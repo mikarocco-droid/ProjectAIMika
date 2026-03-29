@@ -22,12 +22,13 @@ PLAY_ZONES = {
     "padel":            {"x_min": 0.05, "x_max": 0.95, "y_min": 0.10, "y_max": 0.90},
 }
 
-MIN_PLAYER_W = 0.01
-MIN_PLAYER_H = 0.02
-MAX_PLAYER_W = 0.35
-MAX_PLAYER_H = 0.80
-MIN_RATIO    = 0.8
-MAX_RATIO    = 5.0
+# Filtres plus stricts
+MIN_PLAYER_W = 0.015  # était 0.01
+MIN_PLAYER_H = 0.04   # était 0.02
+MAX_PLAYER_W = 0.25   # était 0.35
+MAX_PLAYER_H = 0.70   # était 0.80
+MIN_RATIO    = 1.2    # était 0.8 — joueur plus haut que large
+MAX_RATIO    = 4.0    # était 5.0
 
 # Modèles YOLO11 disponibles — du plus léger au plus lourd
 YOLO11_MODELS = [
