@@ -1,4 +1,5 @@
 # vision/ocr.py
+# -*- coding: utf-8 -*-
 
 import cv2
 import numpy as np
@@ -8,70 +9,62 @@ try:
     TESSERACT_AVAILABLE = True
 except ImportError:
     TESSERACT_AVAILABLE = False
-    print("⚠️  pytesseract non installé — OCR désactivé")
+    print("pytesseract non installe — OCR desactive")
 
 
 # ─────────────────────────────────────────
 # PRÉTRAITEMENT IMAGE
 # ─────────────────────────────────────────
 def preprocess_patch(patch):
-    """
-    Prépare le crop d'un joueur pour l'OCR.
-    On isole la zone maillot (tiers central de la bbox).
-    """
     h, w = patch.shape[:2]
 
-    # Garder uniquement le tiers central vertical (zone numéro)
-    top    = h // 4
-    bottom = 3 * h // 4
-    patch  = patch[top:bottom, :]
+    if h < 20 or w < 10:
+        return None
 
-    # Agrandir pour faciliter l'OCR
-    patch = cv2.resize(patch, (w * 3, (bottom - top) * 3),
-                       interpolation=cv2.INTER_CUBIC)
+    # Zone maillot : entre 20% et 60% de la hauteur
+    top    = int(h * 0.20)
+    bottom = int(h * 0.60)
+    roi    = patch[top:bottom, :]
 
-    # Niveaux de gris
-    gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+    if roi.size == 0:
+        return None
 
-    # Contraste adaptatif
+    # Agrandir
+    roi = cv2.resize(roi, (w * 3, (bottom - top) * 3),
+                     interpolation=cv2.INTER_CUBIC)
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
 
-    # Seuillage binaire + inversé (chiffres noirs sur blanc)
     _, thresh = cv2.threshold(
         gray, 0, 255,
         cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
     )
-
     return thresh
 
 
 # ─────────────────────────────────────────
-# LECTURE NUMÉRO SUR UN CROP
+# LECTURE NUMÉRO
 # ─────────────────────────────────────────
 def read_number_from_patch(patch):
-    """
-    Tente de lire un numéro de maillot depuis un crop joueur.
-    Retourne un entier ou None si non détecté.
-    """
     if not TESSERACT_AVAILABLE:
         return None
 
     processed = preprocess_patch(patch)
+    if processed is None:
+        return None
 
-    # Config Tesseract : chiffres uniquement, mode bloc
-    config = (
-        "--psm 8 "           # bloc de texte unique
-        "--oem 3 "           # moteur LSTM
+    cfg = (
+        "--psm 8 "
+        "--oem 3 "
         "-c tessedit_char_whitelist=0123456789"
     )
 
     try:
-        text = pytesseract.image_to_string(processed, config=config)
+        text = pytesseract.image_to_string(processed, config=cfg)
         text = text.strip()
-
         if text.isdigit() and 1 <= int(text) <= 99:
             return int(text)
-
     except Exception:
         pass
 
@@ -83,39 +76,31 @@ def read_number_from_patch(patch):
 # ─────────────────────────────────────────
 class OCRReader:
 
-    def __init__(self, min_confidence=0.6):
-        self.min_confidence = min_confidence
-        # Cache : track_id → numéro détecté + score confiance
-        self._cache = {}
+    def __init__(self, min_confidence=0.6, ocr_every_n_frames=30):
+        self.min_confidence    = min_confidence
+        self.ocr_every_n_frames = ocr_every_n_frames  # ← 1 fois par seconde
+        self._cache            = {}
+        self._frame_counter    = 0
 
     # ─────────────────────────────────────────
-    # LECTURE SUR UN JOUEUR TRACKÉ
+    # LECTURE SUR UN JOUEUR
     # ─────────────────────────────────────────
     def read_jersey(self, frame, player):
-        """
-        Lit le numéro de maillot d'un joueur tracké.
-
-        player : dict avec "id", "bbox"
-        frame  : image BGR complète
-
-        Retourne le numéro (int) ou None.
-        """
         track_id = player.get("id")
 
-        # Si déjà détecté avec confiance → retourner depuis cache
+        # Retourner depuis cache si confiance suffisante
         if track_id in self._cache:
             cached = self._cache[track_id]
             if cached["confidence"] >= self.min_confidence:
                 return cached["number"]
 
-        x1, y1, x2, y2 = [int(v) for v in player["bbox"]]
+        if not TESSERACT_AVAILABLE:
+            return None
 
-        # Sécurité bords image
+        x1, y1, x2, y2 = [int(v) for v in player["bbox"]]
         h_frame, w_frame = frame.shape[:2]
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(w_frame, x2)
-        y2 = min(h_frame, y2)
+        x1 = max(0, x1); y1 = max(0, y1)
+        x2 = min(w_frame, x2); y2 = min(h_frame, y2)
 
         if x2 - x1 < 20 or y2 - y1 < 20:
             return None
@@ -124,53 +109,64 @@ class OCRReader:
         number = read_number_from_patch(patch)
 
         if number is not None:
-            # Mise à jour cache avec score de confiance
-            entry = self._cache.get(track_id, {"number": None, "confidence": 0, "votes": {}})
+            entry = self._cache.get(track_id, {
+                "number": None, "confidence": 0, "votes": {}
+            })
             votes = entry.get("votes", {})
             votes[number] = votes.get(number, 0) + 1
 
-            # Numéro le plus voté = le plus fiable
-            best        = max(votes, key=votes.get)
-            total_votes = sum(votes.values())
-            confidence  = votes[best] / total_votes
+            best       = max(votes, key=votes.get)
+            confidence = votes[best] / sum(votes.values())
 
             self._cache[track_id] = {
                 "number":     best,
                 "confidence": confidence,
                 "votes":      votes
             }
-
             return best
 
-        # Retourner ce qu'on a en cache même si confiance faible
         if track_id in self._cache:
             return self._cache[track_id]["number"]
 
         return None
 
     # ─────────────────────────────────────────
-    # LECTURE SUR TOUS LES JOUEURS D'UNE FRAME
+    # LECTURE SUR TOUS LES JOUEURS
     # ─────────────────────────────────────────
-    def read_all(self, frame, players):
+    def read_all(self, frame, players, frame_id=None):
         """
-        Lit les numéros de tous les joueurs trackés.
+        Lit les numéros de maillot.
+        OCR actif seulement 1 frame sur ocr_every_n_frames.
+        Les autres frames retournent le cache.
+        """
+        self._frame_counter += 1
 
-        Retourne la liste players enrichie avec "jersey" :
-        [{"id": 1, "bbox": [...], "jersey": 9}, ...]
-        """
+        # Toujours retourner le jersey depuis le cache
         for p in players:
-            p["jersey"] = self.read_jersey(frame, p)
+            tid = p.get("id")
+            if tid in self._cache:
+                p["jersey"] = self._cache[tid].get("number")
+            else:
+                p["jersey"] = None
+
+        # OCR seulement 1 frame sur N
+        if not TESSERACT_AVAILABLE:
+            return players
+
+        if self._frame_counter % self.ocr_every_n_frames != 0:
+            return players
+
+        # Frame OCR — lire les numéros
+        for p in players:
+            jersey = self.read_jersey(frame, p)
+            p["jersey"] = jersey
 
         return players
 
     # ─────────────────────────────────────────
-    # RÉSUMÉ DES NUMÉROS DÉTECTÉS
+    # JERSEY MAP
     # ─────────────────────────────────────────
     def get_jersey_map(self):
-        """
-        Retourne un dict track_id → numéro maillot
-        pour tous les joueurs détectés avec confiance suffisante.
-        """
         return {
             tid: data["number"]
             for tid, data in self._cache.items()
@@ -179,5 +175,5 @@ class OCRReader:
         }
 
     def reset(self):
-        """Vide le cache — à appeler entre deux vidéos."""
-        self._cache = {}
+        self._cache         = {}
+        self._frame_counter = 0
