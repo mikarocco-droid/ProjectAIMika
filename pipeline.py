@@ -13,6 +13,7 @@ from video.montage import create_montage
 from ai.claude import summarize
 from export.pdf import generate_pdf
 from vision.calibration import calibrate
+from analysis.highlights import extract_highlights
 
 
 # ─────────────────────────────────────────
@@ -29,6 +30,9 @@ def normalize_highlights(highlights):
             h["main_type"] = h.get("type", "action")
         if "score" not in h:
             h["score"] = 1.0
+        # S'assurer que time_start est valide
+        if h["time_start"] == 0 and h.get("frame_start", 0) > 0:
+            h["time_start"] = 0.1
         fixed.append(h)
     return fixed
 
@@ -40,7 +44,7 @@ def compute_xg(x, y, frame_width=None):
     frame_width  = frame_width or config.FRAME_WIDTH
     normalized_x = x / frame_width
     dist_to_goal = 1.0 - normalized_x
-    xg = max(0.02, min(0.9, 1.0 - dist_to_goal * 1.5))
+    xg           = max(0.02, min(0.9, 1.0 - dist_to_goal * 1.5))
     return round(xg, 3)
 
 
@@ -57,13 +61,7 @@ def enrich_events_with_xg(events, frame_width=None):
 # MATCH SUMMARY
 # ─────────────────────────────────────────
 def compute_match_summary(events, stats, total_frames=0, fps=30):
-
-    total_xg = sum(
-        e.get("xg", 0)
-        for e in events
-        if e.get("type") == "shot"
-    )
-
+    total_xg     = sum(e.get("xg", 0) for e in events if e.get("type") == "shot")
     duration_sec = int(total_frames / fps) if fps > 0 else 0
     minutes      = duration_sec // 60
     seconds      = duration_sec % 60
@@ -75,6 +73,7 @@ def compute_match_summary(events, stats, total_frames=0, fps=30):
         "passes":        sum(1 for e in events if e.get("type") == "pass"),
         "interceptions": sum(1 for e in events if e.get("type") == "interception"),
         "dribbles":      sum(1 for e in events if e.get("type") == "dribble"),
+        "long_passes":   sum(1 for e in events if e.get("type") == "long_pass"),
         "total_xg":      round(total_xg, 2),
         "players":       len(stats),
         "duration":      f"{minutes:02d}:{seconds:02d}",
@@ -121,7 +120,7 @@ def run_pipeline(
     print(f"\nPIPELINE START - {sport.upper()}")
 
     # ─────────────────────────────────────────
-    # 0. CALIBRATION AUTOMATIQUE
+    # 0. CALIBRATION
     # ─────────────────────────────────────────
     print("Step 0 : Calibration camera...")
     calib      = None
@@ -129,18 +128,13 @@ def run_pipeline(
 
     try:
         calib = calibrate(video_path, sport)
-
-        # Mettre à jour la zone de jeu dans le detector
         if calib and calib.get("play_zone"):
             from vision.detector import PLAY_ZONES
             PLAY_ZONES[sport] = calib["play_zone"]
-            print(f"  Zone de jeu mise a jour : {calib['play_zone']}")
-
-        # Récupérer les zones de tir calibrées
+            print(f"  Zone de jeu : {calib['play_zone']}")
         if calib and calib.get("shot_zones"):
             shot_zones = calib["shot_zones"]
-            print(f"  Shot zones calibrees : {shot_zones}")
-
+            print(f"  Shot zones  : {shot_zones}")
     except Exception as e:
         print(f"  Calibration ignoree : {e}")
 
@@ -158,9 +152,8 @@ def run_pipeline(
         progress_callback = progress,
         save_annotated    = save_annotated,
         annotated_path    = annotated_path,
-        shot_zones        = shot_zones      # ← calibration passée ici
+        shot_zones        = shot_zones
     )
-
     print(f"  OK {len(events)} events | {len(jersey_map)} maillots")
 
     # ─────────────────────────────────────────
@@ -180,49 +173,74 @@ def run_pipeline(
     # 4. HEATMAPS
     # ─────────────────────────────────────────
     print("Step 4 : Heatmaps...")
-    heatmaps = generate_all_heatmaps(
-        events     = events,
-        output_dir = os.path.join(output_dir, "heatmaps"),
-        width      = config.FRAME_WIDTH,
-        height     = config.FRAME_HEIGHT,
-        sport      = sport
-    )
-    heatmap_path = heatmaps.get("global")
-    print(f"  OK {len(heatmaps)} heatmaps")
+    heatmaps     = {}
+    heatmap_path = None
+    try:
+        heatmaps = generate_all_heatmaps(
+            events     = events,
+            output_dir = os.path.join(output_dir, "heatmaps"),
+            width      = config.FRAME_WIDTH,
+            height     = config.FRAME_HEIGHT,
+            sport      = sport
+        )
+        heatmap_path = heatmaps.get("global")
+        print(f"  OK {len(heatmaps)} heatmaps")
+    except Exception as e:
+        print(f"  Heatmaps ignorees : {e}")
 
     # ─────────────────────────────────────────
     # 5. HIGHLIGHTS
     # ─────────────────────────────────────────
     print("Step 5 : Highlights...")
-    highlights = create_highlights(
-        video_path = video_path,
-        events     = events,
-        output_dir = os.path.join(output_dir, "highlights"),
-        fps        = fps,
-        max_clips  = config.HIGHLIGHT_MAX
-    )
-    highlights = normalize_highlights(highlights)
+    highlights = []
+    reel_path  = None
 
-    reel_path = create_highlight_reel(
-        highlights  = highlights,
-        output_path = os.path.join(output_dir, "reel.mp4")
-    )
-    print(f"  OK {len(highlights)} highlights")
+    try:
+        # Extraire highlights depuis les events
+        highlights = extract_highlights(
+            events         = events,
+            max_highlights = config.HIGHLIGHT_MAX,
+            min_score      = config.HIGHLIGHT_MIN_SCORE,
+            fps            = fps
+        )
+        highlights = normalize_highlights(highlights)
+
+        # Découper les clips vidéo
+        highlights = create_highlights(
+            video_path = video_path,
+            events     = events,
+            output_dir = os.path.join(output_dir, "highlights"),
+            fps        = fps,
+            max_clips  = config.HIGHLIGHT_MAX
+        )
+        highlights = normalize_highlights(highlights)
+
+        reel_path = create_highlight_reel(
+            highlights  = highlights,
+            output_path = os.path.join(output_dir, "reel.mp4")
+        )
+        print(f"  OK {len(highlights)} highlights")
+    except Exception as e:
+        print(f"  Highlights error : {e}")
 
     # ─────────────────────────────────────────
     # 6. MONTAGE
     # ─────────────────────────────────────────
     print("Step 6 : Montage...")
-    montage_path = create_montage(
-        highlights  = highlights,
-        video_path  = video_path,
-        output_path = os.path.join(output_dir, "montage.mp4"),
-        title       = f"Analyse {sport.capitalize()}",
-        with_intro  = config.MONTAGE_WITH_INTRO,
-        with_labels = config.MONTAGE_WITH_LABELS,
-        with_fades  = config.MONTAGE_WITH_FADES
-    )
-    print(f"  OK Montage -> {montage_path}")
+    montage_path = None
+    try:
+        montage_path = create_montage(
+            highlights  = highlights,
+            video_path  = video_path,
+            output_path = os.path.join(output_dir, "montage.mp4"),
+            title       = f"Analyse {sport.capitalize()}",
+            with_intro  = config.MONTAGE_WITH_INTRO,
+            with_labels = config.MONTAGE_WITH_LABELS,
+            with_fades  = config.MONTAGE_WITH_FADES
+        )
+        print(f"  OK Montage -> {montage_path}")
+    except Exception as e:
+        print(f"  Montage error : {e}")
 
     # ─────────────────────────────────────────
     # 7. SUMMARY
@@ -237,8 +255,14 @@ def run_pipeline(
     ai_summary = None
     if config.CLAUDE_API_KEY:
         try:
-            ai_summary = summarize(highlights)
-            print("  OK Resume IA genere")
+            from ai.claude import summarize
+            ai_summary = summarize(
+                highlights = highlights,
+                summary    = summary,
+                stats      = stats,
+                sport      = sport
+            )
+            print("  OK Resume IA")
         except Exception as e:
             print(f"  AI error : {e}")
     else:
@@ -295,6 +319,8 @@ def run_pipeline(
         json.dump(result, f, indent=2, ensure_ascii=False)
 
     print(f"\nPIPELINE DONE")
-    print(f"  {summary['goals']} buts | {summary['shots']} tirs | xG: {summary['total_xg']}")
+    print(f"  {summary['goals']} buts | {summary['shots']} tirs | "
+          f"xG: {summary['total_xg']} | "
+          f"{summary['players']} joueurs")
 
     return result
