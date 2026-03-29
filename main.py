@@ -18,9 +18,6 @@ tracker  = Tracker()
 ocr      = OCRReader(min_confidence=0.6)
 
 
-# ─────────────────────────────────────────
-# PROGRESSION CALLBACK
-# ─────────────────────────────────────────
 def default_progress(pct):
     print(f"  {pct}%", end="\r")
 
@@ -36,21 +33,9 @@ def process_video(
     annotated_path    = None,
     shot_zones        = None
 ):
-    """
-    Lit la vidéo frame par frame.
-    Détecte, tracke, lit les maillots, collecte les events.
-
-    Retourne :
-        events       : liste de tous les events détectés
-        jersey_map   : dict {track_id: numéro maillot}
-        fps          : framerate de la vidéo
-        total_frames : nombre total de frames
-    """
-
     if progress_callback is None:
         progress_callback = default_progress
 
-    # Passer le sport au detector pour le filtre de zone
     detector.set_sport(sport)
 
     cap = cv2.VideoCapture(video_path)
@@ -68,7 +53,6 @@ def process_video(
     print(f"  Resolution : {w}x{h}")
     print(f"  Sport : {sport}")
 
-    # ── Writer vidéo annotée ─────────────
     overlay = Overlay(fps=fps) if save_annotated else None
     writer  = None
 
@@ -78,9 +62,7 @@ def process_video(
             cv2.VideoWriter_fourcc(*"mp4v"),
             fps, (w, h)
         )
-        print(f"  Video annotee -> {annotated_path}")
 
-    # ── Boucle principale ────────────────
     frames_data = []
     frame_id    = 0
     last_pct    = -1
@@ -90,17 +72,24 @@ def process_video(
         if not ret:
             break
 
-        # ── Détection YOLO + filtre zone ──
+        # Détection
         players, ball = detector.detect(frame)
 
-        # ── Tracking DeepSort ─────────────
+        # Tracking
         tracked = tracker.update(players, frame)
 
-        # ── OCR numéros maillots ──────────
+        # OCR
         tracked = ocr.read_all(frame, tracked)
 
-        # ── Events de cette frame ─────────
-        frame_events, _ = detect_events_v5(tracked, ball, sport)
+        # Events de cette frame
+        frame_events, _ = detect_events_v5(
+            players    = tracked,
+            ball       = ball,
+            sport      = sport,
+            shot_zones = shot_zones,
+            frame_w    = w,      # ← passer la vraie résolution
+            frame_h    = h       # ← passer la vraie résolution
+        )
         for e in frame_events:
             e["frame"] = frame_id
 
@@ -108,17 +97,19 @@ def process_video(
             "players": tracked,
             "ball":    ball,
             "frame":   frame_id,
+            "frame_w": w,        # ← stocker la résolution
+            "frame_h": h,        # ← stocker la résolution
             "events":  frame_events
         })
 
-        # ── Vidéo annotée ─────────────────
+        # Vidéo annotée
         if writer and overlay:
             annotated = overlay.render(
                 frame, tracked, ball, frame_events, frame_id
             )
             writer.write(annotated)
 
-        # ── Progression ───────────────────
+        # Progression
         if total_frames > 0:
             pct = int((frame_id / total_frames) * 100)
             if pct % 5 == 0 and pct != last_pct:
@@ -128,19 +119,15 @@ def process_video(
         frame_id += 1
 
     cap.release()
-
     if writer:
         writer.release()
-        print(f"  Video annotee terminee")
 
     print(f"\n  {frame_id} frames traitees")
 
-    # ── Jersey map finale ─────────────────
     jersey_map = ocr.get_jersey_map()
     ocr.reset()
 
-    # ── Détection events complète ─────────
-    events = process_match(frames_data, sport, shot_zones)
+    events = process_match(frames_data, sport, shot_zones=shot_zones)
 
     print(f"  {len(events)} events detectes")
     print(f"  {len(jersey_map)} maillots identifies")
@@ -152,25 +139,16 @@ def process_video(
 # TEST LOCAL
 # ─────────────────────────────────────────
 if __name__ == "__main__":
-
     import sys
 
     video = sys.argv[1] if len(sys.argv) > 1 else config.VIDEO_PATH
     sport = sys.argv[2] if len(sys.argv) > 2 else "football"
-
-    print(f"\nTest local : {video} | sport : {sport}\n")
 
     events, jersey_map, fps, total_frames = process_video(
         video_path = video,
         sport      = sport
     )
 
-    print(f"\nRESULTATS :")
-    print(f"  Events      : {len(events)}")
-    print(f"  Maillots    : {jersey_map}")
-    print(f"  FPS         : {fps}")
-    print(f"  Total frames: {total_frames}")
-
-    print(f"\nPremiers events :")
+    print(f"\nEvents : {len(events)}")
     for e in events[:10]:
         print(f"  {e}")
