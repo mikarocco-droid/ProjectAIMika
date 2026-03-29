@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Admin — ScoutIA</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<style>
+    .admin-wrapper  { max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
+    .admin-title    { font-size: 1.6rem; font-weight: 700; color: #1a1a2e; margin-bottom: 1.5rem; }
+
+    /* KPI */
+    .kpi-grid       { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .kpi-card       { background: #fff; border-radius: 12px; padding: 1.25rem; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,.06); border-top: 3px solid #2563eb; }
+    .kpi-value      { font-size: 2rem; font-weight: 700; color: #2563eb; }
+    .kpi-label      { font-size: 0.78rem; color: #888; text-transform: uppercase; letter-spacing: .5px; margin-top: .25rem; }
+
+    /* Tables */
+    .section-title  { font-size: 1.1rem; font-weight: 600; color: #1a1a2e; margin: 2rem 0 1rem; border-left: 4px solid #2563eb; padding-left: .75rem; }
+    .admin-table    { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .admin-table th { background: #2563eb; color: #fff; padding: .75rem 1rem; text-align: left; font-size: .82rem; font-weight: 600; }
+    .admin-table td { padding: .7rem 1rem; border-bottom: 1px solid #f0f0f0; font-size: .88rem; color: #333; vertical-align: middle; }
+    .admin-table tr:last-child td { border-bottom: none; }
+    .admin-table tr:hover td { background: #f8f9ff; }
+
+    /* Badges plan */
+    .badge          { display: inline-block; padding: .2rem .6rem; border-radius: 20px; font-size: .75rem; font-weight: 600; }
+    .badge-free     { background: #f3f4f6; color: #666; }
+    .badge-starter  { background: #dbeafe; color: #1d4ed8; }
+    .badge-pro      { background: #d1fae5; color: #065f46; }
+    .badge-unique   { background: #fef3c7; color: #92400e; }
+    .badge-admin    { background: #fee2e2; color: #991b1b; }
+
+    /* Badges status */
+    .badge-done       { background: #d1fae5; color: #065f46; }
+    .badge-processing { background: #dbeafe; color: #1d4ed8; }
+    .badge-error      { background: #fee2e2; color: #991b1b; }
+    .badge-pending    { background: #f3f4f6; color: #666; }
+
+    /* Actions */
+    .action-form    { display: inline; }
+    .btn-xs         { padding: .25rem .6rem; font-size: .78rem; border-radius: 6px; border: none; cursor: pointer; font-weight: 500; }
+    .btn-danger     { background: #fee2e2; color: #991b1b; }
+    .btn-danger:hover { background: #fca5a5; }
+    .plan-select    { padding: .25rem .5rem; border-radius: 6px; border: 1.5px solid #d1d5db; font-size: .78rem; background: #fff; cursor: pointer; }
+    .btn-save       { background: #dbeafe; color: #1d4ed8; }
+    .btn-save:hover { background: #bfdbfe; }
+
+    /* Flash */
+    .flash          { padding: .75rem 1rem; border-radius: 8px; margin-bottom: 1rem; background: #d1fae5; color: #065f46; font-size: .9rem; }
+</style>
+</head>
+<body>
+<nav>
+    <div class="nav-inner">
+        <a href="/" class="logo">⚽ ScoutIA</a>
+        <div class="nav-links">
+            <span class="badge badge-admin">Admin</span>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/logout">Deconnexion</a>
+        </div>
+    </div>
+</nav>
+
+<div class="admin-wrapper">
+
+    <div class="admin-title">Panel Admin</div>
+
+    <!-- Flash messages -->
+    {% with messages = get_flashed_messages() %}
+        {% for msg in messages %}
+            <div class="flash">{{ msg }}</div>
+        {% endfor %}
+    {% endwith %}
+
+    <!-- KPI -->
+    <div class="kpi-grid">
+        <div class="kpi-card">
+            <div class="kpi-value">{{ stats.total_users }}</div>
+            <div class="kpi-label">Utilisateurs</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value">{{ stats.total_analyses }}</div>
+            <div class="kpi-label">Analyses</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value" style="color:#065f46">{{ stats.done }}</div>
+            <div class="kpi-label">Terminees</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value" style="color:#1d4ed8">{{ stats.processing }}</div>
+            <div class="kpi-label">En cours</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value" style="color:#991b1b">{{ stats.errors }}</div>
+            <div class="kpi-label">Erreurs</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value" style="color:#666">{{ stats.plan_free }}</div>
+            <div class="kpi-label">Plan Free</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value" style="color:#1d4ed8">{{ stats.plan_starter }}</div>
+            <div class="kpi-label">Plan Starter</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value" style="color:#065f46">{{ stats.plan_pro }}</div>
+            <div class="kpi-label">Plan Pro</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value" style="color:#92400e">{{ stats.plan_unique }}</div>
+            <div class="kpi-label">Plan Unique</div>
+        </div>
+    </div>
+
+    <!-- UTILISATEURS -->
+    <div class="section-title">Utilisateurs ({{ stats.total_users }})</div>
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Email</th>
+                <th>Plan</th>
+                <th>Admin</th>
+                <th>Analyses</th>
+                <th>Changer plan</th>
+                <th>Supprimer</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for u in users %}
+            <tr>
+                <td>#{{ u.id }}</td>
+                <td>{{ u.email }}</td>
+                <td>
+                    <span class="badge badge-{{ u.plan }}">{{ u.plan }}</span>
+                </td>
+                <td>
+                    {% if u.is_admin %}
+                        <span class="badge badge-admin">Admin</span>
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td>{{ u.analyses_count() }}</td>
+                <td>
+                    <form class="action-form" action="/admin/user/{{ u.id }}/plan" method="POST">
+                        <select class="plan-select" name="plan">
+                            {% for plan_name in ["free", "starter", "pro", "unique"] %}
+                                <option value="{{ plan_name }}"
+                                    {% if u.plan == plan_name %}selected{% endif %}>
+                                    {{ plan_name }}
+                                </option>
+                            {% endfor %}
+                        </select>
+                        <button type="submit" class="btn-xs btn-save">OK</button>
+                    </form>
+                </td>
+                <td>
+                    {% if u.id != current_user.id %}
+                    <form class="action-form" action="/admin/user/{{ u.id }}/delete" method="POST"
+                          onsubmit="return confirm('Supprimer {{ u.email }} ?')">
+                        <button type="submit" class="btn-xs btn-danger">Supprimer</button>
+                    </form>
+                    {% else %}
+                        <span style="color:#ccc;font-size:.78rem">Vous</span>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- ANALYSES -->
+    <div class="section-title">Analyses recentes ({{ stats.total_analyses }})</div>
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Fichier</th>
+                <th>Sport</th>
+                <th>Utilisateur</th>
+                <th>Statut</th>
+                <th>Progression</th>
+                <th>Date</th>
+                <th>Supprimer</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for a in analyses %}
+            <tr>
+                <td>#{{ a.id }}</td>
+                <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                    {{ a.filename }}
+                </td>
+                <td>{{ a.sport }}</td>
+                <td>
+                    {% set u = users | selectattr("id", "equalto", a.user_id) | first %}
+                    {% if u %}{{ u.email }}{% else %}—{% endif %}
+                </td>
+                <td>
+                    <span class="badge badge-{{ a.status }}">{{ a.status }}</span>
+                </td>
+                <td>
+                    {% if a.status == "processing" %}
+                        <div style="background:#e5e7eb;border-radius:4px;height:6px;width:80px">
+                            <div style="background:#2563eb;height:6px;border-radius:4px;width:{{ a.progress }}%"></div>
+                        </div>
+                        <span style="font-size:.75rem;color:#666">{{ a.progress }}%</span>
+                    {% elif a.status == "done" %}
+                        <span style="color:#065f46;font-size:.78rem">100%</span>
+                    {% else %}
+                        <span style="color:#ccc;font-size:.78rem">—</span>
+                    {% endif %}
+                </td>
+                <td style="font-size:.78rem;color:#888">
+                    {{ a.created_at.strftime('%d/%m/%Y %H:%M') }}
+                </td>
+                <td>
+                    <form class="action-form" action="/admin/analysis/{{ a.id }}/delete" method="POST"
+                          onsubmit="return confirm('Supprimer analyse #{{ a.id }} ?')">
+                        <button type="submit" class="btn-xs btn-danger">Supprimer</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+</div>
+</body>
+</html>

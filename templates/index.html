@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScoutIA — Analyse vidéo de matchs</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<nav>
+  <div class="nav-inner">
+    <a href="/" class="logo">⚽ ScoutIA</a>
+    <div class="nav-links">
+      <a href="/pricing">Tarifs</a>
+      {% if current_user.is_authenticated %}
+        <a href="/dashboard" class="btn-nav">Mon Dashboard</a>
+      {% else %}
+        <a href="/login">Connexion</a>
+        <a href="/register" class="btn-nav">Essai gratuit</a>
+      {% endif %}
+    </div>
+  </div>
+</nav>
+
+<section class="hero">
+  <h1>Votre scout IA personnel</h1>
+  <p class="subtitle">Uploadez un match — recevez les highlights, le rapport tactique et les stats en quelques minutes.</p>
+  <div class="hero-btns">
+    <a href="/register" class="btn-primary">Commencer gratuitement</a>
+    <a href="/pricing" class="btn-secondary">Voir les tarifs</a>
+  </div>
+  <div class="hero-demo">
+    <div class="demo-step">🎬 <span>Upload votre vidéo</span></div>
+    <div class="demo-arrow">→</div>
+    <div class="demo-step">🤖 <span>L'IA analyse le match</span></div>
+    <div class="demo-arrow">→</div>
+    <div class="demo-step">✂️ <span>Recevez vos highlights</span></div>
+  </div>
+</section>
+
+<section class="features">
+  <div class="feature">
+    <div class="feature-icon">🎯</div>
+    <h3>Highlights automatiques</h3>
+    <p>Buts, tirs, dribbles, passes clés — chaque action importante est détectée et découpée automatiquement.</p>
+  </div>
+  <div class="feature">
+    <div class="feature-icon">📊</div>
+    <h3>Rapport scout complet</h3>
+    <p>Fiche par joueur, observations tactiques, score estimé — tout ce qu'un scout professionnel produirait en heures.</p>
+  </div>
+  <div class="feature">
+    <div class="feature-icon">⚡</div>
+    <h3>En quelques minutes</h3>
+    <p>Un match de 90 minutes analysé en moins de 30 minutes. Parfait pour les clubs amateurs et académies.</p>
+  </div>
+</section>
+
+<section class="pricing-teaser">
+  <h2>Simple et abordable</h2>
+  <div class="plans-mini">
+    <div class="plan-mini">
+      <div class="plan-name">Gratuit</div>
+      <div class="plan-price">0€</div>
+      <div class="plan-videos">2 vidéos</div>
+    </div>
+    <div class="plan-mini featured">
+      <div class="plan-badge">Populaire</div>
+      <div class="plan-name">Starter</div>
+      <div class="plan-price">9€<span>/mois</span></div>
+      <div class="plan-videos">20 vidéos</div>
+    </div>
+    <div class="plan-mini">
+      <div class="plan-name">Pro</div>
+      <div class="plan-price">29€<span>/mois</span></div>
+      <div class="plan-videos">100 vidéos</div>
+    </div>
+  </div>
+  <a href="/pricing" class="btn-secondary">Voir les détails</a>
+</section>
+
+<footer>
+  <p>© 2025 ScoutIA — Propulsé par Claude AI</p>
+</footer>
+</body>
+</html>

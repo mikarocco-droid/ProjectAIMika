@@ -1,0 +1,42 @@
+# docker-compose.yml
+
+services:
+
+  # ── Application principale ──────────────
+  app:
+    build: .
+    container_name: scoutia
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./uploads:/app/uploads       # vidéos uploadées
+      - ./outputs:/app/outputs       # résultats analyses
+      - ./models:/app/models         # modèles YOLO
+      - ./instance:/app/instance     # base de données SQLite
+      - ./.env:/app/.env             # variables d'environnement
+    env_file:
+      - .env/param.env
+    environment:
+      - PYTHONIOENCODING=utf-8
+    restart: unless-stopped
+
+    # ── GPU NVIDIA (décommenter sur serveur GPU) ──
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ── Redis (pour Celery — optionnel) ────
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: scoutia-redis
+  #   restart: unless-stopped
+
+volumes:
+  uploads:
+  outputs:
+  models:
+  instance:

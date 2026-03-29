@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Resultats — ScoutIA</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<style>
+    .results-page       { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+    .result-section     { background: #fff; border-radius: 14px; padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .result-section h2  { font-size: 1.1rem; font-weight: 700; color: #1a1a2e; margin-bottom: 1rem; }
+
+    /* KPI */
+    .kpi-grid           { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1rem; }
+    .kpi-card           { background: #f8f9ff; border-radius: 10px; padding: 1rem; text-align: center; border-top: 3px solid #2563eb; }
+    .kpi-value          { font-size: 1.8rem; font-weight: 700; color: #2563eb; }
+    .kpi-label          { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: .5px; margin-top: .2rem; }
+
+    /* Highlights */
+    .highlights-grid    { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+    .highlight-card     { background: #f8f9ff; border-radius: 10px; padding: 1rem; border-left: 4px solid #2563eb; }
+    .highlight-header   { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap; }
+    .highlight-type     { display: inline-block; padding: .2rem .6rem; border-radius: 20px; font-size: .75rem; font-weight: 600; background: #dbeafe; color: #1d4ed8; text-transform: uppercase; }
+    .highlight-type.goal, .highlight-type.score { background: #d1fae5; color: #065f46; }
+    .highlight-type.shot        { background: #dbeafe; color: #1d4ed8; }
+    .highlight-type.interception{ background: #fee2e2; color: #991b1b; }
+    .highlight-type.dribble     { background: #fef3c7; color: #92400e; }
+    .highlight-time     { font-size: .8rem; color: #666; }
+    .highlight-score    { font-size: .75rem; color: #888; margin-left: auto; }
+    .highlight-video    { width: 100%; border-radius: 8px; margin-top: .5rem; max-height: 180px; background: #000; }
+
+    /* Stats */
+    .stats-table        { width: 100%; border-collapse: collapse; }
+    .stats-table th     { background: #2563eb; color: #fff; padding: .6rem 1rem; text-align: left; font-size: .82rem; }
+    .stats-table td     { padding: .6rem 1rem; border-bottom: 1px solid #f0f0f0; font-size: .88rem; }
+    .stats-table tr:last-child td { border-bottom: none; }
+    .stats-table tr:hover td { background: #f8f9ff; }
+
+    /* Heatmaps */
+    .heatmap-grid       { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
+    .heatmap-card       { border-radius: 10px; overflow: hidden; }
+    .heatmap-card img   { width: 100%; border-radius: 10px; }
+    .heatmap-label      { font-size: .8rem; color: #666; text-align: center; margin-top: .4rem; }
+
+    /* Reel */
+    .reel-video         { width: 100%; border-radius: 10px; max-height: 400px; background: #000; margin-bottom: 1rem; }
+
+    /* Boutons */
+    .btn-row            { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
+    .btn-primary        { background: #2563eb; color: #fff; padding: .7rem 1.4rem; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: .9rem; display: inline-block; }
+    .btn-primary:hover  { background: #1d4ed8; }
+    .btn-secondary      { background: #f3f4f6; color: #1a1a2e; padding: .7rem 1.4rem; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: .9rem; display: inline-block; }
+    .btn-secondary:hover{ background: #e5e7eb; }
+    .btn-disabled       { background: #e5e7eb; color: #999; padding: .7rem 1.4rem; border-radius: 10px; font-weight: 600; font-size: .9rem; display: inline-block; cursor: not-allowed; }
+
+    .ai-text            { background: #f8f9ff; border-left: 4px solid #2563eb; padding: 1rem; border-radius: 8px; font-style: italic; color: #444; line-height: 1.6; }
+    .jersey-badge       { display: inline-block; background: #1a1a2e; color: #fff; border-radius: 6px; padding: .15rem .5rem; font-size: .8rem; font-weight: 700; margin-right: .3rem; }
+    .empty-state        { color: #aaa; font-size: .9rem; font-style: italic; }
+</style>
+</head>
+<body>
+<nav>
+    <div class="nav-inner">
+        <a href="/" class="logo">⚽ ScoutIA</a>
+        <div class="nav-links">
+            <a href="/dashboard">← Dashboard</a>
+        </div>
+    </div>
+</nav>
+
+<div class="results-page">
+
+    <h1 style="font-size:1.4rem;font-weight:700;color:#1a1a2e;margin-bottom:1.5rem">
+        Resultats — {{ analysis.filename }}
+        <span style="font-size:.9rem;color:#888;font-weight:400;margin-left:.5rem">
+            {{ analysis.sport }} • {{ analysis.created_at.strftime('%d/%m/%Y %H:%M') }}
+        </span>
+    </h1>
+
+    <!-- ─── KPI RÉSUMÉ ─── -->
+    {% if result.summary %}
+    <div class="result-section">
+        <h2>Résumé du match</h2>
+        <div class="kpi-grid">
+            <div class="kpi-card">
+                <div class="kpi-value" style="color:#065f46">{{ result.summary.goals }}</div>
+                <div class="kpi-label">Buts</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value">{{ result.summary.shots }}</div>
+                <div class="kpi-label">Tirs</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value" style="color:#92400e">{{ result.summary.total_xg }}</div>
+                <div class="kpi-label">xG Total</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value">{{ result.summary.passes }}</div>
+                <div class="kpi-label">Passes</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value" style="color:#991b1b">{{ result.summary.interceptions }}</div>
+                <div class="kpi-label">Interceptions</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value">{{ result.summary.dribbles }}</div>
+                <div class="kpi-label">Dribbles</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value">{{ result.summary.players }}</div>
+                <div class="kpi-label">Joueurs</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-value" style="font-size:1.2rem">{{ result.summary.duration }}</div>
+                <div class="kpi-label">Durée</div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ─── RÉSUMÉ IA ─── -->
+    {% if result.ai_summary %}
+    <div class="result-section">
+        <h2>Analyse IA</h2>
+        <div class="ai-text">{{ result.ai_summary }}</div>
+    </div>
+    {% endif %}
+
+    <!-- ─── HEATMAPS ─── -->
+    {% if result.heatmaps %}
+    <div class="result-section">
+        <h2>Cartes de chaleur</h2>
+        <div class="heatmap-grid">
+            {% if result.heatmaps.global %}
+            <div class="heatmap-card">
+                <img src="/files/{{ analysis.id }}/heatmaps/heatmap_global.png" alt="Heatmap globale">
+                <div class="heatmap-label">Activite globale</div>
+            </div>
+            {% endif %}
+            {% if result.heatmaps.tirs %}
+            <div class="heatmap-card">
+                <img src="/files/{{ analysis.id }}/heatmaps/heatmap_tirs.png" alt="Heatmap tirs">
+                <div class="heatmap-label">Zones de tir</div>
+            </div>
+            {% endif %}
+            {% if result.heatmaps.equipe_A %}
+            <div class="heatmap-card">
+                <img src="/files/{{ analysis.id }}/heatmaps/heatmap_equipe_A.png" alt="Equipe A">
+                <div class="heatmap-label">Equipe A</div>
+            </div>
+            {% endif %}
+            {% if result.heatmaps.equipe_B %}
+            <div class="heatmap-card">
+                <img src="/files/{{ analysis.id }}/heatmaps/heatmap_equipe_B.png" alt="Equipe B">
+                <div class="heatmap-label">Equipe B</div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ─── HIGHLIGHTS ─── -->
+    {% if result.highlights %}
+    <div class="result-section">
+        <h2>Moments clés ({{ result.highlights|length }})</h2>
+        <div class="highlights-grid">
+            {% for h in result.highlights %}
+            <div class="highlight-card">
+                <div class="highlight-header">
+                    <span class="highlight-type {{ h.main_type }}">
+                        {{ h.main_type|upper if h.main_type else "ACTION" }}
+                    </span>
+                    <span class="highlight-time">
+                        {{ "%.1f"|format(h.time_start) }}s → {{ "%.1f"|format(h.time_end) }}s
+                    </span>
+                    <span class="highlight-score">Score : {{ h.score }}</span>
+                </div>
+                <video controls preload="none" class="highlight-video">
+                    <source src="/files/{{ analysis.id }}/highlights/highlight_{{ loop.index }}_{{ h.main_type }}.mp4"
+                            type="video/mp4">
+                    Votre navigateur ne supporte pas la video.
+                </video>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ─── HIGHLIGHT REEL ─── -->
+    <div class="result-section">
+        <h2>Highlight Reel complet</h2>
+        {% if result.reel %}
+        <video controls class="reel-video">
+            <source src="/files/{{ analysis.id }}/reel.mp4" type="video/mp4">
+            Votre navigateur ne supporte pas la video.
+        </video>
+        <div class="btn-row">
+            <a href="/files/{{ analysis.id }}/reel.mp4" download class="btn-secondary">
+                Telecharger le reel
+            </a>
+        </div>
+        {% else %}
+            <p class="empty-state">Reel non disponible.</p>
+        {% endif %}
+    </div>
+
+    <!-- ─── MONTAGE ─── -->
+    {% if result.montage and can_montage %}
+    <div class="result-section">
+        <h2>Montage final</h2>
+        <video controls class="reel-video">
+            <source src="/files/{{ analysis.id }}/montage.mp4" type="video/mp4">
+        </video>
+        <div class="btn-row">
+            <a href="/files/{{ analysis.id }}/montage.mp4" download class="btn-secondary">
+                Telecharger le montage
+            </a>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ─── STATS JOUEURS ─── -->
+    {% if result.stats %}
+    <div class="result-section">
+        <h2>Statistiques joueurs</h2>
+        <table class="stats-table">
+            <thead>
+                <tr>
+                    <th>Joueur</th>
+                    <th>Maillot</th>
+                    <th>Touches</th>
+                    <th>Passes</th>
+                    <th>Tirs</th>
+                    <th>Buts</th>
+                    <th>Interceptions</th>
+                    <th>Dribbles</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for player_id, s in result.stats.items() %}
+                <tr>
+                    <td>Joueur {{ player_id }}</td>
+                    <td>
+                        {% if result.jersey_map and (player_id in result.jersey_map or player_id|string in result.jersey_map) %}
+                            <span class="jersey-badge">
+                                #{{ result.jersey_map[player_id] or result.jersey_map[player_id|string] }}
+                            </span>
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                    <td>{{ s.touches       or 0 }}</td>
+                    <td>{{ s.passes        or 0 }}</td>
+                    <td>{{ s.tirs          or 0 }}</td>
+                    <td>{{ s.buts          or 0 }}</td>
+                    <td>{{ s.interceptions or 0 }}</td>
+                    <td>{{ s.dribbles      or 0 }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    <!-- ─── TÉLÉCHARGEMENTS ─── -->
+    <div class="result-section">
+        <h2>Téléchargements</h2>
+        <div class="btn-row">
+            {% if result.pdf and can_pdf %}
+                <a href="/files/{{ analysis.id }}/rapport.pdf" download class="btn-primary">
+                    Télécharger le rapport PDF
+                </a>
+            {% elif not can_pdf %}
+                <span class="btn-disabled" title="Disponible sur plan Starter et supérieur">
+                    PDF — Plan Starter requis
+                </span>
+            {% endif %}
+
+            {% if result.reel %}
+                <a href="/files/{{ analysis.id }}/reel.mp4" download class="btn-secondary">
+                    Télécharger le reel
+                </a>
+            {% endif %}
+
+            <a href="/files/{{ analysis.id }}/analysis.json" download class="btn-secondary">
+                Télécharger le JSON
+            </a>
+        </div>
+    </div>
+
+</div>
+</body>
+</html>

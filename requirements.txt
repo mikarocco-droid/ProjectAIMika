@@ -1,0 +1,27 @@
+# Web
+flask>=3.0
+flask-sqlalchemy>=3.1
+flask-login>=0.6
+werkzeug>=3.0
+python-dotenv>=1.0
+
+# Vision
+opencv-python>=4.9
+ultralytics>=8.0
+boxmot>=10.0
+ultralytics>=8.3
+
+# IA
+anthropic>=0.25
+
+# Export
+fpdf2>=2.7
+
+# Paiement
+stripe>=8.0
+
+# Utils
+numpy>=1.26
+
+# Serveur production
+gunicorn>=21.0

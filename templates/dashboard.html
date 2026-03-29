@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Dashboard — ScoutIA</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<style>
+  .sport-wrapper { margin: 1.25rem 0; }
+  .sport-wrapper label { display: block; font-size: 0.85rem; font-weight: 600; color: #555; margin-bottom: 0.4rem; }
+  .sport-wrapper select { width: 100%; padding: 0.7rem 1rem; border: 1.5px solid #d1d5db; border-radius: 10px; font-size: 1rem; background: #fff; color: #1a1a2e; cursor: pointer; }
+  .sport-wrapper select:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+  .mode-selector { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.25rem 0; }
+  .mode-option input[type="radio"] { display: none; }
+  .mode-card { border: 2px solid #e8e8e8; border-radius: 12px; padding: 1.25rem 1rem; cursor: pointer; transition: all .2s; text-align: center; background: #fff; }
+  .mode-card:hover { border-color: #2563eb; background: #f0f4ff; }
+  .mode-option input:checked + .mode-card { border-color: #2563eb; background: #eff6ff; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+  .mode-icon  { font-size: 2rem; margin-bottom: 0.5rem; }
+  .mode-title { font-weight: 600; font-size: 1rem; margin-bottom: 0.25rem; color: #1a1a2e; }
+  .mode-desc  { font-size: 0.82rem; color: #666; line-height: 1.4; }
+
+  .joueur-options { background: #f8f9ff; border: 1.5px solid #dbeafe; border-radius: 12px; padding: 1.5rem; margin: 0.75rem 0 1rem; }
+  .joueur-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+  .joueur-row:last-child { margin-bottom: 0; }
+  .f-label { display: block; font-size: 0.82rem; color: #555; margin-bottom: 0.35rem; font-weight: 600; }
+  .f-input, .f-select {
+    width: 100%;
+    padding: 0.65rem 0.9rem;
+    border: 1.5px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    background: #fff;
+    color: #1a1a2e;
+    transition: border-color .15s;
+    box-sizing: border-box;
+  }
+  .f-input:focus, .f-select:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+  .section-divider { font-size: 0.8rem; font-weight: 600; color: #2563eb; text-transform: uppercase; letter-spacing: 0.5px; margin: 1rem 0 0.6rem; padding-top: 1rem; border-top: 1px solid #dbeafe; }
+  .joueur-info { font-size: 0.82rem; color: #555; background: #fff; border-radius: 8px; padding: 0.7rem 1rem; border-left: 3px solid #2563eb; line-height: 1.5; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<nav>
+  <div class="nav-inner">
+    <a href="/" class="logo">⚽ ScoutIA</a>
+    <div class="nav-links">
+      <span class="plan-badge-nav">{{ plan.name }}</span>
+      <a href="/logout">Déconnexion</a>
+    </div>
+  </div>
+</nav>
+
+<div class="dashboard">
+  <div class="upload-card">
+    <h2>Analyser un nouveau match</h2>
+    <p class="quota-info">{{ used }} / {{ plan.videos }} vidéos utilisées ce mois</p>
+
+    {% if used < plan.videos %}
+    <form action="/upload" method="POST" enctype="multipart/form-data" id="upload-form">
+      <input type="file" name="video" accept="video/*" id="file-input" hidden>
+
+      <!-- ZONE UPLOAD -->
+      <div class="upload-zone" id="drop-zone">
+        <div class="upload-icon">🎬</div>
+        <div class="upload-text">Glissez votre vidéo ici ou <span id="browse-btn" style="color:#2563eb;cursor:pointer;font-weight:500">parcourir</span></div>
+        <div class="upload-hint">MP4, AVI, MOV — jusqu'à 10 GB</div>
+        <div class="upload-filename" id="file-name"></div>
+      </div>
+
+      <!-- SPORT -->
+      <div class="sport-wrapper">
+        <label>🏅 Sport</label>
+        <select name="sport" id="sport-select">
+          <optgroup label="⚽ Sports collectifs">
+            <option value="football">⚽ Football</option>
+            <option value="mini-foot">⚽ Mini-foot / Futsal</option>
+            <option value="basketball">🏀 Basketball</option>
+            <option value="handball">🤾 Handball</option>
+            <option value="rugby">🏉 Rugby</option>
+            <option value="hockey sur glace">🏒 Hockey sur glace</option>
+            <option value="hockey sur gazon">🏑 Hockey sur gazon</option>
+          </optgroup>
+          <optgroup label="🎾 Sports de raquette">
+            <option value="tennis">🎾 Tennis</option>
+            <option value="tennis de table">🏓 Tennis de table</option>
+            <option value="padel">🎾 Padel</option>
+          </optgroup>
+        </select>
+      </div>
+
+      <!-- MODE -->
+      <div class="mode-selector">
+        <label class="mode-option">
+          <input type="radio" name="mode" value="match" checked id="mode-match">
+          <div class="mode-card">
+            <div class="mode-icon" id="mode-match-icon">⚽</div>
+            <div class="mode-title">Analyse du match</div>
+            <div class="mode-desc" id="mode-match-desc">Highlights, rapport tactique, top joueurs</div>
+          </div>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="mode" value="joueur" id="mode-joueur">
+          <div class="mode-card">
+            <div class="mode-icon">🎯</div>
+            <div class="mode-title">Joueur ciblé</div>
+            <div class="mode-desc" id="mode-joueur-desc">Rapport complet sur un joueur spécifique</div>
+          </div>
+        </label>
+      </div>
+
+      <!-- OPTIONS JOUEUR -->
+      <div class="joueur-options" id="joueur-options" style="display:none">
+
+        <div class="joueur-row">
+          <div id="field-numero">
+            <label class="f-label" id="label-numero">Numéro de vareuse</label>
+            <input class="f-input" type="number" name="numero_joueur" id="numero-joueur" min="1" max="99" placeholder="Ex: 9">
+          </div>
+          <div>
+            <label class="f-label">Couleur vareuse</label>
+            <select class="f-select" name="couleur_maillot" id="couleur-maillot">
+              <option value="">-- Choisir --</option>
+              <option value="blanc">⚪ Blanc</option>
+              <option value="noir">⚫ Noir</option>
+              <option value="rouge">🔴 Rouge</option>
+              <option value="bleu">🔵 Bleu</option>
+              <option value="vert">🟢 Vert</option>
+              <option value="jaune">🟡 Jaune</option>
+              <option value="orange">🟠 Orange</option>
+              <option value="bordeaux">🔴 Bordeaux</option>
+              <option value="violet">🟣 Violet</option>
+              <option value="rose">🩷 Rose</option>
+              <option value="gris">⚪ Gris</option>
+              <option value="rayé">◼ Rayé</option>
+            </select>
+          </div>
+          <div>
+            <label class="f-label">Position</label>
+            <select class="f-select" name="position_joueur" id="position-joueur">
+              <option value="">-- Choisir --</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="gardien-section">
+          <div class="section-divider">🥅 Couleurs des gardiens — évite les confusions</div>
+          <div class="joueur-row">
+            <div>
+              <label class="f-label">Gardien équipe domicile</label>
+              <select class="f-select" name="couleur_gardien_domicile">
+                <option value="">-- Inconnue --</option>
+                <option value="jaune fluo">🟡 Jaune fluo</option>
+                <option value="orange fluo">🟠 Orange fluo</option>
+                <option value="vert fluo">🟢 Vert fluo</option>
+                <option value="rouge">🔴 Rouge</option>
+                <option value="bleu">🔵 Bleu</option>
+                <option value="noir">⚫ Noir</option>
+                <option value="gris">⚪ Gris</option>
+                <option value="blanc">⚪ Blanc</option>
+                <option value="violet">🟣 Violet</option>
+              </select>
+            </div>
+            <div>
+              <label class="f-label">Gardien équipe visiteur</label>
+              <select class="f-select" name="couleur_gardien_visiteur">
+                <option value="">-- Inconnue --</option>
+                <option value="jaune fluo">🟡 Jaune fluo</option>
+                <option value="orange fluo">🟠 Orange fluo</option>
+                <option value="vert fluo">🟢 Vert fluo</option>
+                <option value="rouge">🔴 Rouge</option>
+                <option value="bleu">🔵 Bleu</option>
+                <option value="noir">⚫ Noir</option>
+                <option value="gris">⚪ Gris</option>
+                <option value="blanc">⚪ Blanc</option>
+                <option value="violet">🟣 Violet</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="joueur-info" id="joueur-info-text">
+          💡 Le numéro, la couleur et la position permettent à l'IA d'identifier précisément le joueur même sans le ballon.
+        </div>
+      </div>
+
+      <button type="submit" class="btn-primary" id="submit-btn" disabled style="width:100%;margin-top:0.5rem;">
+        Lancer l'analyse
+      </button>
+    </form>
+
+    {% else %}
+    <div class="quota-exceeded">
+      Quota atteint. <a href="/pricing">Upgradez votre plan →</a>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Flash messages -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="flash {{ cat }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <!-- Liste des analyses -->
+  <h2>Mes analyses</h2>
+  {% if analyses %}
+  <div class="analyses-list">
+    {% for a in analyses %}
+    <div class="analysis-card" id="card-{{ a.id }}">
+      <div class="analysis-info">
+        <div class="analysis-name">🎬 {{ a.filename }}</div>
+        <div class="analysis-date">{{ a.created_at.strftime('%d/%m/%Y %H:%M') }}</div>
+      </div>
+      <div class="analysis-status">
+        {% if a.status == "done" %}
+          <span class="status-done">✅ Terminé</span>
+          <a href="/results/{{ a.id }}" class="btn-small">Voir les résultats</a>
+        {% elif a.status == "processing" or a.status == "pending" %}
+          <div class="progress-container" data-id="{{ a.id }}">
+            <div class="progress-bar">
+              <div class="progress-fill" style="width: {{ a.progress }}%"></div>
+            </div>
+            <div class="progress-msg">{{ a.progress_msg }}</div>
+          </div>
+        {% elif a.status == "error" %}
+          <span class="status-error">❌ {{ a.progress_msg }}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+    <p class="empty-state">Aucune analyse pour l'instant. Uploadez votre premier match !</p>
+  {% endif %}
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

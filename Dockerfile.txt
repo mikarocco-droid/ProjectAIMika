@@ -1,0 +1,43 @@
+# Dockerfile
+# Image de base PyTorch avec CUDA — fonctionne aussi en CPU
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+# Variables d'environnement
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
+    DEBIAN_FRONTEND=noninteractive
+
+# Dépendances système
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libgl1-mesa-glx \
+    git \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Dossier de travail
+WORKDIR /app
+
+# Copier requirements en premier (cache Docker)
+COPY requirements.txt .
+
+# Installer les dépendances Python
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copier le reste du projet
+COPY . .
+
+# Créer les dossiers nécessaires
+RUN mkdir -p uploads outputs models instance
+
+# Port Flask
+EXPOSE 5000
+
+# Script de démarrage
+ENTRYPOINT ["bash", "entrypoint.sh"]

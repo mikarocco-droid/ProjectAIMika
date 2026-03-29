@@ -1,0 +1,7 @@
+file 'D:\ProjetAIMika\outputs\7\highlights\highlight_1_dribble.mp4'
+file 'D:\ProjetAIMika\outputs\7\highlights\highlight_2_dribble.mp4'
+file 'D:\ProjetAIMika\outputs\7\highlights\highlight_3_dribble.mp4'
+file 'D:\ProjetAIMika\outputs\7\highlights\highlight_4_dribble.mp4'
+file 'D:\ProjetAIMika\outputs\7\highlights\highlight_5_dribble.mp4'
+file 'D:\ProjetAIMika\outputs\7\highlights\highlight_6_dribble.mp4'
+file 'D:\ProjetAIMika\outputs\7\highlights\highlight_7_dribble.mp4'

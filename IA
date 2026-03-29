@@ -1,0 +1,235 @@
+from google import genai
+from google.genai import types
+import yt_dlp
+import subprocess
+import json
+import os
+import re
+
+# ─────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────
+GEMINI_API_KEY = "AIzaSyCrzaaKVEG_2EHHFQgENAi9lknrkqXws-Q"
+OUTPUT_DIR     = "output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+# ─────────────────────────────────────────
+# ÉTAPE 1 : Télécharger la vidéo YouTube
+# ─────────────────────────────────────────
+def download_video(url: str) -> str:
+    print("📥 Téléchargement de la vidéo...")
+    opts = {
+        "format"  : "mp4[height<=720]/best[height<=720]",
+        "outtmpl" : f"{OUTPUT_DIR}/video.%(ext)s",
+        "quiet"   : True,
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        path = ydl.prepare_filename(info)
+    print(f"✅ Vidéo téléchargée : {path}")
+    return path
+
+# ─────────────────────────────────────────
+# ÉTAPE 2 : Analyser avec Gemini
+# ─────────────────────────────────────────
+def compress_video(video_path: str) -> str:
+    """Compresse la vidéo si elle dépasse 500MB"""
+    size_mb = os.path.getsize(video_path) / (1024 * 1024)
+    print(f"📦 Taille vidéo : {size_mb:.0f} MB")
+
+    if size_mb <= 500:
+        print("✅ Taille OK, pas de compression nécessaire")
+        return video_path
+
+    print("🗜️  Compression en cours (résolution 480p, bitrate réduit)...")
+    out = f"{OUTPUT_DIR}/video_compressed.mp4"
+    cmd = [
+        "ffmpeg", "-y", "-i", video_path,
+        "-vf", "scale=-2:480",       # réduit à 480p
+        "-c:v", "libx264",
+        "-crf", "28",                # qualité (18=haute, 28=moyenne, 35=basse)
+        "-preset", "fast",
+        "-c:a", "aac", "-b:a", "96k",
+        out
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode == 0:
+        new_size = os.path.getsize(out) / (1024 * 1024)
+        print(f"✅ Compressée : {new_size:.0f} MB → {out}")
+        return out
+    else:
+        print("⚠️  Compression échouée, on tente avec l'original")
+        return video_path
+
+def analyze_video(video_path: str, sport: str = "football") -> dict:
+    print("🤖 Analyse IA en cours (peut prendre 1-2 min)...")
+
+    # Compresser si nécessaire
+    video_path = compress_video(video_path)
+
+    # Upload la vidéo vers Gemini
+    print("📤 Upload de la vidéo vers Gemini...")
+    with open(video_path, "rb") as f:
+        video_file = client.files.upload(
+            file=f,
+            config=types.UploadFileConfig(mime_type="video/mp4")
+        )
+    print(f"✅ Vidéo uploadée : {video_file.name}")
+
+    prompt = f"""
+    Tu es un expert scout de {sport}. Analyse cette vidéo de match.
+    
+    Retourne UNIQUEMENT un JSON valide (sans markdown) avec cette structure :
+    {{
+        "resume": "Résumé du match en 3-4 phrases",
+        "score": "Score final si visible, sinon null",
+        "highlights": [
+            {{
+                "timestamp_debut": "MM:SS",
+                "timestamp_fin":   "MM:SS",
+                "type":  "but|tir|action_defensive|dribble|passe_cle|autre",
+                "description": "Description courte de l'action",
+                "joueur": "Numéro ou nom du joueur si visible, sinon null",
+                "importance": 1
+            }}
+        ],
+        "stats_equipe": {{
+            "possession_dominante": "equipe_gauche|equipe_droite|equilibre",
+            "equipe_plus_dangereuse": "equipe_gauche|equipe_droite",
+            "observations_tactiques": "2-3 observations clés"
+        }},
+        "top_joueurs": [
+            {{
+                "joueur": "Numéro ou description",
+                "points_forts": "Ce qu'il fait bien",
+                "note": 1
+            }}
+        ]
+    }}
+    Identifie AU MOINS 5 highlights importants avec des timestamps précis.
+    importance et note sont des entiers entre 1 et 5.
+    """
+
+    response = client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=[video_file, prompt]
+    )
+
+    # Nettoyer et parser le JSON
+    text = response.text.strip()
+    text = re.sub(r"```json|```", "", text).strip()
+
+    result = json.loads(text)
+    print("✅ Analyse terminée !")
+    return result
+
+
+# ─────────────────────────────────────────
+# ÉTAPE 3 : Découper les highlights
+# ─────────────────────────────────────────
+def time_to_seconds(t: str) -> float:
+    parts = t.strip().split(":")
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + float(parts[1])
+    elif len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    return 0.0
+
+def cut_highlights(video_path: str, highlights: list) -> list:
+    print("✂️  Découpe des highlights...")
+    clips = []
+    highlights_sorted = sorted(highlights, key=lambda h: h.get("importance", 1), reverse=True)
+
+    for i, h in enumerate(highlights_sorted):
+        start = max(0, time_to_seconds(h["timestamp_debut"]) - 2)
+        end   = time_to_seconds(h["timestamp_fin"]) + 2
+        out   = f"{OUTPUT_DIR}/highlight_{i+1}_{h['type']}.mp4"
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(start),
+            "-to", str(end),
+            "-i", video_path,
+            "-c", "copy",
+            out
+        ]
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode == 0:
+            clips.append({
+                "fichier"     : out,
+                "type"        : h["type"],
+                "description" : h["description"],
+                "importance"  : h.get("importance", 1)
+            })
+            print(f"  ✅ Clip {i+1} : {h['description'][:50]}")
+        else:
+            print(f"  ❌ Erreur clip {i+1}")
+    return clips
+
+# ─────────────────────────────────────────
+# ÉTAPE 4 : Créer le highlight reel
+# ─────────────────────────────────────────
+def create_highlight_reel(clips: list) -> str:
+    print("🎬 Création du highlight reel...")
+    list_path = f"{OUTPUT_DIR}/clips_list.txt"
+    with open(list_path, "w") as f:
+        for clip in clips:
+            f.write(f"file '{os.path.abspath(clip['fichier'])}'\n")
+
+    reel = f"{OUTPUT_DIR}/highlight_reel.mp4"
+    cmd  = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", reel]
+    subprocess.run(cmd, capture_output=True)
+    print(f"✅ Highlight reel : {reel}")
+    return reel
+
+# ─────────────────────────────────────────
+# ÉTAPE 5 : Rapport
+# ─────────────────────────────────────────
+def print_report(analysis: dict, clips: list, reel_path: str):
+    print("\n" + "═" * 60)
+    print("           📊 RAPPORT SCOUT IA")
+    print("═" * 60)
+    print(f"\n📝 RÉSUMÉ\n{analysis['resume']}")
+    if analysis.get("score"):
+        print(f"\n🏆 SCORE : {analysis['score']}")
+
+    print(f"\n🎯 HIGHLIGHTS ({len(clips)} clips)")
+    for i, c in enumerate(clips, 1):
+        print(f"  {i}. [{c['type'].upper()}] {c['description']}")
+        print(f"     {'⭐' * c['importance']} → {c['fichier']}")
+
+    if analysis.get("top_joueurs"):
+        print("\n👤 TOP JOUEURS")
+        for j in analysis["top_joueurs"]:
+            print(f"  • {j['joueur']} — {j['note']}/10 — {j['points_forts']}")
+
+    if analysis.get("stats_equipe"):
+        print(f"\n📈 TACTIQUE\n  {analysis['stats_equipe'].get('observations_tactiques','')}")
+
+    print(f"\n🎬 HIGHLIGHT REEL : {reel_path}")
+    print("═" * 60)
+
+    with open(f"{OUTPUT_DIR}/rapport.json", "w", encoding="utf-8") as f:
+        json.dump(analysis, f, ensure_ascii=False, indent=2)
+    print(f"💾 rapport.json sauvegardé\n")
+# ─────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────
+if __name__ == "__main__":
+    # ▶ OPTION A : Fichier local (recommandé pour tester)
+    USE_LOCAL_FILE = True
+    LOCAL_VIDEO    = r"D:\Video\Résumé Bullange - Stavelot B 0-1.mp4"
+
+    # ▶ OPTION B : YouTube (nécessite Node.js installé)
+    VIDEO_URL = "https://www.youtube.com/watch?v=FCSfDJO528A"
+    SPORT     = "football"
+
+    video_path = LOCAL_VIDEO if USE_LOCAL_FILE else download_video(VIDEO_URL)
+    print(f"📁 Vidéo : {video_path}")
+
+    analysis  = analyze_video(video_path, SPORT)
+    clips     = cut_highlights(video_path, analysis["highlights"])
+    reel      = create_highlight_reel(clips)
+    print_report(analysis, clips, reel)

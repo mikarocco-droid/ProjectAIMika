@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: Arial, sans-serif; font-size: 13px; color: #1a1a2e; line-height: 1.6; }
+
+  /* PAGE */
+  @page { margin: 2cm; size: A4; }
+
+  /* HEADER */
+  .header { display: flex; justify-content: space-between; align-items: center;
+            border-bottom: 3px solid #2563eb; padding-bottom: 1rem; margin-bottom: 1.5rem; }
+  .header-left h1 { font-size: 22px; color: #2563eb; font-weight: 700; }
+  .header-left p  { font-size: 12px; color: #666; margin-top: 2px; }
+  .header-right   { text-align: right; font-size: 11px; color: #888; }
+  .logo           { font-size: 18px; font-weight: 800; color: #2563eb; }
+
+  /* SCORE BANNER */
+  .score-banner { background: #2563eb; color: #fff; text-align: center;
+                  padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem; }
+  .score-banner .score { font-size: 36px; font-weight: 800; }
+  .score-banner .match-name { font-size: 13px; opacity: 0.85; margin-top: 4px; }
+
+  /* SECTIONS */
+  .section { margin-bottom: 1.5rem; }
+  .section-title { font-size: 14px; font-weight: 700; color: #2563eb;
+                   border-left: 4px solid #2563eb; padding-left: 8px;
+                   margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  /* RÉSUMÉ */
+  .resume-box { background: #f0f4ff; border-radius: 6px; padding: 1rem;
+                font-size: 13px; color: #333; line-height: 1.7; }
+
+  /* HIGHLIGHTS TABLE */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  thead tr { background: #2563eb; color: #fff; }
+  thead th { padding: 8px 10px; text-align: left; font-weight: 600; }
+  tbody tr:nth-child(even) { background: #f8f9ff; }
+  tbody tr:nth-child(odd)  { background: #fff; }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid #e8e8e8; vertical-align: top; }
+  .type-badge { display: inline-block; padding: 2px 8px; border-radius: 4px;
+                font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .type-but               { background: #dcfce7; color: #15803d; }
+  .type-tir               { background: #fef9c3; color: #854d0e; }
+  .type-dribble           { background: #dbeafe; color: #1d4ed8; }
+  .type-passe_cle         { background: #f3e8ff; color: #7c3aed; }
+  .type-action_defensive  { background: #fee2e2; color: #dc2626; }
+  .type-autre             { background: #f1f5f9; color: #475569; }
+  .stars { color: #f59e0b; font-size: 11px; }
+
+  /* JOUEURS */
+  .players-grid { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .player-card  { flex: 1; min-width: 140px; border: 1px solid #e8e8e8;
+                  border-radius: 8px; padding: 0.75rem; text-align: center; }
+  .player-note  { font-size: 28px; font-weight: 800; color: #2563eb; }
+  .player-name  { font-size: 11px; font-weight: 600; margin: 4px 0 2px; }
+  .player-strengths { font-size: 10px; color: #666; }
+
+  /* TACTIQUE */
+  .tactique-box { background: #f8f9ff; border: 1px solid #dbeafe;
+                  border-radius: 6px; padding: 1rem; font-size: 12px;
+                  color: #334155; line-height: 1.7; }
+
+  /* FOOTER */
+  .footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #e8e8e8;
+            display: flex; justify-content: space-between;
+            font-size: 10px; color: #aaa; }
+
+  /* PAGE BREAK */
+  .page-break { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-left">
+    <div class="logo">⚽ ScoutIA</div>
+    <h1>Rapport d'analyse</h1>
+    <p>{{ analysis.filename }}</p>
+  </div>
+  <div class="header-right">
+    <p>Généré le {{ date }}</p>
+    <p>{{ analysis.created_at.strftime('%d/%m/%Y') }}</p>
+  </div>
+</div>
+
+<!-- SCORE -->
+{% if result.score %}
+<div class="score-banner">
+  <div class="score">{{ result.score }}</div>
+  <div class="match-name">{{ analysis.filename | replace('.mp4','') | replace('.avi','') | replace('.mov','') }}</div>
+</div>
+{% endif %}
+
+<!-- RÉSUMÉ -->
+<div class="section">
+  <div class="section-title">📝 Résumé du match</div>
+  <div class="resume-box">{{ result.resume }}</div>
+</div>
+
+<!-- HIGHLIGHTS -->
+{% if result.highlights %}
+<div class="section">
+  <div class="section-title">🎯 Highlights ({{ result.highlights|length }})</div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:80px">Temps</th>
+        <th style="width:100px">Type</th>
+        <th>Description</th>
+        <th style="width:60px">Importance</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for h in result.highlights %}
+      <tr>
+        <td><strong>{{ h.timestamp_debut }}</strong><br><span style="color:#888;font-size:10px">→ {{ h.timestamp_fin }}</span></td>
+        <td><span class="type-badge type-{{ h.type }}">{{ h.type }}</span></td>
+        <td>{{ h.description }}</td>
+        <td class="stars">{{ '★' * h.importance }}{{ '☆' * (5 - h.importance) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<!-- TOP JOUEURS -->
+{% if result.top_joueurs %}
+<div class="section">
+  <div class="section-title">👤 Top joueurs</div>
+  <div class="players-grid">
+    {% for j in result.top_joueurs %}
+    <div class="player-card">
+      <div class="player-note">{{ j.note }}<span style="font-size:14px;color:#888">/10</span></div>
+      <div class="player-name">{{ j.joueur }}</div>
+      <div class="player-strengths">{{ j.points_forts }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- OBSERVATIONS TACTIQUES -->
+{% if result.observations_tactiques %}
+<div class="section">
+  <div class="section-title">📈 Observations tactiques</div>
+  <div class="tactique-box">{{ result.observations_tactiques }}</div>
+</div>
+{% endif %}
+
+<!-- FOOTER -->
+<div class="footer">
+  <span>ScoutIA — Rapport généré automatiquement par IA</span>
+  <span>{{ analysis.filename }}</span>
+</div>
+
+</body>
+</html>
