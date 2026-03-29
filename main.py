@@ -15,7 +15,7 @@ import config
 # ─────────────────────────────────────────
 detector = Detector()
 tracker  = Tracker()
-ocr      = OCRReader(min_confidence=0.6)
+ocr      = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
 
 
 def default_progress(pct):
@@ -26,17 +26,12 @@ def default_progress(pct):
 # ASSIGNATION ÉQUIPE PAR COULEUR
 # ─────────────────────────────────────────
 def assign_teams(frame, tracked, color_detector):
-    """
-    Assigne une équipe (0 ou 1) à chaque joueur
-    selon la couleur dominante de son maillot.
-    """
     color_detector.update(frame, tracked)
 
     for p in tracked:
         x1, y1, x2, y2 = [int(v) for v in p["bbox"]]
         h_f, w_f = frame.shape[:2]
 
-        # Sécurité bords
         x1 = max(0, x1); y1 = max(0, y1)
         x2 = min(w_f, x2); y2 = min(h_f, y2)
 
@@ -47,9 +42,7 @@ def assign_teams(frame, tracked, color_detector):
         color = color_detector._dominant_color(patch)
 
         if color:
-            # color = (B, G, R)
             b, g, r = color
-            # Équipe 0 = dominante verte/jaune, Équipe 1 = dominante rouge/bleue
             if g > r and g > b:
                 p["team"] = 0
             elif r > g and r > b:
@@ -78,7 +71,6 @@ def process_video(
 
     detector.set_sport(sport)
 
-    # Init détecteur de couleurs d'équipe
     color_detector = TeamColorDetector(sample_frames=60)
 
     cap = cv2.VideoCapture(video_path)
@@ -124,8 +116,8 @@ def process_video(
         # ── Assignation équipes ──────────
         tracked = assign_teams(frame, tracked, color_detector)
 
-        # ── OCR maillots ─────────────────
-        tracked = ocr.read_all(frame, tracked)
+        # ── OCR maillots (1/30 frames) ───
+        tracked = ocr.read_all(frame, tracked, frame_id=frame_id)
 
         # ── Events de cette frame ─────────
         frame_events, _ = detect_events_v5(
