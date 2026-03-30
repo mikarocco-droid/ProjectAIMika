@@ -2,16 +2,11 @@
 # -*- coding: utf-8 -*-
 
 import cv2
-import numpy as np
-
 from vision.detector import Detector
 from vision.tracker import Tracker
 from vision.ocr import OCRReader
-from vision.ball_tracker import BallTracker
-
 from analysis.events import process_match, detect_events
 from rendering.overlay import Overlay, TeamColorDetector
-
 import config
 
 
@@ -22,29 +17,23 @@ detector = Detector()
 tracker  = Tracker()
 ocr      = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
 
-# 🔥 V15 BALL TRACKER (UNIQUE)
-ball_tracker = BallTracker(max_history=30)
-
 
 def default_progress(pct):
     print(f"  {pct}%", end="\r")
 
 
 # ─────────────────────────────────────────
-# TEAM ASSIGNMENT
+# ASSIGNATION ÉQUIPE PAR COULEUR
 # ─────────────────────────────────────────
 def assign_teams(frame, tracked, color_detector):
     color_detector.update(frame, tracked)
 
-    h_f, w_f = frame.shape[:2]
-
     for p in tracked:
         x1, y1, x2, y2 = [int(v) for v in p["bbox"]]
+        h_f, w_f = frame.shape[:2]
 
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(w_f, x2)
-        y2 = min(h_f, y2)
+        x1 = max(0, x1); y1 = max(0, y1)
+        x2 = min(w_f, x2); y2 = min(h_f, y2)
 
         if x2 - x1 < 10 or y2 - y1 < 10:
             continue
@@ -54,10 +43,11 @@ def assign_teams(frame, tracked, color_detector):
 
         if color:
             b, g, r = color
-
             if g > r and g > b:
                 p["team"] = 0
             elif r > g and r > b:
+                p["team"] = 1
+            elif b > r and b > g:
                 p["team"] = 1
             else:
                 p["team"] = 0
@@ -66,7 +56,7 @@ def assign_teams(frame, tracked, color_detector):
 
 
 # ─────────────────────────────────────────
-# PIPELINE VIDEO V15 GOD MODE
+# PIPELINE FRAME PAR FRAME
 # ─────────────────────────────────────────
 def process_video(
     video_path,
@@ -75,14 +65,12 @@ def process_video(
     save_annotated    = False,
     annotated_path    = None,
     shot_zones        = None,
-    return_frames     = False    # ← ajouter
+    return_frames     = False     # ← nouveau paramètre
 ):
-
     if progress_callback is None:
         progress_callback = default_progress
 
     detector.set_sport(sport)
-
     color_detector = TeamColorDetector(sample_frames=60)
 
     cap = cv2.VideoCapture(video_path)
@@ -100,6 +88,22 @@ def process_video(
     print(f"  Resolution : {w}x{h}")
     print(f"  Sport : {sport}")
 
+    # Corriger shot_zones si valeurs relatives (0-1)
+    # La calibration retourne des ratios, il faut les convertir en pixels
+    if shot_zones:
+        hi = shot_zones.get("threshold_hi", 0.85)
+        lo = shot_zones.get("threshold_lo", 0.15)
+        if hi <= 1.0:
+            shot_zones = {
+                "axis":         shot_zones.get("axis", "x"),
+                "threshold_hi": hi * w,
+                "threshold_lo": lo * w,
+                "y_min":        shot_zones.get("y_min", 0.25) * h,
+                "y_max":        shot_zones.get("y_max", 0.75) * h,
+            }
+            print(f"  Shot zones (px) : x>[{shot_zones['threshold_lo']:.0f}, {shot_zones['threshold_hi']:.0f}] "
+                  f"y=[{shot_zones['y_min']:.0f}, {shot_zones['y_max']:.0f}]")
+
     overlay = Overlay(fps=fps) if save_annotated else None
     writer  = None
 
@@ -114,44 +118,32 @@ def process_video(
     frame_id    = 0
     last_pct    = -1
 
-    # 🔥 STATE GLOBAL POUR EVENTS (ULTRA IMPORTANT)
-    state = None
-
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        # ── DETECTION ─────────────────────
-        players, balls = detector.detect(frame)
+        # ── Détection ───────────────────
+        players, ball = detector.detect(frame)
 
-        # ── TRACKING JOUEURS ──────────────
+        # ── Tracking ─────────────────────
         tracked = tracker.update(players, frame)
 
-        # ── TEAM COLOR ────────────────────
+        # ── Assignation équipes ──────────
         tracked = assign_teams(frame, tracked, color_detector)
 
-        # ── OCR ───────────────────────────
+        # ── OCR (1/30 frames) ────────────
         tracked = ocr.read_all(frame, tracked, frame_id=frame_id)
 
-        # ── BALL TRACKING (V15 CLEAN) 🔥
-        ball = ball_tracker.update(
-            detected_balls = balls,
-            frame_w = w,
-            frame_h = h
-        )
-
-        # ── EVENTS (STATEFUL) 🔥🔥🔥
-        frame_events, state = detect_events(
+        # ── Events de cette frame ─────────
+        frame_events, _ = detect_events(
             players    = tracked,
             ball       = ball,
             sport      = sport,
-            state      = state,
             shot_zones = shot_zones,
             frame_w    = w,
             frame_h    = h
         )
-
         for e in frame_events:
             e["frame"] = frame_id
 
@@ -164,14 +156,14 @@ def process_video(
             "events":  frame_events
         })
 
-        # ── OVERLAY ───────────────────────
+        # ── Vidéo annotée ─────────────────
         if writer and overlay:
             annotated = overlay.render(
                 frame, tracked, ball, frame_events, frame_id
             )
             writer.write(annotated)
 
-        # ── PROGRESS ──────────────────────
+        # ── Progression ───────────────────
         if total_frames > 0:
             pct = int((frame_id / total_frames) * 100)
             if pct % 5 == 0 and pct != last_pct:
@@ -189,16 +181,17 @@ def process_video(
     jersey_map = ocr.get_jersey_map()
     ocr.reset()
 
-    # ── EVENTS GLOBALS ───────────────────
     events = process_match(frames_data, sport, shot_zones=shot_zones)
 
     print(f"  {len(events)} events detectes")
     print(f"  {len(jersey_map)} maillots identifies")
-    
+
+    # ← retourner frames_data si demandé
     if return_frames:
         return events, jersey_map, fps, total_frames, frames_data
     else:
         return events, jersey_map, fps, total_frames
+
 
 # ─────────────────────────────────────────
 # TEST LOCAL
