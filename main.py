@@ -9,7 +9,7 @@ from vision.tracker import Tracker
 from vision.ocr import OCRReader
 from vision.ball_tracker import BallTracker, smooth_position, is_valid_ball
 
-from analysis.events import process_match, detect_events_v5
+from analysis.events import process_match, detect_events
 from rendering.overlay import Overlay, TeamColorDetector
 
 import config
@@ -154,7 +154,13 @@ def process_video(
             break
 
         # ── DETECTION ─────────────────────
-        players, ball_raw = detector.detect(frame)
+        players, balls = detector.detect(frame)  # balls = LISTE
+
+        ball = ball_tracker.update(
+            detected_balls = balls,
+            frame_w = w,
+            frame_h = h
+        )
 
         # ── TRACKING JOUEURS ──────────────
         tracked = tracker.update(players, frame)
@@ -169,7 +175,7 @@ def process_video(
         ball = track_ball(ball_raw, frame_id)
 
         # ── EVENTS ────────────────────────
-        frame_events, _ = detect_events_v5(
+        frame_events, _ = detect_events(
             players    = tracked,
             ball       = ball,
             sport      = sport,
