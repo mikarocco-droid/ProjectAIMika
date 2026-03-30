@@ -1,6 +1,10 @@
 # analysis/player_insights.py
 
+from analysis.intelligence import compute_danger
+
+
 def compute_player_report(events):
+
     players = {}
 
     for e in events:
@@ -12,17 +16,20 @@ def compute_player_report(events):
             "passes": 0,
             "shots": 0,
             "goals": 0,
-            "xA": 0
+            "xA": 0,
+            "danger": 0
         })
+
+        players[pid]["danger"] += compute_danger(e)
 
         if e["type"] == "pass":
             players[pid]["passes"] += 1
             players[pid]["xA"] += e.get("xA", 0)
 
-        if e["type"] == "shot":
+        elif e["type"] == "shot":
             players[pid]["shots"] += 1
 
-        if e["type"] == "goal":
+        elif e["type"] in ["goal", "score"]:
             players[pid]["goals"] += 1
 
     return players

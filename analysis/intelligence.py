@@ -3,48 +3,59 @@
 
 import math
 
+
 def distance(a, b):
-    return math.hypot(a[0]-b[0], a[1]-b[1])
+    return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
 # ─────────────────────────────────────────
-# xA (EXPECTED ASSIST)
+# xA
 # ─────────────────────────────────────────
-def compute_xa(event, next_event):
-    if event["type"] != "pass":
-        return None
+def compute_xa(pass_event, shot_event):
+    if pass_event.get("type") != "pass":
+        return 0.0
 
-    if next_event and next_event["type"] == "shot":
-        return round(0.3, 2)  # base simple (upgrade possible)
+    if shot_event and shot_event.get("type") == "shot":
+        return round(shot_event.get("xg", 0.1) * 0.7, 3)
 
     return 0.05
 
 
 # ─────────────────────────────────────────
-# PROGRESSION
+# PROGRESSIVE RUN
 # ─────────────────────────────────────────
 def is_progressive(prev_x, new_x, frame_w):
-    return (new_x - prev_x) > frame_w * 0.15
+    return (new_x - prev_x) > frame_w * 0.12
 
 
 # ─────────────────────────────────────────
-# DANGEROUS ACTION SCORE
+# DANGER SCORE (🔥 CORE IA)
 # ─────────────────────────────────────────
 def compute_danger(event):
-    score = 0
+    t = event.get("type")
 
-    if event["type"] == "shot":
-        score += 5
-    if event["type"] == "goal":
-        score += 10
-    if event["type"] == "assist":
-        score += 6
-    if event["type"] == "progressive_run":
-        score += 2
-    if event["type"] == "counter_attack":
-        score += 4
+    if t in ["goal", "score"]:
+        return 10
 
-    return score
+    if t == "shot":
+        return 5 + event.get("xg", 0.1) * 5
+
+    if t == "assist":
+        return 7
+
+    if t == "key_pass":
+        return 5
+
+    if t == "progressive_run":
+        return 2
+
+    if t == "interception":
+        return 3
+
+    if t == "counter_attack":
+        return 6
+
+    return 1
 
 
 # ─────────────────────────────────────────
@@ -57,21 +68,21 @@ def detect_build_up(sequence, frame_w):
     start_x = sequence[0][0]
     end_x   = sequence[-1][0]
 
-    return (end_x - start_x) > frame_w * 0.4
+    return (end_x - start_x) > frame_w * 0.35
 
 
 # ─────────────────────────────────────────
-# TEAM DOMINANCE
+# DOMINANCE
 # ─────────────────────────────────────────
 def compute_team_dominance(events):
-    team_stats = {}
+    stats = {}
 
     for e in events:
         t = e.get("team")
         if t is None:
             continue
 
-        team_stats.setdefault(t, 0)
-        team_stats[t] += compute_danger(e)
+        stats.setdefault(t, 0)
+        stats[t] += compute_danger(e)
 
-    return team_stats
+    return stats
