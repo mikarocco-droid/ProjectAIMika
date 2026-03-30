@@ -12,7 +12,22 @@ def assign_teams(events):
 
 
 def detect_formation(events):
-    return "4-3-3"
+    lines = {"def": 0, "mid": 0, "att": 0}
+
+    for e in events:
+        if "y" not in e:
+            continue
+
+        y = e["y"]
+
+        if y < 250:
+            lines["def"] += 1
+        elif y < 500:
+            lines["mid"] += 1
+        else:
+            lines["att"] += 1
+
+    return f"{lines['def']}-{lines['mid']}-{lines['att']}"
 
 
 def detect_pressing(events):
