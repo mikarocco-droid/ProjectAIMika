@@ -1,37 +1,37 @@
 # analysis/events.py
 # -*- coding: utf-8 -*-
 
+from analysis.intelligence import (
+    compute_xa,
+    is_progressive,
+    compute_danger,
+    detect_build_up
+)
+
 
 # ─────────────────────────────────────────
 # UTILITAIRES
 # ─────────────────────────────────────────
 def distance(a, b):
-    return ((a[0] - b[0])**2 + (a[1] - b[1])**2)**0.5
+    return ((a[0]-b[0])**2 + (a[1]-b[1])**2) ** 0.5
 
 
 def get_closest_player(players, ball):
     closest  = None
     min_dist = float("inf")
-
     for p in players:
         d = distance(p["center"], ball["center"])
         if d < min_dist:
             min_dist = d
             closest  = p
-
     return closest, min_dist
 
 
 # ─────────────────────────────────────────
-# DÉTECTION ZONES DE TIR
+# ZONES DE TIR
 # ─────────────────────────────────────────
 def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
-    """
-    Vérifie si la balle est dans une zone de tir.
-    Seuils relatifs à la résolution de la vidéo.
-    """
 
-    # Zones calibrées dynamiquement
     if shot_zones:
         axis  = shot_zones.get("axis", "x")
         hi    = shot_zones.get("threshold_hi", frame_w * 0.85)
@@ -39,55 +39,30 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
         y_min = shot_zones.get("y_min", 0)
         y_max = shot_zones.get("y_max", frame_h)
         y_ok  = y_min <= y <= y_max
-
         if axis == "x":
             is_shot  = (x > hi or x < lo) and y_ok
             is_score = (x > hi * 1.02 or x < lo * 0.98) and y_ok
         else:
             is_shot  = (y < hi or y > lo)
             is_score = (y < hi * 0.85 or y > lo * 1.15)
-
         return is_shot, is_score
 
-    # Seuils relatifs à la résolution
     if sport in ["football", "mini-foot"]:
-        # Zone but = 15% droite ou gauche de l'image
-        shot_x_hi = frame_w * 0.85
-        shot_x_lo = frame_w * 0.15
-        shot_y_min = frame_h * 0.25
-        shot_y_max = frame_h * 0.75
-
-        y_ok     = shot_y_min <= y <= shot_y_max
-        is_shot  = (x > shot_x_hi or x < shot_x_lo) and y_ok
+        y_ok     = frame_h * 0.20 <= y <= frame_h * 0.80
+        is_shot  = (x > frame_w * 0.85 or x < frame_w * 0.15) and y_ok
         is_score = (x > frame_w * 0.92 or x < frame_w * 0.08) and y_ok
         return is_shot, is_score
 
     elif sport == "basketball":
-        # Paniers à 8% gauche et 92% droite
-        shot_x_hi  = frame_w * 0.92
-        shot_x_lo  = frame_w * 0.08
-        shot_y_min = frame_h * 0.20
-        shot_y_max = frame_h * 0.80
-
-        y_ok     = shot_y_min <= y <= shot_y_max
-        is_shot  = (x > shot_x_hi or x < shot_x_lo) and y_ok
+        y_ok     = frame_h * 0.20 <= y <= frame_h * 0.80
+        is_shot  = (x > frame_w * 0.92 or x < frame_w * 0.08) and y_ok
         is_score = (x > frame_w * 0.95 or x < frame_w * 0.05) and y_ok
         return is_shot, is_score
 
     elif sport == "handball":
-        shot_x_hi  = frame_w * 0.82
-        shot_x_lo  = frame_w * 0.18
-        shot_y_min = frame_h * 0.20
-        shot_y_max = frame_h * 0.80
-
-        y_ok     = shot_y_min <= y <= shot_y_max
-        is_shot  = (x > shot_x_hi or x < shot_x_lo) and y_ok
+        y_ok     = frame_h * 0.20 <= y <= frame_h * 0.80
+        is_shot  = (x > frame_w * 0.82 or x < frame_w * 0.18) and y_ok
         is_score = (x > frame_w * 0.88 or x < frame_w * 0.12) and y_ok
-        return is_shot, is_score
-
-    elif sport == "rugby":
-        is_shot  = x > frame_w * 0.90 or x < frame_w * 0.10
-        is_score = x > frame_w * 0.95 or x < frame_w * 0.05
         return is_shot, is_score
 
     else:
@@ -99,7 +74,7 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
 # ─────────────────────────────────────────
 # DÉTECTION PRINCIPALE
 # ─────────────────────────────────────────
-def detect_events_v5(
+def detect_events(
     players,
     ball,
     sport      = "football",
@@ -115,10 +90,11 @@ def detect_events_v5(
             "last_team":      None,
             "shot_cooldown":  0,
             "score_cooldown": 0,
+            "sequence":       [],
+            "events_buffer":  []
         }
 
     events = []
-
     state["shot_cooldown"]  = max(0, state["shot_cooldown"]  - 1)
     state["score_cooldown"] = max(0, state["score_cooldown"] - 1)
 
@@ -126,26 +102,13 @@ def detect_events_v5(
         return events, state
 
     # ─────────────────────────────────────────
-    # JOUEUR LE PLUS PROCHE
+    # POSSESSION
     # ─────────────────────────────────────────
-    closest, dist = get_closest_player(players, ball)
+    closest, dist        = get_closest_player(players, ball)
+    possession_threshold = frame_w * 0.06
+    current_player       = closest if dist < possession_threshold else None
 
-    # Seuil possession relatif à la résolution
-    possession_threshold = {
-        "football":        frame_w * 0.06,
-        "mini-foot":       frame_w * 0.05,
-        "basketball":      frame_w * 0.07,
-        "handball":        frame_w * 0.06,
-        "rugby":           frame_w * 0.06,
-        "tennis":          frame_w * 0.12,
-        "padel":           frame_w * 0.12,
-        "tennis de table": frame_w * 0.05,
-    }.get(sport, frame_w * 0.06)
-
-    current_player = None
-
-    if closest and dist < possession_threshold:
-        current_player = closest
+    if current_player:
         events.append({
             "type":   "possession",
             "player": str(current_player["id"]),
@@ -153,6 +116,23 @@ def detect_events_v5(
             "x":      ball["center"][0],
             "y":      ball["center"][1]
         })
+
+    # ─────────────────────────────────────────
+    # PROGRESSIVE RUN
+    # ─────────────────────────────────────────
+    if state["last_ball_pos"] and current_player:
+        if is_progressive(
+            state["last_ball_pos"][0],
+            ball["center"][0],
+            frame_w
+        ):
+            events.append({
+                "type":   "progressive_run",
+                "player": str(current_player["id"]),
+                "team":   current_player.get("team"),
+                "x":      ball["center"][0],
+                "y":      ball["center"][1]
+            })
 
     # ─────────────────────────────────────────
     # PASS / INTERCEPTION
@@ -164,14 +144,19 @@ def detect_events_v5(
             same_team = last_player.get("team") == current_player.get("team")
 
             if same_team:
-                events.append({
+                pass_event = {
                     "type": "pass",
                     "from": str(last_player["id"]),
                     "to":   str(current_player["id"]),
                     "team": current_player.get("team"),
                     "x":    ball["center"][0],
-                    "y":    ball["center"][1]
-                })
+                    "y":    ball["center"][1],
+                    "xA":   0.0
+                }
+                events.append(pass_event)
+                state["events_buffer"].append(pass_event)
+                if len(state["events_buffer"]) > 5:
+                    state["events_buffer"].pop(0)
             else:
                 events.append({
                     "type":      "interception",
@@ -185,22 +170,11 @@ def detect_events_v5(
     # ─────────────────────────────────────────
     # DRIBBLE
     # ─────────────────────────────────────────
-    dribble_threshold = {
-        "football":        frame_w * 0.025,
-        "mini-foot":       frame_w * 0.020,
-        "basketball":      frame_w * 0.020,
-        "handball":        frame_w * 0.025,
-        "rugby":           frame_w * 0.025,
-        "tennis":          frame_w * 0.040,
-        "padel":           frame_w * 0.040,
-        "tennis de table": frame_w * 0.015,
-    }.get(sport, frame_w * 0.025)
-
     if current_player and last_player:
         if str(current_player["id"]) == str(last_player["id"]):
             if state.get("last_ball_pos"):
                 move = distance(state["last_ball_pos"], ball["center"])
-                if move > dribble_threshold:
+                if move > frame_w * 0.025:
                     events.append({
                         "type":   "dribble",
                         "player": str(current_player["id"]),
@@ -209,24 +183,39 @@ def detect_events_v5(
                     })
 
     # ─────────────────────────────────────────
+    # BUILD-UP
+    # ─────────────────────────────────────────
+    state["sequence"].append(ball["center"])
+    if len(state["sequence"]) > 20:
+        state["sequence"].pop(0)
+
+    if detect_build_up(state["sequence"], frame_w):
+        events.append({"type": "build_up_play"})
+        state["sequence"] = []
+
+    # ─────────────────────────────────────────
     # TIRS ET BUTS
     # ─────────────────────────────────────────
     if current_player:
         x, y = ball["center"]
-
         is_shot, is_score = is_shot_zone(
             x, y, sport, shot_zones, frame_w, frame_h
         )
 
         if is_shot and state["shot_cooldown"] == 0:
-            events.append({
+            shot_event = {
                 "type":   "shot",
                 "player": str(current_player["id"]),
                 "team":   current_player.get("team"),
                 "x":      x,
-                "y":      y
-            })
-            state["shot_cooldown"] = 20  # ~0.8s à 25fps
+                "y":      y,
+                "danger": compute_danger({"type": "shot"})
+            }
+            events.append(shot_event)
+            state["shot_cooldown"] = 20
+            if state["events_buffer"]:
+                last_pass        = state["events_buffer"][-1]
+                last_pass["xA"] = compute_xa(last_pass, shot_event)
 
         if is_score and state["score_cooldown"] == 0:
             events.append({
@@ -234,19 +223,17 @@ def detect_events_v5(
                 "player": str(current_player["id"]),
                 "team":   current_player.get("team"),
                 "x":      x,
-                "y":      y
+                "y":      y,
+                "danger": compute_danger({"type": "goal"})
             })
-            state["score_cooldown"] = int(25 * 5)  # 5s à 25fps
+            state["score_cooldown"] = int(25 * 5)
 
     # ─────────────────────────────────────────
     # PASSE LONGUE
     # ─────────────────────────────────────────
-    # Seuil relatif — 20% de la largeur
-    long_pass_threshold = frame_w * 0.20
-
     if state.get("last_ball_pos") and current_player:
         dist_ball = distance(state["last_ball_pos"], ball["center"])
-        if dist_ball > long_pass_threshold:
+        if dist_ball > frame_w * 0.20:
             events.append({
                 "type":   "long_pass",
                 "player": str(current_player["id"]),
@@ -272,11 +259,10 @@ def process_match(frames_data, sport="football", shot_zones=None):
     all_events = []
 
     for frame in frames_data:
-        # Récupérer dimensions depuis la frame si disponible
         frame_w = frame.get("frame_w", 1280)
         frame_h = frame.get("frame_h", 720)
 
-        events, state = detect_events_v5(
+        events, state = detect_events(
             players    = frame.get("players", []),
             ball       = frame.get("ball"),
             sport      = sport,
