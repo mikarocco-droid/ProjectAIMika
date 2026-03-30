@@ -7,7 +7,7 @@ import numpy as np
 from vision.detector import Detector
 from vision.tracker import Tracker
 from vision.ocr import OCRReader
-from vision.ball_tracker import BallTracker, smooth_position, is_valid_ball
+from vision.ball_tracker import BallTracker
 
 from analysis.events import process_match, detect_events
 from rendering.overlay import Overlay, TeamColorDetector
@@ -22,8 +22,7 @@ detector = Detector()
 tracker  = Tracker()
 ocr      = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
 
-
-# 🔥 TRACKER BALLE (IMPORTANT)
+# 🔥 V15 BALL TRACKER (UNIQUE)
 ball_tracker = BallTracker(max_history=30)
 
 
@@ -32,15 +31,15 @@ def default_progress(pct):
 
 
 # ─────────────────────────────────────────
-# ASSIGNATION ÉQUIPE
+# TEAM ASSIGNMENT
 # ─────────────────────────────────────────
 def assign_teams(frame, tracked, color_detector):
     color_detector.update(frame, tracked)
 
+    h_f, w_f = frame.shape[:2]
+
     for p in tracked:
         x1, y1, x2, y2 = [int(v) for v in p["bbox"]]
-
-        h_f, w_f = frame.shape[:2]
 
         x1 = max(0, x1)
         y1 = max(0, y1)
@@ -67,49 +66,16 @@ def assign_teams(frame, tracked, color_detector):
 
 
 # ─────────────────────────────────────────
-# DETECTION + TRACKING BALLE
-# ─────────────────────────────────────────
-def track_ball(ball_detection, frame_id):
-    """
-    ball_detection = (x, y, w, h) ou None
-    """
-
-    if ball_detection is not None:
-        x, y, w, h = ball_detection
-        cx = int(x + w / 2)
-        cy = int(y + h / 2)
-
-        if is_valid_ball(cx, cy):
-            ball_tracker.update((cx, cy), frame_id)
-        else:
-            ball_tracker.predict(frame_id)
-
-    else:
-        # 🔥 fallback : prédiction si pas détecté
-        ball_tracker.predict(frame_id)
-
-    # 🔥 smoothing
-    smoothed = smooth_position(ball_tracker.get_position())
-
-    if smoothed:
-        return {
-            "x": smoothed[0],
-            "y": smoothed[1]
-        }
-
-    return None
-
-
-# ─────────────────────────────────────────
-# PIPELINE VIDEO
+# PIPELINE VIDEO V15 GOD MODE
 # ─────────────────────────────────────────
 def process_video(
     video_path,
-    sport="football",
-    progress_callback=None,
-    save_annotated=False,
-    annotated_path=None,
-    shot_zones=None
+    sport             = "football",
+    progress_callback = None,
+    save_annotated    = False,
+    annotated_path    = None,
+    shot_zones        = None,
+    return_frames     = False    # ← ajouter
 ):
 
     if progress_callback is None:
@@ -148,19 +114,16 @@ def process_video(
     frame_id    = 0
     last_pct    = -1
 
+    # 🔥 STATE GLOBAL POUR EVENTS (ULTRA IMPORTANT)
+    state = None
+
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
         # ── DETECTION ─────────────────────
-        players, balls = detector.detect(frame)  # balls = LISTE
-
-        ball = ball_tracker.update(
-            detected_balls = balls,
-            frame_w = w,
-            frame_h = h
-        )
+        players, balls = detector.detect(frame)
 
         # ── TRACKING JOUEURS ──────────────
         tracked = tracker.update(players, frame)
@@ -171,14 +134,19 @@ def process_video(
         # ── OCR ───────────────────────────
         tracked = ocr.read_all(frame, tracked, frame_id=frame_id)
 
-        # ── TRACKING BALLE 🔥 ─────────────
-        ball = track_ball(ball_raw, frame_id)
+        # ── BALL TRACKING (V15 CLEAN) 🔥
+        ball = ball_tracker.update(
+            detected_balls = balls,
+            frame_w = w,
+            frame_h = h
+        )
 
-        # ── EVENTS ────────────────────────
-        frame_events, _ = detect_events(
+        # ── EVENTS (STATEFUL) 🔥🔥🔥
+        frame_events, state = detect_events(
             players    = tracked,
             ball       = ball,
             sport      = sport,
+            state      = state,
             shot_zones = shot_zones,
             frame_w    = w,
             frame_h    = h
@@ -226,9 +194,11 @@ def process_video(
 
     print(f"  {len(events)} events detectes")
     print(f"  {len(jersey_map)} maillots identifies")
-
-    return events, jersey_map, fps, total_frames
-
+    
+    if return_frames:
+        return events, jersey_map, fps, total_frames, frames_data
+    else:
+        return events, jersey_map, fps, total_frames
 
 # ─────────────────────────────────────────
 # TEST LOCAL
