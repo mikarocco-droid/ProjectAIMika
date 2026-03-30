@@ -1,34 +1,133 @@
 # analytics/advanced.py
+# -*- coding: utf-8 -*-
 
+from collections import defaultdict
+
+
+# ─────────────────────────────────────────
+# SCORE D'ACTION (pour highlights & IA)
+# ─────────────────────────────────────────
 def compute_action_score(e):
-    if e.get("type") == "goal":
+    t = e.get("type")
+
+    if t == "goal":
         return 10
-    if e.get("type") == "shot":
+
+    if t == "shot":
         return 5 + e.get("xg", 0) * 5
-    if e.get("type") == "pass":
+
+    if t == "progressive_pass":
+        return 4
+
+    if t == "progressive_run":
+        return 3
+
+    if t == "key_pass":
+        return 6
+
+    if t == "pass":
         return 2
+
+    if t == "dribble":
+        return 2
+
+    if t == "interception":
+        return 3
+
     return 1
 
 
+# ─────────────────────────────────────────
+# PASS NETWORK
+# ─────────────────────────────────────────
 def build_pass_network(events):
-    net = {}
+    net = defaultdict(int)
+
     for e in events:
         if e.get("type") == "pass":
-            key = (e.get("player_id"), e.get("receiver_id"))
-            net[key] = net.get(key, 0) + 1
-    return net
+            p1 = str(e.get("from"))
+            p2 = str(e.get("to"))
+
+            if p1 and p2:
+                net[(p1, p2)] += 1
+
+    return dict(net)
 
 
+# ─────────────────────────────────────────
+# xA (EXPECTED ASSIST)
+# ─────────────────────────────────────────
 def compute_xa(events):
+    """
+    Associe xA = xG du tir suivant (dans une fenêtre courte)
+    """
     for i in range(len(events) - 1):
-        if events[i].get("type") == "pass" and events[i+1].get("type") == "shot":
-            events[i]["xA"] = events[i+1].get("xg", 0)
+        e = events[i]
+        nxt = events[i + 1]
+
+        if e.get("type") == "pass" and nxt.get("type") == "shot":
+            e["xA"] = nxt.get("xg", 0)
+
     return events
 
 
-def detect_offside(events):
-    offsides = []
+# ─────────────────────────────────────────
+# CHAÎNES DE PASSES (BUILD-UP)
+# ─────────────────────────────────────────
+def extract_pass_sequences(events, min_length=3):
+    sequences = []
+    current = []
+
     for e in events:
-        if e.get("type") == "pass" and e.get("x", 0) > 1000:
-            offsides.append(e)
+        if e.get("type") == "pass":
+            current.append(e)
+        else:
+            if len(current) >= min_length:
+                sequences.append(current)
+            current = []
+
+    if len(current) >= min_length:
+        sequences.append(current)
+
+    return sequences
+
+
+# ─────────────────────────────────────────
+# OFFSIDE (simple heuristic)
+# ─────────────────────────────────────────
+def detect_offside(events, frame_w=1280):
+    offsides = []
+
+    for e in events:
+        if e.get("type") == "pass":
+            if e.get("x", 0) > frame_w * 0.9:
+                offsides.append(e)
+
     return offsides
+
+
+# ─────────────────────────────────────────
+# TEAM DOMINANCE
+# ─────────────────────────────────────────
+def compute_team_dominance(events):
+    teams = defaultdict(lambda: {
+        "passes": 0,
+        "shots": 0,
+        "possession": 0
+    })
+
+    for e in events:
+        team = e.get("team")
+        if team is None:
+            continue
+
+        if e["type"] == "pass":
+            teams[team]["passes"] += 1
+
+        if e["type"] == "shot":
+            teams[team]["shots"] += 1
+
+        if e["type"] == "possession":
+            teams[team]["possession"] += 1
+
+    return dict(teams)
