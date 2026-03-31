@@ -56,6 +56,36 @@ def assign_teams(frame, tracked, color_detector):
 
 
 # ─────────────────────────────────────────
+# CONVERSION DICT BALL → TUPLE (x,y,w,h)
+# ─────────────────────────────────────────
+def ball_dict_to_tuple(ball_dict):
+    if ball_dict is None:
+        return None
+    bbox = ball_dict.get("bbox")
+    if not bbox:
+        return None
+    x1, y1, x2, y2 = bbox
+    return (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
+
+
+# ─────────────────────────────────────────
+# CONVERSION TUPLE → DICT BALL
+# ─────────────────────────────────────────
+def ball_tuple_to_dict(ball_tuple, interpolated=False):
+    if ball_tuple is None:
+        return None
+    x, y, w, h = ball_tuple
+    cx = x + w // 2
+    cy = y + h // 2
+    return {
+        "bbox":         [x, y, x + w, y + h],
+        "center":       [cx, cy],
+        "conf":         1.0,
+        "interpolated": interpolated
+    }
+
+
+# ─────────────────────────────────────────
 # PIPELINE FRAME PAR FRAME
 # ─────────────────────────────────────────
 def process_video(
@@ -65,13 +95,22 @@ def process_video(
     save_annotated    = False,
     annotated_path    = None,
     shot_zones        = None,
-    return_frames     = False     # ← nouveau paramètre
+    return_frames     = False
 ):
     if progress_callback is None:
         progress_callback = default_progress
 
     detector.set_sport(sport)
     color_detector = TeamColorDetector(sample_frames=60)
+
+    # Init BallTracker — import lazy pour éviter circular import
+    ball_tracker = None
+    try:
+        from vision.ball_tracker import BallTracker
+        ball_tracker = BallTracker(max_history=30)
+        print("  BallTracker : OK")
+    except Exception as e:
+        print(f"  BallTracker indisponible : {e} — fallback YOLO")
 
     cap = cv2.VideoCapture(video_path)
 
@@ -88,12 +127,11 @@ def process_video(
     print(f"  Resolution : {w}x{h}")
     print(f"  Sport : {sport}")
 
-    # Corriger shot_zones si valeurs relatives (0-1)
-    # La calibration retourne des ratios, il faut les convertir en pixels
+    # Convertir shot_zones ratios → pixels si nécessaire
     if shot_zones:
         hi = shot_zones.get("threshold_hi", 0.85)
         lo = shot_zones.get("threshold_lo", 0.15)
-        if hi <= 1.0:
+        if isinstance(hi, float) and hi <= 1.0:
             shot_zones = {
                 "axis":         shot_zones.get("axis", "x"),
                 "threshold_hi": hi * w,
@@ -101,7 +139,9 @@ def process_video(
                 "y_min":        shot_zones.get("y_min", 0.25) * h,
                 "y_max":        shot_zones.get("y_max", 0.75) * h,
             }
-            print(f"  Shot zones (px) : x>[{shot_zones['threshold_lo']:.0f}, {shot_zones['threshold_hi']:.0f}] "
+            print(f"  Shot zones (px) : "
+                  f"x>[{shot_zones['threshold_hi']:.0f}] "
+                  f"x<[{shot_zones['threshold_lo']:.0f}] "
                   f"y=[{shot_zones['y_min']:.0f}, {shot_zones['y_max']:.0f}]")
 
     overlay = Overlay(fps=fps) if save_annotated else None
@@ -123,17 +163,34 @@ def process_video(
         if not ret:
             break
 
-        # ── Détection ───────────────────
-        players, ball = detector.detect(frame)
+        # ── Détection YOLO ───────────────
+        players, yolo_ball = detector.detect(frame)
 
-        # ── Tracking ─────────────────────
+        # ── Tracking joueurs ─────────────
         tracked = tracker.update(players, frame)
 
         # ── Assignation équipes ──────────
         tracked = assign_teams(frame, tracked, color_detector)
 
-        # ── OCR (1/30 frames) ────────────
+        # ── OCR maillots (1/30) ──────────
         tracked = ocr.read_all(frame, tracked, frame_id=frame_id)
+
+        # ── Ball Tracker ─────────────────
+        if ball_tracker is not None:
+            yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
+            balls_list      = [yolo_ball_tuple] if yolo_ball_tuple else []
+
+            ball_result = ball_tracker.update(
+                detected_balls = balls_list,
+                frame_w        = w,
+                frame_h        = h
+            )
+
+            was_interpolated = (yolo_ball_tuple is None and ball_result is not None)
+            ball = ball_tuple_to_dict(ball_result, interpolated=was_interpolated)
+        else:
+            # Fallback — utiliser directement YOLO
+            ball = yolo_ball
 
         # ── Events de cette frame ─────────
         frame_events, _ = detect_events(
@@ -186,7 +243,6 @@ def process_video(
     print(f"  {len(events)} events detectes")
     print(f"  {len(jersey_map)} maillots identifies")
 
-    # ← retourner frames_data si demandé
     if return_frames:
         return events, jersey_map, fps, total_frames, frames_data
     else:
