@@ -183,17 +183,38 @@ def crossfade_concat(clips, output):
         return output
 
     FADE_DUR = 0.5
-    inputs   = []
-    for c in clips:
+
+    # FIX — re-normaliser chaque clip pour garantir des timestamps propres
+    # avant xfade (nvenc peut produire des PTS non monotones)
+    tmp_dir    = tempfile.mkdtemp()
+    safe_clips = []
+    for i, c in enumerate(clips):
+        safe = os.path.join(tmp_dir, f"safe_{i}.mp4")
+        subprocess.run([
+            "ffmpeg", "-y", "-i", c,
+            "-c:v", ENCODER, *ENCODER_OPTS,
+            "-c:a", "aac",
+            "-vsync", "cfr",          # force constant frame rate
+            "-af", "aresample=async=1", # resync audio
+            safe
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(safe) and os.path.getsize(safe) > 0:
+            safe_clips.append(safe)
+
+    if not safe_clips:
+        return None
+
+    inputs       = []
+    for c in safe_clips:
         inputs += ["-i", c]
 
-    durations    = [get_duration(c) for c in clips]
+    durations    = [get_duration(c) for c in safe_clips]
     filter_parts = []
     prev_v = "[0:v]"
     prev_a = "[0:a]"
     offset = 0.0
 
-    for i in range(1, len(clips)):
+    for i in range(1, len(safe_clips)):
         offset += durations[i - 1] - FADE_DUR
         out_v   = f"[v{i}]"
         out_a   = f"[a{i}]"
@@ -206,7 +227,7 @@ def crossfade_concat(clips, output):
         prev_v = out_v
         prev_a = out_a
 
-    subprocess.run([
+    ret = subprocess.run([
         "ffmpeg", "-y",
         *inputs,
         "-filter_complex", ";".join(filter_parts),
@@ -215,7 +236,33 @@ def crossfade_concat(clips, output):
         "-c:v", ENCODER, *ENCODER_OPTS,
         "-c:a", "aac",
         output
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ], capture_output=True, text=True)
+
+    # Nettoyage clips safe
+    try:
+        shutil.rmtree(tmp_dir)
+    except:
+        pass
+
+    # FIX — fallback concat simple si xfade échoue encore
+    if ret.returncode != 0 or not os.path.exists(output) or os.path.getsize(output) == 0:
+        print("  ⚠️ xfade échoué — fallback concat simple")
+        list_file = output + "_list.txt"
+        with open(list_file, "w") as f:
+            for c in clips:
+                f.write(f"file '{os.path.abspath(c)}'\n")
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", list_file,
+            "-c:v", ENCODER, *ENCODER_OPTS,
+            "-c:a", "aac",
+            output
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            os.remove(list_file)
+        except:
+            pass
 
     return output
 
