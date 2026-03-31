@@ -1,205 +1,270 @@
-# vision/ball_tracker.py
+# main.py
 # -*- coding: utf-8 -*-
 
-import numpy as np
-from collections import deque
+import cv2
+from vision.detector import Detector
+from vision.tracker import Tracker
+from vision.ocr import OCRReader
+from vision.ball_tracker import BallTracker
+from analysis.events import process_match, detect_events
+from rendering.overlay import Overlay, TeamColorDetector
+import config
 
 
 # ─────────────────────────────────────────
-# UTILS
+# INIT MODULES
 # ─────────────────────────────────────────
-def smooth_position(history, window=5):
-    if len(history) == 0:
-        return None
-
-    pts = list(history)[-window:]
-    x = int(np.mean([p[0] for p in pts]))
-    y = int(np.mean([p[1] for p in pts]))
-    return (x, y)
+detector     = Detector()
+tracker      = Tracker()
+ocr          = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
+ball_tracker = BallTracker(max_history=30)
 
 
-def distance(p1, p2):
-    return np.linalg.norm(np.array(p1) - np.array(p2))
-
-
-def is_valid_ball(ball, frame_w, frame_h):
-    if ball is None:
-        return False
-
-    x, y, w, h = ball
-
-    if w <= 2 or h <= 2:
-        return False
-
-    if w > frame_w * 0.2:
-        return False
-
-    return True
+def default_progress(pct):
+    print(f"  {pct}%", end="\r")
 
 
 # ─────────────────────────────────────────
-# KALMAN FILTER SIMPLE
+# ASSIGNATION ÉQUIPE PAR COULEUR
 # ─────────────────────────────────────────
-class SimpleKalman:
-    def __init__(self):
-        self.state = None
-        self.velocity = np.array([0.0, 0.0])
+def assign_teams(frame, tracked, color_detector):
+    color_detector.update(frame, tracked)
 
-    def update(self, measurement):
-        if measurement is None:
-            if self.state is not None:
-                self.state = self.state + self.velocity
-            return self.state
+    for p in tracked:
+        x1, y1, x2, y2 = [int(v) for v in p["bbox"]]
+        h_f, w_f = frame.shape[:2]
 
-        m = np.array(measurement)
+        x1 = max(0, x1); y1 = max(0, y1)
+        x2 = min(w_f, x2); y2 = min(h_f, y2)
 
-        if self.state is None:
-            self.state = m
-            return self.state
+        if x2 - x1 < 10 or y2 - y1 < 10:
+            continue
 
-        self.velocity = (m - self.state) * 0.6
-        self.state = self.state + self.velocity
+        patch = frame[y1:y2, x1:x2]
+        color = color_detector._dominant_color(patch)
 
-        return self.state
-
-
-# ─────────────────────────────────────────
-# BALL TRACKER V12 ULTIME
-# ─────────────────────────────────────────
-class BallTracker:
-
-    def __init__(self, max_history=30):
-        self.history = deque(maxlen=max_history)
-        self.kalman = SimpleKalman()
-
-        self.last_seen = 0
-        self.frame_id = 0
-
-        self.lost_frames = 0
-        self.max_lost = 15
-
-    # ─────────────────────────────────────────
-    # CHOIX MEILLEURE DETECTION
-    # ─────────────────────────────────────────
-    def select_best_ball(self, balls, last_pos):
-        if not balls:
-            return None
-
-        if last_pos is None:
-            return balls[0]
-
-        best = None
-        best_score = 1e9
-
-        for b in balls:
-            x, y, w, h = b
-            cx = x + w // 2
-            cy = y + h // 2
-
-            d = distance((cx, cy), last_pos)
-
-            # pénalise gros objets
-            size_penalty = w * h * 0.001
-
-            score = d + size_penalty
-
-            if score < best_score:
-                best_score = score
-                best = b
-
-        return best
-
-    # ─────────────────────────────────────────
-    # UPDATE PRINCIPAL
-    # ─────────────────────────────────────────
-    def update(self, detected_balls, frame_w, frame_h):
-        self.frame_id += 1
-
-        # filtre detections invalides
-        detected_balls = [
-            b for b in detected_balls
-            if is_valid_ball(b, frame_w, frame_h)
-        ]
-
-        last_pos = self.history[-1] if self.history else None
-
-        best = self.select_best_ball(detected_balls, last_pos)
-
-        if best is not None:
-            x, y, w, h = best
-            cx = x + w // 2
-            cy = y + h // 2
-
-            self.history.append((cx, cy))
-            self.last_seen = self.frame_id
-            self.lost_frames = 0
-
-            pos = self.kalman.update((cx, cy))
-
-        else:
-            self.lost_frames += 1
-
-            if self.lost_frames < self.max_lost:
-                pos = self.kalman.update(None)
-                if pos is not None:
-                    self.history.append(tuple(pos.astype(int)))
+        if color:
+            b, g, r = color
+            if g > r and g > b:
+                p["team"] = 0
+            elif r > g and r > b:
+                p["team"] = 1
+            elif b > r and b > g:
+                p["team"] = 1
             else:
-                pos = None
-                self.history.clear()
+                p["team"] = 0
 
-        return self.get_ball_bbox(pos)
+    return tracked
 
-    # ─────────────────────────────────────────
-    # SORTIE FORMAT BBOX
-    # ─────────────────────────────────────────
-    def get_ball_bbox(self, pos):
-        if pos is None:
-            return None
 
-        x, y = int(pos[0]), int(pos[1])
-
-        size = 10  # taille fixe du ballon
-        return (x - size, y - size, size * 2, size * 2)
-
-    # ─────────────────────────────────────────
-    # TRAJECTOIRE
-    # ─────────────────────────────────────────
-    def get_trajectory(self):
-        return list(self.history)
-
-    # ─────────────────────────────────────────
-    # VITESSE
-    # ─────────────────────────────────────────
-    def get_speed(self):
-        if len(self.history) < 2:
-            return 0.0
-
-        return distance(self.history[-1], self.history[-2])
-
-    # ─────────────────────────────────────────
-    # POSSESSION (approx)
-    # ─────────────────────────────────────────
-    def closest_player(self, players):
-        if not self.history:
-            return None
-
-        ball_pos = self.history[-1]
-
-        best = None
-        best_dist = 9999
-
-        for p in players:
-            x1, y1, x2, y2 = p["bbox"]
-            cx = (x1 + x2) // 2
-            cy = (y1 + y2) // 2
-
-            d = distance((cx, cy), ball_pos)
-
-            if d < best_dist:
-                best_dist = d
-                best = p
-
-        if best_dist < 80:
-            return best
-
+# ─────────────────────────────────────────
+# CONVERSION DICT BALL → TUPLE (x,y,w,h)
+# ─────────────────────────────────────────
+def ball_dict_to_tuple(ball_dict):
+    """
+    Convertit un dict ballon {bbox, center, conf}
+    en tuple (x, y, w, h) pour BallTracker.
+    """
+    if ball_dict is None:
         return None
+    bbox = ball_dict.get("bbox")
+    if not bbox:
+        return None
+    x1, y1, x2, y2 = bbox
+    return (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
+
+
+# ─────────────────────────────────────────
+# CONVERSION TUPLE → DICT BALL
+# ─────────────────────────────────────────
+def ball_tuple_to_dict(ball_tuple, interpolated=False):
+    """
+    Convertit un tuple (x, y, w, h) de BallTracker
+    en dict ballon {bbox, center} pour le pipeline.
+    """
+    if ball_tuple is None:
+        return None
+    x, y, w, h = ball_tuple
+    cx = x + w // 2
+    cy = y + h // 2
+    return {
+        "bbox":         [x, y, x + w, y + h],
+        "center":       [cx, cy],
+        "conf":         1.0,
+        "interpolated": interpolated
+    }
+
+
+# ─────────────────────────────────────────
+# PIPELINE FRAME PAR FRAME
+# ─────────────────────────────────────────
+def process_video(
+    video_path,
+    sport             = "football",
+    progress_callback = None,
+    save_annotated    = False,
+    annotated_path    = None,
+    shot_zones        = None,
+    return_frames     = False
+):
+    if progress_callback is None:
+        progress_callback = default_progress
+
+    detector.set_sport(sport)
+    color_detector = TeamColorDetector(sample_frames=60)
+
+    # Reset ball tracker entre vidéos
+    ball_tracker.__init__(max_history=30)
+
+    cap = cv2.VideoCapture(video_path)
+
+    if not cap.isOpened():
+        raise ValueError(f"Impossible d'ouvrir la video : {video_path}")
+
+    fps          = cap.get(cv2.CAP_PROP_FPS) or config.FPS
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    w            = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h            = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    print(f"Video : {video_path}")
+    print(f"  {total_frames} frames | {fps:.1f} fps | {total_frames / fps:.1f}s")
+    print(f"  Resolution : {w}x{h}")
+    print(f"  Sport : {sport}")
+
+    # Convertir shot_zones ratios → pixels si nécessaire
+    if shot_zones:
+        hi = shot_zones.get("threshold_hi", 0.85)
+        lo = shot_zones.get("threshold_lo", 0.15)
+        if hi <= 1.0:
+            shot_zones = {
+                "axis":         shot_zones.get("axis", "x"),
+                "threshold_hi": hi * w,
+                "threshold_lo": lo * w,
+                "y_min":        shot_zones.get("y_min", 0.25) * h,
+                "y_max":        shot_zones.get("y_max", 0.75) * h,
+            }
+            print(f"  Shot zones (px) : "
+                  f"x>[{shot_zones['threshold_hi']:.0f}] "
+                  f"x<[{shot_zones['threshold_lo']:.0f}] "
+                  f"y=[{shot_zones['y_min']:.0f}, {shot_zones['y_max']:.0f}]")
+
+    overlay = Overlay(fps=fps) if save_annotated else None
+    writer  = None
+
+    if save_annotated and annotated_path:
+        writer = cv2.VideoWriter(
+            annotated_path,
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps, (w, h)
+        )
+
+    frames_data = []
+    frame_id    = 0
+    last_pct    = -1
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # ── Détection YOLO ───────────────
+        players, yolo_ball = detector.detect(frame)
+
+        # ── Tracking joueurs ─────────────
+        tracked = tracker.update(players, frame)
+
+        # ── Assignation équipes ──────────
+        tracked = assign_teams(frame, tracked, color_detector)
+
+        # ── OCR maillots (1/30) ──────────
+        tracked = ocr.read_all(frame, tracked, frame_id=frame_id)
+
+        # ── Ball Tracker ─────────────────
+        # Convertir le dict YOLO en tuple pour BallTracker
+        yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
+        balls_list      = [yolo_ball_tuple] if yolo_ball_tuple else []
+
+        ball_result = ball_tracker.update(
+            detected_balls = balls_list,
+            frame_w        = w,
+            frame_h        = h
+        )
+
+        # Reconvertir en dict pour le pipeline
+        was_interpolated = (yolo_ball_tuple is None and ball_result is not None)
+        ball = ball_tuple_to_dict(ball_result, interpolated=was_interpolated)
+
+        # ── Events de cette frame ─────────
+        frame_events, _ = detect_events(
+            players    = tracked,
+            ball       = ball,
+            sport      = sport,
+            shot_zones = shot_zones,
+            frame_w    = w,
+            frame_h    = h
+        )
+        for e in frame_events:
+            e["frame"] = frame_id
+
+        frames_data.append({
+            "players": tracked,
+            "ball":    ball,
+            "frame":   frame_id,
+            "frame_w": w,
+            "frame_h": h,
+            "events":  frame_events
+        })
+
+        # ── Vidéo annotée ─────────────────
+        if writer and overlay:
+            annotated = overlay.render(
+                frame, tracked, ball, frame_events, frame_id
+            )
+            writer.write(annotated)
+
+        # ── Progression ───────────────────
+        if total_frames > 0:
+            pct = int((frame_id / total_frames) * 100)
+            if pct % 5 == 0 and pct != last_pct:
+                progress_callback(pct)
+                last_pct = pct
+
+        frame_id += 1
+
+    cap.release()
+    if writer:
+        writer.release()
+
+    print(f"\n  {frame_id} frames traitees")
+
+    jersey_map = ocr.get_jersey_map()
+    ocr.reset()
+
+    events = process_match(frames_data, sport, shot_zones=shot_zones)
+
+    print(f"  {len(events)} events detectes")
+    print(f"  {len(jersey_map)} maillots identifies")
+
+    if return_frames:
+        return events, jersey_map, fps, total_frames, frames_data
+    else:
+        return events, jersey_map, fps, total_frames
+
+
+# ─────────────────────────────────────────
+# TEST LOCAL
+# ─────────────────────────────────────────
+if __name__ == "__main__":
+    import sys
+
+    video = sys.argv[1] if len(sys.argv) > 1 else config.VIDEO_PATH
+    sport = sys.argv[2] if len(sys.argv) > 2 else "football"
+
+    events, jersey_map, fps, total_frames = process_video(
+        video_path = video,
+        sport      = sport
+    )
+
+    print(f"\nEvents : {len(events)}")
+    for e in events[:10]:
+        print(f"  {e}")
