@@ -1,3 +1,6 @@
+# scout.py
+# -*- coding: utf-8 -*-
+
 import anthropic
 import subprocess
 import base64
@@ -8,10 +11,11 @@ import time
 from dotenv import load_dotenv
 from collections import Counter
 
-load_dotenv(dotenv_path=r"D:\ProjetAIMika\.env\param.env")
+load_dotenv(dotenv_path=".env/param.env")
 
 # ─────────────────────────────────────────
 # CONFIG
+# FIX — clé API depuis .env, jamais en dur
 # ─────────────────────────────────────────
 CLAUDE_API_KEY       = os.environ.get("CLAUDE_API_KEY", "")
 BASE_OUTPUT_DIR      = "output"
@@ -21,8 +25,14 @@ BATCH_SIZE           = 5    # frames par paquet envoyé à Claude
 BATCH_DELAY          = 65   # secondes de pause entre paquets
 
 os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
-client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-print("CLAUDE KEY:", CLAUDE_API_KEY[:20] + "..." if CLAUDE_API_KEY else "NON TROUVÉE")
+
+if not CLAUDE_API_KEY:
+    print("⚠️  CLAUDE_API_KEY manquante — vérifiez .env/param.env")
+    client = None
+else:
+    client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+    print("CLAUDE KEY:", CLAUDE_API_KEY[:20] + "...")
+
 
 # ─────────────────────────────────────────
 # DOSSIERS PAR VIDÉO
@@ -33,6 +43,7 @@ def setup_dirs(video_path: str) -> tuple:
     output_dir = os.path.join(BASE_OUTPUT_DIR, safe_name)
     frames_dir = os.path.join(output_dir, "frames")
     os.makedirs(output_dir, exist_ok=True)
+
     if os.path.exists(frames_dir):
         print("🗑️  Nettoyage des anciennes frames...")
         for f in os.listdir(frames_dir):
@@ -40,6 +51,7 @@ def setup_dirs(video_path: str) -> tuple:
     os.makedirs(frames_dir, exist_ok=True)
     print(f"📁 Dossier : {output_dir}")
     return output_dir, frames_dir
+
 
 # ─────────────────────────────────────────
 # ÉTAPE 1 : Extraire les frames
@@ -72,6 +84,7 @@ def extract_frames(video_path: str, frames_dir: str) -> tuple:
     print(f"✅ {len(frames)} frames extraites")
     return frames, duration, interval
 
+
 # ─────────────────────────────────────────
 # UTILITAIRES
 # ─────────────────────────────────────────
@@ -82,22 +95,25 @@ def clean_json(text: str) -> str:
         raise ValueError("Pas de JSON trouvé")
     depth = 0
     for i, c in enumerate(text[start:], start):
-        if c == "{":   depth += 1
+        if c == "{":
+            depth += 1
         elif c == "}":
             depth -= 1
             if depth == 0:
                 return text[start:i+1]
     return text[start:]
 
+
+# FIX — double return supprimé
 def encode_frame(path: str) -> str:
     with open(path, "rb") as f:
         return base64.standard_b64encode(f.read()).decode("utf-8")
-    with open(path, "rb") as f:
-        return base64.standard_b64encode(f.read()).decode("utf-8")
+
 
 def seconds_to_mmss(s: float) -> str:
     s = int(max(0, s))
     return f"{s//60:02d}:{s%60:02d}"
+
 
 def time_to_seconds(t: str) -> float:
     parts = t.strip().split(":")
@@ -107,10 +123,17 @@ def time_to_seconds(t: str) -> float:
         return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
     return 0.0
 
+
+def _check_client():
+    if client is None:
+        raise RuntimeError("CLAUDE_API_KEY manquante — impossible d'appeler l'API")
+
+
 # ─────────────────────────────────────────
 # ÉTAPE 2 : Résumé global
 # ─────────────────────────────────────────
 def get_summary(actions: list, duration: float, sport: str = "football") -> dict:
+    _check_client()
     print("📝 Génération du résumé global...")
     prompt = f"""
     Voici les actions détectées dans un match de {sport} de {duration/60:.0f} minutes :
@@ -123,7 +146,7 @@ def get_summary(actions: list, duration: float, sport: str = "football") -> dict
         "highlights": [
             {{
                 "timestamp_debut": "MM:SS",
-                "timestamp_fin": "MM:SS",
+                "timestamp_fin":   "MM:SS",
                 "type": "but|tir|dribble|passe_cle|action_defensive|autre",
                 "description": "Description",
                 "importance": 4
@@ -147,11 +170,13 @@ def get_summary(actions: list, duration: float, sport: str = "football") -> dict
     text = clean_json(response.content[0].text)
     return json.loads(text)
 
+
 # ─────────────────────────────────────────
 # ÉTAPE 3 : Analyser les frames par paquets
 # ─────────────────────────────────────────
 def analyze_frames(frames: list, duration: float, interval: int,
                    sport: str = "football") -> dict:
+    _check_client()
     print("🤖 Analyse des frames avec Claude...")
     all_actions  = []
     total_frames = len(frames)
@@ -179,7 +204,7 @@ def analyze_frames(frames: list, duration: float, interval: int,
             )
         }]
         for i, fp in enumerate(batch):
-            content.append({"type": "text", "text": f"Frame {i+1} :"})
+            content.append({"type": "text",  "text": f"Frame {i+1} :"})
             content.append({"type": "image", "source": {
                 "type": "base64", "media_type": "image/jpeg", "data": encode_frame(fp)
             }})
@@ -210,10 +235,13 @@ def analyze_frames(frames: list, duration: float, interval: int,
     print(f"✅ Total : {len(all_actions)} actions détectées")
     return get_summary(all_actions, duration, sport)
 
+
 # ─────────────────────────────────────────
 # ÉTAPE 4 : Affiner les highlights
 # ─────────────────────────────────────────
-def refine_highlight(video_path: str, output_dir: str, timestamp_sec: float, label: str) -> dict:
+def refine_highlight(video_path: str, output_dir: str,
+                     timestamp_sec: float, label: str) -> dict:
+    _check_client()
     print(f"  🔍 Affinage : {label} autour de {seconds_to_mmss(int(timestamp_sec))}...")
     refine_dir = os.path.join(output_dir, "refine")
     os.makedirs(refine_dir, exist_ok=True)
@@ -256,9 +284,11 @@ def refine_highlight(video_path: str, output_dir: str, timestamp_sec: float, lab
 
     time.sleep(BATCH_DELAY)
     try:
-        r1 = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=200,
-                                     messages=[{"role": "user", "content": content1}])
-        d1 = json.loads(clean_json(r1.content[0].text))
+        r1 = client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=200,
+            messages=[{"role": "user", "content": content1}]
+        )
+        d1         = json.loads(clean_json(r1.content[0].text))
         zone_start = start1 + max(0, d1["frame_debut"] - 1) * 5
         zone_end   = start1 + d1["frame_fin"] * 5
         print(f"     Passe 1 → {seconds_to_mmss(int(zone_start))} - {seconds_to_mmss(int(zone_end))}")
@@ -279,9 +309,12 @@ def refine_highlight(video_path: str, output_dir: str, timestamp_sec: float, lab
     frames2 = sorted([os.path.join(refine_dir, f)
                       for f in os.listdir(refine_dir) if f.startswith("p2_")])
     if not frames2:
-        return {"timestamp_debut": seconds_to_mmss(int(zone_start)),
-                "timestamp_fin":   seconds_to_mmss(int(zone_end)),
-                "description": label, "confirmation": True}
+        return {
+            "timestamp_debut": seconds_to_mmss(int(zone_start)),
+            "timestamp_fin":   seconds_to_mmss(int(zone_end)),
+            "description":     label,
+            "confirmation":    True
+        }
 
     content2 = [{
         "type": "text",
@@ -304,18 +337,28 @@ def refine_highlight(video_path: str, output_dir: str, timestamp_sec: float, lab
 
     time.sleep(BATCH_DELAY)
     try:
-        r2 = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=300,
-                                     messages=[{"role": "user", "content": content2}])
-        d2 = json.loads(clean_json(r2.content[0].text))
+        r2 = client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=300,
+            messages=[{"role": "user", "content": content2}]
+        )
+        d2       = json.loads(clean_json(r2.content[0].text))
         ts_debut = seconds_to_mmss(int(start2 + d2["frame_debut"] - 1))
         ts_fin   = seconds_to_mmss(int(start2 + d2["frame_fin"]))
         print(f"     Passe 2 → {ts_debut} - {ts_fin} ✅")
-        return {"timestamp_debut": ts_debut, "timestamp_fin": ts_fin,
-                "description": d2.get("description", label), "confirmation": True}
+        return {
+            "timestamp_debut": ts_debut,
+            "timestamp_fin":   ts_fin,
+            "description":     d2.get("description", label),
+            "confirmation":    True
+        }
     except:
-        return {"timestamp_debut": seconds_to_mmss(int(zone_start)),
-                "timestamp_fin":   seconds_to_mmss(int(zone_end)),
-                "description": label, "confirmation": True}
+        return {
+            "timestamp_debut": seconds_to_mmss(int(zone_start)),
+            "timestamp_fin":   seconds_to_mmss(int(zone_end)),
+            "description":     label,
+            "confirmation":    True
+        }
+
 
 def refine_all_highlights(video_path: str, output_dir: str, analysis: dict) -> dict:
     print("\n🔬 Affinage des highlights importants...")
@@ -332,6 +375,7 @@ def refine_all_highlights(video_path: str, output_dir: str, analysis: dict) -> d
                 print(f"  ⚠️  Pas pu affiner {h['type']}, estimation conservée")
     return analysis
 
+
 # ─────────────────────────────────────────
 # ÉTAPE 5 : Découper les highlights
 # ─────────────────────────────────────────
@@ -343,16 +387,22 @@ def cut_highlights(video_path: str, output_dir: str, highlights: list) -> list:
         end   = time_to_seconds(h["timestamp_fin"])
         out   = os.path.join(output_dir, f"highlight_{i+1}_{h['type']}.mp4")
         r     = subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(start), "-to", str(end), "-i", video_path, "-c", "copy", out],
+            ["ffmpeg", "-y", "-ss", str(start), "-to", str(end),
+             "-i", video_path, "-c", "copy", out],
             capture_output=True
         )
         if r.returncode == 0:
-            clips.append({"fichier": out, "type": h["type"],
-                           "description": h["description"], "importance": h.get("importance", 1)})
+            clips.append({
+                "fichier":     out,
+                "type":        h["type"],
+                "description": h["description"],
+                "importance":  h.get("importance", 1)
+            })
             print(f"  ✅ {h['description'][:50]}")
         else:
             print(f"  ❌ Erreur clip {i+1}")
     return clips
+
 
 # ─────────────────────────────────────────
 # ÉTAPE 6 : Highlight reel
@@ -361,16 +411,32 @@ def create_highlight_reel(output_dir: str, clips: list) -> str:
     if not clips:
         print("⚠️  Aucun clip")
         return ""
+
+    valid = [c for c in clips if os.path.exists(c.get("fichier", ""))]
+    if not valid:
+        print("⚠️  Aucun clip valide")
+        return ""
+
     print("🎬 Création du highlight reel...")
     list_path = os.path.join(output_dir, "clips_list.txt")
     with open(list_path, "w") as f:
-        for c in clips:
+        for c in valid:
             f.write(f"file '{os.path.abspath(c['fichier'])}'\n")
+
     reel = os.path.join(output_dir, "highlight_reel.mp4")
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                    "-i", list_path, "-c", "copy", reel], capture_output=True)
+    subprocess.run([
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", list_path, "-c", "copy", reel
+    ], capture_output=True)
+
+    try:
+        os.remove(list_path)
+    except:
+        pass
+
     print(f"✅ Reel : {reel}")
     return reel
+
 
 # ─────────────────────────────────────────
 # ÉTAPE 7 : Rapport match
@@ -399,6 +465,7 @@ def print_report(output_dir: str, analysis: dict, clips: list, reel_path: str):
         json.dump(analysis, f, ensure_ascii=False, indent=2)
     print("💾 rapport.json sauvegardé\n")
 
+
 # ─────────────────────────────────────────
 # ANALYSE JOUEUR CIBLÉ
 # ─────────────────────────────────────────
@@ -407,7 +474,7 @@ def analyze_player(frames: list, duration: float, interval: int,
                    position: str = "", sport: str = "football",
                    couleur_gardien_domicile: str = "",
                    couleur_gardien_visiteur: str = "") -> dict:
-
+    _check_client()
     print(f"🎯 Analyse #{numero} ({couleur}) — {position}...")
 
     gardien_context = ""
@@ -493,12 +560,13 @@ def analyze_player(frames: list, duration: float, interval: int,
 
 def generate_player_report(actions: list, zones: list, numero: int,
                             couleur: str, sport: str, duration: float) -> dict:
+    _check_client()
     print("📝 Génération du rapport joueur...")
-    total_obs       = len(actions)
-    avec_ballon     = sum(1 for a in actions if a.get("avec_ballon"))
-    evaluations     = [a["evaluation"] for a in actions if a.get("evaluation")]
-    note_moyenne    = round(sum(evaluations) / len(evaluations), 1) if evaluations else 0
-    zone_counts     = Counter(zones)
+    total_obs    = len(actions)
+    avec_ballon  = sum(1 for a in actions if a.get("avec_ballon"))
+    evaluations  = [a["evaluation"] for a in actions if a.get("evaluation")]
+    note_moyenne = round(sum(evaluations) / len(evaluations), 1) if evaluations else 0
+    zone_counts  = Counter(zones)
     zone_principale = zone_counts.most_common(1)[0][0] if zone_counts else "inconnue"
 
     prompt = f"""
@@ -564,11 +632,13 @@ def print_player_report(report: dict):
         print(f"\n💡 RECOMMANDATION\n  {report['recommandation']}")
     print("═"*60)
 
+
 # ─────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────
 if __name__ == "__main__":
-    VIDEO_PATH      = r"D:\Video\Match Bullange - Stavelot B 0-1.mp4"
+    # FIX — chemins depuis .env ou à adapter localement
+    VIDEO_PATH      = os.getenv("VIDEO_PATH", "match.mp4")
     SPORT           = "football"
 
     ANALYSE_MATCH   = True
@@ -590,8 +660,10 @@ if __name__ == "__main__":
     if ANALYSE_JOUEUR:
         player_report = analyze_player(
             frames, duration, interval,
-            numero=NUMERO_JOUEUR, couleur=COULEUR_MAILLOT,
-            position=POSITION_JOUEUR, sport=SPORT,
+            numero  = NUMERO_JOUEUR,
+            couleur = COULEUR_MAILLOT,
+            position = POSITION_JOUEUR,
+            sport    = SPORT,
         )
         print_player_report(player_report)
         path = os.path.join(output_dir, f"rapport_joueur_{NUMERO_JOUEUR}.json")
