@@ -335,17 +335,14 @@ def run_pipeline(
         try:
             from export.pdf import generate_pdf
             pdf_path = generate_pdf(
-                result      = {
-                    "summary":    summary,
-                    "stats":      stats,
+                result = {
+                    "summary": summary,
+                    "stats": stats,
                     "highlights": highlights,
                     "jersey_map": jersey_map,
-                    "heatmap":    heatmap_path,
-                    "ai_summary": ai_summary,
-                    "ratings":    ratings,
-                    "mvp":        mvp,
-                    "tactical":   tactical,
-                    "story":      story
+                    "heatmaps": heatmap_paths,
+                    "player_ratings": ratings,
+                    "match_story": story
                 },
                 output_path = os.path.join(output_dir, "rapport.pdf"),
                 sport       = sport
