@@ -2,11 +2,19 @@
 # -*- coding: utf-8 -*-
 
 import anthropic
-import os
-
 import config
 
-client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY)
+
+# FIX — instanciation lazy pour éviter crash si CLAUDE_API_KEY vide au démarrage
+_client = None
+
+def get_client():
+    global _client
+    if _client is None:
+        if not config.CLAUDE_API_KEY:
+            raise RuntimeError("CLAUDE_API_KEY manquante dans .env")
+        _client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY)
+    return _client
 
 
 def summarize(highlights, summary=None, stats=None, sport="football"):
@@ -25,14 +33,14 @@ def summarize(highlights, summary=None, stats=None, sport="football"):
     if summary:
         summary_text = f"""
 Statistiques du match :
-- Buts       : {summary.get('goals', 0)}
-- Tirs       : {summary.get('shots', 0)}
-- xG total   : {summary.get('total_xg', 0)}
-- Passes     : {summary.get('passes', 0)}
+- Buts          : {summary.get('goals', 0)}
+- Tirs          : {summary.get('shots', 0)}
+- xG total      : {summary.get('total_xg', 0)}
+- Passes        : {summary.get('passes', 0)}
 - Interceptions : {summary.get('interceptions', 0)}
-- Dribbles   : {summary.get('dribbles', 0)}
-- Joueurs    : {summary.get('players', 0)}
-- Durée      : {summary.get('duration', '--')}
+- Dribbles      : {summary.get('dribbles', 0)}
+- Joueurs       : {summary.get('players', 0)}
+- Durée         : {summary.get('duration', '--')}
 """
 
     # ── Moments clés ─────────────────────
@@ -63,11 +71,12 @@ Statistiques du match :
                 f"{s.get('touches', 0)} touches, "
                 f"{s.get('passes', 0)} passes, "
                 f"{s.get('tirs', 0)} tirs, "
-                f"{s.get('buts', 0)} buts"
+                f"{s.get('buts', 0)} buts, "
+                f"xG={s.get('xg_total', 0):.2f}"
             )
         stats_text = "Top joueurs :\n" + "\n".join(lines)
 
-    # ── Prompt ───────────────────────────
+    # ── Labels sport ─────────────────────
     sport_labels = {
         "football":         "football",
         "mini-foot":        "futsal / mini-foot",
@@ -82,14 +91,13 @@ Statistiques du match :
     }
     sport_label = sport_labels.get(sport, sport)
 
+    # ── Prompt ───────────────────────────
     prompt = f"""Tu es un analyste sportif expert en {sport_label}.
 
 Voici les données d'une analyse vidéo d'un match de {sport_label} :
 
 {summary_text}
-
 {highlights_text}
-
 {stats_text}
 
 Rédige un résumé analytique du match en français, en 3-4 paragraphes.
@@ -98,7 +106,7 @@ Commente les moments clés, les tendances tactiques et les performances individu
 Sois précis, factuel et concis.
 """
 
-    res = client.messages.create(
+    res = get_client().messages.create(
         model      = config.CLAUDE_MODEL,
         max_tokens = config.CLAUDE_MAX_TOKENS,
         messages   = [{"role": "user", "content": prompt}]
