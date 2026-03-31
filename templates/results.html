@@ -8,14 +8,10 @@
     .results-page       { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
     .result-section     { background: #fff; border-radius: 14px; padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
     .result-section h2  { font-size: 1.1rem; font-weight: 700; color: #1a1a2e; margin-bottom: 1rem; }
-
-    /* KPI */
     .kpi-grid           { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1rem; }
     .kpi-card           { background: #f8f9ff; border-radius: 10px; padding: 1rem; text-align: center; border-top: 3px solid #2563eb; }
     .kpi-value          { font-size: 1.8rem; font-weight: 700; color: #2563eb; }
     .kpi-label          { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: .5px; margin-top: .2rem; }
-
-    /* Highlights */
     .highlights-grid    { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
     .highlight-card     { background: #f8f9ff; border-radius: 10px; padding: 1rem; border-left: 4px solid #2563eb; }
     .highlight-header   { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap; }
@@ -27,34 +23,29 @@
     .highlight-time     { font-size: .8rem; color: #666; }
     .highlight-score    { font-size: .75rem; color: #888; margin-left: auto; }
     .highlight-video    { width: 100%; border-radius: 8px; margin-top: .5rem; max-height: 180px; background: #000; }
-
-    /* Stats */
     .stats-table        { width: 100%; border-collapse: collapse; }
     .stats-table th     { background: #2563eb; color: #fff; padding: .6rem 1rem; text-align: left; font-size: .82rem; }
     .stats-table td     { padding: .6rem 1rem; border-bottom: 1px solid #f0f0f0; font-size: .88rem; }
     .stats-table tr:last-child td { border-bottom: none; }
     .stats-table tr:hover td { background: #f8f9ff; }
-
-    /* Heatmaps */
     .heatmap-grid       { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
     .heatmap-card       { border-radius: 10px; overflow: hidden; }
     .heatmap-card img   { width: 100%; border-radius: 10px; }
     .heatmap-label      { font-size: .8rem; color: #666; text-align: center; margin-top: .4rem; }
-
-    /* Reel */
     .reel-video         { width: 100%; border-radius: 10px; max-height: 400px; background: #000; margin-bottom: 1rem; }
-
-    /* Boutons */
     .btn-row            { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
     .btn-primary        { background: #2563eb; color: #fff; padding: .7rem 1.4rem; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: .9rem; display: inline-block; }
     .btn-primary:hover  { background: #1d4ed8; }
     .btn-secondary      { background: #f3f4f6; color: #1a1a2e; padding: .7rem 1.4rem; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: .9rem; display: inline-block; }
     .btn-secondary:hover{ background: #e5e7eb; }
     .btn-disabled       { background: #e5e7eb; color: #999; padding: .7rem 1.4rem; border-radius: 10px; font-weight: 600; font-size: .9rem; display: inline-block; cursor: not-allowed; }
-
     .ai-text            { background: #f8f9ff; border-left: 4px solid #2563eb; padding: 1rem; border-radius: 8px; font-style: italic; color: #444; line-height: 1.6; }
     .jersey-badge       { display: inline-block; background: #1a1a2e; color: #fff; border-radius: 6px; padding: .15rem .5rem; font-size: .8rem; font-weight: 700; margin-right: .3rem; }
     .empty-state        { color: #aaa; font-size: .9rem; font-style: italic; }
+    .tactical-grid      { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
+    .tactical-card      { background: #f8f9ff; border-radius: 10px; padding: 1rem; text-align: center; }
+    .tactical-value     { font-size: 1.4rem; font-weight: 700; color: #2563eb; }
+    .tactical-label     { font-size: .75rem; color: #888; margin-top: .2rem; }
 </style>
 </head>
 <body>
@@ -117,6 +108,39 @@
     </div>
     {% endif %}
 
+    <!-- ─── TACTIQUE ─── -->
+    {% if result.formation or result.tactical %}
+    <div class="result-section">
+        <h2>Analyse tactique</h2>
+        <div class="tactical-grid">
+            {% if result.formation %}
+            <div class="tactical-card">
+                <div class="tactical-value">{{ result.formation }}</div>
+                <div class="tactical-label">Formation</div>
+            </div>
+            {% endif %}
+            {% if result.tactical and result.tactical.style %}
+            <div class="tactical-card">
+                <div class="tactical-value">{{ result.tactical.style }}</div>
+                <div class="tactical-label">Style de jeu</div>
+            </div>
+            {% endif %}
+            {% if result.pressing is defined %}
+            <div class="tactical-card">
+                <div class="tactical-value">{{ "Oui" if result.pressing else "Non" }}</div>
+                <div class="tactical-label">Pressing</div>
+            </div>
+            {% endif %}
+            {% if result.mvp %}
+            <div class="tactical-card">
+                <div class="tactical-value">P{{ result.mvp }}</div>
+                <div class="tactical-label">MVP</div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
     <!-- ─── RÉSUMÉ IA ─── -->
     {% if result.ai_summary %}
     <div class="result-section">
@@ -125,32 +149,47 @@
     </div>
     {% endif %}
 
+    <!-- ─── STORY ─── -->
+    {% if result.story %}
+    <div class="result-section">
+        <h2>Récit du match</h2>
+        <div class="ai-text">{{ result.story }}</div>
+    </div>
+    {% endif %}
+
     <!-- ─── HEATMAPS ─── -->
+    <!-- FIX — clés alignées avec generate_all_heatmaps() -->
     {% if result.heatmaps %}
     <div class="result-section">
         <h2>Cartes de chaleur</h2>
         <div class="heatmap-grid">
             {% if result.heatmaps.global %}
             <div class="heatmap-card">
-                <img src="/files/{{ analysis.id }}/heatmaps/heatmap_global.png" alt="Heatmap globale">
+                <img src="/files/{{ analysis.id }}/heatmaps/global.png" alt="Activite globale">
                 <div class="heatmap-label">Activite globale</div>
             </div>
             {% endif %}
-            {% if result.heatmaps.tirs %}
+            {% if result.heatmaps.shots %}
             <div class="heatmap-card">
-                <img src="/files/{{ analysis.id }}/heatmaps/heatmap_tirs.png" alt="Heatmap tirs">
+                <img src="/files/{{ analysis.id }}/heatmaps/shots.png" alt="Zones de tir">
                 <div class="heatmap-label">Zones de tir</div>
             </div>
             {% endif %}
-            {% if result.heatmaps.equipe_A %}
+            {% if result.heatmaps.goals %}
             <div class="heatmap-card">
-                <img src="/files/{{ analysis.id }}/heatmaps/heatmap_equipe_A.png" alt="Equipe A">
+                <img src="/files/{{ analysis.id }}/heatmaps/goals.png" alt="Zones de but">
+                <div class="heatmap-label">Zones de but</div>
+            </div>
+            {% endif %}
+            {% if result.heatmaps.team_A %}
+            <div class="heatmap-card">
+                <img src="/files/{{ analysis.id }}/heatmaps/team_A.png" alt="Equipe A">
                 <div class="heatmap-label">Equipe A</div>
             </div>
             {% endif %}
-            {% if result.heatmaps.equipe_B %}
+            {% if result.heatmaps.team_B %}
             <div class="heatmap-card">
-                <img src="/files/{{ analysis.id }}/heatmaps/heatmap_equipe_B.png" alt="Equipe B">
+                <img src="/files/{{ analysis.id }}/heatmaps/team_B.png" alt="Equipe B">
                 <div class="heatmap-label">Equipe B</div>
             </div>
             {% endif %}
@@ -233,6 +272,7 @@
                     <th>Buts</th>
                     <th>Interceptions</th>
                     <th>Dribbles</th>
+                    <th>xG</th>
                 </tr>
             </thead>
             <tbody>
@@ -240,10 +280,9 @@
                 <tr>
                     <td>Joueur {{ player_id }}</td>
                     <td>
-                        {% if result.jersey_map and (player_id in result.jersey_map or player_id|string in result.jersey_map) %}
-                            <span class="jersey-badge">
-                                #{{ result.jersey_map[player_id] or result.jersey_map[player_id|string] }}
-                            </span>
+                        {% set jersey = result.jersey_map.get(player_id) or result.jersey_map.get(player_id|string) if result.jersey_map else None %}
+                        {% if jersey %}
+                            <span class="jersey-badge">#{{ jersey }}</span>
                         {% else %}
                             —
                         {% endif %}
@@ -254,6 +293,7 @@
                     <td>{{ s.buts          or 0 }}</td>
                     <td>{{ s.interceptions or 0 }}</td>
                     <td>{{ s.dribbles      or 0 }}</td>
+                    <td>{{ "%.2f"|format(s.xg_total) if s.xg_total else "0.00" }}</td>
                 </tr>
             {% endfor %}
             </tbody>
@@ -274,13 +314,11 @@
                     PDF — Plan Starter requis
                 </span>
             {% endif %}
-
             {% if result.reel %}
                 <a href="/files/{{ analysis.id }}/reel.mp4" download class="btn-secondary">
                     Télécharger le reel
                 </a>
             {% endif %}
-
             <a href="/files/{{ analysis.id }}/analysis.json" download class="btn-secondary">
                 Télécharger le JSON
             </a>
