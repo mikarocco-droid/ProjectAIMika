@@ -8,9 +8,9 @@ load_dotenv(".env/param.env")
 # ─────────────────────────────────────────
 # FLASK
 # ─────────────────────────────────────────
-SECRET_KEY   = os.getenv("SECRET_KEY",    "dev-only-change-me")
-DATABASE_URI = os.getenv("DATABASE_URI",  "sqlite:///db.sqlite3")
-DEBUG        = os.getenv("DEBUG",         "false").lower() == "true"
+SECRET_KEY   = os.getenv("SECRET_KEY",   "dev-only-change-me")
+DATABASE_URI = os.getenv("DATABASE_URI", "sqlite:///db.sqlite3")
+DEBUG        = os.getenv("DEBUG",        "false").lower() == "true"
 
 # ─────────────────────────────────────────
 # UPLOADS
@@ -23,7 +23,7 @@ ALLOWED_EXTENSIONS = {"mp4", "avi", "mov", "mkv", "m4v"}
 # ─────────────────────────────────────────
 # VIDÉO
 # ─────────────────────────────────────────
-VIDEO_PATH   = os.getenv("VIDEO_PATH",  "match.mp4")
+VIDEO_PATH   = os.getenv("VIDEO_PATH",   "match.mp4")
 FPS          = int(os.getenv("FPS",          30))
 FRAME_WIDTH  = int(os.getenv("FRAME_WIDTH",  1280))
 FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", 720))
@@ -64,11 +64,10 @@ HIGHLIGHT_AFTER_SEC     = int(os.getenv("HIGHLIGHT_AFTER_SEC",      4))
 
 # ─────────────────────────────────────────
 # MONTAGE
+# FIX — ces constantes étaient définies mais ignorées par create_montage (V18).
+# Elles sont conservées pour la config .env mais ne sont plus passées en kwargs.
 # ─────────────────────────────────────────
-MONTAGE_WITH_INTRO  = os.getenv("MONTAGE_WITH_INTRO",  "true").lower() == "true"
-MONTAGE_WITH_LABELS = os.getenv("MONTAGE_WITH_LABELS", "true").lower() == "true"
-MONTAGE_WITH_FADES  = os.getenv("MONTAGE_WITH_FADES",  "true").lower() == "true"
-MONTAGE_RESOLUTION  = os.getenv("MONTAGE_RESOLUTION",  "1280x720")
+MONTAGE_RESOLUTION  = os.getenv("MONTAGE_RESOLUTION", "1280x720")
 
 # ─────────────────────────────────────────
 # IA — CLAUDE
@@ -80,9 +79,9 @@ CLAUDE_MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", 500))
 # ─────────────────────────────────────────
 # STRIPE
 # ─────────────────────────────────────────
-STRIPE_PUBLIC_KEY      = os.getenv("STRIPE_PUBLIC_KEY",      "")
-STRIPE_SECRET_KEY      = os.getenv("STRIPE_SECRET_KEY",      "")
-STRIPE_WEBHOOK_SECRET  = os.getenv("STRIPE_WEBHOOK_SECRET",  "")
+STRIPE_PUBLIC_KEY     = os.getenv("STRIPE_PUBLIC_KEY",     "")
+STRIPE_SECRET_KEY     = os.getenv("STRIPE_SECRET_KEY",     "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
 STRIPE_PRICE_IDS = {
     "starter": os.getenv("STRIPE_PRICE_STARTER", ""),
@@ -135,22 +134,16 @@ PDF_PRIMARY_COLOR = os.getenv("PDF_PRIMARY_COLOR", "#1a73e8")
 # ─────────────────────────────────────────
 def validate():
     warnings = []
-
     if SECRET_KEY == "dev-only-change-me":
         warnings.append("⚠️  SECRET_KEY non définie")
-
     if not CLAUDE_API_KEY:
         warnings.append("⚠️  CLAUDE_API_KEY manquante — résumé IA désactivé")
-
     if not STRIPE_SECRET_KEY:
         warnings.append("⚠️  STRIPE_SECRET_KEY manquante — paiement désactivé")
-
     if not STRIPE_WEBHOOK_SECRET:
         warnings.append("⚠️  STRIPE_WEBHOOK_SECRET manquante — webhook désactivé")
-
     for w in warnings:
         print(w)
-
     return len(warnings) == 0
 
 
