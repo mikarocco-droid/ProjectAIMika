@@ -52,6 +52,22 @@ def normalize_highlights(highlights):
 
 
 # ─────────────────────────────────────────
+# SANITIZE JSON — corrige les clés tuples
+# ─────────────────────────────────────────
+def sanitize_for_json(obj):
+    """Convertit récursivement les clés tuples en string pour json.dump."""
+    if isinstance(obj, dict):
+        return {
+            (str(k) if isinstance(k, tuple) else k): sanitize_for_json(v)
+            for k, v in obj.items()
+        }
+    elif isinstance(obj, list):
+        return [sanitize_for_json(i) for i in obj]
+    else:
+        return obj
+
+
+# ─────────────────────────────────────────
 # MATCH SUMMARY
 # ─────────────────────────────────────────
 def compute_match_summary(events, stats, total_frames=0, fps=25):
@@ -61,19 +77,19 @@ def compute_match_summary(events, stats, total_frames=0, fps=25):
     seconds      = duration_sec % 60
 
     return {
-        "total_events":   len(events),
-        "goals":          sum(1 for e in events if e.get("type") in ["goal", "score"]),
-        "shots":          sum(1 for e in events if e.get("type") == "shot"),
-        "passes":         sum(1 for e in events if e.get("type") == "pass"),
-        "interceptions":  sum(1 for e in events if e.get("type") == "interception"),
-        "dribbles":       sum(1 for e in events if e.get("type") == "dribble"),
+        "total_events":     len(events),
+        "goals":            sum(1 for e in events if e.get("type") in ["goal", "score"]),
+        "shots":            sum(1 for e in events if e.get("type") == "shot"),
+        "passes":           sum(1 for e in events if e.get("type") == "pass"),
+        "interceptions":    sum(1 for e in events if e.get("type") == "interception"),
+        "dribbles":         sum(1 for e in events if e.get("type") == "dribble"),
         "progressive_runs": sum(1 for e in events if e.get("type") == "progressive_run"),
-        "build_up_plays": sum(1 for e in events if e.get("type") == "build_up_play"),
-        "total_xg":       round(total_xg, 2),
-        "players":        len(stats),
-        "duration":       f"{minutes:02d}:{seconds:02d}",
-        "total_frames":   total_frames,
-        "fps":            fps
+        "build_up_plays":   sum(1 for e in events if e.get("type") == "build_up_play"),
+        "total_xg":         round(total_xg, 2),
+        "players":          len(stats),
+        "duration":         f"{minutes:02d}:{seconds:02d}",
+        "total_frames":     total_frames,
+        "fps":              fps
     }
 
 
@@ -148,7 +164,7 @@ def run_pipeline(
         save_annotated    = save_annotated,
         annotated_path    = annotated_path,
         shot_zones        = shot_zones,
-        return_frames     = True       # ← retourner frames_data
+        return_frames     = True
     )
     print(f"  OK {len(events)} events | {len(jersey_map)} maillots")
 
@@ -193,9 +209,9 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 5 : IA Learning...")
     try:
-        events       = cluster_actions(events)
-        events       = learn_action_importance(events)
-        key_moments  = detect_key_moments(events)
+        events      = cluster_actions(events)
+        events      = learn_action_importance(events)
+        key_moments = detect_key_moments(events)
         print(f"  OK {len(key_moments)} key moments")
     except Exception as e:
         print(f"  Learning error : {e}")
@@ -206,13 +222,18 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 6 : Advanced analytics...")
     try:
-        # xA depuis advanced (sur liste d'events)
         from analytics.advanced import compute_xa as compute_xa_list
         events       = compute_xa_list(events)
-
         pass_network = build_pass_network(events)
         offsides     = detect_offside(events)
         dominance    = compute_team_dominance(events)
+
+        # FIX — convertir les clés tuples du pass_network en string
+        pass_network = {
+            f"{k[0]}_{k[1]}" if isinstance(k, tuple) else str(k): v
+            for k, v in pass_network.items()
+        }
+
         print(f"  OK pass_network={len(pass_network)} | offsides={len(offsides)}")
     except Exception as e:
         print(f"  Advanced error : {e}")
@@ -224,6 +245,7 @@ def run_pipeline(
     print("Step 7 : Heatmaps...")
     heatmaps     = {}
     heatmap_path = None
+    heatmap_paths = {}   # FIX — déclaré ici pour être accessible au Step 13
     try:
         heatmaps = generate_all_heatmaps(
             events     = events,
@@ -232,7 +254,8 @@ def run_pipeline(
             height     = config.FRAME_HEIGHT,
             sport      = sport
         )
-        heatmap_path = heatmaps.get("global")
+        heatmap_path  = heatmaps.get("global")
+        heatmap_paths = heatmaps   # FIX — alias utilisé dans le PDF
         print(f"  OK {len(heatmaps)} heatmaps")
     except Exception as e:
         print(f"  Heatmaps error : {e}")
@@ -269,13 +292,10 @@ def run_pipeline(
     montage_path = None
     try:
         montage_path = create_montage(
-            highlights  = highlights,
-            video_path  = video_path,
-            output_path = os.path.join(output_dir, "montage.mp4"),
-            title       = f"Analyse {sport.capitalize()}",
-            with_intro  = config.MONTAGE_WITH_INTRO,
-            with_labels = config.MONTAGE_WITH_LABELS,
-            with_fades  = config.MONTAGE_WITH_FADES
+            highlights = highlights,
+            video_path = video_path,
+            output     = os.path.join(output_dir, "montage.mp4"),  # FIX output_path → output
+            title      = f"Analyse {sport.capitalize()}",
         )
         print(f"  OK montage -> {montage_path}")
     except Exception as e:
@@ -336,13 +356,13 @@ def run_pipeline(
             from export.pdf import generate_pdf
             pdf_path = generate_pdf(
                 result = {
-                    "summary": summary,
-                    "stats": stats,
-                    "highlights": highlights,
-                    "jersey_map": jersey_map,
-                    "heatmaps": heatmap_paths,
+                    "summary":        summary,
+                    "stats":          stats,
+                    "highlights":     highlights,
+                    "jersey_map":     jersey_map,
+                    "heatmaps":       heatmap_paths,   # FIX — variable correcte
                     "player_ratings": ratings,
-                    "match_story": story
+                    "match_story":    story
                 },
                 output_path = os.path.join(output_dir, "rapport.pdf"),
                 sport       = sport
@@ -355,36 +375,39 @@ def run_pipeline(
     # 14. SAVE JSON
     # ─────────────────────────────────────────
     result = {
-        "summary":       summary,
-        "events":        events,
-        "stats":         stats,
-        "highlights":    highlights,
-        "jersey_map":    jersey_map,
-        "heatmaps":      heatmaps,
-        "heatmap":       heatmap_path,
-        "reel":          reel_path,
-        "montage":       montage_path,
-        "annotated":     annotated_path,
-        "ai_summary":    ai_summary,
-        "pdf":           pdf_path,
-        "sport":         sport,
-        "calib":         calib,
-        "fps":           fps,
-        "total_frames":  total_frames,
-        "teams":         teams,
-        "formation":     formation,
-        "pressing":      pressing,
-        "phases":        phases,
-        "tactical":      tactical,
-        "pass_network":  pass_network,
-        "offsides":      offsides,
-        "dominance":     dominance,
-        "key_moments":   key_moments,
-        "ratings":       ratings,
-        "mvp":           str(mvp[0]) if mvp else None,
-        "commentary":    commentary,
-        "story":         story
+        "summary":      summary,
+        "events":       events,
+        "stats":        stats,
+        "highlights":   highlights,
+        "jersey_map":   jersey_map,
+        "heatmaps":     heatmaps,
+        "heatmap":      heatmap_path,
+        "reel":         reel_path,
+        "montage":      montage_path,
+        "annotated":    annotated_path,
+        "ai_summary":   ai_summary,
+        "pdf":          pdf_path,
+        "sport":        sport,
+        "calib":        calib,
+        "fps":          fps,
+        "total_frames": total_frames,
+        "teams":        teams,
+        "formation":    formation,
+        "pressing":     pressing,
+        "phases":       phases,
+        "tactical":     tactical,
+        "pass_network": pass_network,
+        "offsides":     offsides,
+        "dominance":    dominance,
+        "key_moments":  key_moments,
+        "ratings":      ratings,
+        "mvp":          str(mvp[0]) if mvp else None,
+        "commentary":   commentary,
+        "story":        story
     }
+
+    # FIX — sanitize avant json.dump pour éliminer toute clé tuple résiduelle
+    result = sanitize_for_json(result)
 
     with open(os.path.join(output_dir, "analysis.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
