@@ -10,14 +10,6 @@ from rendering.overlay import Overlay, TeamColorDetector
 import config
 
 
-# ─────────────────────────────────────────
-# INIT MODULES
-# ─────────────────────────────────────────
-detector = Detector()
-tracker  = Tracker()
-ocr      = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
-
-
 def default_progress(pct):
     print(f"  {pct}%", end="\r")
 
@@ -25,13 +17,12 @@ def default_progress(pct):
 # ─────────────────────────────────────────
 # ASSIGNATION ÉQUIPE PAR COULEUR
 # ─────────────────────────────────────────
-def assign_teams(frame, tracked, color_detector):
+def assign_teams_by_color(frame, tracked, color_detector):
     color_detector.update(frame, tracked)
 
     for p in tracked:
         x1, y1, x2, y2 = [int(v) for v in p["bbox"]]
         h_f, w_f = frame.shape[:2]
-
         x1 = max(0, x1); y1 = max(0, y1)
         x2 = min(w_f, x2); y2 = min(h_f, y2)
 
@@ -100,10 +91,13 @@ def process_video(
     if progress_callback is None:
         progress_callback = default_progress
 
-    detector.set_sport(sport)
+    # FIX — instanciation ici (pas au niveau module) pour éviter crash au démarrage
+    detector       = Detector(sport=sport)
+    tracker        = Tracker()
+    ocr            = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
     color_detector = TeamColorDetector(sample_frames=60)
 
-    # Init BallTracker — import lazy pour éviter circular import
+    # BallTracker — import lazy
     ball_tracker = None
     try:
         from vision.ball_tracker import BallTracker
@@ -113,7 +107,6 @@ def process_video(
         print(f"  BallTracker indisponible : {e} — fallback YOLO")
 
     cap = cv2.VideoCapture(video_path)
-
     if not cap.isOpened():
         raise ValueError(f"Impossible d'ouvrir la video : {video_path}")
 
@@ -140,13 +133,12 @@ def process_video(
                 "y_max":        shot_zones.get("y_max", 0.75) * h,
             }
             print(f"  Shot zones (px) : "
-                  f"x>[{shot_zones['threshold_hi']:.0f}] "
-                  f"x<[{shot_zones['threshold_lo']:.0f}] "
+                  f"hi={shot_zones['threshold_hi']:.0f} "
+                  f"lo={shot_zones['threshold_lo']:.0f} "
                   f"y=[{shot_zones['y_min']:.0f}, {shot_zones['y_max']:.0f}]")
 
     overlay = Overlay(fps=fps) if save_annotated else None
     writer  = None
-
     if save_annotated and annotated_path:
         writer = cv2.VideoWriter(
             annotated_path,
@@ -170,7 +162,7 @@ def process_video(
         tracked = tracker.update(players, frame)
 
         # ── Assignation équipes ──────────
-        tracked = assign_teams(frame, tracked, color_detector)
+        tracked = assign_teams_by_color(frame, tracked, color_detector)
 
         # ── OCR maillots (1/30) ──────────
         tracked = ocr.read_all(frame, tracked, frame_id=frame_id)
@@ -179,17 +171,14 @@ def process_video(
         if ball_tracker is not None:
             yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
             balls_list      = [yolo_ball_tuple] if yolo_ball_tuple else []
-
-            ball_result = ball_tracker.update(
+            ball_result     = ball_tracker.update(
                 detected_balls = balls_list,
                 frame_w        = w,
                 frame_h        = h
             )
-
             was_interpolated = (yolo_ball_tuple is None and ball_result is not None)
             ball = ball_tuple_to_dict(ball_result, interpolated=was_interpolated)
         else:
-            # Fallback — utiliser directement YOLO
             ball = yolo_ball
 
         # ── Events de cette frame ─────────
@@ -215,9 +204,7 @@ def process_video(
 
         # ── Vidéo annotée ─────────────────
         if writer and overlay:
-            annotated = overlay.render(
-                frame, tracked, ball, frame_events, frame_id
-            )
+            annotated = overlay.render(frame, tracked, ball, frame_events, frame_id)
             writer.write(annotated)
 
         # ── Progression ───────────────────
@@ -254,7 +241,6 @@ def process_video(
 # ─────────────────────────────────────────
 if __name__ == "__main__":
     import sys
-
     video = sys.argv[1] if len(sys.argv) > 1 else config.VIDEO_PATH
     sport = sys.argv[2] if len(sys.argv) > 2 else "football"
 
@@ -262,7 +248,6 @@ if __name__ == "__main__":
         video_path = video,
         sport      = sport
     )
-
     print(f"\nEvents : {len(events)}")
     for e in events[:10]:
         print(f"  {e}")
