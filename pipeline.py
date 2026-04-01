@@ -348,6 +348,7 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 13. PDF
+    # FIX — jersey_map passé correctement
     # ─────────────────────────────────────────
     print("Step 13 : PDF...")
     pdf_path = None
@@ -359,10 +360,11 @@ def run_pipeline(
                     "summary":        summary,
                     "stats":          stats,
                     "highlights":     highlights,
-                    "jersey_map":     jersey_map,
-                    "heatmaps":       heatmap_paths,   # FIX — variable correcte
+                    "jersey_map":     jersey_map,      # numéros maillot
+                    "heatmaps":       heatmap_paths,
                     "player_ratings": ratings,
-                    "match_story":    story
+                    "match_story":    story,
+                    "mvp":            str(mvp[0]) if mvp else None,
                 },
                 output_path = os.path.join(output_dir, "rapport.pdf"),
                 sport       = sport
