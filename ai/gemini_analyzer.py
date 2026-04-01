@@ -115,7 +115,7 @@ def analyze_tactics(video_path, sport="football", fps=25, events=None):
             parts.append(frame_to_part(frame))
 
         response = client.models.generate_content(
-            model    = "gemini-1.5-flash",
+            model = "gemini-2.5-flash",
             contents = parts
         )
 

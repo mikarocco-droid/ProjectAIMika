@@ -115,7 +115,7 @@ def validate_event(video_path, event, fps=25, sport="football"):
             parts.append(frame_to_part(frame))
 
         response = client.models.generate_content(
-            model    = "gemini-1.5-flash",
+            model = "gemini-2.5-flash",
             contents = parts
         )
 

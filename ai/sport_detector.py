@@ -80,7 +80,7 @@ def detect_sport(video_path, fallback="football"):
             parts.append(frame_to_part(frame))
 
         response = client.models.generate_content(
-            model    = "gemini-1.5-flash",
+            model = "gemini-2.5-flash",
             contents = parts
         )
 

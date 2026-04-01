@@ -67,7 +67,7 @@ def find_player_in_frame(frame, numero=None, couleur=None, position=None):
         }]
 
         response = client.models.generate_content(
-            model    = "gemini-1.5-flash",
+            model = "gemini-2.5-flash",
             contents = content
         )
         text   = response.text.strip()
