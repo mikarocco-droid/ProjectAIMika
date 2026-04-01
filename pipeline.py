@@ -177,11 +177,13 @@ def run_pipeline(
         if e.get("type") == "shot":
             e["xg"] = compute_xg_sport(e.get("x", 0), sport)
 
-    # ─────────────────────────────────────────
+    
+# ─────────────────────────────────────────
     # 3. STATS
+    # FIX — jersey_map passé pour enrichir les stats avec numéros maillot
     # ─────────────────────────────────────────
     print("Step 3 : Stats...")
-    stats = compute_stats(events)
+    stats = compute_stats(events, jersey_map=jersey_map)
     print(f"  OK {len(stats)} joueurs")
 
     # ─────────────────────────────────────────
