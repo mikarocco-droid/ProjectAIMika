@@ -44,34 +44,34 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
 
         if axis == "x":
             in_zone = (x > hi or x < lo) and (y_min <= y <= y_max)
-            # FIX — zone but = derniers 3% du terrain seulement
-            in_goal = (x > frame_w * 0.97 or x < frame_w * 0.03) and (y_min <= y <= y_max)
+            # FIX — zone but = derniers 8% du terrain (était 3%, trop strict)
+            in_goal = (x > frame_w * 0.92 or x < frame_w * 0.08) and (y_min <= y <= y_max)
             return in_zone, in_goal
         else:
             in_zone = (y < hi or y > lo)
-            in_goal = (y < hi * 0.85 or y > lo * 1.15)
+            in_goal = (y < hi * 0.88 or y > lo * 1.12)
             return in_zone, in_goal
 
     if sport == "football":
         in_y    = (frame_h * 0.30 <= y <= frame_h * 0.70)
         in_zone = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y
-        # FIX — zone but très stricte : derniers 2% du terrain
-        in_goal = (x > frame_w * 0.98 or x < frame_w * 0.02) and in_y
+        # FIX — zone but : 8% du bord (compromis entre 5% trop large et 2% trop strict)
+        in_goal = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y
         return in_zone, in_goal
 
     if sport == "basketball":
         in_zone = (x > frame_w * 0.92 or x < frame_w * 0.08)
-        in_goal = (x > frame_w * 0.97 or x < frame_w * 0.03)
+        in_goal = (x > frame_w * 0.96 or x < frame_w * 0.04)
         return in_zone, in_goal
 
     if sport == "handball":
         in_y    = (frame_h * 0.20 <= y <= frame_h * 0.80)
         in_zone = (x > frame_w * 0.85 or x < frame_w * 0.15) and in_y
-        in_goal = (x > frame_w * 0.97 or x < frame_w * 0.03) and in_y
+        in_goal = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y
         return in_zone, in_goal
 
     in_zone = (x > frame_w * 0.88 or x < frame_w * 0.12)
-    in_goal = (x > frame_w * 0.97 or x < frame_w * 0.03)
+    in_goal = (x > frame_w * 0.92 or x < frame_w * 0.08)
     return in_zone, in_goal
 
 
@@ -261,9 +261,10 @@ def detect_events(
             state["ball_in_goal_zone"] = 0
 
         goal_confirmed = (
-            state["ball_in_goal_zone"] >= 8
+            state["ball_in_goal_zone"] >= 5   # ~0.2s à 25fps
             and state["goal_cd"] == 0
-            and state["shot_cd"] < 25  # un tir récent doit précéder
+            # FIX — suppression condition shot_cd qui bloquait le but
+            # Le but peut survenir après que le shot_cd soit redescendu
         )
 
         if goal_confirmed:
@@ -275,7 +276,7 @@ def detect_events(
                 "y":      y,
                 "danger": compute_danger({"type": "goal"})
             })
-            state["goal_cd"]           = 1500  # 60s à 25fps
+            state["goal_cd"]           = 1125  # 45s à 25fps
             state["ball_in_goal_zone"] = 0
 
     else:
