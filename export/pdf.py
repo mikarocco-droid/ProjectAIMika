@@ -217,8 +217,8 @@ def generate_pdf(result, output_path, sport="football"):
 
         pdf.set_font("Helvetica", "", 8)
         for pid, s in sorted_players:
-            # FIX — afficher le numéro de maillot si connu
-            label  = player_label(pid, jersey_map)
+            # FIX — utiliser le label pré-calculé dans stats si dispo
+            label  = s.get("label") or player_label(pid, jersey_map)
             rating = ratings.get(str(pid), {}).get("rating") or \
                      ratings.get(pid, {}).get("rating", "-")
             xg_val = round(s.get("xg_total", 0), 2)
