@@ -168,6 +168,48 @@ def run_pipeline(
     print(f"  OK {len(events)} events | {len(jersey_map)} maillots")
 
     # ─────────────────────────────────────────
+    # 1b. VALIDATION GEMINI (buts/tirs + maillots)
+    # ─────────────────────────────────────────
+    print("Step 1b : Validation Gemini...")
+    try:
+        from ai.gemini_validator import (
+            validate_events_with_gemini,
+            read_jersey_numbers
+        )
+
+        # Validation buts/tirs
+        events = validate_events_with_gemini(
+            events     = events,
+            video_path = video_path,
+            fps        = fps,
+            sport      = sport,
+            min_conf   = 0.75
+        )
+
+        # Lecture maillots par Gemini — enrichit jersey_map existant
+        # Prendre les joueurs les plus actifs sans numéro connu
+        top_players = [
+            {"id": pid, "frame_id": int(fps * 30), "bbox": [100, 100, 200, 300]}
+            for pid in list(set(
+                str(e.get("player")) for e in events
+                if e.get("player") and str(e.get("player")) not in jersey_map
+            ))[:20]
+        ]
+
+        if top_players:
+            gemini_jerseys = read_jersey_numbers(
+                video_path         = video_path,
+                players_with_frames = top_players,
+                fps                = fps
+            )
+            # Fusionner avec jersey_map existant (Tesseract + Gemini)
+            jersey_map.update(gemini_jerseys)
+            print(f"  Gemini jerseys : {len(gemini_jerseys)} nouveaux numéros lus")
+
+    except Exception as e:
+        print(f"  Gemini validation ignoree : {e}")
+
+    # ─────────────────────────────────────────
     # 2. ENRICH xG
     # ─────────────────────────────────────────
     print("Step 2 : xG...")
