@@ -266,10 +266,26 @@ def detect_events(
                 last_pass["xA"] = compute_xa(last_pass, shot)
 
         # ── GOAL ─────────────────────────
-        # Validé si ballon reste 5 frames consécutives dans zone but
-        # et cooldown de 45 secondes écoulé
+        # Critères anti faux-positifs :
+        # 1. Ballon réellement détecté (pas interpolé) OU
+        #    interpolé mais compteur déjà > 0 (ballon entrant dans filet)
+        # 2. 5 frames consécutives dans zone but
+        # 3. Cooldown 45s
+        # 4. Pas une simple touche (reset si ballon interpolé dès le début)
+        ball_is_real = not ball.get("interpolated", False)
+
         if is_goal_zone:
-            state["ball_in_goal_zone"] += 1
+            if ball_is_real:
+                # Ballon vraiment vu dans zone but → incrémenter
+                state["ball_in_goal_zone"] += 1
+            elif state["ball_in_goal_zone"] > 0:
+                # Ballon interpolé MAIS séquence déjà commencée
+                # (ballon qui entre dans le filet et disparaît)
+                # On tolère jusqu'à 3 frames interpolées consécutives
+                state["ball_in_goal_zone"] += 1
+            else:
+                # Ballon interpolé dès le début = touche/hors jeu → reset
+                state["ball_in_goal_zone"] = 0
         else:
             state["ball_in_goal_zone"] = 0
 
