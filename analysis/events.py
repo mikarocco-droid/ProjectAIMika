@@ -37,10 +37,8 @@ def get_closest_player(players, ball):
 def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
     """
     Retourne (is_shot, is_goal).
-
-    is_shot : le ballon est dans la zone de tir
-    is_goal : le ballon est dans la zone de but stricte
-              (avec tolérance Y pour les buts dans les coins)
+    Tolérance Y +20% sur la zone but pour capturer
+    les buts dans les coins du filet.
     """
     if shot_zones:
         axis  = shot_zones.get("axis", "x")
@@ -50,20 +48,12 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
         y_max = shot_zones.get("y_max", frame_h)
 
         if axis == "x":
-            # Tolérance Y +20% pour zone but
-            # (ballon dans le filet peut déborder légèrement de la zone calibrée)
             y_tol     = (y_max - y_min) * 0.20
             in_y_shot = (y_min <= y <= y_max)
             in_y_goal = (y_min - y_tol <= y <= y_max + y_tol)
-
-            in_zone = (x > hi or x < lo) and in_y_shot
-            in_goal = (
-                (x > frame_w * 0.92 or x < frame_w * 0.08)
-                and in_y_goal
-            )
-            # in_zone inclut in_goal pour que le shot soit aussi détecté
+            in_zone   = (x > hi or x < lo) and in_y_shot
+            in_goal   = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y_goal
             return in_zone or in_goal, in_goal
-
         else:
             in_zone = (y < hi or y > lo)
             in_goal = (y < hi * 0.88 or y > lo * 1.12)
@@ -88,7 +78,6 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
         in_goal   = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y_goal
         return in_zone or in_goal, in_goal
 
-    # Fallback générique
     in_zone = (x > frame_w * 0.88 or x < frame_w * 0.12)
     in_goal = (x > frame_w * 0.92 or x < frame_w * 0.08)
     return in_zone or in_goal, in_goal
@@ -102,7 +91,8 @@ def compute_xg(x, y, frame_w=1280, frame_h=720):
     dist_left  = math.hypot(x,           y - frame_h / 2)
     dist       = min(dist_right, dist_left)
     max_dist   = math.hypot(frame_w, frame_h / 2)
-    return round(max(0.0, 1.0 - dist / max_dist), 3)
+    xg         = round(max(0.0, 1.0 - dist / max_dist), 3)
+    return min(xg, 0.5)  # plafonné à 0.5
 
 
 # ─────────────────────────────────────────
@@ -247,10 +237,10 @@ def detect_events(
         )
 
         # ── SHOT ─────────────────────────
+        # shot_cd = 75 frames = 3s à 25fps
+        # évite de compter le même tir plusieurs fois
         if is_shot and state["shot_cd"] == 0:
             xg_val = compute_xg(x, y, frame_w, frame_h)
-            # FIX — xG plafonné à 0.5 max (évite surestimation géométrique)
-            xg_val = min(xg_val, 0.5)
             shot   = {
                 "type":   "shot",
                 "player": str(current["id"]),
@@ -261,32 +251,28 @@ def detect_events(
                 "danger": compute_danger({"type": "shot", "xg": xg_val})
             }
             events.append(shot)
-            state["shot_cd"] = 75  # FIX — 3s à 25fps (était 1s, trop court)
+            state["shot_cd"] = 75  # 3s à 25fps
 
             if state["events_buffer"]:
                 last_pass       = state["events_buffer"][-1]
                 last_pass["xA"] = compute_xa(last_pass, shot)
 
         # ── GOAL ─────────────────────────
-        # Critères anti faux-positifs :
+        # Critères stricts anti faux-positifs :
         # 1. Ballon réellement détecté (pas interpolé) OU
-        #    interpolé mais compteur déjà > 0 (ballon entrant dans filet)
-        # 2. 5 frames consécutives dans zone but
-        # 3. Cooldown 45s
-        # 4. Pas une simple touche (reset si ballon interpolé dès le début)
+        #    interpolé mais séquence déjà commencée
+        # 2. 5 frames consécutives dans zone but (~0.2s)
+        # 3. Cooldown 1125 frames = 45s à 25fps
         ball_is_real = not ball.get("interpolated", False)
 
         if is_goal_zone:
             if ball_is_real:
-                # Ballon vraiment vu dans zone but → incrémenter
                 state["ball_in_goal_zone"] += 1
             elif state["ball_in_goal_zone"] > 0:
-                # Ballon interpolé MAIS séquence déjà commencée
-                # (ballon qui entre dans le filet et disparaît)
-                # On tolère jusqu'à 3 frames interpolées consécutives
+                # Ballon entrant dans le filet qui disparaît → OK
                 state["ball_in_goal_zone"] += 1
             else:
-                # Ballon interpolé dès le début = touche/hors jeu → reset
+                # Ballon interpolé dès le début = touche/hors jeu
                 state["ball_in_goal_zone"] = 0
         else:
             state["ball_in_goal_zone"] = 0
