@@ -18,39 +18,28 @@ class Tracker:
     def __init__(self):
         if BOXMOT_AVAILABLE:
             self.tracker = ByteTrack(
-                track_thresh  = 0.4,   # seuil detection
-                track_buffer  = 60,    # frames avant suppression track perdu
-                match_thresh  = 0.8,   # seuil association
+                track_thresh  = 0.35,   # FIX — légèrement plus bas pour mieux détecter
+                track_buffer  = 150,    # FIX — était 60 : 6s à 25fps (joueur hors cadre)
+                match_thresh  = 0.85,   # FIX — plus strict pour moins de faux matches
                 frame_rate    = config.FPS
             )
             self.mode = "bytetrack"
-            print("  Tracker : ByteTrack")
+            print("  Tracker : ByteTrack (buffer=150)")
         else:
             from deep_sort_realtime.deepsort_tracker import DeepSort
-            self.tracker = DeepSort(max_age=30)
+            self.tracker = DeepSort(max_age=90)  # FIX — était 30
             self.mode    = "deepsort"
             print("  Tracker : DeepSort (fallback)")
 
     def update(self, players, frame):
-        """
-        Met à jour le tracking avec les détections courantes.
-
-        Retourne :
-            list de dicts {id, bbox, center, conf}
-        """
         if not players:
             return []
-
         if self.mode == "bytetrack":
             return self._update_bytetrack(players, frame)
         else:
             return self._update_deepsort(players, frame)
 
     def _update_bytetrack(self, players, frame):
-        """
-        ByteTrack attend un array numpy :
-        [[x1, y1, x2, y2, conf, cls], ...]
-        """
         dets = np.array([
             [p["bbox"][0], p["bbox"][1],
              p["bbox"][2], p["bbox"][3],
@@ -75,7 +64,6 @@ class Tracker:
         return results
 
     def _update_deepsort(self, players, frame):
-        """Fallback DeepSort."""
         detections = []
         for p in players:
             x1, y1, x2, y2 = p["bbox"]
@@ -100,5 +88,4 @@ class Tracker:
         return results
 
     def reset(self):
-        """Réinitialise le tracker entre deux vidéos."""
         self.__init__()
