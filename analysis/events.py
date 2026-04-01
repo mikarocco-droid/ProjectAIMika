@@ -249,6 +249,8 @@ def detect_events(
         # ── SHOT ─────────────────────────
         if is_shot and state["shot_cd"] == 0:
             xg_val = compute_xg(x, y, frame_w, frame_h)
+            # FIX — xG plafonné à 0.5 max (évite surestimation géométrique)
+            xg_val = min(xg_val, 0.5)
             shot   = {
                 "type":   "shot",
                 "player": str(current["id"]),
@@ -259,7 +261,7 @@ def detect_events(
                 "danger": compute_danger({"type": "shot", "xg": xg_val})
             }
             events.append(shot)
-            state["shot_cd"] = 25
+            state["shot_cd"] = 75  # FIX — 3s à 25fps (était 1s, trop court)
 
             if state["events_buffer"]:
                 last_pass       = state["events_buffer"][-1]
