@@ -35,6 +35,13 @@ def get_closest_player(players, ball):
 # SHOT ZONES MULTI SPORT
 # ─────────────────────────────────────────
 def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
+    """
+    Retourne (is_shot, is_goal).
+
+    is_shot : le ballon est dans la zone de tir
+    is_goal : le ballon est dans la zone de but stricte
+              (avec tolérance Y pour les buts dans les coins)
+    """
     if shot_zones:
         axis  = shot_zones.get("axis", "x")
         hi    = shot_zones.get("threshold_hi", frame_w * 0.85)
@@ -43,21 +50,31 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
         y_max = shot_zones.get("y_max", frame_h)
 
         if axis == "x":
-            in_zone = (x > hi or x < lo) and (y_min <= y <= y_max)
-            # FIX — zone but = derniers 8% du terrain (était 3%, trop strict)
-            in_goal = (x > frame_w * 0.92 or x < frame_w * 0.08) and (y_min <= y <= y_max)
-            return in_zone, in_goal
+            # Tolérance Y +20% pour zone but
+            # (ballon dans le filet peut déborder légèrement de la zone calibrée)
+            y_tol     = (y_max - y_min) * 0.20
+            in_y_shot = (y_min <= y <= y_max)
+            in_y_goal = (y_min - y_tol <= y <= y_max + y_tol)
+
+            in_zone = (x > hi or x < lo) and in_y_shot
+            in_goal = (
+                (x > frame_w * 0.92 or x < frame_w * 0.08)
+                and in_y_goal
+            )
+            # in_zone inclut in_goal pour que le shot soit aussi détecté
+            return in_zone or in_goal, in_goal
+
         else:
             in_zone = (y < hi or y > lo)
             in_goal = (y < hi * 0.88 or y > lo * 1.12)
             return in_zone, in_goal
 
     if sport == "football":
-        in_y    = (frame_h * 0.30 <= y <= frame_h * 0.70)
-        in_zone = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y
-        # FIX — zone but : 8% du bord (compromis entre 5% trop large et 2% trop strict)
-        in_goal = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y
-        return in_zone, in_goal
+        in_y_shot = (frame_h * 0.30 <= y <= frame_h * 0.70)
+        in_y_goal = (frame_h * 0.20 <= y <= frame_h * 0.80)
+        in_zone   = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y_shot
+        in_goal   = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y_goal
+        return in_zone or in_goal, in_goal
 
     if sport == "basketball":
         in_zone = (x > frame_w * 0.92 or x < frame_w * 0.08)
@@ -65,14 +82,16 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
         return in_zone, in_goal
 
     if sport == "handball":
-        in_y    = (frame_h * 0.20 <= y <= frame_h * 0.80)
-        in_zone = (x > frame_w * 0.85 or x < frame_w * 0.15) and in_y
-        in_goal = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y
-        return in_zone, in_goal
+        in_y_shot = (frame_h * 0.20 <= y <= frame_h * 0.80)
+        in_y_goal = (frame_h * 0.15 <= y <= frame_h * 0.85)
+        in_zone   = (x > frame_w * 0.85 or x < frame_w * 0.15) and in_y_shot
+        in_goal   = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y_goal
+        return in_zone or in_goal, in_goal
 
+    # Fallback générique
     in_zone = (x > frame_w * 0.88 or x < frame_w * 0.12)
     in_goal = (x > frame_w * 0.92 or x < frame_w * 0.08)
-    return in_zone, in_goal
+    return in_zone or in_goal, in_goal
 
 
 # ─────────────────────────────────────────
@@ -91,20 +110,18 @@ def compute_xg(x, y, frame_w=1280, frame_h=720):
 # ─────────────────────────────────────────
 def init_state():
     return {
-        "last_player":     None,
-        "last_ball_pos":   None,
-        "last_team":       None,
-        "sequence":        deque(maxlen=30),
-        "events_buffer":   deque(maxlen=10),
-        # FIX — cooldowns plus longs pour éviter faux buts
-        "shot_cd":         0,
-        "goal_cd":         0,
-        "possession_time": 0,
-        "team_possession": {0: 0, 1: 0},
-        "pressing":        False,
-        "turnover_window": 0,
-        # FIX — suivi de la trajectoire du ballon pour confirmer le but
-        "ball_in_goal_zone": 0,   # nombre de frames consécutives dans zone but
+        "last_player":       None,
+        "last_ball_pos":     None,
+        "last_team":         None,
+        "sequence":          deque(maxlen=30),
+        "events_buffer":     deque(maxlen=10),
+        "shot_cd":           0,
+        "goal_cd":           0,
+        "possession_time":   0,
+        "team_possession":   {0: 0, 1: 0},
+        "pressing":          False,
+        "turnover_window":   0,
+        "ball_in_goal_zone": 0,
     }
 
 
@@ -223,9 +240,8 @@ def detect_events(
         state["sequence"].clear()
 
     # ── SHOTS / GOALS ─────────────────────
-    # FIX — logique entièrement revue pour éviter les faux buts
     if current:
-        x, y     = ball["center"]
+        x, y = ball["center"]
         is_shot, is_goal_zone = is_shot_zone(
             x, y, sport, shot_zones, frame_w, frame_h
         )
@@ -243,31 +259,21 @@ def detect_events(
                 "danger": compute_danger({"type": "shot", "xg": xg_val})
             }
             events.append(shot)
-            state["shot_cd"] = 25  # ~1s à 25fps
+            state["shot_cd"] = 25
 
             if state["events_buffer"]:
                 last_pass       = state["events_buffer"][-1]
                 last_pass["xA"] = compute_xa(last_pass, shot)
 
-        # ── GOAL — FIX v2 ────────────────
-        # Critères stricts anti faux-positifs :
-        # 1. Ballon dans zone but stricte (95% du bord)
-        # 2. Pendant au moins 8 frames consécutives (~0.3s)
-        # 3. Cooldown 1500 frames = 60s à 25fps
-        # 4. Un tir doit avoir été détecté avant (shot_cd < 25)
+        # ── GOAL ─────────────────────────
+        # Validé si ballon reste 5 frames consécutives dans zone but
+        # et cooldown de 45 secondes écoulé
         if is_goal_zone:
             state["ball_in_goal_zone"] += 1
         else:
             state["ball_in_goal_zone"] = 0
 
-        goal_confirmed = (
-            state["ball_in_goal_zone"] >= 5   # ~0.2s à 25fps
-            and state["goal_cd"] == 0
-            # FIX — suppression condition shot_cd qui bloquait le but
-            # Le but peut survenir après que le shot_cd soit redescendu
-        )
-
-        if goal_confirmed:
+        if state["ball_in_goal_zone"] >= 5 and state["goal_cd"] == 0:
             events.append({
                 "type":   "goal",
                 "player": str(current["id"]),
@@ -280,7 +286,6 @@ def detect_events(
             state["ball_in_goal_zone"] = 0
 
     else:
-        # Ballon sans joueur proche — reset zone but
         state["ball_in_goal_zone"] = 0
 
     # ── LONG PASS ────────────────────────
