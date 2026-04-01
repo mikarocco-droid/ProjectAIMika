@@ -52,12 +52,21 @@ def merge_close_events(events, window=8, fps=25):
 # EXTRACTION CLIP
 # ─────────────────────────────────────────
 def cut_clip(video_path, start, end, output_path):
+    """
+    FIX — ré-encode avec libx264 au lieu de -c copy
+    pour garantir des keyframes propres au début de chaque clip
+    et éviter les saccades dans le reel.
+    """
     subprocess.run([
         "ffmpeg", "-y",
-        "-ss", str(max(0, start)),
+        "-ss", str(max(0, start - 0.5)),  # recule légèrement pour keyframe
         "-to", str(end),
         "-i", video_path,
-        "-c", "copy",
+        "-ss", "0.5",                      # coupe le demi-seconde de marge
+        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        "-c:a", "aac",
+        "-avoid_negative_ts", "make_zero",  # FIX timestamps
+        "-movflags", "+faststart",
         output_path
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -150,7 +159,9 @@ def create_highlight_reel(highlights, output_path="outputs/reel.mp4"):
         "ffmpeg", "-y",
         "-f", "concat", "-safe", "0",
         "-i", list_file,
-        "-c", "copy",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        "-c:a", "aac",
+        "-movflags", "+faststart",   # FIX — lecture fluide dès le début
         output_path
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
