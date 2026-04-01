@@ -233,7 +233,7 @@ def crossfade_concat(clips, output):
         "-filter_complex", ";".join(filter_parts),
         "-map", prev_v,
         "-map", prev_a,
-        "-c:v", ENCODER, *ENCODER_OPTS,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",  # FIX libx264 pour xfade
         "-c:a", "aac",
         output
     ], capture_output=True, text=True)
