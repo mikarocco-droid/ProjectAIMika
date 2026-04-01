@@ -55,7 +55,6 @@ def normalize_highlights(highlights):
 # SANITIZE JSON — corrige les clés tuples
 # ─────────────────────────────────────────
 def sanitize_for_json(obj):
-    """Convertit récursivement les clés tuples en string pour json.dump."""
     if isinstance(obj, dict):
         return {
             (str(k) if isinstance(k, tuple) else k): sanitize_for_json(v)
@@ -175,12 +174,12 @@ def run_pipeline(
     cfg = get_sport_config(sport)
     for e in events:
         if e.get("type") == "shot":
-            e["xg"] = compute_xg_sport(e.get("x", 0), sport)
+            xg = compute_xg_sport(e.get("x", 0), sport)
+            e["xg"] = min(xg, 0.5)  # FIX — plafonné à 0.5
 
-    
-# ─────────────────────────────────────────
+    # ─────────────────────────────────────────
     # 3. STATS
-    # FIX — jersey_map passé pour enrichir les stats avec numéros maillot
+    # FIX — jersey_map passé pour numéros maillot
     # ─────────────────────────────────────────
     print("Step 3 : Stats...")
     stats = compute_stats(events, jersey_map=jersey_map)
@@ -230,12 +229,11 @@ def run_pipeline(
         offsides     = detect_offside(events)
         dominance    = compute_team_dominance(events)
 
-        # FIX — convertir les clés tuples du pass_network en string
+        # FIX — convertir clés tuples en string
         pass_network = {
             f"{k[0]}_{k[1]}" if isinstance(k, tuple) else str(k): v
             for k, v in pass_network.items()
         }
-
         print(f"  OK pass_network={len(pass_network)} | offsides={len(offsides)}")
     except Exception as e:
         print(f"  Advanced error : {e}")
@@ -245,9 +243,9 @@ def run_pipeline(
     # 7. HEATMAPS
     # ─────────────────────────────────────────
     print("Step 7 : Heatmaps...")
-    heatmaps     = {}
-    heatmap_path = None
-    heatmap_paths = {}   # FIX — déclaré ici pour être accessible au Step 13
+    heatmaps      = {}
+    heatmap_path  = None
+    heatmap_paths = {}
     try:
         heatmaps = generate_all_heatmaps(
             events     = events,
@@ -257,7 +255,7 @@ def run_pipeline(
             sport      = sport
         )
         heatmap_path  = heatmaps.get("global")
-        heatmap_paths = heatmaps   # FIX — alias utilisé dans le PDF
+        heatmap_paths = heatmaps
         print(f"  OK {len(heatmaps)} heatmaps")
     except Exception as e:
         print(f"  Heatmaps error : {e}")
@@ -296,7 +294,7 @@ def run_pipeline(
         montage_path = create_montage(
             highlights = highlights,
             video_path = video_path,
-            output     = os.path.join(output_dir, "montage.mp4"),  # FIX output_path → output
+            output     = os.path.join(output_dir, "montage.mp4"),
             title      = f"Analyse {sport.capitalize()}",
         )
         print(f"  OK montage -> {montage_path}")
@@ -305,6 +303,7 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 10. RANKINGS + RATINGS + COMMENTARY
+    # FIX — fps passé à generate_match_story pour les minutes correctes
     # ─────────────────────────────────────────
     print("Step 10 : Ratings + Commentary...")
     ratings    = {}
@@ -317,7 +316,7 @@ def run_pipeline(
         ratings           = compute_player_ratings(events)
         mvp               = get_mvp(ratings)
         commentary        = generate_commentary(ranked_highlights[:10])
-        story             = generate_match_story(events)
+        story             = generate_match_story(events, fps=fps)  # FIX — fps
         print(f"  OK MVP={mvp[0] if mvp else '?'} | commentary={len(commentary)} lines")
     except Exception as e:
         print(f"  Ratings error : {e}")
@@ -350,7 +349,7 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 13. PDF
-    # FIX — jersey_map passé correctement
+    # FIX — jersey_map + mvp passés correctement
     # ─────────────────────────────────────────
     print("Step 13 : PDF...")
     pdf_path = None
@@ -362,7 +361,7 @@ def run_pipeline(
                     "summary":        summary,
                     "stats":          stats,
                     "highlights":     highlights,
-                    "jersey_map":     jersey_map,      # numéros maillot
+                    "jersey_map":     jersey_map,
                     "heatmaps":       heatmap_paths,
                     "player_ratings": ratings,
                     "match_story":    story,
@@ -410,7 +409,7 @@ def run_pipeline(
         "story":        story
     }
 
-    # FIX — sanitize avant json.dump pour éliminer toute clé tuple résiduelle
+    # FIX — sanitize avant json.dump
     result = sanitize_for_json(result)
 
     with open(os.path.join(output_dir, "analysis.json"), "w", encoding="utf-8") as f:
