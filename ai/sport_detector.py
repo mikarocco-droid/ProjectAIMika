@@ -15,7 +15,7 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-from ai.gemini_validator import get_client, encode_frame
+from ai.gemini_validator import get_client, frame_to_part, text_to_part
 
 
 # Sports supportés avec leurs aliases
@@ -68,30 +68,20 @@ def detect_sport(video_path, fallback="football"):
 
         sports_list = ", ".join(SUPPORTED_SPORTS.keys())
 
-        content = [{
-            "type": "text",
-            "text": (
-                f"Regarde ces frames d'une vidéo sportive et identifie le sport.\n"
-                f"Sports possibles : {sports_list}\n\n"
-                f"Réponds UNIQUEMENT en JSON sans markdown :\n"
-                f'{{"sport": "football", "confiance": 0.98, "raison": "terrain vert, but visible"}}'
-            )
-        }]
+        parts = [text_to_part(
+            f"Regarde ces frames et identifie le sport.\n"
+            f"Sports possibles : {sports_list}\n\n"
+            f"JSON sans markdown :\n"
+            f'{{"sport": "football", "confiance": 0.98, "raison": "terrain vert, but visible"}}'
+        )]
 
         for i, frame in enumerate(frames):
-            content.append({"type": "text",  "text": f"Frame {i+1} :"})
-            content.append({
-                "type": "image",
-                "source": {
-                    "type":       "base64",
-                    "media_type": "image/jpeg",
-                    "data":       encode_frame(frame)
-                }
-            })
+            parts.append(text_to_part(f"Frame {i+1} :"))
+            parts.append(frame_to_part(frame))
 
         response = client.models.generate_content(
             model    = "gemini-1.5-flash",
-            contents = content
+            contents = parts
         )
 
         text   = response.text.strip()

@@ -19,7 +19,7 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-from ai.gemini_validator import get_client, encode_frame
+from ai.gemini_validator import get_client, frame_to_part, text_to_part
 
 
 # ─────────────────────────────────────────
@@ -82,42 +82,29 @@ def score_highlight(video_path, highlight, sport="football"):
         secs      = int(t % 60)
         h_type    = highlight.get("main_type", "action")
 
-        content = [{
-            "type": "text",
-            "text": (
-                f"Tu es un expert en {sport}. "
-                f"Voici 4 frames d'un clip à {mins:02d}:{secs:02d} "
-                f"(type détecté : {h_type}).\n\n"
-                f"Évalue ce moment et réponds en JSON sans markdown :\n"
-                f"{{\n"
-                f'  "score": 8.5,\n'
-                f'  "type_reel": "goal",\n'
-                f'  "spectaculaire": true,\n'
-                f'  "important": true,\n'
-                f'  "description": "Description courte et précise en français",\n'
-                f'  "titre": "Titre accrocheur court"\n'
-                f"}}\n\n"
-                f"- score : 0 (sans intérêt) à 10 (moment historique)\n"
-                f"- type_reel : goal/shot/dribble/interception/corner/touche/none\n"
-                f"- spectaculaire : visuellement impressionnant\n"
-                f"- important : change le cours du match"
-            )
-        }]
+        parts = [text_to_part(
+            f"Tu es un expert en {sport}. "
+            f"Voici 4 frames d'un clip à {mins:02d}:{secs:02d} "
+            f"(type détecté : {h_type}).\n\n"
+            f"Évalue ce moment en JSON sans markdown :\n"
+            f"{{\n"
+            f'  "score": 8.5,\n'
+            f'  "type_reel": "goal",\n'
+            f'  "spectaculaire": true,\n'
+            f'  "important": true,\n'
+            f'  "description": "Description courte en français",\n'
+            f'  "titre": "Titre accrocheur"\n'
+            f"}}\n"
+            f"score : 0 (sans intérêt) à 10 (moment historique)"
+        )]
 
         for i, frame in enumerate(frames):
-            content.append({"type": "text",  "text": f"Frame {i+1}/4 :"})
-            content.append({
-                "type": "image",
-                "source": {
-                    "type":       "base64",
-                    "media_type": "image/jpeg",
-                    "data":       encode_frame(frame)
-                }
-            })
+            parts.append(text_to_part(f"Frame {i+1}/4 :"))
+            parts.append(frame_to_part(frame))
 
         response = client.models.generate_content(
             model    = "gemini-1.5-flash",
-            contents = content
+            contents = parts
         )
 
         text   = response.text.strip()

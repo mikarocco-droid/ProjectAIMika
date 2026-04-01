@@ -18,7 +18,7 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-from ai.gemini_validator import get_client, encode_frame
+from ai.gemini_validator import get_client, frame_to_part, text_to_part
 
 
 # ─────────────────────────────────────────
@@ -89,52 +89,34 @@ def analyze_tactics(video_path, sport="football", fps=25, events=None):
                 f"{goals} buts, {shots} tirs, {passes} passes."
             )
 
-        content = [{
-            "type": "text",
-            "text": (
-                f"Tu es un analyste tactique expert en {sport}. "
-                f"Voici {len(frames)} frames extraites à intervalles réguliers d'un match.{context}\n\n"
-                f"Analyse en profondeur la tactique et réponds UNIQUEMENT en JSON valide sans markdown :\n"
-                f"{{\n"
-                f'  "formation": "4-3-3",\n'
-                f'  "formation_adverse": "4-4-2",\n'
-                f'  "style": "possession",\n'
-                f'  "pressing": true,\n'
-                f'  "pressing_zone": "haut",\n'
-                f'  "transitions": "rapides",\n'
-                f'  "cotes_dominants": "gauche",\n'
-                f'  "observations": ["obs1", "obs2", "obs3"],\n'
-                f'  "forces": ["force1", "force2"],\n'
-                f'  "faiblesses": ["faiblesse1"],\n'
-                f'  "score_estime": "1-0"\n'
-                f"}}\n\n"
-                f"Formations possibles selon sport :\n"
-                f"- football/handball : 4-3-3, 4-4-2, 3-5-2, 4-2-3-1, 5-3-2\n"
-                f"- basketball : man-to-man, zone 2-3, zone 3-2, pick-and-roll\n"
-                f"- rugby : 4-3-1, 4-2-2, défense en rideau\n"
-                f"- autre : adapter au sport visible"
-            )
-        }]
+        parts = [text_to_part(
+            f"Tu es un analyste tactique expert en {sport}. "
+            f"Voici {len(frames)} frames extraites à intervalles réguliers.{context}\n\n"
+            f"Analyse la tactique et réponds en JSON sans markdown :\n"
+            f"{{\n"
+            f'  "formation": "4-3-3",\n'
+            f'  "formation_adverse": "4-4-2",\n'
+            f'  "style": "possession",\n'
+            f'  "pressing": true,\n'
+            f'  "pressing_zone": "haut",\n'
+            f'  "transitions": "rapides",\n'
+            f'  "cotes_dominants": "gauche",\n'
+            f'  "observations": ["obs1", "obs2"],\n'
+            f'  "forces": ["force1"],\n'
+            f'  "faiblesses": ["faiblesse1"],\n'
+            f'  "score_estime": "1-0"\n'
+            f"}}"
+        )]
 
         for pos, frame in frames:
             mins = int(pos / fps / 60)
             secs = int((pos / fps) % 60)
-            content.append({
-                "type": "text",
-                "text": f"Frame à {mins:02d}:{secs:02d} :"
-            })
-            content.append({
-                "type": "image",
-                "source": {
-                    "type":       "base64",
-                    "media_type": "image/jpeg",
-                    "data":       encode_frame(frame)
-                }
-            })
+            parts.append(text_to_part(f"Frame à {mins:02d}:{secs:02d} :"))
+            parts.append(frame_to_part(frame))
 
         response = client.models.generate_content(
             model    = "gemini-1.5-flash",
-            contents = content
+            contents = parts
         )
 
         text   = response.text.strip()
