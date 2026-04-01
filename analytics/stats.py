@@ -82,11 +82,13 @@ def compute_stats(events, jersey_map=None):
         elif t == "progressive_run":
             players[pid]["progressive_runs"] += 1
 
-    # Filtre : garder seulement les joueurs avec au moins 5 touches
+    # FIX — filtre plus strict : 15 touches minimum
+    # Élimine les IDs fantômes (joueurs trackés brièvement puis perdus)
+    # Sur 10 min à 25fps = 15000 frames, 15 touches = présent ~0.1% du temps
     filtered = {
         pid: s
         for pid, s in players.items()
-        if s["touches"] >= 5
+        if s["touches"] >= 15
     }
 
     # FIX — pour les joueurs sans jersey_map fourni, assigner le label par défaut
