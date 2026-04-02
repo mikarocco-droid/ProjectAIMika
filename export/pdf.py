@@ -255,7 +255,7 @@ def generate_pdf(result, output_path, sport="football"):
             p_label = player_label(pid, jersey_map) if pid else "?"
 
             txt = (f"{i+1}. {htype.upper()} | "
-                   f"{mins_s:02d}:{secs_s:02d} -> {mins_e:02d}:{mins_e:02d} | "
+                   f"{mins_s:02d}:{secs_s:02d} -> {mins_e:02d}:{secs_e:02d} | "
                    f"Joueur {p_label} | score {score:.1f}")
             pdf.cell(0, 5, clean(txt),
                      new_x=XPos.LMARGIN, new_y=YPos.NEXT)
