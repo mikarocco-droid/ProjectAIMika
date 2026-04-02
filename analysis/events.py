@@ -58,10 +58,10 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
 
     if sport == "football":
         in_y_shot = (frame_h * 0.30 <= y <= frame_h * 0.70)
-        # FIX — resserré : 0.35→0.65 au lieu de 0.20→0.80
-        # évite de confondre touche latérale centrale avec zone de but
         in_y_goal = (frame_h * 0.35 <= y <= frame_h * 0.65)
-        in_zone   = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y_shot
+        # FIX — seuil resserré 0.88→0.92 : seuls les vrais corners de frame
+        # correspondent à une position proche du but sur caméra latérale
+        in_zone   = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y_shot
         in_goal   = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y_goal
         return in_zone or in_goal, in_goal
 
