@@ -6,6 +6,7 @@ import cv2
 import json
 import base64
 import re
+import time
 import numpy as np
 
 try:
@@ -22,7 +23,31 @@ except ImportError:
 # ─────────────────────────────────────────
 _client = None
 
-def get_client():
+def _call_gemini(client, parts, max_retries=3):
+    """
+    Appel Gemini avec retry automatique sur 429.
+    Respecte le retryDelay indiqué par l'API.
+    """
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model    = "gemini-2.5-flash",
+                contents = parts
+            )
+            return response
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str and attempt < max_retries - 1:
+                # Extraire le retryDelay si disponible
+                import re as _re
+                m = _re.search(r"retryDelay.*?(\d+)s", err_str)
+                wait = int(m.group(1)) + 2 if m else 65
+                wait = min(wait, 65)  # max 65s
+                print(f"  ⏳ Rate limit Gemini — attente {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
+    return None
     global _client
     if _client is None:
         api_key = os.getenv("GEMINI_API_KEY", "")
@@ -115,7 +140,7 @@ def validate_event(video_path, event, fps=25, sport="football"):
             parts.append(frame_to_part(frame))
 
         response = client.models.generate_content(
-            model = "gemini-2.5-flash",
+            model    = "gemini-1.5-flash",
             contents = parts
         )
 
@@ -182,10 +207,9 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
             parts.append(text_to_part(f"Joueur {i} (ID={tid}) :"))
             parts.append(frame_to_part(crop))
 
-        response = client.models.generate_content(
-            model    = "gemini-1.5-flash",
-            contents = parts
-        )
+        response = _call_gemini(client, parts)
+        if response is None:
+            return {}
 
         text   = response.text.strip()
         text   = re.sub(r"```json|```", "", text).strip()
