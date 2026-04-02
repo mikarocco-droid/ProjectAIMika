@@ -25,11 +25,18 @@ from ai.gemini_validator import get_client, frame_to_part, text_to_part
 # ─────────────────────────────────────────
 # EXTRAIRE FRAMES D'UN CLIP
 # ─────────────────────────────────────────
+
 def extract_clip_frames(video_path, time_start, time_end, n=4):
     """Extrait n frames d'un segment vidéo."""
     cap    = cv2.VideoCapture(video_path)
     fps    = cap.get(cv2.CAP_PROP_FPS) or 25
     frames = []
+
+    # FIX — garantir une durée minimale de 1s même si time_end est invalide
+    time_start = float(time_start or 0)
+    time_end   = float(time_end   or 0)
+    if time_end <= time_start:
+        time_end = time_start + 3.0
 
     duration = time_end - time_start
     for i in range(n):
