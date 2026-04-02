@@ -20,14 +20,22 @@ except ImportError:
 
 # ─────────────────────────────────────────
 # INIT CLIENT
+# FIX — get_client() séparé de _call_gemini (était fusionné par erreur)
 # ─────────────────────────────────────────
 _client = None
 
+def get_client():
+    global _client
+    if _client is None:
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY manquante dans .env")
+        _client = genai.Client(api_key=api_key)
+    return _client
+
+
 def _call_gemini(client, parts, max_retries=3):
-    """
-    Appel Gemini avec retry automatique sur 429.
-    Respecte le retryDelay indiqué par l'API.
-    """
+    """Appel Gemini avec retry automatique sur 429."""
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
@@ -38,36 +46,25 @@ def _call_gemini(client, parts, max_retries=3):
         except Exception as e:
             err_str = str(e)
             if "429" in err_str and attempt < max_retries - 1:
-                # Extraire le retryDelay si disponible
-                import re as _re
-                m = _re.search(r"retryDelay.*?(\d+)s", err_str)
+                m    = re.search(r"retryDelay.*?(\d+)s", err_str)
                 wait = int(m.group(1)) + 2 if m else 65
-                wait = min(wait, 65)  # max 65s
+                wait = min(wait, 65)
                 print(f"  ⏳ Rate limit Gemini — attente {wait}s...")
                 time.sleep(wait)
             else:
                 raise
     return None
-    global _client
-    if _client is None:
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("GEMINI_API_KEY manquante dans .env")
-        _client = genai.Client(api_key=api_key)
-    return _client
 
 
 # ─────────────────────────────────────────
 # ENCODER FRAME → BYTES JPEG
 # ─────────────────────────────────────────
 def encode_frame(frame):
-    """Encode une frame numpy BGR en JPEG bytes."""
     _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
     return buf.tobytes()
 
 
 def frame_to_part(frame):
-    """Convertit une frame numpy en types.Part Gemini."""
     return types.Part.from_bytes(
         data      = encode_frame(frame),
         mime_type = "image/jpeg"
@@ -75,7 +72,6 @@ def frame_to_part(frame):
 
 
 def text_to_part(text):
-    """Convertit un texte en types.Part Gemini."""
     return types.Part.from_text(text=text)
 
 
@@ -83,8 +79,8 @@ def text_to_part(text):
 # EXTRAIRE FRAMES AUTOUR D'UN EVENT
 # ─────────────────────────────────────────
 def extract_frames_around(video_path, frame_id, fps=25, n_frames=3):
-    cap    = cv2.VideoCapture(video_path)
-    frames = []
+    cap     = cv2.VideoCapture(video_path)
+    frames  = []
     offsets = [-int(fps * 0.5), 0, int(fps * 0.5)]
 
     for offset in offsets[:n_frames]:
@@ -116,7 +112,6 @@ def validate_event(video_path, event, fps=25, sport="football"):
     try:
         client = get_client()
 
-        # FIX — utiliser types.Part au lieu de dicts
         parts = [text_to_part(
             f"Tu es un expert analyste de {sport}. "
             f"Voici 3 frames autour d'un événement suspect "
@@ -139,10 +134,9 @@ def validate_event(video_path, event, fps=25, sport="football"):
             parts.append(text_to_part(f"Frame {i+1}/3 :"))
             parts.append(frame_to_part(frame))
 
-        response = client.models.generate_content(
-            model    = "gemini-1.5-flash",
-            contents = parts
-        )
+        response = _call_gemini(client, parts)
+        if response is None:
+            return None
 
         text   = response.text.strip()
         text   = re.sub(r"```json|```", "", text).strip()
@@ -260,9 +254,9 @@ def validate_events_with_gemini(
         if result is None:
             continue
 
-        validated    += 1
-        gemini_type   = result["type"]
-        confiance     = result["confiance"]
+        validated  += 1
+        gemini_type = result["type"]
+        confiance   = result["confiance"]
 
         if confiance >= min_conf:
             if gemini_type in ["goal", "shot"]:
