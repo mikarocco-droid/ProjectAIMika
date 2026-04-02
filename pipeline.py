@@ -33,20 +33,33 @@ from ai.learning import cluster_actions, learn_action_importance, detect_key_mom
 from sports.config import get_sport_config, compute_xg_sport
 
 
+
 # ─────────────────────────────────────────
 # NORMALIZE HIGHLIGHTS
+# FIX — préserve time_start/time_end issus de video_utils.py
+#        et corrige les valeurs invalides retournées par Gemini scorer
 # ─────────────────────────────────────────
 def normalize_highlights(highlights):
     fixed = []
     for h in highlights:
-        if "time_start" not in h:
-            h["time_start"] = h.get("timestamp_debut", 0)
-        if "time_end" not in h:
-            h["time_end"] = h.get("timestamp_fin", h["time_start"] + 3)
+        # Résoudre time_start
+        # FIX — "not in" remplacé par "not h.get()" pour attraper les 0 et None
+        ts = h.get("time_start") or h.get("timestamp_debut") or 0
+        h["time_start"] = float(ts)
+
+        # Résoudre time_end
+        te = h.get("time_end") or h.get("timestamp_fin") or 0
+        h["time_end"] = float(te)
+
+        # FIX — corriger time_end invalide (0, None, ou <= time_start)
+        if h["time_end"] <= h["time_start"]:
+            h["time_end"] = h["time_start"] + 3.0
+
         if "main_type" not in h:
             h["main_type"] = h.get("type", "action")
         if "score" not in h:
             h["score"] = 1.0
+
         fixed.append(h)
     return fixed
 
@@ -130,11 +143,22 @@ def run_pipeline(
     print(f"\nPIPELINE START - {sport.upper()}")
 
     # ─────────────────────────────────────────
-    # 0. CALIBRATION
+    # 0. DÉTECTION AUTOMATIQUE DU SPORT
     # ─────────────────────────────────────────
-    print("Step 0 : Calibration...")
+    print("Step 0 : Détection sport + Calibration...")
     calib      = None
     shot_zones = None
+
+    # FIX — détecter le sport automatiquement si non spécifié
+    try:
+        from ai.sport_detector import detect_sport
+        sport_detected = detect_sport(video_path, fallback=sport)
+        if sport_detected != sport:
+            print(f"  Sport détecté automatiquement : {sport_detected} "
+                  f"(demandé : {sport})")
+            sport = sport_detected
+    except Exception as e:
+        print(f"  Sport detector ignoré : {e}")
 
     try:
         from vision.calibration import calibrate
@@ -228,7 +252,7 @@ def run_pipeline(
     print(f"  OK {len(stats)} joueurs")
 
     # ─────────────────────────────────────────
-    # 4. TACTICAL
+    # 4. TACTICAL — enrichi par Gemini
     # ─────────────────────────────────────────
     print("Step 4 : Tactical...")
     try:
@@ -241,6 +265,24 @@ def run_pipeline(
             players_frames = [f.get("players", []) for f in frames_data[:100]],
             frame_h        = int(frames_data[0].get("frame_h", 720)) if frames_data else 720
         )
+
+        # FIX — enrichir avec Gemini Vision
+        try:
+            from ai.gemini_analyzer import analyze_tactics
+            tactical_gemini = analyze_tactics(
+                video_path = video_path,
+                sport      = sport,
+                fps        = fps,
+                events     = events
+            )
+            if tactical_gemini.get("gemini_analysed"):
+                # Fusionner : Gemini enrichit l'heuristique
+                tactical.update({k: v for k, v in tactical_gemini.items()
+                                 if k != "gemini_analysed"})
+                formation = tactical_gemini.get("formation", formation)
+        except Exception as eg:
+            print(f"  Gemini tactical ignoré : {eg}")
+
         print(f"  OK formation={formation} | style={tactical.get('style','?')}")
     except Exception as e:
         print(f"  Tactical error : {e}")
@@ -318,6 +360,19 @@ def run_pipeline(
             max_clips  = config.HIGHLIGHT_MAX
         )
         highlights = normalize_highlights(highlights)
+
+        # FIX — scoring intelligent des highlights par Gemini
+        try:
+            from ai.highlight_scorer import score_all_highlights
+            highlights = score_all_highlights(
+                highlights  = highlights,
+                video_path  = video_path,
+                sport       = sport,
+                max_highlights = config.HIGHLIGHT_MAX
+            )
+            print(f"  Gemini scoring : {len(highlights)} highlights scorés")
+        except Exception as eg:
+            print(f"  Highlight scorer ignoré : {eg}")
 
         reel_path = create_highlight_reel(
             highlights  = highlights,
