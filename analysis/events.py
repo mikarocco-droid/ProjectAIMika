@@ -237,7 +237,13 @@ def detect_events(
         )
 
         # ── SHOT ─────────────────────────
-        if is_shot and state["shot_cd"] == 0:
+        # FIX — vitesse minimale de balle obligatoire pour valider un tir
+        # Évite de compter une passe courte ou un contrôle comme tir
+        ball_speed = speed(state["last_ball_pos"], ball["center"]) \
+                     if state["last_ball_pos"] else 0
+        shot_speed_ok = ball_speed > frame_w * 0.03  # ~38px/frame à 1280px
+
+        if is_shot and state["shot_cd"] == 0 and shot_speed_ok:
             xg_val = compute_xg(x, y, frame_w, frame_h)
             shot   = {
                 "type":   "shot",
