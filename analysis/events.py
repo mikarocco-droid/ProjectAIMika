@@ -33,18 +33,10 @@ def get_closest_player(players, ball):
 
 # ─────────────────────────────────────────
 # SHOT ZONES MULTI SPORT
+# FIX — zone but resserrée en Y pour éviter faux positifs
+#        sur les touches latérales centrales
 # ─────────────────────────────────────────
 def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
-    """
-    Retourne (is_shot, is_goal).
-
-    FIX — zone but resserrée en Y pour éviter les faux positifs
-    sur les touches latérales (balle qui sort en touche côté droit/gauche
-    au niveau du milieu de terrain).
-
-    En football la caméra latérale voit le but dans le tiers central en Y
-    (environ 35%-65% de la hauteur frame). On restreint is_goal à cette zone.
-    """
     if shot_zones:
         axis  = shot_zones.get("axis", "x")
         hi    = shot_zones.get("threshold_hi", frame_w * 0.85)
@@ -65,23 +57,12 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
             return in_zone, in_goal
 
     if sport == "football":
-        # Zone tir : bords gauche/droit + bande Y centrale élargie
         in_y_shot = (frame_h * 0.30 <= y <= frame_h * 0.70)
-
-        # FIX — zone but resserrée : tiers central uniquement
-        # Avant : 0.20 -> 0.80 (60% de la hauteur) → attrape les touches latérales
-        # Après : 0.35 -> 0.65 (30% de la hauteur) → seul le vrai cadre du but
+        # FIX — resserré : 0.35→0.65 au lieu de 0.20→0.80
+        # évite de confondre touche latérale centrale avec zone de but
         in_y_goal = (frame_h * 0.35 <= y <= frame_h * 0.65)
-
-        # FIX — zone tir : x > 88% ou x < 12% (inchangé)
-        in_zone = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y_shot
-
-        # FIX — zone but : x > 92% ou x < 8% ET dans le tiers central Y
-        # La touche latérale centrale (x≈95%, y≈50%) est maintenant filtrée
-        # car in_y_goal est resserré ET on ajoute une vérification supplémentaire :
-        # la balle doit être proche d'un joueur (pas en touche isolée)
-        in_goal = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y_goal
-
+        in_zone   = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y_shot
+        in_goal   = (x > frame_w * 0.92 or x < frame_w * 0.08) and in_y_goal
         return in_zone or in_goal, in_goal
 
     if sport == "basketball":
@@ -103,48 +84,6 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
 
 
 # ─────────────────────────────────────────
-# MAIN DETECTOR — fix goal : vérifier proximité joueur
-# ─────────────────────────────────────────
-# Dans detect_events(), remplacer le bloc GOAL par ceci :
-
-        # ── GOAL ─────────────────────────
-        # Critères stricts anti faux-positifs :
-        # 1. Ballon réel (non interpolé) ou séquence déjà commencée
-        # 2. 5 frames consécutives dans zone but (~0.2s à 25fps)
-        # 3. FIX — joueur proche obligatoire : une touche isolée
-        #    n'a pas de joueur à moins de 15% du frame
-        # 4. Cooldown 1125 frames = 45s à 25fps
-        ball_is_real = not ball.get("interpolated", False)
-
-        # FIX — un vrai but a toujours un joueur proche de la balle
-        # (gardien, attaquant). Une touche latérale centrale = pas de joueur
-        # dans la zone but. On vérifie que dist < 15% frame_w.
-        player_near_goal = dist < frame_w * 0.15
-
-        if is_goal_zone:
-            if ball_is_real and player_near_goal:
-                state["ball_in_goal_zone"] += 1
-            elif state["ball_in_goal_zone"] > 0:
-                # Ballon entrant dans le filet qui disparaît → OK
-                state["ball_in_goal_zone"] += 1
-            else:
-                # Ballon interpolé ou sans joueur proche = touche/hors jeu
-                state["ball_in_goal_zone"] = 0
-        else:
-            state["ball_in_goal_zone"] = 0
-
-        if state["ball_in_goal_zone"] >= 5 and state["goal_cd"] == 0:
-            events.append({
-                "type":   "goal",
-                "player": str(current["id"]),
-                "team":   current.get("team"),
-                "x":      x,
-                "y":      y,
-                "danger": compute_danger({"type": "goal"})
-            })
-            state["goal_cd"]           = 1125
-            state["ball_in_goal_zone"] = 0
-# ─────────────────────────────────────────
 # CALCUL xG
 # ─────────────────────────────────────────
 def compute_xg(x, y, frame_w=1280, frame_h=720):
@@ -153,7 +92,7 @@ def compute_xg(x, y, frame_w=1280, frame_h=720):
     dist       = min(dist_right, dist_left)
     max_dist   = math.hypot(frame_w, frame_h / 2)
     xg         = round(max(0.0, 1.0 - dist / max_dist), 3)
-    return min(xg, 0.5)  # plafonné à 0.5
+    return min(xg, 0.5)
 
 
 # ─────────────────────────────────────────
@@ -298,8 +237,6 @@ def detect_events(
         )
 
         # ── SHOT ─────────────────────────
-        # shot_cd = 75 frames = 3s à 25fps
-        # évite de compter le même tir plusieurs fois
         if is_shot and state["shot_cd"] == 0:
             xg_val = compute_xg(x, y, frame_w, frame_h)
             shot   = {
@@ -312,28 +249,26 @@ def detect_events(
                 "danger": compute_danger({"type": "shot", "xg": xg_val})
             }
             events.append(shot)
-            state["shot_cd"] = 75  # 3s à 25fps
+            state["shot_cd"] = 75
 
             if state["events_buffer"]:
                 last_pass       = state["events_buffer"][-1]
                 last_pass["xA"] = compute_xa(last_pass, shot)
 
         # ── GOAL ─────────────────────────
-        # Critères stricts anti faux-positifs :
-        # 1. Ballon réellement détecté (pas interpolé) OU
-        #    interpolé mais séquence déjà commencée
-        # 2. 5 frames consécutives dans zone but (~0.2s)
-        # 3. Cooldown 1125 frames = 45s à 25fps
-        ball_is_real = not ball.get("interpolated", False)
+        # FIX — joueur obligatoire proche de la balle (< 15% frame_w)
+        # Une touche latérale isolée n'a pas de joueur dans la zone but
+        ball_is_real     = not ball.get("interpolated", False)
+        player_near_goal = dist < frame_w * 0.15
 
         if is_goal_zone:
-            if ball_is_real:
+            if ball_is_real and player_near_goal:
                 state["ball_in_goal_zone"] += 1
             elif state["ball_in_goal_zone"] > 0:
                 # Ballon entrant dans le filet qui disparaît → OK
                 state["ball_in_goal_zone"] += 1
             else:
-                # Ballon interpolé dès le début = touche/hors jeu
+                # Ballon interpolé ou sans joueur proche = touche/hors jeu
                 state["ball_in_goal_zone"] = 0
         else:
             state["ball_in_goal_zone"] = 0
@@ -347,7 +282,7 @@ def detect_events(
                 "y":      y,
                 "danger": compute_danger({"type": "goal"})
             })
-            state["goal_cd"]           = 1125  # 45s à 25fps
+            state["goal_cd"]           = 1125
             state["ball_in_goal_zone"] = 0
 
     else:
