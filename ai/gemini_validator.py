@@ -34,8 +34,20 @@ def get_client():
     return _client
 
 
-def _call_gemini(client, parts, max_retries=3):
-    """Appel Gemini avec retry automatique sur 429."""
+# Flag global — dès que le quota journalier est épuisé, on arrête tout
+_quota_exhausted = False
+
+def _call_gemini(client, parts, max_retries=2):
+    """
+    Appel Gemini avec retry limité sur 429.
+    FIX — si RESOURCE_EXHAUSTED (quota journalier), on lève le flag
+         et on abandonne immédiatement au lieu de retenter indéfiniment.
+    """
+    global _quota_exhausted
+
+    if _quota_exhausted:
+        return None
+
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
@@ -45,10 +57,15 @@ def _call_gemini(client, parts, max_retries=3):
             return response
         except Exception as e:
             err_str = str(e)
-            if "429" in err_str and attempt < max_retries - 1:
+            if "RESOURCE_EXHAUSTED" in err_str:
+                # Quota journalier épuisé — inutile de retenter
+                print("  ⚠️  Quota Gemini journalier épuisé — validation désactivée pour cette session")
+                _quota_exhausted = True
+                return None
+            elif "429" in err_str and attempt < max_retries - 1:
                 m    = re.search(r"retryDelay.*?(\d+)s", err_str)
-                wait = int(m.group(1)) + 2 if m else 65
-                wait = min(wait, 65)
+                wait = int(m.group(1)) + 2 if m else 30
+                wait = min(wait, 30)  # max 30s, pas 65s
                 print(f"  ⏳ Rate limit Gemini — attente {wait}s...")
                 time.sleep(wait)
             else:
@@ -250,9 +267,17 @@ def validate_events_with_gemini(
     validated = corrected = removed = 0
 
     for event in candidates:
+        # FIX — si quota épuisé, arrêter immédiatement sans retenter
+        if _quota_exhausted:
+            print("  ⚠️  Quota épuisé — validation Gemini interrompue")
+            break
+
         result = validate_event(video_path, event, fps, sport)
         if result is None:
             continue
+
+        # FIX — pause de 2s entre chaque appel pour rester sous la RPM limit
+        time.sleep(2)
 
         validated  += 1
         gemini_type = result["type"]
