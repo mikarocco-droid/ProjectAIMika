@@ -1,9 +1,5 @@
 # ai/sport_detector.py
 # -*- coding: utf-8 -*-
-"""
-Détection automatique du sport depuis la vidéo via Gemini Vision.
-L'utilisateur n'a plus besoin de choisir manuellement.
-"""
 
 import cv2
 import json
@@ -15,10 +11,9 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-from ai.gemini_validator import get_client, frame_to_part, text_to_part
+from ai.gemini_validator import get_client, frame_to_part, text_to_part, _call_gemini
 
 
-# Sports supportés avec leurs aliases
 SUPPORTED_SPORTS = {
     "football":         ["football", "soccer", "foot"],
     "mini-foot":        ["futsal", "mini-foot", "mini foot", "5v5"],
@@ -34,23 +29,22 @@ SUPPORTED_SPORTS = {
 
 
 def detect_sport(video_path, fallback="football"):
-    """
-    Détecte automatiquement le sport depuis les premières frames.
-
-    Retourne le nom du sport normalisé (clé de SUPPORTED_SPORTS)
-    ou fallback si non détecté.
-    """
     if not GEMINI_AVAILABLE:
         return fallback
 
     try:
+        # FIX — vérifier le flag quota avant d'appeler Gemini
+        from ai.gemini_validator import _quota_exhausted
+        if _quota_exhausted:
+            print(f"  Sport detector ignoré — quota épuisé → fallback {fallback}")
+            return fallback
+
         client = get_client()
         cap    = cv2.VideoCapture(video_path)
 
         if not cap.isOpened():
             return fallback
 
-        # Extraire 3 frames du début
         frames = []
         total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
@@ -79,10 +73,10 @@ def detect_sport(video_path, fallback="football"):
             parts.append(text_to_part(f"Frame {i+1} :"))
             parts.append(frame_to_part(frame))
 
-        response = client.models.generate_content(
-            model = "gemini-2.5-flash",
-            contents = parts
-        )
+        # FIX — passer par _call_gemini pour gérer quota + retry
+        response = _call_gemini(client, parts)
+        if response is None:
+            return fallback
 
         text   = response.text.strip()
         text   = re.sub(r"```json|```", "", text).strip()
@@ -91,7 +85,6 @@ def detect_sport(video_path, fallback="football"):
         detected  = result.get("sport", "").lower().strip()
         confiance = float(result.get("confiance", 0))
 
-        # Normaliser vers les clés supportées
         for sport_key, aliases in SUPPORTED_SPORTS.items():
             if detected == sport_key or any(a in detected for a in aliases):
                 if confiance >= 0.7:

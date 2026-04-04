@@ -1,15 +1,9 @@
 # ai/gemini_analyzer.py
 # -*- coding: utf-8 -*-
-"""
-Analyse tactique complète par Gemini Vision.
-Remplace l'heuristique de tactical.py par une vraie analyse visuelle.
-Multi-sport nativement.
-"""
 
 import os
 import cv2
 import json
-import base64
 import re
 
 try:
@@ -18,17 +12,13 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-from ai.gemini_validator import get_client, frame_to_part, text_to_part
+from ai.gemini_validator import get_client, frame_to_part, text_to_part, _call_gemini
 
 
 # ─────────────────────────────────────────
 # EXTRAIRE FRAMES REPRÉSENTATIVES
 # ─────────────────────────────────────────
 def extract_tactical_frames(video_path, fps=25, n=6):
-    """
-    Extrait n frames réparties sur toute la vidéo
-    pour l'analyse tactique globale.
-    """
     cap          = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     frames       = []
@@ -49,36 +39,22 @@ def extract_tactical_frames(video_path, fps=25, n=6):
 # ANALYSE TACTIQUE COMPLÈTE
 # ─────────────────────────────────────────
 def analyze_tactics(video_path, sport="football", fps=25, events=None):
-    """
-    Analyse tactique complète via Gemini Vision.
-
-    Retourne un dict enrichi par rapport à tactical.py :
-    {
-        "formation":          "4-3-3",
-        "formation_adverse":  "4-4-2",
-        "style":              "possession | direct | vertical | pressing",
-        "pressing":           true,
-        "pressing_zone":      "haut | milieu | bas",
-        "transitions":        "rapides | lentes",
-        "cotes_dominants":    "gauche | droite | centre",
-        "observations":       ["obs1", "obs2", "obs3"],
-        "forces":             ["force1", "force2"],
-        "faiblesses":         ["faiblesse1", "faiblesse2"],
-        "score_estime":       "1-0",
-        "gemini_analysed":    true
-    }
-    """
     if not GEMINI_AVAILABLE:
         return {"gemini_analysed": False}
 
     try:
+        # FIX — vérifier le flag quota avant d'appeler Gemini
+        from ai.gemini_validator import _quota_exhausted
+        if _quota_exhausted:
+            print("  Gemini tactical ignoré — quota épuisé")
+            return {"gemini_analysed": False}
+
         client = get_client()
         frames = extract_tactical_frames(video_path, fps, n=6)
 
         if not frames:
             return {"gemini_analysed": False}
 
-        # Stats events pour contexte
         context = ""
         if events:
             goals  = sum(1 for e in events if e.get("type") == "goal")
@@ -114,10 +90,10 @@ def analyze_tactics(video_path, sport="football", fps=25, events=None):
             parts.append(text_to_part(f"Frame à {mins:02d}:{secs:02d} :"))
             parts.append(frame_to_part(frame))
 
-        response = client.models.generate_content(
-            model = "gemini-2.5-flash",
-            contents = parts
-        )
+        # FIX — passer par _call_gemini pour gérer quota + retry
+        response = _call_gemini(client, parts)
+        if response is None:
+            return {"gemini_analysed": False}
 
         text   = response.text.strip()
         text   = re.sub(r"```json|```", "", text).strip()
