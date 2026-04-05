@@ -174,34 +174,39 @@ def intro(out, title="Scout IA"):
     return out
 
 
-# ─────────────────────────────────────────
-# CROSSFADE CONCAT GPU
-# ─────────────────────────────────────────
 def crossfade_concat(clips, output):
+    if not clips:
+        return None
+
     if len(clips) == 1:
         shutil.copy2(clips[0], output)
         return output
 
-    FADE_DUR = 0.5
+    # FIX — xfade échoue avec trop de clips (filtre_complex trop long)
+    # Au-delà de 8 clips, on fait un concat simple direct qui est plus stable
+    if len(clips) > 8:
+        print(f"  {len(clips)} clips → concat simple (xfade limité à 8)")
+        return _concat_simple(clips, output)
 
-    # FIX — re-normaliser chaque clip pour garantir des timestamps propres
-    # avant xfade (nvenc peut produire des PTS non monotones)
+    FADE_DUR   = 0.5
     tmp_dir    = tempfile.mkdtemp()
     safe_clips = []
+
     for i, c in enumerate(clips):
         safe = os.path.join(tmp_dir, f"safe_{i}.mp4")
         subprocess.run([
             "ffmpeg", "-y", "-i", c,
             "-c:v", ENCODER, *ENCODER_OPTS,
             "-c:a", "aac",
-            "-vsync", "cfr",          # force constant frame rate
-            "-af", "aresample=async=1", # resync audio
+            "-vsync", "cfr",
+            "-af", "aresample=async=1",
             safe
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(safe) and os.path.getsize(safe) > 0:
             safe_clips.append(safe)
 
     if not safe_clips:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         return None
 
     inputs       = []
@@ -233,38 +238,40 @@ def crossfade_concat(clips, output):
         "-filter_complex", ";".join(filter_parts),
         "-map", prev_v,
         "-map", prev_a,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",  # FIX libx264 pour xfade
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-c:a", "aac",
         output
     ], capture_output=True, text=True)
 
-    # Nettoyage clips safe
-    try:
-        shutil.rmtree(tmp_dir)
-    except:
-        pass
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # FIX — fallback concat simple si xfade échoue encore
     if ret.returncode != 0 or not os.path.exists(output) or os.path.getsize(output) == 0:
         print("  ⚠️ xfade échoué — fallback concat simple")
-        list_file = output + "_list.txt"
-        with open(list_file, "w") as f:
-            for c in clips:
-                f.write(f"file '{os.path.abspath(c)}'\n")
-        subprocess.run([
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", list_file,
-            "-c:v", ENCODER, *ENCODER_OPTS,
-            "-c:a", "aac",
-            output
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        try:
-            os.remove(list_file)
-        except:
-            pass
+        return _concat_simple(clips, output)
 
     return output
+
+
+def _concat_simple(clips, output):
+    """Concat simple sans transitions — stable peu importe le nombre de clips."""
+    list_file = output + "_list.txt"
+    with open(list_file, "w") as f:
+        for c in clips:
+            f.write(f"file '{os.path.abspath(c)}'\n")
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "concat", "-safe", "0",
+        "-i", list_file,
+        "-c:v", ENCODER, *ENCODER_OPTS,
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        output
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        os.remove(list_file)
+    except:
+        pass
+    return output if os.path.exists(output) and os.path.getsize(output) > 0 else None
 
 
 # ─────────────────────────────────────────
