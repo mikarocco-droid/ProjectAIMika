@@ -288,7 +288,10 @@ def detect_events(
                 "y":      y,
                 "danger": compute_danger({"type": "goal"})
             })
-            state["goal_cd"]           = 1125
+            # FIX — cooldown 3750 frames = 2.5 minutes à 25fps
+            # Après un but : célébration + remise en jeu au centre
+            # prend facilement 60-90s → 1125 (45s) était trop court
+            state["goal_cd"]           = 3750
             state["ball_in_goal_zone"] = 0
 
     else:
