@@ -8,28 +8,34 @@ import subprocess
 # ─────────────────────────────────────────
 # SCORE DES EVENTS
 # ─────────────────────────────────────────
-def score_event(e):
-    scores = {
-        "goal":          10,
-        "score":         10,
-        "shot":           6,
-        "interception":   5,
-        "dribble":        4,
-        "pass":           2,
-        "possession":     1
-    }
-    return scores.get(e.get("type", ""), 1)
+def score_event(e, mode="match"):
+    if mode == "player":
+        scores = {
+            "goal":           10,
+            "score":          10,
+            "shot":            7,
+            "dribble":         6,
+            "fast_break":      6,
+            "progressive_run": 5,
+            "interception":    4,
+        }
+    else:
+        scores = {
+            "goal":  10,
+            "score": 10,
+            "shot":   6,
+        }
+    return scores.get(e.get("type", ""), 0)
 
 
 def frame_to_time(frame, fps=25):
-    """FIX — fps=25 aligné sur la vidéo source."""
     return frame / fps if fps > 0 else 0
 
 
 # ─────────────────────────────────────────
 # MERGE EVENTS PROCHES
 # ─────────────────────────────────────────
-def merge_close_events(events, window=8, fps=25):
+def merge_close_events(events, window=8, fps=25, mode="match"):
     merged = []
     events = sorted(events, key=lambda e: e.get("frame", 0))
 
@@ -38,9 +44,8 @@ def merge_close_events(events, window=8, fps=25):
             merged.append(e)
             continue
         last = merged[-1]
-        # FIX — fenêtre en frames (8 secondes * fps)
         if abs(e.get("frame", 0) - last.get("frame", 0)) < window * fps:
-            if score_event(e) > score_event(last):
+            if score_event(e, mode) > score_event(last, mode):
                 merged[-1] = e
         else:
             merged.append(e)
@@ -52,53 +57,77 @@ def merge_close_events(events, window=8, fps=25):
 # EXTRACTION CLIP
 # ─────────────────────────────────────────
 def cut_clip(video_path, start, end, output_path):
-    """
-    FIX — ré-encode avec libx264 au lieu de -c copy
-    pour garantir des keyframes propres au début de chaque clip
-    et éviter les saccades dans le reel.
-    """
     subprocess.run([
         "ffmpeg", "-y",
-        "-ss", str(max(0, start - 0.5)),  # recule légèrement pour keyframe
+        "-ss", str(max(0, start - 0.5)),
         "-to", str(end),
         "-i", video_path,
-        "-ss", "0.5",                      # coupe le demi-seconde de marge
+        "-ss", "0.5",
         "-c:v", "libx264", "-preset", "fast", "-crf", "22",
         "-c:a", "aac",
-        "-avoid_negative_ts", "make_zero",  # FIX timestamps
+        "-avoid_negative_ts", "make_zero",
         "-movflags", "+faststart",
         output_path
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 # ─────────────────────────────────────────
-# HIGHLIGHTS PRINCIPAL
+# HIGHLIGHTS
+# mode="match"  → goals + tirs uniquement
+# mode="player" → goals + tirs + dribbles + actions individuelles
 # ─────────────────────────────────────────
 def create_highlights(
     video_path,
     events,
     output_dir = "outputs/highlights",
     fps        = 25,
-    max_clips  = 20
+    max_clips  = 20,
+    mode       = "match",  # "match" | "player"
+    player_id  = None      # ID tracker du joueur ciblé (mode player)
 ):
     os.makedirs(output_dir, exist_ok=True)
 
-    # FIX — inclure "goal" explicitement
+    # Types autorisés selon le mode
+    if mode == "player":
+        allowed_types = [
+            "goal", "score", "shot",
+            "dribble", "progressive_run",
+            "interception", "fast_break"
+        ]
+    else:
+        allowed_types = ["goal", "score", "shot"]
+
     key_events = [
         e for e in events
-        if e.get("type") in ["goal", "score", "shot", "interception", "dribble"]
-        and e.get("frame") is not None   # FIX — ignorer events sans frame
-        and e.get("frame", 0) > 0        # FIX — ignorer frame 0
+        if e.get("type") in allowed_types
+        and e.get("frame") is not None
+        and e.get("frame", 0) > 0
+        and e.get("gemini_type") not in ["touche", "corner", "none"]
     ]
 
+    # Filtrer par joueur si mode player
+    if mode == "player" and player_id is not None:
+        key_events = [
+            e for e in key_events
+            if str(e.get("player")) == str(player_id)
+        ]
+
     if not key_events:
-        print("  ⚠️ Aucun event clé avec timestamp valide")
+        print("  ⚠️ Aucun event valide pour les highlights")
         return []
 
-    # Trier par importance puis dédupliquer
-    key_events = sorted(key_events, key=score_event, reverse=True)
-    key_events = key_events[:max_clips * 2]  # marge avant merge
-    key_events = merge_close_events(key_events, fps=fps)
+    # Trier : goals en premier, puis par score décroissant
+    key_events = sorted(
+        key_events,
+        key=lambda e: (
+            e.get("type") in ["goal", "score"],
+            score_event(e, mode),
+            e.get("xg", 0)
+        ),
+        reverse=True
+    )
+    key_events = key_events[:max_clips * 2]
+    key_events = merge_close_events(key_events, fps=fps, mode=mode)
     key_events = key_events[:max_clips]
 
     highlights = []
@@ -107,11 +136,12 @@ def create_highlights(
         frame      = e.get("frame", 0)
         t          = frame_to_time(frame, fps)
 
-        # FIX — contexte autour de l'action
+        # Contexte selon type d'action
+        is_goal    = e.get("type") in ["goal", "score"]
         time_start = max(0, t - 5)
-        time_end   = t + 4
+        time_end   = t + (8 if is_goal else 4)
 
-        filename    = f"highlight_{i+1}_{e.get('type','action')}.mp4"
+        filename    = f"highlight_{i+1}_{e.get('type','shot')}.mp4"
         output_path = os.path.join(output_dir, filename)
 
         cut_clip(video_path, time_start, time_end, output_path)
@@ -122,18 +152,20 @@ def create_highlights(
 
         highlights.append({
             "file":       output_path,
-            "main_type":  e.get("type", "action"),
+            "main_type":  e.get("type", "shot"),
             "time_start": round(time_start, 2),
             "time_end":   round(time_end,   2),
-            "score":      float(score_event(e)),
+            "score":      float(score_event(e, mode)),
             "player":     e.get("player"),
             "team":       e.get("team"),
-            "frame":      frame
+            "frame":      frame,
+            "xg":         e.get("xg", 0)
         })
 
         mins = int(t // 60)
         secs = int(t % 60)
-        print(f"  Clip {i+1} : {e.get('type')} à {mins:02d}:{secs:02d}")
+        print(f"  Clip {i+1} : {e.get('type')} à {mins:02d}:{secs:02d} "
+              f"(xG={e.get('xg', 0):.2f})")
 
     return highlights
 
@@ -161,7 +193,7 @@ def create_highlight_reel(highlights, output_path="outputs/reel.mp4"):
         "-i", list_file,
         "-c:v", "libx264", "-preset", "fast", "-crf", "22",
         "-c:a", "aac",
-        "-movflags", "+faststart",   # FIX — lecture fluide dès le début
+        "-movflags", "+faststart",
         output_path
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

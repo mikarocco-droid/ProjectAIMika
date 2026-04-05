@@ -33,17 +33,13 @@ from ai.learning import cluster_actions, learn_action_importance, detect_key_mom
 from sports.config import get_sport_config, compute_xg_sport
 
 
-
 # ─────────────────────────────────────────
 # NORMALIZE HIGHLIGHTS
-# FIX — préserve time_start/time_end issus de video_utils.py
-#        et corrige les valeurs invalides retournées par Gemini scorer
 # ─────────────────────────────────────────
-def normalize_highlights(highlights):
+def normalize_highlights(highlights, mode="match"):
     fixed = []
     for h in highlights:
         # Résoudre time_start
-        # FIX — "not in" remplacé par "not h.get()" pour attraper les 0 et None
         ts = h.get("time_start") or h.get("timestamp_debut") or 0
         h["time_start"] = float(ts)
 
@@ -51,33 +47,48 @@ def normalize_highlights(highlights):
         te = h.get("time_end") or h.get("timestamp_fin") or 0
         h["time_end"] = float(te)
 
-        # FIX — corriger time_end invalide (0, None, ou <= time_start)
+        # Corriger time_end invalide
         if h["time_end"] <= h["time_start"]:
             h["time_end"] = h["time_start"] + 3.0
 
         if "main_type" not in h:
             h["main_type"] = h.get("type", "action")
 
-        # FIX — normaliser les types Gemini non standard vers types connus
+        # Normaliser les types Gemini non standard
         TYPE_MAP = {
-            "arrêt_gardien": "shot", "arret_gardien": "shot",
-            "shot_missed":   "shot", "shot_on_target": "shot",
-            "phase de jeu":  "action", "phase_de_jeu": "action",
-            "tir":           "shot", "but": "goal",
-            "none":          "action", "corner": "action",
-            "touche":        "action"
+            "arrêt_gardien":  "shot",
+            "arret_gardien":  "shot",
+            "shot_missed":    "shot",
+            "shot_on_target": "shot",
+            "phase de jeu":   "action",
+            "phase_de_jeu":   "action",
+            "tir":            "shot",
+            "but":            "goal",
+            "none":           "action",
+            "corner":         "action",
+            "touche":         "action"
         }
         t = h["main_type"].lower().strip()
         h["main_type"] = TYPE_MAP.get(t, t)
+
         if "score" not in h:
             h["score"] = 1.0
 
         fixed.append(h)
+
+    # Filtrer selon le mode
+    if mode == "player":
+        allowed = ["goal", "shot", "score", "dribble",
+                   "progressive_run", "interception", "fast_break"]
+    else:
+        allowed = ["goal", "shot", "score"]
+
+    fixed = [h for h in fixed if h["main_type"] in allowed]
     return fixed
 
 
 # ─────────────────────────────────────────
-# SANITIZE JSON — corrige les clés tuples
+# SANITIZE JSON
 # ─────────────────────────────────────────
 def sanitize_for_json(obj):
     if isinstance(obj, dict):
@@ -147,12 +158,14 @@ def run_pipeline(
     output_dir     = "outputs",
     analysis_id    = None,
     save_annotated = False,
-    plan           = "free"
+    plan           = "free",
+    mode           = "match",   # FIX — "match" | "player"
+    player_id      = None       # FIX — ID tracker joueur ciblé
 ):
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
 
-    print(f"\nPIPELINE START - {sport.upper()}")
+    print(f"\nPIPELINE START - {sport.upper()} | mode={mode}")
 
     # ─────────────────────────────────────────
     # 0. DÉTECTION AUTOMATIQUE DU SPORT
@@ -161,7 +174,6 @@ def run_pipeline(
     calib      = None
     shot_zones = None
 
-    # FIX — détecter le sport automatiquement si non spécifié
     try:
         from ai.sport_detector import detect_sport
         sport_detected = detect_sport(video_path, fallback=sport)
@@ -204,7 +216,7 @@ def run_pipeline(
     print(f"  OK {len(events)} events | {len(jersey_map)} maillots")
 
     # ─────────────────────────────────────────
-    # 1b. VALIDATION GEMINI (buts/tirs + maillots)
+    # 1b. VALIDATION GEMINI
     # ─────────────────────────────────────────
     print("Step 1b : Validation Gemini...")
     try:
@@ -213,7 +225,6 @@ def run_pipeline(
             read_jersey_numbers
         )
 
-        # Validation buts/tirs
         events = validate_events_with_gemini(
             events     = events,
             video_path = video_path,
@@ -222,8 +233,6 @@ def run_pipeline(
             min_conf   = 0.75
         )
 
-        # Lecture maillots par Gemini — enrichit jersey_map existant
-        # Prendre les joueurs les plus actifs sans numéro connu
         top_players = [
             {"id": pid, "frame_id": int(fps * 30), "bbox": [100, 100, 200, 300]}
             for pid in list(set(
@@ -234,11 +243,10 @@ def run_pipeline(
 
         if top_players:
             gemini_jerseys = read_jersey_numbers(
-                video_path         = video_path,
+                video_path          = video_path,
                 players_with_frames = top_players,
-                fps                = fps
+                fps                 = fps
             )
-            # Fusionner avec jersey_map existant (Tesseract + Gemini)
             jersey_map.update(gemini_jerseys)
             print(f"  Gemini jerseys : {len(gemini_jerseys)} nouveaux numéros lus")
 
@@ -253,18 +261,17 @@ def run_pipeline(
     for e in events:
         if e.get("type") == "shot":
             xg = compute_xg_sport(e.get("x", 0), sport)
-            e["xg"] = min(xg, 0.5)  # FIX — plafonné à 0.5
+            e["xg"] = min(xg, 0.5)
 
     # ─────────────────────────────────────────
     # 3. STATS
-    # FIX — jersey_map passé pour numéros maillot
     # ─────────────────────────────────────────
     print("Step 3 : Stats...")
     stats = compute_stats(events, jersey_map=jersey_map)
     print(f"  OK {len(stats)} joueurs")
 
     # ─────────────────────────────────────────
-    # 4. TACTICAL — enrichi par Gemini
+    # 4. TACTICAL
     # ─────────────────────────────────────────
     print("Step 4 : Tactical...")
     try:
@@ -278,7 +285,6 @@ def run_pipeline(
             frame_h        = int(frames_data[0].get("frame_h", 720)) if frames_data else 720
         )
 
-        # FIX — enrichir avec Gemini Vision
         try:
             from ai.gemini_analyzer import analyze_tactics
             tactical_gemini = analyze_tactics(
@@ -288,7 +294,6 @@ def run_pipeline(
                 events     = events
             )
             if tactical_gemini.get("gemini_analysed"):
-                # Fusionner : Gemini enrichit l'heuristique
                 tactical.update({k: v for k, v in tactical_gemini.items()
                                  if k != "gemini_analysed"})
                 formation = tactical_gemini.get("formation", formation)
@@ -325,7 +330,6 @@ def run_pipeline(
         offsides     = detect_offside(events)
         dominance    = compute_team_dominance(events)
 
-        # FIX — convertir clés tuples en string
         pass_network = {
             f"{k[0]}_{k[1]}" if isinstance(k, tuple) else str(k): v
             for k, v in pass_network.items()
@@ -358,6 +362,7 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 8. HIGHLIGHTS
+    # FIX — mode + player_id passés
     # ─────────────────────────────────────────
     print("Step 8 : Highlights...")
     highlights = []
@@ -369,19 +374,22 @@ def run_pipeline(
             events     = events,
             output_dir = os.path.join(output_dir, "highlights"),
             fps        = fps,
-            max_clips  = config.HIGHLIGHT_MAX
+            max_clips  = config.HIGHLIGHT_MAX,
+            mode       = mode,
+            player_id  = player_id
         )
-        highlights = normalize_highlights(highlights)
+        highlights = normalize_highlights(highlights, mode=mode)
 
-        # FIX — scoring intelligent des highlights par Gemini
         try:
             from ai.highlight_scorer import score_all_highlights
             highlights = score_all_highlights(
-                highlights  = highlights,
-                video_path  = video_path,
-                sport       = sport,
+                highlights     = highlights,
+                video_path     = video_path,
+                sport          = sport,
                 max_highlights = config.HIGHLIGHT_MAX
             )
+            # Second normalize après Gemini
+            highlights = normalize_highlights(highlights, mode=mode)
             print(f"  Gemini scoring : {len(highlights)} highlights scorés")
         except Exception as eg:
             print(f"  Highlight scorer ignoré : {eg}")
@@ -412,7 +420,6 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 10. RANKINGS + RATINGS + COMMENTARY
-    # FIX — fps passé à generate_match_story pour les minutes correctes
     # ─────────────────────────────────────────
     print("Step 10 : Ratings + Commentary...")
     ratings    = {}
@@ -421,20 +428,29 @@ def run_pipeline(
     story      = ""
 
     try:
+        # FIX — enrichir les events avec time_sec si absent
+        for e in events:
+            if not e.get("time"):
+                frame = e.get("frame", 0) or 0
+                e["time"] = round(frame / fps, 2) if fps > 0 else 0
+
         ranked_highlights = rank_highlights(events)
         ratings           = compute_player_ratings(events)
         mvp               = get_mvp(ratings)
         commentary        = generate_commentary(ranked_highlights[:10])
-        story             = generate_match_story(events, fps=fps)  # FIX — fps
+        story             = generate_match_story(events, fps=fps)
         print(f"  OK MVP={mvp[0] if mvp else '?'} | commentary={len(commentary)} lines")
     except Exception as e:
         print(f"  Ratings error : {e}")
 
     # ─────────────────────────────────────────
     # 11. SUMMARY
+    # FIX — recalculé après tous les enrichissements
     # ─────────────────────────────────────────
     print("Step 11 : Summary...")
     summary = compute_match_summary(events, stats, total_frames, fps)
+    print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
+          f"xG={summary['total_xg']} | joueurs={summary['players']}")
 
     # ─────────────────────────────────────────
     # 12. AI SUMMARY (Claude)
@@ -458,7 +474,6 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 13. PDF
-    # FIX — jersey_map + mvp passés correctement
     # ─────────────────────────────────────────
     print("Step 13 : PDF...")
     pdf_path = None
@@ -500,6 +515,8 @@ def run_pipeline(
         "ai_summary":   ai_summary,
         "pdf":          pdf_path,
         "sport":        sport,
+        "mode":         mode,
+        "player_id":    player_id,
         "calib":        calib,
         "fps":          fps,
         "total_frames": total_frames,
@@ -518,7 +535,6 @@ def run_pipeline(
         "story":        story
     }
 
-    # FIX — sanitize avant json.dump
     result = sanitize_for_json(result)
 
     with open(os.path.join(output_dir, "analysis.json"), "w", encoding="utf-8") as f:

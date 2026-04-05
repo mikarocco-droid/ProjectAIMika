@@ -33,7 +33,6 @@ from payments.stripe_handler import (
 
 # ─────────────────────────────────────────
 # SPORTS VALIDES
-# FIX — liste complète, pas seulement ceux dans SHOT_ZONES
 # ─────────────────────────────────────────
 VALID_SPORTS = {
     "football", "mini-foot", "basketball", "handball",
@@ -106,6 +105,8 @@ class Analysis(db.Model):
     user_id      = db.Column(db.Integer,     nullable=False)
     filename     = db.Column(db.String(200))
     sport        = db.Column(db.String(50),  default="football")
+    mode         = db.Column(db.String(20),  default="match")   # FIX
+    player_id    = db.Column(db.String(50),  nullable=True)      # FIX
     status       = db.Column(db.String(20),  default="pending")
     progress     = db.Column(db.Integer,     default=0)
     progress_msg = db.Column(db.String(200), default="En attente...")
@@ -242,8 +243,10 @@ def upload():
         flash(f"Quota atteint pour votre plan {current_user.plan} — passez a Pro")
         return redirect(url_for("pricing"))
 
-    f     = request.files.get("video")
-    sport = request.form.get("sport", "football")
+    f         = request.files.get("video")
+    sport     = request.form.get("sport",     "football")
+    mode      = request.form.get("mode",      "match")
+    player_id = request.form.get("player_id", "").strip() or None
 
     if not f or f.filename == "":
         flash("Aucune video selectionnee")
@@ -253,27 +256,31 @@ def upload():
         flash(f"Format non supporte — formats acceptes : {', '.join(config.ALLOWED_EXTENSIONS)}")
         return redirect(url_for("dashboard"))
 
-    # FIX — validation sport étendue
     if sport not in VALID_SPORTS:
         flash(f"Sport non reconnu : {sport}")
         return redirect(url_for("dashboard"))
+
+    if mode not in ["match", "player"]:
+        mode = "match"
 
     filename = secure_filename(f.filename)
     path     = os.path.join(config.UPLOAD_FOLDER, filename)
     f.save(path)
 
     analysis = Analysis(
-        user_id  = current_user.id,
-        filename = filename,
-        sport    = sport,
-        status   = "pending"
+        user_id   = current_user.id,
+        filename  = filename,
+        sport     = sport,
+        mode      = mode,
+        player_id = player_id,
+        status    = "pending"
     )
     db.session.add(analysis)
     db.session.commit()
 
     thread = threading.Thread(
         target = run_analysis,
-        args   = (analysis.id, path, sport, current_user.plan),
+        args   = (analysis.id, path, sport, current_user.plan, mode, player_id),
         daemon = True
     )
     thread.start()
@@ -285,7 +292,7 @@ def upload():
 # ─────────────────────────────────────────
 # BACKGROUND PROCESS
 # ─────────────────────────────────────────
-def run_analysis(analysis_id, video_path, sport, plan):
+def run_analysis(analysis_id, video_path, sport, plan, mode="match", player_id=None):
     with app.app_context():
         a              = db.session.get(Analysis, analysis_id)
         a.status       = "processing"
@@ -302,7 +309,9 @@ def run_analysis(analysis_id, video_path, sport, plan):
             output_dir     = output_dir,
             analysis_id    = analysis_id,
             save_annotated = config.PLANS.get(plan, {}).get("montage", False),
-            plan           = plan
+            plan           = plan,
+            mode           = mode,
+            player_id      = player_id
         )
 
         with app.app_context():
@@ -359,7 +368,6 @@ def delete_analysis(id):
 
 # ─────────────────────────────────────────
 # FICHIERS OUTPUT
-# FIX — utilise output_dir stocké en DB
 # ─────────────────────────────────────────
 @app.route("/files/<int:analysis_id>/<path:filename>")
 @login_required
@@ -377,7 +385,6 @@ def files(analysis_id, filename):
 
 # ─────────────────────────────────────────
 # STRIPE — CHECKOUT
-# FIX — accepte GET (/checkout/<plan>) et POST (/create-checkout)
 # ─────────────────────────────────────────
 @app.route("/create-checkout", methods=["POST"])
 @app.route("/checkout/<plan>",  methods=["GET"])
