@@ -57,6 +57,18 @@ def normalize_highlights(highlights):
 
         if "main_type" not in h:
             h["main_type"] = h.get("type", "action")
+
+        # FIX — normaliser les types Gemini non standard vers types connus
+        TYPE_MAP = {
+            "arrêt_gardien": "shot", "arret_gardien": "shot",
+            "shot_missed":   "shot", "shot_on_target": "shot",
+            "phase de jeu":  "action", "phase_de_jeu": "action",
+            "tir":           "shot", "but": "goal",
+            "none":          "action", "corner": "action",
+            "touche":        "action"
+        }
+        t = h["main_type"].lower().strip()
+        h["main_type"] = TYPE_MAP.get(t, t)
         if "score" not in h:
             h["score"] = 1.0
 
