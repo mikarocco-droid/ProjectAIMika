@@ -376,7 +376,8 @@ def run_pipeline(
             fps        = fps,
             max_clips  = config.HIGHLIGHT_MAX,
             mode       = mode,
-            player_id  = player_id
+            player_id  = player_id,
+            sport      = sport      # FIX
         )
         highlights = normalize_highlights(highlights, mode=mode)
 
