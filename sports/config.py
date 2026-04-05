@@ -2,10 +2,27 @@
 
 import math
 
-SPORT_CONFIG = {
-    "football":   {"goal_x": 1200},
-    "basketball": {"goal_x": 900},
-    "handball":   {"goal_x": 950},
+SPORTS_CONFIG = {
+    "football": {
+        "highlight_types": ["goal", "shot"],
+        ...
+    },
+    "basketball": {
+        "highlight_types": ["goal", "shot", "dribble"],  # panier + dunk + interception
+        ...
+    },
+    "handball": {
+        "highlight_types": ["goal", "shot"],
+        ...
+    },
+    "rugby": {
+        "highlight_types": ["goal", "score"],  # essai + transformation
+        ...
+    },
+    "tennis": {
+        "highlight_types": ["shot"],  # point gagnant
+        ...
+    }
 }
 
 
