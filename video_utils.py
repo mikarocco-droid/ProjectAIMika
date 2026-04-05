@@ -136,10 +136,10 @@ def create_highlights(
         frame      = e.get("frame", 0)
         t          = frame_to_time(frame, fps)
 
-        # Contexte selon type d'action
+        # Contexte selon type d'action et sport
         is_goal    = e.get("type") in ["goal", "score"]
-        time_start = max(0, t - 5)
-        time_end   = t + (8 if is_goal else 4)
+        time_start = max(0, t - context_before)
+        time_end   = t + (context_goal if is_goal else context_after)
 
         filename    = f"highlight_{i+1}_{e.get('type','shot')}.mp4"
         output_path = os.path.join(output_dir, filename)
