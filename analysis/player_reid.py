@@ -1,46 +1,43 @@
-from analysis.smart_game_ai import (
-    compute_possession,
-    clean_events_smart,
-    cluster_events
-)
-from analysis.ball_physics import detect_real_shot
-from analysis.xg_model import compute_xg_advanced
+# analysis/player_reid.py
+# -*- coding: utf-8 -*-
+import math
 
 
-# ─────────────────────────────────────────
-# V18 SMART FILTERING
-# ─────────────────────────────────────────
+def distance(a, b):
+    return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2)
 
-# 1. nettoyage intelligent
-events = clean_events_smart(events)
 
-# 2. validation tirs (ULTRA IMPORTANT)
-validated = []
-for i in range(1, len(events)):
-    e = events[i]
-    prev = events[i-1]
+def reidentify_players(events, max_dist=100):
+    """
+    Fusionne les IDs tracker proches pour réduire
+    les doublons (76 joueurs → ~22).
+    """
+    memory  = {}   # player_id -> last position
+    new_ids = {}
+    next_id = 1
 
-    if e.get("type") == "shot":
-        if not detect_real_shot(e, prev):
+    for e in events:
+        if "x" not in e or "y" not in e:
             continue
 
-    validated.append(e)
+        pid = e.get("player")
+        if pid is None:
+            continue
 
-events = validated
+        pos      = (e["x"], e["y"])
+        assigned = None
 
-# 3. clustering actions
-clusters = cluster_events(events)
+        for stored_pid, last_pos in memory.items():
+            if distance(pos, last_pos) < max_dist:
+                assigned = stored_pid
+                break
 
-# garder événements centraux
-events = [c[len(c)//2] for c in clusters]
+        if assigned is None:
+            assigned = next_id
+            next_id += 1
 
-print(f"  SMART events: {len(events)}")
+        memory[assigned] = pos
+        new_ids[pid]     = assigned
+        e["player"]      = assigned
 
-# 4. xG avancé
-for e in events:
-    if e.get("type") == "shot":
-        e["xg"] = compute_xg_advanced(e.get("x", 0), e.get("y", 0))
-
-# 5. possession réelle
-possession = compute_possession(events)
-print(f"  Possession: {possession}")
+    return events
