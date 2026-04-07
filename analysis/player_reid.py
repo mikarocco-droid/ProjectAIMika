@@ -1,43 +1,74 @@
-# analysis/player_reid.py
+# tracking/player_reid.py
 # -*- coding: utf-8 -*-
-import math
+
+import numpy as np
 
 
-def distance(a, b):
-    return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2)
-
-
-def reidentify_players(events, max_dist=100):
+class PlayerReID:
     """
-    Fusionne les IDs tracker proches pour réduire
-    les doublons (76 joueurs → ~22).
+    Stabilise les IDs joueurs entre les frames.
+    Quand ByteTrack perd un joueur et lui réassigne un nouvel ID,
+    PlayerReID détecte que c'est le même joueur (même position)
+    et lui redonne son ID d'origine.
+
+    Résultat : 398 IDs uniques → ~22 joueurs stables
     """
-    memory  = {}   # player_id -> last position
-    new_ids = {}
-    next_id = 1
 
-    for e in events:
-        if "x" not in e or "y" not in e:
-            continue
+    def __init__(self, max_distance=50):
+        self.max_distance = max_distance
+        self.memory       = {}   # reid_id -> dernière bbox_center
+        self.id_map       = {}   # tracker_id -> reid_id
+        self.next_id      = 1
 
-        pid = e.get("player")
-        if pid is None:
-            continue
+    def _distance(self, a, b):
+        return np.linalg.norm(np.array(a) - np.array(b))
 
-        pos      = (e["x"], e["y"])
-        assigned = None
+    def _get_or_create_reid_id(self, tracker_id, bbox_center):
+        # Si on a déjà un mapping pour ce tracker_id, on le réutilise
+        if tracker_id in self.id_map:
+            reid_id = self.id_map[tracker_id]
+            self.memory[reid_id] = bbox_center
+            return reid_id
 
-        for stored_pid, last_pos in memory.items():
-            if distance(pos, last_pos) < max_dist:
-                assigned = stored_pid
-                break
+        # Chercher un joueur proche en mémoire
+        for reid_id, prev_center in self.memory.items():
+            if self._distance(bbox_center, prev_center) < self.max_distance:
+                # Même joueur — on réutilise son reid_id
+                self.id_map[tracker_id] = reid_id
+                self.memory[reid_id]    = bbox_center
+                return reid_id
 
-        if assigned is None:
-            assigned = next_id
-            next_id += 1
+        # Nouveau joueur
+        reid_id                 = self.next_id
+        self.next_id           += 1
+        self.memory[reid_id]    = bbox_center
+        self.id_map[tracker_id] = reid_id
+        return reid_id
 
-        memory[assigned] = pos
-        new_ids[pid]     = assigned
-        e["player"]      = assigned
+    def process_tracks(self, tracks):
+        """
+        tracks : liste de dicts avec "id", "bbox", "center", "conf"
+        Retourne la même liste avec "id" stabilisé par Re-ID.
+        """
+        results = []
 
-    return events
+        for t in tracks:
+            bbox   = t.get("bbox", [0, 0, 0, 0])
+            x1, y1, x2, y2 = bbox
+            center = ((x1 + x2) / 2, (y1 + y2) / 2)
+
+            reid_id = self._get_or_create_reid_id(t["id"], center)
+
+            results.append({
+                **t,
+                "id":          reid_id,
+                "tracker_id":  t["id"],   # garde l'ID original pour debug
+                "center":      [center[0], center[1]]
+            })
+
+        return results
+
+    def reset(self):
+        self.memory  = {}
+        self.id_map  = {}
+        self.next_id = 1
