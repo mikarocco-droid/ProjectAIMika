@@ -209,6 +209,13 @@ def run_pipeline(
     )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
+    # FIX — enrichir time en secondes AVANT le post-processing
+    # sans ça, tous les events ont time=0 et le filtre temporel ne fonctionne pas
+    for e in events:
+        if not e.get("time"):
+            frame = e.get("frame", 0) or 0
+            e["time"] = round(frame / fps, 2) if fps > 0 else 0
+
     # ─────────────────────────────────────────
     # 1a. POST PROCESSING V17
     # ─────────────────────────────────────────
