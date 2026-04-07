@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import cv2
+import numpy as np
 from vision.detector import Detector
 from vision.tracker import Tracker
 from vision.ocr import OCRReader
@@ -11,10 +12,29 @@ import config
 
 # ─────────────────────────────────────────
 # FRAME SKIP — saute 1 frame sur 3
-# Pattern : analyse 0,1 / skip 2 / analyse 3,4 / skip 5...
-# → 2 frames analysées sur 3 = ~33% plus rapide
 # ─────────────────────────────────────────
 FRAME_SKIP_EVERY = 3
+
+# ─────────────────────────────────────────
+# BATCH YOLO — nombre de frames traitées
+# simultanément par le GPU
+# 4 = bon équilibre mémoire/vitesse sur T4
+# ─────────────────────────────────────────
+YOLO_BATCH_SIZE = 4
+
+# ─────────────────────────────────────────
+# RÉSOLUTION YOLO — 960 au lieu de 1280
+# Suffisant pour détecter des joueurs
+# sur caméra latérale fixe
+# ─────────────────────────────────────────
+YOLO_IMGSZ = 960
+
+# ─────────────────────────────────────────
+# PRÉ-RESIZE — dimensions cibles avant YOLO
+# Réduit la charge mémoire GPU
+# ─────────────────────────────────────────
+PROCESS_W = 960
+PROCESS_H = 540
 
 
 def default_progress(pct):
@@ -54,6 +74,30 @@ def assign_teams_by_color(frame, tracked, color_detector):
 
 
 # ─────────────────────────────────────────
+# RESCALE BBOXES
+# Les détections YOLO sont sur la frame
+# réduite (PROCESS_W x PROCESS_H) →
+# on les remet à l'échelle originale
+# ─────────────────────────────────────────
+def rescale_detections(players, yolo_ball, scale_x, scale_y):
+    """Remet les bboxes à l'échelle de la frame originale."""
+    for p in players:
+        x1, y1, x2, y2 = p["bbox"]
+        p["bbox"]   = [x1*scale_x, y1*scale_y, x2*scale_x, y2*scale_y]
+        p["center"] = [(p["bbox"][0]+p["bbox"][2])/2,
+                       (p["bbox"][1]+p["bbox"][3])/2]
+
+    if yolo_ball:
+        x1, y1, x2, y2 = yolo_ball["bbox"]
+        yolo_ball["bbox"]   = [x1*scale_x, y1*scale_y,
+                                x2*scale_x, y2*scale_y]
+        yolo_ball["center"] = [(yolo_ball["bbox"][0]+yolo_ball["bbox"][2])/2,
+                                (yolo_ball["bbox"][1]+yolo_ball["bbox"][3])/2]
+
+    return players, yolo_ball
+
+
+# ─────────────────────────────────────────
 # CONVERSION DICT BALL → TUPLE (x,y,w,h)
 # ─────────────────────────────────────────
 def ball_dict_to_tuple(ball_dict):
@@ -84,7 +128,129 @@ def ball_tuple_to_dict(ball_tuple, interpolated=False):
 
 
 # ─────────────────────────────────────────
-# PIPELINE FRAME PAR FRAME
+# TRAITEMENT D'UN BATCH DE FRAMES
+# ─────────────────────────────────────────
+def process_batch(
+    batch_frames,       # liste de (frame_id, frame_orig, frame_small)
+    detector,
+    tracker,
+    ocr,
+    color_detector,
+    ball_tracker,
+    sport,
+    shot_zones,
+    w, h,               # dimensions originales
+    scale_x, scale_y,   # facteurs de rescale
+    analyzed_offset,    # pour le compteur OCR
+):
+    """
+    Traite un batch de frames avec YOLO en une seule passe GPU,
+    puis applique tracking/events individuellement.
+    """
+    if not batch_frames:
+        return []
+
+    # ── YOLO batch : une seule inférence pour N frames ──
+    small_frames = [bf[2] for bf in batch_frames]
+    batch_results = detector.model(
+        small_frames,
+        conf    = config.YOLO_CONFIDENCE,
+        verbose = False,
+        imgsz   = YOLO_IMGSZ
+    )
+
+    batch_data = []
+
+    for i, (frame_id, frame_orig, frame_small) in enumerate(batch_frames):
+        result    = batch_results[i]
+        analyzed  = analyzed_offset + i
+
+        # Parser résultats YOLO pour cette frame
+        players   = []
+        yolo_ball = None
+
+        for box in result.boxes:
+            cls  = int(box.cls[0])
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            center = ((x1 + x2) / 2, (y1 + y2) / 2)
+            bbox   = [x1, y1, x2, y2]
+
+            if cls == detector.player_cls:
+                if not detector._in_play_zone(center, PROCESS_W, PROCESS_H):
+                    continue
+                if not detector._valid_size(bbox, PROCESS_W, PROCESS_H):
+                    continue
+                players.append({
+                    "bbox":   bbox,
+                    "center": [center[0], center[1]],
+                    "conf":   conf
+                })
+            elif cls == detector.ball_cls:
+                yolo_ball = {
+                    "bbox":   bbox,
+                    "center": [center[0], center[1]],
+                    "conf":   conf
+                }
+
+        # Détection ballon HSV sur frame réduite
+        yolo_ball = detector._detect_ball(frame_small, yolo_ball)
+
+        # Rescale vers dimensions originales
+        players, yolo_ball = rescale_detections(
+            players, yolo_ball, scale_x, scale_y
+        )
+
+        # ── Tracking ─────────────────────
+        tracked = tracker.update(players, frame_orig)
+
+        # ── Équipes ──────────────────────
+        tracked = assign_teams_by_color(frame_orig, tracked, color_detector)
+
+        # ── OCR ──────────────────────────
+        tracked = ocr.read_all(frame_orig, tracked, frame_id=analyzed)
+
+        # ── Ball Tracker ─────────────────
+        if ball_tracker is not None:
+            yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
+            balls_list      = [yolo_ball_tuple] if yolo_ball_tuple else []
+            ball_result     = ball_tracker.update(
+                detected_balls = balls_list,
+                frame_w        = w,
+                frame_h        = h
+            )
+            was_interpolated = (yolo_ball_tuple is None and ball_result is not None)
+            ball = ball_tuple_to_dict(ball_result, interpolated=was_interpolated)
+        else:
+            ball = yolo_ball
+
+        # ── Events ───────────────────────
+        frame_events, _ = detect_events(
+            players    = tracked,
+            ball       = ball,
+            sport      = sport,
+            shot_zones = shot_zones,
+            frame_w    = w,
+            frame_h    = h
+        )
+        for e in frame_events:
+            e["frame"] = frame_id
+
+        batch_data.append({
+            "players": tracked,
+            "ball":    ball,
+            "frame":   frame_id,
+            "frame_w": w,
+            "frame_h": h,
+            "events":  frame_events,
+            "_frame_orig": frame_orig,   # pour overlay si besoin
+        })
+
+    return batch_data
+
+
+# ─────────────────────────────────────────
+# PIPELINE PRINCIPAL
 # ─────────────────────────────────────────
 def process_video(
     video_path,
@@ -95,20 +261,19 @@ def process_video(
     shot_zones        = None,
     return_frames     = False,
     frame_skip_every  = None,
+    batch_size        = None,
 ):
     if progress_callback is None:
         progress_callback = default_progress
 
-    # Priorité au paramètre, sinon constante globale
     skip_every = frame_skip_every if frame_skip_every is not None else FRAME_SKIP_EVERY
+    b_size     = batch_size       if batch_size       is not None else YOLO_BATCH_SIZE
 
-    # FIX — instanciation ici (pas au niveau module) pour éviter crash au démarrage
     detector       = Detector(sport=sport)
     tracker        = Tracker()
     ocr            = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
     color_detector = TeamColorDetector(sample_frames=60)
 
-    # BallTracker — import lazy
     ball_tracker = None
     try:
         from vision.ball_tracker import BallTracker
@@ -126,14 +291,19 @@ def process_video(
     w            = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h            = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    # Facteurs de rescale original → réduit
+    scale_x = w / PROCESS_W
+    scale_y = h / PROCESS_H
+
     analyzed_count = total_frames - (total_frames // skip_every)
 
     print(f"Video : {video_path}")
     print(f"  {total_frames} frames | {fps:.1f} fps | {total_frames / fps:.1f}s")
-    print(f"  Resolution : {w}x{h}")
+    print(f"  Resolution : {w}x{h} → traitement {PROCESS_W}x{PROCESS_H}")
     print(f"  Sport : {sport}")
-    print(f"  Frame skip : 2/{skip_every} → ~{analyzed_count} frames analysées "
+    print(f"  Frame skip  : 2/{skip_every} → ~{analyzed_count} frames analysées "
           f"({analyzed_count * 100 // total_frames}%)")
+    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={YOLO_IMGSZ}")
 
     # Convertir shot_zones ratios → pixels si nécessaire
     if shot_zones:
@@ -155,7 +325,6 @@ def process_video(
     overlay = Overlay(fps=fps) if save_annotated else None
     writer  = None
     if save_annotated and annotated_path:
-        # FPS de sortie réduit proportionnellement
         out_fps = fps * (2 / skip_every)
         writer  = cv2.VideoWriter(
             annotated_path,
@@ -163,10 +332,11 @@ def process_video(
             out_fps, (w, h)
         )
 
-    frames_data = []
-    frame_id    = 0   # numéro réel dans la vidéo source
-    analyzed    = 0   # compteur de frames effectivement analysées
-    last_pct    = -1
+    frames_data     = []
+    frame_id        = 0
+    analyzed        = 0
+    last_pct        = -1
+    current_batch   = []   # buffer de frames en attente de traitement
 
     while True:
         ret, frame = cap.read()
@@ -174,64 +344,41 @@ def process_video(
             break
 
         # ── FRAME SKIP ───────────────────
-        # Saute 1 frame toutes les `skip_every` frames
-        # Pattern pour skip_every=3 : analyse 0,1 / skip 2 / analyse 3,4 / skip 5...
         if frame_id % skip_every == (skip_every - 1):
             frame_id += 1
             continue
 
-        # ── Détection YOLO ───────────────
-        players, yolo_ball = detector.detect(frame)
+        # ── PRÉ-RESIZE ───────────────────
+        # Réduction avant YOLO pour moins de mémoire GPU
+        frame_small = cv2.resize(frame, (PROCESS_W, PROCESS_H),
+                                 interpolation=cv2.INTER_LINEAR)
 
-        # ── Tracking joueurs ─────────────
-        tracked = tracker.update(players, frame)
+        current_batch.append((frame_id, frame, frame_small))
 
-        # ── Assignation équipes ──────────
-        tracked = assign_teams_by_color(frame, tracked, color_detector)
-
-        # ── OCR maillots ─────────────────
-        # On passe analyzed (pas frame_id) pour garder le rythme 1/30 analysées
-        tracked = ocr.read_all(frame, tracked, frame_id=analyzed)
-
-        # ── Ball Tracker ─────────────────
-        if ball_tracker is not None:
-            yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
-            balls_list      = [yolo_ball_tuple] if yolo_ball_tuple else []
-            ball_result     = ball_tracker.update(
-                detected_balls = balls_list,
-                frame_w        = w,
-                frame_h        = h
+        # ── BATCH COMPLET → traitement ────
+        if len(current_batch) >= b_size:
+            batch_data = process_batch(
+                current_batch, detector, tracker, ocr,
+                color_detector, ball_tracker,
+                sport, shot_zones, w, h, scale_x, scale_y,
+                analyzed_offset=analyzed - len(current_batch) + 1
             )
-            was_interpolated = (yolo_ball_tuple is None and ball_result is not None)
-            ball = ball_tuple_to_dict(ball_result, interpolated=was_interpolated)
-        else:
-            ball = yolo_ball
 
-        # ── Events de cette frame ─────────
-        frame_events, _ = detect_events(
-            players    = tracked,
-            ball       = ball,
-            sport      = sport,
-            shot_zones = shot_zones,
-            frame_w    = w,
-            frame_h    = h
-        )
-        for e in frame_events:
-            e["frame"] = frame_id
+            for fd in batch_data:
+                # Overlay si demandé
+                if writer and overlay:
+                    orig = fd.pop("_frame_orig", None)
+                    if orig is not None:
+                        ann = overlay.render(
+                            orig, fd["players"], fd["ball"],
+                            fd["events"], fd["frame"]
+                        )
+                        writer.write(ann)
+                else:
+                    fd.pop("_frame_orig", None)
+                frames_data.append(fd)
 
-        frames_data.append({
-            "players": tracked,
-            "ball":    ball,
-            "frame":   frame_id,
-            "frame_w": w,
-            "frame_h": h,
-            "events":  frame_events
-        })
-
-        # ── Vidéo annotée ─────────────────
-        if writer and overlay:
-            annotated = overlay.render(frame, tracked, ball, frame_events, frame_id)
-            writer.write(annotated)
+            current_batch = []
 
         # ── Progression ───────────────────
         if total_frames > 0:
@@ -243,11 +390,33 @@ def process_video(
         frame_id += 1
         analyzed += 1
 
+    # ── FLUSH dernier batch incomplet ────
+    if current_batch:
+        batch_data = process_batch(
+            current_batch, detector, tracker, ocr,
+            color_detector, ball_tracker,
+            sport, shot_zones, w, h, scale_x, scale_y,
+            analyzed_offset=analyzed - len(current_batch) + 1
+        )
+        for fd in batch_data:
+            if writer and overlay:
+                orig = fd.pop("_frame_orig", None)
+                if orig is not None:
+                    ann = overlay.render(
+                        orig, fd["players"], fd["ball"],
+                        fd["events"], fd["frame"]
+                    )
+                    writer.write(ann)
+            else:
+                fd.pop("_frame_orig", None)
+            frames_data.append(fd)
+
     cap.release()
     if writer:
         writer.release()
 
-    print(f"\n  {frame_id} frames lues | {analyzed} analysées")
+    print(f"\n  {frame_id} frames lues | {analyzed} analysées"
+          f" | batches de {b_size}")
 
     jersey_map = ocr.get_jersey_map()
     ocr.reset()
