@@ -1,4 +1,5 @@
 # vision/ball.py
+# -*- coding: utf-8 -*-
 
 import numpy as np
 import cv2
@@ -11,74 +12,60 @@ class BallDetector:
     ce module prend le relais avec une détection par couleur + forme.
     """
 
+    # FIX — limite d'interpolation : au-delà de MAX_LOST frames sans
+    # détection réelle, on retourne None plutôt qu'une position figée.
+    # Ça évite que ball_speed = 0 pendant des minutes entières.
+    MAX_LOST = 8   # ~0.3s à 25fps — assez pour combler un saut de frame
+
     def __init__(self, method="hybrid"):
-        """
-        method :
-            "yolo"   → uniquement résultat YOLO passé en paramètre
-            "color"  → détection HSV (ballon blanc/jaune)
-            "hybrid" → YOLO en priorité, fallback color si non détecté
-        """
-        self.method = method
-        self.last_known = None  # dernière position connue
+        self.method     = method
+        self.last_known = None
+        self.lost_count = 0   # frames consécutives sans détection réelle
 
     # ─────────────────────────────────────────
     # DÉTECTION PAR COULEUR (HSV)
     # ─────────────────────────────────────────
     def _detect_by_color(self, frame):
-        """
-        Cherche un objet rond de couleur blanche ou jaune
-        correspondant à un ballon.
-        """
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Masque ballon blanc
         mask_white = cv2.inRange(hsv,
             np.array([0,   0,   200]),
-            np.array([180, 40,  255])
+            np.array([180,  40, 255])
         )
-
-        # Masque ballon jaune (ex: futsal, basket)
         mask_yellow = cv2.inRange(hsv,
             np.array([20,  100, 100]),
             np.array([35,  255, 255])
         )
-
         mask = cv2.bitwise_or(mask_white, mask_yellow)
 
-        # Nettoyage morphologique
         kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask   = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
+        mask   = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
 
-        best = None
+        best       = None
         best_score = 0
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
-
-            # Filtrer trop petit ou trop grand
             if area < 80 or area > 8000:
                 continue
 
-            # Circularité (1.0 = cercle parfait)
             perimeter = cv2.arcLength(cnt, True)
             if perimeter == 0:
                 continue
 
             circularity = 4 * np.pi * area / (perimeter ** 2)
-
-            if circularity < 0.55:  # pas assez rond
+            if circularity < 0.55:
                 continue
 
             score = circularity * area
-
             if score > best_score:
                 best_score = score
-                best = cnt
+                best       = cnt
 
         if best is None:
             return None
@@ -98,15 +85,6 @@ class BallDetector:
     # DÉTECTION HYBRIDE
     # ─────────────────────────────────────────
     def detect(self, frame, yolo_ball=None):
-        """
-        Point d'entrée principal.
-
-        frame     : image BGR (numpy array)
-        yolo_ball : résultat YOLO existant (dict ou None)
-
-        Retourne un dict ballon ou None.
-        """
-
         ball = None
 
         if self.method == "yolo":
@@ -122,25 +100,35 @@ class BallDetector:
             else:
                 ball = self._detect_by_color(frame)
 
-        # Mise à jour dernière position connue
         if ball:
             self.last_known = ball
-        
+            self.lost_count = 0
+        else:
+            self.lost_count += 1
+
         return ball
 
     # ─────────────────────────────────────────
-    # INTERPOLATION (ballon perdu quelques frames)
+    # INTERPOLATION LIMITÉE
+    # FIX — retourne None après MAX_LOST frames sans détection
+    # pour que ball_speed soit recalculé correctement dès
+    # que le ballon réapparaît
     # ─────────────────────────────────────────
-    def get_position(self, frame, yolo_ball=None, max_lost=10):
-        """
-        Comme detect() mais retourne la dernière position connue
-        si le ballon est temporairement perdu (évite les trous
-        dans la timeline d'events).
-        """
+    def get_position(self, frame, yolo_ball=None):
         ball = self.detect(frame, yolo_ball)
 
         if ball is None and self.last_known is not None:
-            ball = dict(self.last_known)
-            ball["interpolated"] = True
+            if self.lost_count <= self.MAX_LOST:
+                # Interpolation courte — position connue récente
+                ball = dict(self.last_known)
+                ball["interpolated"] = True
+            else:
+                # Trop longtemps perdu → on coupe l'interpolation
+                # events.py recevra None et ne calculera pas de tir
+                ball = None
 
         return ball
+
+    def reset(self):
+        self.last_known = None
+        self.lost_count = 0
