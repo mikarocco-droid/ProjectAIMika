@@ -163,6 +163,21 @@ def run_pipeline(
     print(f"\nPIPELINE START - {sport.upper()} | mode={mode}")
 
     # ─────────────────────────────────────────
+    # INIT LEARNING MODEL
+    # Chargé en début de pipeline pour utiliser
+    # les seuils et xG appris des matchs précédents
+    # ─────────────────────────────────────────
+    learner = None
+    try:
+        from ai.learning_model import MatchLearner
+        learner = MatchLearner(sport=sport, base_dir=os.path.join(output_dir, "..", "learning"))
+        learned_stats = learner.stats()
+        print(f"  Learning : {learned_stats['n_matches']} matchs | "
+              f"{learned_stats['n_events']} events cumulés")
+    except Exception as e:
+        print(f"  Learning model ignoré : {e}")
+
+    # ─────────────────────────────────────────
     # 0. DÉTECTION SPORT + CALIBRATION
     # ─────────────────────────────────────────
     print("Step 0 : Détection sport + Calibration...")
@@ -209,15 +224,6 @@ def run_pipeline(
     )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
-    # FIX — log ReID stats si disponible via main module
-    try:
-        from main import get_tracker
-        _tracker = get_tracker()
-        if _tracker and hasattr(_tracker, 'reid'):
-            print(f"  ReID stats : {_tracker.reid.stats()}")
-    except Exception:
-        pass
-
     # FIX — enrichir time en secondes AVANT le post-processing
     for e in events:
         if not e.get("time"):
@@ -229,10 +235,15 @@ def run_pipeline(
     # ─────────────────────────────────────────
     try:
         from analysis.post_processing import temporal_filter, filter_goals, merge_players
+
+        # Utiliser les seuils appris si disponibles
+        goal_cooldown = learner.get_thresholds().get("goal_cooldown", 150.0) \
+                        if learner else 150.0
+
         events = merge_players(events)
         events = temporal_filter(events, min_delta=2.0)
-        events = filter_goals(events)
-        print(f"  CLEAN {len(events)} events après filtrage V17")
+        events = filter_goals(events, window=goal_cooldown)
+        print(f"  CLEAN {len(events)} events | goal_cooldown={goal_cooldown:.0f}s")
     except Exception as e:
         print(f"  Post processing ignoré : {e}")
 
@@ -319,14 +330,21 @@ def run_pipeline(
         print(f"  V19 ignoré : {e}")
 
     # ─────────────────────────────────────────
-    # 2. ENRICH xG
+    # 2. ENRICH xG — modèle appris si disponible
     # ─────────────────────────────────────────
     print("Step 2 : xG...")
     frame_w = getattr(config, 'FRAME_WIDTH', 1920) or 1920
     for e in events:
         if e.get("type") == "shot":
-            x_norm = e.get("x", 0) / frame_w
-            xg     = compute_xg_sport(x_norm, sport=sport)
+            if learner and learner.xg_model.get("n_samples", 0) >= 10:
+                # Modèle appris
+                xg = learner.predict_xg(
+                    e.get("x", 0), e.get("y", 0), frame_w
+                )
+            else:
+                # Modèle par défaut
+                x_norm = e.get("x", 0) / frame_w
+                xg     = compute_xg_sport(x_norm, sport=sport)
             e["xg"] = min(xg, 0.5)
 
     # ─────────────────────────────────────────
@@ -495,7 +513,7 @@ def run_pipeline(
     try:
         for e in events:
             if not e.get("time"):
-                frame  = e.get("frame", 0) or 0
+                frame     = e.get("frame", 0) or 0
                 e["time"] = round(frame / fps, 2) if fps > 0 else 0
 
         ranked_highlights = rank_highlights(events)
@@ -514,6 +532,18 @@ def run_pipeline(
     summary = compute_match_summary(events, stats, total_frames, fps)
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
           f"xG={summary['total_xg']} | joueurs={summary['players']}")
+
+    # ─────────────────────────────────────────
+    # 11b. ENREGISTREMENT APPRENTISSAGE
+    # Doit être APRÈS le summary pour avoir les stats complètes
+    # ─────────────────────────────────────────
+    learning_result = {}
+    if learner:
+        try:
+            learning_result = learner.record_match(events, summary, fps)
+            print(f"  Learning : {learner.stats()}")
+        except Exception as e:
+            print(f"  Learning record error : {e}")
 
     # ─────────────────────────────────────────
     # 12. AI SUMMARY (Claude)
@@ -565,37 +595,38 @@ def run_pipeline(
     # 14. SAVE JSON
     # ─────────────────────────────────────────
     result = {
-        "summary":      summary,
-        "events":       events,
-        "stats":        stats,
-        "highlights":   highlights,
-        "jersey_map":   jersey_map,
-        "heatmaps":     heatmaps,
-        "heatmap":      heatmap_path,
-        "reel":         reel_path,
-        "montage":      montage_path,
-        "annotated":    annotated_path,
-        "ai_summary":   ai_summary,
-        "pdf":          pdf_path,
-        "sport":        sport,
-        "mode":         mode,
-        "player_id":    player_id,
-        "calib":        calib,
-        "fps":          fps,
-        "total_frames": total_frames,
-        "teams":        teams,
-        "formation":    formation,
-        "pressing":     pressing,
-        "phases":       phases,
-        "tactical":     tactical,
-        "pass_network": pass_network,
-        "offsides":     offsides,
-        "dominance":    dominance,
-        "key_moments":  key_moments,
-        "ratings":      ratings,
-        "mvp":          str(mvp[0]) if mvp else None,
-        "commentary":   commentary,
-        "story":        story
+        "summary":         summary,
+        "events":          events,
+        "stats":           stats,
+        "highlights":      highlights,
+        "jersey_map":      jersey_map,
+        "heatmaps":        heatmaps,
+        "heatmap":         heatmap_path,
+        "reel":            reel_path,
+        "montage":         montage_path,
+        "annotated":       annotated_path,
+        "ai_summary":      ai_summary,
+        "pdf":             pdf_path,
+        "sport":           sport,
+        "mode":            mode,
+        "player_id":       player_id,
+        "calib":           calib,
+        "fps":             fps,
+        "total_frames":    total_frames,
+        "teams":           teams,
+        "formation":       formation,
+        "pressing":        pressing,
+        "phases":          phases,
+        "tactical":        tactical,
+        "pass_network":    pass_network,
+        "offsides":        offsides,
+        "dominance":       dominance,
+        "key_moments":     key_moments,
+        "ratings":         ratings,
+        "mvp":             str(mvp[0]) if mvp else None,
+        "commentary":      commentary,
+        "story":           story,
+        "learning":        learning_result,
     }
 
     result = sanitize_for_json(result)
