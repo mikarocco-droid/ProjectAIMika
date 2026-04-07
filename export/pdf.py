@@ -23,7 +23,7 @@ def clean(text):
     return (
         str(text)
         .replace("—", "-").replace("–", "-")
-        .replace("'", "'").replace(""", '"').replace(""", '"')
+        .replace("'", "'").replace("\u201c", '"').replace("\u201d", '"')
         .replace("«", '"').replace("»", '"')
         .replace("…", "...").replace("•", "-")
         .replace("⭐", "*").replace("⚽", "[goal]").replace("🏀", "[basket]")
@@ -33,21 +33,67 @@ def clean(text):
 
 # ─────────────────────────────────────────
 # RÉSOLUTION NOM JOUEUR
-# FIX — utilise jersey_map pour afficher le numéro de maillot
-#        sinon fallback sur l'ID tracker
 # ─────────────────────────────────────────
 def player_label(pid, jersey_map=None):
-    """
-    Retourne le label d'un joueur :
-    - '#9' si le numéro de maillot est connu
-    - 'ID-1234' sinon
-    """
     if jersey_map:
-        # Chercher dans jersey_map avec pid en str ou int
         jersey = jersey_map.get(str(pid)) or jersey_map.get(pid)
         if jersey:
             return f"#{jersey}"
     return f"ID-{pid}"
+
+
+# ─────────────────────────────────────────
+# FIX — DÉDUPLICATION MAILLOTS
+# ─────────────────────────────────────────
+def deduplicate_stats(stats, jersey_map):
+    """
+    Fusionne les entrées ayant le même numéro de maillot.
+    Additionne les stats, garde la meilleure note.
+    """
+    merged = {}
+
+    for pid, s in stats.items():
+        label = s.get("label") or player_label(pid, jersey_map)
+
+        if label not in merged:
+            merged[label] = {
+                "touches":  s.get("touches",  0),
+                "passes":   s.get("passes",   0),
+                "tirs":     s.get("tirs",     0),
+                "buts":     s.get("buts",     0),
+                "xg_total": s.get("xg_total", 0),
+                "_rating":  s.get("_rating",  0),
+                "_pid":     pid,
+            }
+        else:
+            merged[label]["touches"]  += s.get("touches",  0)
+            merged[label]["passes"]   += s.get("passes",   0)
+            merged[label]["tirs"]     += s.get("tirs",     0)
+            merged[label]["buts"]     += s.get("buts",     0)
+            merged[label]["xg_total"] += s.get("xg_total", 0)
+            merged[label]["_rating"]   = max(
+                merged[label]["_rating"], s.get("_rating", 0)
+            )
+
+    return merged
+
+
+# ─────────────────────────────────────────
+# FIX — VALIDATION TIMESTAMPS HIGHLIGHTS
+# ─────────────────────────────────────────
+def fix_highlight_times(highlights):
+    """S'assure que time_end >= time_start + 1s."""
+    fixed = []
+    for h in highlights:
+        t_start = float(h.get("time_start") or 0)
+        t_end   = float(h.get("time_end")   or 0)
+        if t_end <= t_start:
+            t_end = t_start + 3.0
+        h = dict(h)
+        h["time_start"] = t_start
+        h["time_end"]   = t_end
+        fixed.append(h)
+    return fixed
 
 
 # ─────────────────────────────────────────
@@ -133,11 +179,14 @@ def generate_pdf(result, output_path, sport="football"):
     summary    = result.get("summary",        {})
     stats      = result.get("stats",          {})
     highlights = result.get("highlights",     [])
-    jersey_map = result.get("jersey_map",     {})  # FIX — récupéré ici
+    jersey_map = result.get("jersey_map",     {})
     heatmaps   = result.get("heatmaps",       {})
     ratings    = result.get("player_ratings", {})
     story      = result.get("match_story")
     mvp_id     = result.get("mvp")
+
+    # FIX — corriger timestamps avant affichage
+    highlights = fix_highlight_times(highlights)
 
     pdf = ScoutPDF(sport=sport)
     pdf.add_page()
@@ -208,27 +257,29 @@ def generate_pdf(result, output_path, sport="football"):
             pdf.cell(w, 6, clean(h), border=0, align="C")
         pdf.ln()
 
-        # Trier par touches décroissant, top 20
+        # FIX — dédupliquer les maillots avant affichage
+        deduped = deduplicate_stats(stats, jersey_map)
+
         sorted_players = sorted(
-            stats.items(),
+            deduped.items(),
             key=lambda x: x[1].get("touches", 0),
             reverse=True
         )[:20]
 
         pdf.set_font("Helvetica", "", 8)
-        for pid, s in sorted_players:
-            # FIX — utiliser le label pré-calculé dans stats si dispo
-            label  = s.get("label") or player_label(pid, jersey_map)
+        for label, s in sorted_players:
+            pid    = s.get("_pid")
             rating = ratings.get(str(pid), {}).get("rating") or \
-                     ratings.get(pid, {}).get("rating", "-")
+                     ratings.get(pid,      {}).get("rating", "-") \
+                     if pid else "-"
             xg_val = round(s.get("xg_total", 0), 2)
 
             row = [
                 label,
-                s.get("touches",       0),
-                s.get("passes",        0),
-                s.get("tirs",          0),
-                s.get("buts",          0),
+                s.get("touches", 0),
+                s.get("passes",  0),
+                s.get("tirs",    0),
+                s.get("buts",    0),
                 xg_val,
                 rating
             ]
@@ -250,7 +301,6 @@ def generate_pdf(result, output_path, sport="football"):
             htype   = h.get("main_type", "action")
             score   = h.get("score", 0)
 
-            # FIX — afficher le joueur avec son numéro de maillot
             pid     = h.get("player")
             p_label = player_label(pid, jersey_map) if pid else "?"
 
