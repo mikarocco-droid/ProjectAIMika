@@ -258,9 +258,11 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 2 : xG...")
     cfg = get_sport_config(sport)
+    frame_w = getattr(config, 'FRAME_WIDTH', 1920) or 1920
     for e in events:
         if e.get("type") == "shot":
-            xg = compute_xg_sport(e.get("x", 0), sport)
+            x_norm = e.get("x", 0) / frame_w  # normaliser 0→1
+            xg = compute_xg_sport(x_norm, sport=sport)
             e["xg"] = min(xg, 0.5)
 
     # ─────────────────────────────────────────
