@@ -4,6 +4,8 @@
 import os
 import subprocess
 
+from sports.config import get_sport_config, get_highlight_types
+
 
 # ─────────────────────────────────────────
 # SCORE DES EVENTS
@@ -75,6 +77,7 @@ def cut_clip(video_path, start, end, output_path):
 # HIGHLIGHTS
 # mode="match"  → goals + tirs uniquement
 # mode="player" → goals + tirs + dribbles + actions individuelles
+# sport         → adapte les types et le contexte temporel
 # ─────────────────────────────────────────
 def create_highlights(
     video_path,
@@ -82,20 +85,18 @@ def create_highlights(
     output_dir = "outputs/highlights",
     fps        = 25,
     max_clips  = 20,
-    mode       = "match",  # "match" | "player"
-    player_id  = None      # ID tracker du joueur ciblé (mode player)
+    mode       = "match",      # "match" | "player"
+    player_id  = None,         # ID tracker du joueur ciblé (mode player)
+    sport      = "football"    # FIX — sport pour adapter les types et contexte
 ):
     os.makedirs(output_dir, exist_ok=True)
 
-    # Types autorisés selon le mode
-    if mode == "player":
-        allowed_types = [
-            "goal", "score", "shot",
-            "dribble", "progressive_run",
-            "interception", "fast_break"
-        ]
-    else:
-        allowed_types = ["goal", "score", "shot"]
+    # FIX — types et contexte adaptés selon sport + mode
+    allowed_types  = get_highlight_types(sport, mode)
+    cfg            = get_sport_config(sport)
+    context_before = cfg.get("context_before", 5)
+    context_after  = cfg.get("context_after",  4)
+    context_goal   = cfg.get("context_goal",   8)
 
     key_events = [
         e for e in events
