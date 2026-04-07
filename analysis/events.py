@@ -33,7 +33,6 @@ def get_closest_player(players, ball):
 
 # ─────────────────────────────────────────
 # SHOT ZONES MULTI SPORT
-# FIX v2 — seuils assouplis + zone centrale incluse
 # ─────────────────────────────────────────
 def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
     if shot_zones:
@@ -44,12 +43,10 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
         y_max = shot_zones.get("y_max", frame_h)
 
         if axis == "x":
-            y_tol     = (y_max - y_min) * 0.30          # FIX: 0.20→0.30 tolérance Y
+            y_tol     = (y_max - y_min) * 0.30
             in_y_shot = (y_min - y_tol <= y <= y_max + y_tol)
             in_y_goal = (y_min <= y <= y_max)
-            # FIX: zone tir élargie de 85% à 80% du bord
             in_zone   = (x > hi or x < lo) and in_y_shot
-            # FIX: zone but à 88% au lieu de 92%
             in_goal   = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y_goal
             return in_zone or in_goal, in_goal
         else:
@@ -58,11 +55,9 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
             return in_zone, in_goal
 
     if sport == "football":
-        in_y_shot = (frame_h * 0.25 <= y <= frame_h * 0.75)   # FIX: élargi 0.30→0.25
-        in_y_goal = (frame_h * 0.30 <= y <= frame_h * 0.70)   # FIX: élargi 0.35→0.30
-        # FIX: seuil tir 0.80 (était 0.92) — inclut les tirs depuis l'intérieur
+        in_y_shot = (frame_h * 0.25 <= y <= frame_h * 0.75)
+        in_y_goal = (frame_h * 0.30 <= y <= frame_h * 0.70)
         in_zone   = (x > frame_w * 0.80 or x < frame_w * 0.20) and in_y_shot
-        # FIX: zone but 0.88 (était 0.92)
         in_goal   = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y_goal
         return in_zone or in_goal, in_goal
 
@@ -87,7 +82,6 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
 # CALCUL xG
 # ─────────────────────────────────────────
 def compute_xg(x, y, frame_w=1280, frame_h=720, learner=None):
-    """xG depuis le modèle appris si disponible, sinon formule géométrique."""
     if learner and learner.xg_model.get("n_samples", 0) >= 10:
         return learner.predict_xg(x, y, frame_w, frame_h)
     dist_right = math.hypot(x - frame_w, y - frame_h / 2)
@@ -102,36 +96,34 @@ def compute_xg(x, y, frame_w=1280, frame_h=720, learner=None):
 # INIT STATE
 # ─────────────────────────────────────────
 def init_state(learner=None):
-    """Initialise l'état depuis les seuils appris si disponibles."""
     thr = learner.get_thresholds() if learner else {}
 
-    # Conversion secondes → frames (25fps)
-    fps = 25
-    shot_cd_frames = int(thr.get("shot_cooldown", 3.0)  * fps)
+    fps            = 25
+    shot_cd_frames = int(thr.get("shot_cooldown",   3.0) * fps)
     goal_cd_frames = int(thr.get("goal_cooldown", 150.0) * fps)
-    ball_speed_min = thr.get("ball_speed_min",    0.02)   # FIX: 0.03→0.02
+    ball_speed_min = thr.get("ball_speed_min",    0.02)
     player_near    = thr.get("player_near_goal",  0.15)
     goal_frames    = int(thr.get("goal_frames_min", 12))
 
     return {
-        "last_player":         None,
-        "last_ball_pos":       None,
-        "last_team":           None,
-        "sequence":            deque(maxlen=30),
-        "events_buffer":       deque(maxlen=10),
-        "shot_cd":             0,
-        "goal_cd":             0,
-        "possession_time":     0,
-        "team_possession":     {0: 0, 1: 0},
-        "pressing":            False,
-        "turnover_window":     0,
-        "ball_in_goal_zone":   0,
-        # Seuils dynamiques
-        "_shot_cd_max":        shot_cd_frames,
-        "_goal_cd_max":        goal_cd_frames,
-        "_ball_speed_min":     ball_speed_min,
-        "_player_near_goal":   player_near,
-        "_goal_frames_min":    goal_frames,
+        "last_player":              None,
+        "last_ball_pos":            None,
+        "last_team":                None,
+        "sequence":                 deque(maxlen=30),
+        "events_buffer":            deque(maxlen=10),
+        "shot_cd":                  0,
+        "goal_cd":                  0,
+        "possession_time":          0,
+        "team_possession":          {0: 0, 1: 0},
+        "pressing":                 False,
+        "turnover_window":          0,
+        "ball_in_goal_zone":        0,
+        "_shot_cd_max":             shot_cd_frames,
+        "_goal_cd_max":             goal_cd_frames,
+        "_ball_speed_min":          ball_speed_min,
+        "_player_near_goal":        player_near,
+        "_goal_frames_min":         goal_frames,
+        "_last_ball_interpolated":  False,
     }
 
 
@@ -253,32 +245,49 @@ def detect_events(
         events.append({"type": "build_up"})
         state["sequence"].clear()
 
+    # ── LONG PASS ────────────────────────
+    if state["last_ball_pos"]:
+        if distance(state["last_ball_pos"], ball["center"]) > frame_w * 0.2:
+            events.append({
+                "type":   "long_pass",
+                "player": str(current["id"]) if current else None,
+                "team":   current.get("team") if current else None
+            })
+
     # ── SHOTS / GOALS ─────────────────────
-    # Récupération seuils dynamiques (depuis learner ou defaults state)
-    ball_speed_min   = state.get("_ball_speed_min",   0.02)
-    player_near_pct  = state.get("_player_near_goal", 0.15)
-    goal_frames_min  = state.get("_goal_frames_min",  12)
-    shot_cd_max      = state.get("_shot_cd_max",      75)
-    goal_cd_max      = state.get("_goal_cd_max",      3750)
+    ball_speed_min  = state.get("_ball_speed_min",   0.02)
+    player_near_pct = state.get("_player_near_goal", 0.15)
+    goal_frames_min = state.get("_goal_frames_min",  12)
+    shot_cd_max     = state.get("_shot_cd_max",      75)
+    goal_cd_max     = state.get("_goal_cd_max",      3750)
 
     if current:
         x, y = ball["center"]
 
-        # FIX — vérification zone FP apprise
         if learner and learner.is_fp_zone(x, y, frame_w, frame_h):
-            pass  # zone connue comme faux positif → on skip tir
+            pass  # zone FP connue → skip
         else:
             is_shot, is_goal_zone = is_shot_zone(
                 x, y, sport, shot_zones, frame_w, frame_h
             )
 
             # ── SHOT ─────────────────────────
-            ball_speed   = speed(state["last_ball_pos"], ball["center"]) \
-                           if state["last_ball_pos"] else 0
-            # FIX: seuil réduit 0.03→0.02 ET on accepte aussi les tirs lents
-            # si le joueur est très près du but (zone goal)
-            shot_speed_ok = (ball_speed > frame_w * ball_speed_min) or \
-                            (is_goal_zone and ball_speed > frame_w * 0.01)
+            # FIX — ball_speed valide uniquement si les deux frames
+            # (courante + précédente) sont de vraies détections
+            ball_interpolated = ball.get("interpolated", False)
+
+            if (state["last_ball_pos"]
+                    and not ball_interpolated
+                    and not state.get("_last_ball_interpolated", False)):
+                ball_speed = speed(state["last_ball_pos"], ball["center"])
+            else:
+                # Vitesse inconnue → valeur neutre conservative
+                ball_speed = frame_w * 0.025
+
+            shot_speed_ok = (
+                ball_speed > frame_w * ball_speed_min
+                or (is_goal_zone and ball_speed > frame_w * 0.01)
+            )
 
             if is_shot and state["shot_cd"] == 0 and shot_speed_ok:
                 xg_val = compute_xg(x, y, frame_w, frame_h, learner)
@@ -299,7 +308,7 @@ def detect_events(
                     last_pass["xA"] = compute_xa(last_pass, shot)
 
             # ── GOAL ─────────────────────────
-            ball_is_real     = not ball.get("interpolated", False)
+            ball_is_real     = not ball_interpolated
             player_near_goal = dist < frame_w * player_near_pct
 
             if is_goal_zone:
@@ -312,7 +321,8 @@ def detect_events(
             else:
                 state["ball_in_goal_zone"] = 0
 
-            if state["ball_in_goal_zone"] >= goal_frames_min and state["goal_cd"] == 0:
+            if state["ball_in_goal_zone"] >= goal_frames_min \
+                    and state["goal_cd"] == 0:
                 events.append({
                     "type":   "goal",
                     "player": str(current["id"]),
@@ -327,19 +337,11 @@ def detect_events(
     else:
         state["ball_in_goal_zone"] = 0
 
-    # ── LONG PASS ────────────────────────
-    if state["last_ball_pos"]:
-        if distance(state["last_ball_pos"], ball["center"]) > frame_w * 0.2:
-            events.append({
-                "type":   "long_pass",
-                "player": str(current["id"]) if current else None,
-                "team":   current.get("team") if current else None
-            })
-
     # ── UPDATE STATE ─────────────────────
-    state["last_player"]   = current
-    state["last_ball_pos"] = ball["center"]
-    state["last_team"]     = current.get("team") if current else None
+    state["last_player"]             = current
+    state["last_ball_pos"]           = ball["center"]
+    state["_last_ball_interpolated"] = ball.get("interpolated", False)
+    state["last_team"]               = current.get("team") if current else None
 
     return events, state
 
