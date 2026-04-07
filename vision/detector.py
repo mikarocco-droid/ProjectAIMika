@@ -257,22 +257,29 @@ class Detector:
         ratio = h / w
         return MIN_RATIO <= ratio <= MAX_RATIO
 
-    def _detect_ball(self, frame, yolo_ball):
+    def _detect_ball(self, frame, yolo_ball, last_pos_override=None):
         """
         Stratégie ballon à 3 niveaux :
         1. YOLO a trouvé le ballon → on l'utilise + on met à jour last_pos
         2. HSV trouve quelque chose de circulaire → on l'utilise
         3. Fallback BallDetector (méthode config)
+
+        last_pos_override : position en coordonnées de `frame` (pas originales)
+                            Utilisé quand frame est une version réduite.
         """
         # 1. YOLO
         if yolo_ball is not None:
             self._last_ball_pos = yolo_ball["center"]
             return yolo_ball
 
-        # 2. HSV avec recherche guidée par dernière position
+        # Position de recherche HSV — override si fourni (frame réduite)
+        search_pos = last_pos_override if last_pos_override is not None \
+                     else self._last_ball_pos
+
+        # 2. HSV avec recherche guidée
         hsv_result = self.hsv_ball.detect(
             frame,
-            last_pos      = self._last_ball_pos,
+            last_pos      = search_pos,
             search_radius = 250
         )
         if hsv_result is not None:
@@ -288,6 +295,7 @@ class Detector:
     def detect(self, frame):
         """
         Détecte joueurs et ballon sur une frame.
+        Utilisé hors batch (calibration, sport_detector...).
         Retourne :
             players : list de dicts {bbox, center, conf}
             ball    : dict {bbox, center, conf} ou None
@@ -298,7 +306,7 @@ class Detector:
             frame,
             conf    = config.YOLO_CONFIDENCE,
             verbose = False,
-            imgsz   = 1280
+            imgsz   = 960    # FIX: 1280 → 960 cohérent avec batch
         )[0]
 
         players   = []
@@ -311,7 +319,6 @@ class Detector:
             center = ((x1 + x2) / 2, (y1 + y2) / 2)
             bbox   = [x1, y1, x2, y2]
 
-            # ── Joueurs ──────────────────
             if cls == self.player_cls:
                 if not self._in_play_zone(center, w_frame, h_frame):
                     continue
@@ -322,8 +329,6 @@ class Detector:
                     "center": [center[0], center[1]],
                     "conf":   conf
                 })
-
-            # ── Ballon YOLO ──────────────
             elif cls == self.ball_cls:
                 yolo_ball = {
                     "bbox":   bbox,
@@ -331,7 +336,5 @@ class Detector:
                     "conf":   conf
                 }
 
-        # Détection ballon enrichie
         ball = self._detect_ball(frame, yolo_ball)
-
         return players, ball
