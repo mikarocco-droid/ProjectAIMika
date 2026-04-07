@@ -32,11 +32,6 @@ from ai.commentary import generate_commentary
 from ai.learning import cluster_actions, learn_action_importance, detect_key_moments
 from sports.config import get_sport_config, compute_xg_sport
 
-from analysis.player_reid import reidentify_players
-from analysis.team_cluster import assign_teams_by_color
-from analysis.pass_detector import detect_passes
-from analysis.xa_model import compute_xa
-from analysis.tactical_v2 import detect_pressing_intensity, detect_play_style
 
 # ─────────────────────────────────────────
 # NORMALIZE HIGHLIGHTS
@@ -44,22 +39,18 @@ from analysis.tactical_v2 import detect_pressing_intensity, detect_play_style
 def normalize_highlights(highlights, mode="match"):
     fixed = []
     for h in highlights:
-        # Résoudre time_start
         ts = h.get("time_start") or h.get("timestamp_debut") or 0
         h["time_start"] = float(ts)
 
-        # Résoudre time_end
         te = h.get("time_end") or h.get("timestamp_fin") or 0
         h["time_end"] = float(te)
 
-        # Corriger time_end invalide
         if h["time_end"] <= h["time_start"]:
             h["time_end"] = h["time_start"] + 3.0
 
         if "main_type" not in h:
             h["main_type"] = h.get("type", "action")
 
-        # Normaliser les types Gemini non standard
         TYPE_MAP = {
             "arrêt_gardien":  "shot",
             "arret_gardien":  "shot",
@@ -81,7 +72,6 @@ def normalize_highlights(highlights, mode="match"):
 
         fixed.append(h)
 
-    # Filtrer selon le mode
     if mode == "player":
         allowed = ["goal", "shot", "score", "dribble",
                    "progressive_run", "interception", "fast_break"]
@@ -164,8 +154,8 @@ def run_pipeline(
     analysis_id    = None,
     save_annotated = False,
     plan           = "free",
-    mode           = "match",   # FIX — "match" | "player"
-    player_id      = None       # FIX — ID tracker joueur ciblé
+    mode           = "match",
+    player_id      = None
 ):
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
@@ -173,7 +163,7 @@ def run_pipeline(
     print(f"\nPIPELINE START - {sport.upper()} | mode={mode}")
 
     # ─────────────────────────────────────────
-    # 0. DÉTECTION AUTOMATIQUE DU SPORT
+    # 0. DÉTECTION SPORT + CALIBRATION
     # ─────────────────────────────────────────
     print("Step 0 : Détection sport + Calibration...")
     calib      = None
@@ -183,8 +173,7 @@ def run_pipeline(
         from ai.sport_detector import detect_sport
         sport_detected = detect_sport(video_path, fallback=sport)
         if sport_detected != sport:
-            print(f"  Sport détecté automatiquement : {sport_detected} "
-                  f"(demandé : {sport})")
+            print(f"  Sport détecté : {sport_detected} (demandé : {sport})")
             sport = sport_detected
     except Exception as e:
         print(f"  Sport detector ignoré : {e}")
@@ -221,34 +210,23 @@ def run_pipeline(
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
     # ─────────────────────────────────────────
-    # 🧠 POST PROCESSING INTELLIGENT (v17)
+    # 1a. POST PROCESSING V17
     # ─────────────────────────────────────────
-    from analysis.post_processing import (
-        temporal_filter,
-        filter_goals,
-        merge_players
-    )
-
-    # 1. merge joueurs (CRUCIAL)
-    events = merge_players(events)
-
-    # 2. filtre temporel global
-    events = temporal_filter(events, min_delta=2.0)
-
-    # 3. filtre spécifique buts
-    events = filter_goals(events)
-
-    print(f"  CLEAN {len(events)} events après filtrage")
+    try:
+        from analysis.post_processing import temporal_filter, filter_goals, merge_players
+        events = merge_players(events)
+        events = temporal_filter(events, min_delta=2.0)
+        events = filter_goals(events)
+        print(f"  CLEAN {len(events)} events après filtrage V17")
+    except Exception as e:
+        print(f"  Post processing ignoré : {e}")
 
     # ─────────────────────────────────────────
     # 1b. VALIDATION GEMINI
     # ─────────────────────────────────────────
     print("Step 1b : Validation Gemini...")
     try:
-        from ai.gemini_validator import (
-            validate_events_with_gemini,
-            read_jersey_numbers
-        )
+        from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers
 
         events = validate_events_with_gemini(
             events     = events,
@@ -278,86 +256,67 @@ def run_pipeline(
     except Exception as e:
         print(f"  Gemini validation ignoree : {e}")
 
-    from analysis.smart_game_ai import (
-    compute_possession,
-    clean_events_smart,
-    cluster_events
-)
-from analysis.ball_physics import detect_real_shot
-from analysis.xg_model import compute_xg_advanced
+    # ─────────────────────────────────────────
+    # 1c. SMART FILTERING V18
+    # ─────────────────────────────────────────
+    try:
+        from analysis.smart_game_ai import compute_possession, clean_events_smart, cluster_events
+        from analysis.ball_physics import detect_real_shot
 
+        # Nettoyage intelligent
+        events = clean_events_smart(events)
+
+        # Validation tirs par vitesse balle
+        validated = []
+        for i in range(len(events)):
+            e    = events[i]
+            prev = events[i-1] if i > 0 else None
+            if e.get("type") == "shot":
+                if not detect_real_shot(e, prev):
+                    continue
+            validated.append(e)
+        events = validated
+
+        # Clustering spatial — garde l'event central de chaque cluster
+        clusters = cluster_events(events)
+        events   = [c[len(c)//2] for c in clusters]
+
+        possession = compute_possession(events)
+        print(f"  SMART {len(events)} events | Possession: {possession}")
+    except Exception as e:
+        print(f"  Smart filtering ignoré : {e}")
 
     # ─────────────────────────────────────────
-    # V18 SMART FILTERING
+    # 1d. RE-ID + TEAMS V19
     # ─────────────────────────────────────────
+    try:
+        from analysis.player_reid import reidentify_players
+        from analysis.team_cluster import assign_teams_by_color
+        from analysis.pass_detector import detect_passes
+        from analysis.xa_model import compute_xa
+        from analysis.tactical_v2 import detect_pressing_intensity, detect_play_style
 
-    # 1. nettoyage intelligent
-    events = clean_events_smart(events)
+        events     = reidentify_players(events)
+        events     = assign_teams_by_color(events)
+        real_pass  = detect_passes(events)
+        events.extend(real_pass)
+        events     = compute_xa(events)
 
-    # 2. validation tirs (ULTRA IMPORTANT)
-    validated = []
-    for i in range(1, len(events)):
-        e = events[i]
-        prev = events[i-1]
-
-        if e.get("type") == "shot":
-            if not detect_real_shot(e, prev):
-                continue
-
-        validated.append(e)
-
-    events = validated
-
-    # 3. clustering actions
-    clusters = cluster_events(events)
-
-    # garder événements centraux
-    events = [c[len(c)//2] for c in clusters]
-
-    print(f"  SMART events: {len(events)}")
-
-    # 4. xG avancé
-    for e in events:
-        if e.get("type") == "shot":
-            e["xg"] = compute_xg_advanced(e.get("x", 0), e.get("y", 0))
-
-    # 5. possession réelle
-    possession = compute_possession(events)
-    print(f"  Possession: {possession}")
-
-    # ─────────────────────────────────────────
-    # V19 GOD MODE
-    # ─────────────────────────────────────────
-
-    # 1. Re-ID joueurs
-    events = reidentify_players(events)
-
-    # 2. Teams auto
-    events = assign_teams_by_color(events)
-
-    # 3. Détection passes réelles
-    real_passes = detect_passes(events)
-    events.extend(real_passes)
-
-    # 4. xA
-    events = compute_xa(events)
-
-    # 5. Tactical avancé
-    pressing_level = detect_pressing_intensity(events)
-    play_style = detect_play_style(events)
-
-    print(f"  Pressing: {pressing_level} | Style: {play_style}")
+        pressing_level = detect_pressing_intensity(events)
+        play_style     = detect_play_style(events)
+        print(f"  V19 Re-ID OK | Pressing: {pressing_level} | Style: {play_style}")
+    except Exception as e:
+        print(f"  V19 ignoré : {e}")
 
     # ─────────────────────────────────────────
     # 2. ENRICH xG
     # ─────────────────────────────────────────
     print("Step 2 : xG...")
-    cfg = get_sport_config(sport)
     frame_w = getattr(config, 'FRAME_WIDTH', 1920) or 1920
     for e in events:
         if e.get("type") == "shot":
-            x_norm = e.get("x", 0) / frame_w  # normaliser 0→1
-            xg = compute_xg_sport(x_norm, sport=sport)
+            x_norm = e.get("x", 0) / frame_w
+            xg     = compute_xg_sport(x_norm, sport=sport)
             e["xg"] = min(xg, 0.5)
 
     # ─────────────────────────────────────────
@@ -459,7 +418,6 @@ from analysis.xg_model import compute_xg_advanced
 
     # ─────────────────────────────────────────
     # 8. HIGHLIGHTS
-    # FIX — mode + player_id passés
     # ─────────────────────────────────────────
     print("Step 8 : Highlights...")
     highlights = []
@@ -474,7 +432,7 @@ from analysis.xg_model import compute_xg_advanced
             max_clips  = config.HIGHLIGHT_MAX,
             mode       = mode,
             player_id  = player_id,
-            sport      = sport      # FIX
+            sport      = sport
         )
         highlights = normalize_highlights(highlights, mode=mode)
 
@@ -486,7 +444,6 @@ from analysis.xg_model import compute_xg_advanced
                 sport          = sport,
                 max_highlights = config.HIGHLIGHT_MAX
             )
-            # Second normalize après Gemini
             highlights = normalize_highlights(highlights, mode=mode)
             print(f"  Gemini scoring : {len(highlights)} highlights scorés")
         except Exception as eg:
@@ -526,10 +483,9 @@ from analysis.xg_model import compute_xg_advanced
     story      = ""
 
     try:
-        # FIX — enrichir les events avec time_sec si absent
         for e in events:
             if not e.get("time"):
-                frame = e.get("frame", 0) or 0
+                frame  = e.get("frame", 0) or 0
                 e["time"] = round(frame / fps, 2) if fps > 0 else 0
 
         ranked_highlights = rank_highlights(events)
@@ -543,7 +499,6 @@ from analysis.xg_model import compute_xg_advanced
 
     # ─────────────────────────────────────────
     # 11. SUMMARY
-    # FIX — recalculé après tous les enrichissements
     # ─────────────────────────────────────────
     print("Step 11 : Summary...")
     summary = compute_match_summary(events, stats, total_frames, fps)
