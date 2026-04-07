@@ -7,50 +7,57 @@ import cv2
 
 class PlayerReID:
     """
-    ReID hybride : position + couleur maillot + embedding histogramme
-    + memory intelligente avec TTL (Time To Live)
-
-    TTL system :
-    - joueur actif    : vu dans les 5 dernières secondes (125 frames @25fps)
-    - joueur en veille: pas vu depuis 5-30s → récupérable si revient
-    - joueur oublié   : pas vu depuis >30s → supprimé de la mémoire
+    ReID hybride calibré :
+    - position + couleur maillot + embedding histogramme
+    - contrainte spatiale (pas de téléportation)
+    - contrainte inter-équipes (jamais fusion A/B)
+    - TTL adaptatif (seuil plus strict pour joueurs en veille)
+    - MAX_PLAYERS = 25 (filet de sécurité)
     """
 
-    # TTL en frames (@25fps)
-    TTL_ACTIVE  = 125   # 5s  — joueur considéré actif
-    TTL_SLEEP   = 750   # 30s — joueur en veille, récupérable
-    # Au-delà de TTL_SLEEP → supprimé
+    TTL_ACTIVE  = 125    # 5s  @25fps — joueur actif
+    TTL_SLEEP   = 500    # 20s @25fps — joueur en veille, récupérable
+    # >TTL_SLEEP → supprimé
 
-    def __init__(self, max_distance=80, fps=25):
-        self.max_distance = max_distance
-        self.fps          = fps
-        self.memory       = {}    # pid -> {center, color, embedding, last_seen, active}
-        self.next_id      = 0
-        self.frame_count  = 0
+    MAX_PLAYERS      = 25     # limite dure — jamais plus de 25 IDs actifs
+    SPATIAL_MAX_DIST = 200    # px — distance max pour matcher deux positions
+    THRESHOLD_ACTIVE = 90     # seuil matching joueur actif
+    THRESHOLD_SLEEP  = 120    # seuil matching joueur en veille (plus strict)
+
+    def __init__(self, fps=25):
+        self.fps         = fps
+        self.memory      = {}   # pid -> {center, color, embedding, team, last_seen}
+        self.next_id     = 0
+        self.frame_count = 0
 
     # ─────────────────────────────
-    # COULEUR DOMINANTE MAILLOT
+    # COULEUR MAILLOT (torse)
     # ─────────────────────────────
     def _extract_color(self, frame, bbox):
         x1, y1, x2, y2 = map(int, bbox)
         x1 = max(0, x1); y1 = max(0, y1)
         x2 = min(frame.shape[1], x2)
         y2 = min(frame.shape[0], y2)
-
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             return np.array([0.0, 0.0, 0.0])
-
-        h = crop.shape[0]
-        # Torse uniquement (évite pelouse + shorts)
+        h    = crop.shape[0]
         crop = crop[int(h * 0.2):int(h * 0.6), :]
         if crop.size == 0:
             return np.array([0.0, 0.0, 0.0])
-
         return crop.mean(axis=(0, 1)).astype(float)
 
-    def _color_distance(self, c1, c2):
-        return np.linalg.norm(c1 - c2)
+    # ─────────────────────────────
+    # ÉQUIPE (depuis couleur maillot)
+    # Rouge (255,80,80) → team 1  |  Cyan (0,200,255) → team 0
+    # ─────────────────────────────
+    def _infer_team(self, color):
+        r, g, b = color[2], color[1], color[0]  # BGR
+        if r > 150 and g < 120 and b < 120:
+            return 1   # rouge
+        if b > 150 and g > 150 and r < 100:
+            return 0   # cyan
+        return None    # inconnu (arbitre, staff...)
 
     # ─────────────────────────────
     # EMBEDDING HISTOGRAMME
@@ -60,21 +67,24 @@ class PlayerReID:
         x1 = max(0, x1); y1 = max(0, y1)
         x2 = min(frame.shape[1], x2)
         y2 = min(frame.shape[0], y2)
-
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             return np.zeros(512)
-
         crop = cv2.resize(crop, (32, 64))
         hist = cv2.calcHist(
             [crop], [0, 1, 2], None,
-            [8, 8, 8],
-            [0, 256, 0, 256, 0, 256]
+            [8, 8, 8], [0, 256, 0, 256, 0, 256]
         )
         return cv2.normalize(hist, hist).flatten()
 
-    def _embedding_distance(self, e1, e2):
-        return np.linalg.norm(e1 - e2)
+    # ─────────────────────────────
+    # CONTRAINTE SPATIALE
+    # ─────────────────────────────
+    def _spatial_gate(self, center1, center2):
+        dist = np.linalg.norm(
+            np.array(center1) - np.array(center2)
+        )
+        return dist < self.SPATIAL_MAX_DIST
 
     # ─────────────────────────────
     # SCORE GLOBAL
@@ -83,23 +93,19 @@ class PlayerReID:
         pos_d = np.linalg.norm(
             np.array(det["center"]) - np.array(mem["center"])
         )
-        col_d = self._color_distance(det["color"], mem["color"])
-        emb_d = self._embedding_distance(det["embedding"], mem["embedding"])
+        col_d = np.linalg.norm(det["color"] - mem["color"])
+        emb_d = np.linalg.norm(det["embedding"] - mem["embedding"])
 
-        # Pénalité si joueur en veille (pas vu depuis longtemps)
+        # Pénalité progressive si joueur en veille
         frames_absent = self.frame_count - mem["last_seen"]
-        sleep_penalty = 1.0 + (frames_absent / self.TTL_SLEEP) * 0.5
+        penalty       = 1.0 + (frames_absent / self.TTL_SLEEP) * 0.5
 
-        return (pos_d * 0.5 + col_d * 0.3 + emb_d * 0.2) * sleep_penalty
+        return (pos_d * 0.5 + col_d * 0.3 + emb_d * 0.2) * penalty
 
     # ─────────────────────────────
-    # MEMORY — nettoyage TTL
+    # CLEANUP MEMORY (TTL)
     # ─────────────────────────────
     def _cleanup_memory(self):
-        """
-        Supprime les joueurs non vus depuis plus de TTL_SLEEP frames.
-        Appelé à chaque frame pour garder la mémoire propre.
-        """
         to_delete = [
             pid for pid, mem in self.memory.items()
             if self.frame_count - mem["last_seen"] > self.TTL_SLEEP
@@ -111,67 +117,92 @@ class PlayerReID:
     # ASSIGNATION ID
     # ─────────────────────────────
     def _assign_id(self, det):
+        # Filet de sécurité — jamais plus de MAX_PLAYERS IDs actifs
+        active_count = sum(
+            1 for m in self.memory.values()
+            if self.frame_count - m["last_seen"] <= self.TTL_ACTIVE
+        )
+
         best_id    = None
         best_score = float("inf")
 
         for pid, mem in self.memory.items():
+            # ── Contrainte spatiale ──
+            if not self._spatial_gate(det["center"], mem["center"]):
+                continue
+
+            # ── Contrainte inter-équipes ──
+            det_team = det.get("team")
+            mem_team = mem.get("team")
+            if det_team is not None and mem_team is not None:
+                if det_team != mem_team:
+                    continue
+
+            # ── Seuil adaptatif selon TTL ──
+            frames_absent = self.frame_count - mem["last_seen"]
+            threshold = (
+                self.THRESHOLD_ACTIVE
+                if frames_absent <= self.TTL_ACTIVE
+                else self.THRESHOLD_SLEEP
+            )
+
             score = self._compute_score(det, mem)
-            if score < best_score and score < self.max_distance:
+            if score < best_score and score < threshold:
                 best_score = score
                 best_id    = pid
 
         if best_id is not None:
-            # Mettre à jour la mémoire du joueur
             self.memory[best_id].update({
                 "center":    det["center"],
                 "color":     det["color"],
                 "embedding": det["embedding"],
+                "team":      det.get("team", self.memory[best_id].get("team")),
                 "last_seen": self.frame_count,
-                "active":    True
             })
             return best_id
 
-        # Nouveau joueur
+        # Nouveau joueur — respecter MAX_PLAYERS
+        if active_count >= self.MAX_PLAYERS:
+            # Retourner l'ID le plus proche quand même
+            # (évite de perdre un joueur à cause du cap)
+            if best_id is None and self.memory:
+                best_id = min(
+                    self.memory.keys(),
+                    key=lambda p: np.linalg.norm(
+                        np.array(det["center"]) - np.array(self.memory[p]["center"])
+                    )
+                )
+            return best_id or 0
+
         pid              = self.next_id
         self.memory[pid] = {
             **det,
             "last_seen": self.frame_count,
-            "active":    True
         }
         self.next_id += 1
         return pid
 
     # ─────────────────────────────
-    # STATS (debug)
+    # STATS (debug pipeline)
     # ─────────────────────────────
     def stats(self):
         active  = sum(
             1 for m in self.memory.values()
             if self.frame_count - m["last_seen"] <= self.TTL_ACTIVE
         )
-        sleeping = sum(
-            1 for m in self.memory.values()
-            if self.TTL_ACTIVE < self.frame_count - m["last_seen"] <= self.TTL_SLEEP
-        )
+        sleeping = len(self.memory) - active
         return {
             "total_ids": self.next_id,
             "in_memory": len(self.memory),
             "active":    active,
-            "sleeping":  sleeping
+            "sleeping":  sleeping,
         }
 
     # ─────────────────────────────
     # PROCESS FRAME
     # ─────────────────────────────
     def process(self, frame, detections):
-        """
-        Appelé depuis vision/tracker.py après ByteTrack.
-        detections : liste de dicts avec "id", "bbox", "center", "conf"
-        Retourne la même liste avec "id" stabilisé par ReID.
-        """
         self.frame_count += 1
-
-        # Nettoyer les joueurs oubliés (>30s sans apparition)
         self._cleanup_memory()
 
         results = []
@@ -180,21 +211,25 @@ class PlayerReID:
             bbox   = det.get("bbox", [0, 0, 0, 0])
             x1, y1, x2, y2 = bbox
             center = ((x1 + x2) / 2, (y1 + y2) / 2)
+            color  = self._extract_color(frame, bbox)
+            team   = self._infer_team(color)
 
             enriched = {
                 "center":    center,
-                "color":     self._extract_color(frame, bbox),
+                "color":     color,
                 "embedding": self._extract_embedding(frame, bbox),
+                "team":      team,
             }
 
             reid_id = self._assign_id(enriched)
 
             results.append({
                 **det,
+                "id":         reid_id,
                 "player_id":  reid_id,
                 "tracker_id": det.get("id"),
-                "id":         reid_id,
-                "center":     list(center)
+                "center":     list(center),
+                "team":       team,
             })
 
         return results
