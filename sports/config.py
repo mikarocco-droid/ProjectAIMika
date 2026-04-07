@@ -162,9 +162,16 @@ def get_highlight_types(sport, mode="match"):
 # ─────────────────────────────────────────
 def compute_xg_sport(x, y=None, sport="football"):
     cfg  = get_sport_config(sport)
-    dist = x / cfg["goal_x"] if cfg["goal_x"] > 0 else x
+    gx   = cfg.get("goal_x", 1.0)
 
-    # Modèle logistique
-    xg = 1 / (1 + math.exp(4 * (dist - 0.5)))
+    # FIX — éviter division par zéro et overflow math.exp
+    if gx <= 0:
+        return 0.1
+    dist = float(x) / gx
+
+    # Clamp dist pour éviter overflow dans math.exp
+    # math.exp(>709) = OverflowError
+    exponent = max(-100.0, min(100.0, 4 * (dist - 0.5)))
+    xg = 1 / (1 + math.exp(exponent))
 
     return round(max(0.01, min(0.95, xg)), 3)
