@@ -164,16 +164,20 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # INIT LEARNING MODEL
-    # Chargé en début de pipeline pour utiliser
-    # les seuils et xG appris des matchs précédents
     # ─────────────────────────────────────────
     learner = None
     try:
         from ai.learning_model import MatchLearner
-        learner = MatchLearner(sport=sport, base_dir=os.path.join(output_dir, "..", "learning"))
-        learned_stats = learner.stats()
-        print(f"  Learning : {learned_stats['n_matches']} matchs | "
-              f"{learned_stats['n_events']} events cumulés")
+        learner = MatchLearner(
+            sport    = sport,
+            base_dir = os.path.join(output_dir, "..", "learning")
+        )
+        ls = learner.stats()
+        print(f"  Learning : {ls['n_matches']} matchs | "
+              f"{ls['n_events']} events | "
+              f"xG n={ls['xg_samples']} | "
+              f"FP zones={ls['fp_zones']} | "
+              f"spatial={ls['spatial_max_dist']:.0f}px")
     except Exception as e:
         print(f"  Learning model ignoré : {e}")
 
@@ -236,7 +240,6 @@ def run_pipeline(
     try:
         from analysis.post_processing import temporal_filter, filter_goals, merge_players
 
-        # Utiliser les seuils appris si disponibles
         goal_cooldown = learner.get_thresholds().get("goal_cooldown", 150.0) \
                         if learner else 150.0
 
@@ -261,6 +264,17 @@ def run_pipeline(
             sport      = sport,
             min_conf   = 0.75
         )
+
+        # FIX — filtrer les zones FP apprises avant d'envoyer à Gemini
+        if learner:
+            n_before = len(events)
+            events   = [
+                e for e in events
+                if not (e.get("type") == "shot"
+                        and learner.is_fp_zone(e.get("x", 0), e.get("y", 0)))
+            ]
+            if len(events) < n_before:
+                print(f"  FP zones : {n_before - len(events)} shots filtrés")
 
         top_players = [
             {"id": pid, "frame_id": int(fps * 30), "bbox": [100, 100, 200, 300]}
@@ -337,12 +351,8 @@ def run_pipeline(
     for e in events:
         if e.get("type") == "shot":
             if learner and learner.xg_model.get("n_samples", 0) >= 10:
-                # Modèle appris
-                xg = learner.predict_xg(
-                    e.get("x", 0), e.get("y", 0), frame_w
-                )
+                xg = learner.predict_xg(e.get("x", 0), e.get("y", 0), frame_w)
             else:
-                # Modèle par défaut
                 x_norm = e.get("x", 0) / frame_w
                 xg     = compute_xg_sport(x_norm, sport=sport)
             e["xg"] = min(xg, 0.5)
@@ -535,12 +545,18 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 11b. ENREGISTREMENT APPRENTISSAGE
-    # Doit être APRÈS le summary pour avoir les stats complètes
+    # APRÈS summary — passe jersey_map + highlights pour tout apprendre
     # ─────────────────────────────────────────
     learning_result = {}
     if learner:
         try:
-            learning_result = learner.record_match(events, summary, fps)
+            learning_result = learner.record_match(
+                events     = events,
+                summary    = summary,
+                fps        = fps,
+                jersey_map = jersey_map,
+                highlights = highlights
+            )
             print(f"  Learning : {learner.stats()}")
         except Exception as e:
             print(f"  Learning record error : {e}")
@@ -595,38 +611,38 @@ def run_pipeline(
     # 14. SAVE JSON
     # ─────────────────────────────────────────
     result = {
-        "summary":         summary,
-        "events":          events,
-        "stats":           stats,
-        "highlights":      highlights,
-        "jersey_map":      jersey_map,
-        "heatmaps":        heatmaps,
-        "heatmap":         heatmap_path,
-        "reel":            reel_path,
-        "montage":         montage_path,
-        "annotated":       annotated_path,
-        "ai_summary":      ai_summary,
-        "pdf":             pdf_path,
-        "sport":           sport,
-        "mode":            mode,
-        "player_id":       player_id,
-        "calib":           calib,
-        "fps":             fps,
-        "total_frames":    total_frames,
-        "teams":           teams,
-        "formation":       formation,
-        "pressing":        pressing,
-        "phases":          phases,
-        "tactical":        tactical,
-        "pass_network":    pass_network,
-        "offsides":        offsides,
-        "dominance":       dominance,
-        "key_moments":     key_moments,
-        "ratings":         ratings,
-        "mvp":             str(mvp[0]) if mvp else None,
-        "commentary":      commentary,
-        "story":           story,
-        "learning":        learning_result,
+        "summary":      summary,
+        "events":       events,
+        "stats":        stats,
+        "highlights":   highlights,
+        "jersey_map":   jersey_map,
+        "heatmaps":     heatmaps,
+        "heatmap":      heatmap_path,
+        "reel":         reel_path,
+        "montage":      montage_path,
+        "annotated":    annotated_path,
+        "ai_summary":   ai_summary,
+        "pdf":          pdf_path,
+        "sport":        sport,
+        "mode":         mode,
+        "player_id":    player_id,
+        "calib":        calib,
+        "fps":          fps,
+        "total_frames": total_frames,
+        "teams":        teams,
+        "formation":    formation,
+        "pressing":     pressing,
+        "phases":       phases,
+        "tactical":     tactical,
+        "pass_network": pass_network,
+        "offsides":     offsides,
+        "dominance":    dominance,
+        "key_moments":  key_moments,
+        "ratings":      ratings,
+        "mvp":          str(mvp[0]) if mvp else None,
+        "commentary":   commentary,
+        "story":        story,
+        "learning":     learning_result,
     }
 
     result = sanitize_for_json(result)
