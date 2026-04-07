@@ -117,13 +117,19 @@ class BallHSVDetector:
 
         # Zone de recherche réduite si position précédente connue
         if last_pos is not None:
+            h_f, w_f = frame.shape[:2]
             cx, cy  = last_pos
             x1 = max(0, int(cx - search_radius))
             y1 = max(0, int(cy - search_radius))
-            x2 = min(w, int(cx + search_radius))
-            y2 = min(h, int(cy + search_radius))
-            roi        = frame[y1:y2, x1:x2]
-            offset     = (x1, y1)
+            x2 = min(w_f, int(cx + search_radius))
+            y2 = min(h_f, int(cy + search_radius))
+            # FIX — si le crop est vide (last_pos hors frame) → fallback frame entière
+            if x2 <= x1 or y2 <= y1:
+                roi    = frame
+                offset = (0, 0)
+            else:
+                roi    = frame[y1:y2, x1:x2]
+                offset = (x1, y1)
         else:
             roi    = frame
             offset = (0, 0)
