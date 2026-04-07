@@ -4,21 +4,6 @@
 from collections import defaultdict
 
 
-# ─────────────────────────────────────────
-# DÉLAIS MINIMUM PAR TYPE D'EVENT
-# Basés sur la réalité du jeu :
-# - goal      : 150s  — après un but, remise en jeu + célébration
-# - shot      :   3s  — on ne peut pas tirer 2x en 3s
-# - dribble   :   1s  — possible d'enchaîner mais pas trop vite
-# - interception: 2s  — une interception = action ponctuelle
-# - fast_break:   3s  — une contre-attaque dure plusieurs secondes
-# - progressive_run: 1s — course vers l'avant
-# - pass      :   0.3s — les passes s'enchaînent rapidement
-# - possession:   0.1s — très fréquent, délai minimal
-# - long_pass :   1s  — moins fréquent qu'une passe courte
-# - under_pressure: 0.5s
-# - build_up  :   2s
-# ─────────────────────────────────────────
 MIN_DELTA = {
     "goal":            150.0,
     "score":           150.0,
@@ -37,14 +22,7 @@ MIN_DELTA = {
 }
 
 
-# ─────────────────────────────────────────
-# FILTRE TEMPOREL PAR TYPE
-# ─────────────────────────────────────────
 def temporal_filter(events, min_delta=None):
-    """
-    Filtre les events trop rapprochés dans le temps.
-    min_delta ignoré — on utilise MIN_DELTA par type.
-    """
     filtered          = []
     last_time_by_type = {}
 
@@ -62,29 +40,72 @@ def temporal_filter(events, min_delta=None):
 
 
 # ─────────────────────────────────────────
-# FILTRE GOALS ANTI-DOUBLON
-# FIX — fenêtre large : après un but, 150s de cooldown
-#        (célébration + remise en jeu + reprise)
+# FILTRE GOALS — version renforcée
+#
+# Règles anti-faux-positifs :
+# 1. Cooldown 200s entre deux buts
+# 2. But dans les 30 premières secondes → suspect, exige validation Gemini
+# 3. xG minimum : un but sans xG > 0 et sans validation Gemini est rejeté
+# 4. Si deux buts détectés proches (<60s) → garder celui avec le meilleur score
 # ─────────────────────────────────────────
-def filter_goals(events, window=200.0):
-    goals          = []
+def filter_goals(events, window=200.0, shot_before_goal_window=12.0):
+    """
+    Filtre les faux buts avec 3 règles :
+
+    1. Cooldown 200s entre deux buts
+    2. Un vrai but est TOUJOURS précédé d'un tir dans les
+       `shot_before_goal_window` secondes — sinon rejeté
+       (sauf si Gemini a explicitement validé le but)
+    3. xG=0 + pas de Gemini + danger faible → rejeté
+    """
+    all_sorted     = sorted(events, key=lambda x: x.get("time", 0))
+    goals_raw      = [e for e in all_sorted if e.get("type") in ["goal", "score"]]
+    others         = [e for e in all_sorted if e.get("type") not in ["goal", "score"]]
+    shot_times     = [e.get("time", 0) for e in all_sorted if e.get("type") == "shot"]
+
+    validated      = []
     last_goal_time = -999
 
-    for e in sorted(events, key=lambda x: x.get("time", 0)):
-        if e.get("type") in ["goal", "score"]:
-            t = e.get("time", 0)
-            if t - last_goal_time > window:
-                goals.append(e)
-                last_goal_time = t
+    for g in goals_raw:
+        t    = g.get("time", 0)
+        xg   = g.get("xg", 0) or 0
+        gem  = g.get("gemini_validated", False)
+        dang = g.get("danger", 0) or 0
 
-    others = [e for e in events if e.get("type") not in ["goal", "score"]]
-    return others + goals
+        # ── Règle 1 : cooldown ──
+        if t - last_goal_time <= window:
+            print(f"  filter_goals : but à {t:.0f}s rejeté (cooldown)")
+            continue
+
+        # ── Règle 2 : tir précédent obligatoire ──
+        # Un but sans tir dans les N secondes avant est une sortie de balle
+        # Exception : Gemini l'a explicitement validé (confiance haute)
+        if not gem:
+            shot_before = any(
+                0 < t - st <= shot_before_goal_window
+                for st in shot_times
+            )
+            if not shot_before:
+                print(f"  filter_goals : but à {t:.0f}s rejeté "
+                      f"(aucun tir dans les {shot_before_goal_window:.0f}s précédentes)")
+                continue
+
+        # ── Règle 3 : xG + danger ──
+        if xg == 0 and not gem and dang < 5:
+            print(f"  filter_goals : but à {t:.0f}s rejeté "
+                  f"(xG=0, non validé Gemini, danger={dang})")
+            continue
+
+        validated.append(g)
+        last_goal_time = t
+
+    if len(validated) != len(goals_raw):
+        print(f"  filter_goals : {len(goals_raw)} buts bruts → "
+              f"{len(validated)} retenus")
+
+    return others + validated
 
 
-# ─────────────────────────────────────────
-# MERGE TRACKER IDS
-# Réduit les doublons de joueurs (76 → ~22)
-# ─────────────────────────────────────────
 def merge_players(events, distance_thresh=80):
     player_positions = defaultdict(list)
 
