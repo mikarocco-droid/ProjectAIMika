@@ -16,7 +16,6 @@ from analytics.advanced import (
     extract_pass_sequences
 )
 from video_utils import create_highlights, create_highlight_reel
-from video.montage import create_montage
 from analysis.events import detect_events
 from analysis.tactical import (
     tactical_report,
@@ -498,18 +497,8 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # 9. MONTAGE
     # ─────────────────────────────────────────
-    print("Step 9 : Montage...")
+    print("Step 9 : Montage ignoré (désactivé)")
     montage_path = None
-    try:
-        montage_path = create_montage(
-            highlights = highlights,
-            video_path = video_path,
-            output     = os.path.join(output_dir, "montage.mp4"),
-            title      = f"Analyse {sport.capitalize()}",
-        )
-        print(f"  OK montage -> {montage_path}")
-    except Exception as e:
-        print(f"  Montage error : {e}")
 
     # ─────────────────────────────────────────
     # 10. RANKINGS + RATINGS + COMMENTARY
