@@ -32,10 +32,8 @@ class Tracker:
             self.mode    = "deepsort"
             print("  Tracker : DeepSort (fallback)")
 
-        # ── Re-ID — stabilise les IDs entre les frames ──
-        # max_distance=50px : si un joueur réapparaît à moins de 50px
-        # de sa dernière position connue, il garde le même ID
-        self.reid = PlayerReID(max_distance=50)
+        # ── ReID hybride (position + couleur + embedding) ──
+        self.reid = PlayerReID(max_distance=80)
 
     def update(self, players, frame):
         if not players:
@@ -46,10 +44,16 @@ class Tracker:
         else:
             results = self._update_deepsort(players, frame)
 
-        # ── Appliquer Re-ID sur les résultats du tracker ──
-        # Réduit les doublons d'IDs (398 maillots → ~22 joueurs)
-        reid_results = self.reid.process_tracks(results)
-        return reid_results
+        # ── Appliquer ReID hybride avec la frame courante ──
+        results = self.reid.process(frame, results)
+
+        # Normaliser : player_id → id pour cohérence pipeline
+        for r in results:
+            if "player_id" in r:
+                r["tracker_id"] = r.get("id", r["player_id"])
+                r["id"]         = r["player_id"]
+
+        return results
 
     def _update_bytetrack(self, players, frame):
         dets = np.array([
