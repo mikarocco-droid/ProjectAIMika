@@ -66,7 +66,7 @@ def temporal_filter(events, min_delta=None):
 # FIX — fenêtre large : après un but, 150s de cooldown
 #        (célébration + remise en jeu + reprise)
 # ─────────────────────────────────────────
-def filter_goals(events, window=150.0):
+def filter_goals(events, window=200.0):
     goals          = []
     last_goal_time = -999
 
