@@ -211,12 +211,12 @@ def process_batch(
         if ball_tracker is not None:
             yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
             balls_list      = [yolo_ball_tuple] if yolo_ball_tuple else []
-            ball_result     = ball_tracker.update(
+            # FIX — update() retourne (bbox, interpolated)
+            ball_result, was_interpolated = ball_tracker.update(
                 detected_balls = balls_list,
                 frame_w        = w,
                 frame_h        = h
             )
-            was_interpolated = (yolo_ball_tuple is None and ball_result is not None)
             ball = ball_tuple_to_dict(ball_result, interpolated=was_interpolated)
         else:
             ball = yolo_ball
