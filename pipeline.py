@@ -277,9 +277,9 @@ def run_pipeline(
             validated.append(e)
         events = validated
 
-        # Clustering spatial — garde l'event central de chaque cluster
-        clusters = cluster_events(events)
-        events   = [c[len(c)//2] for c in clusters]
+        # FIX — clustering spatial désactivé : trop agressif, détruit les passes
+        # clusters = cluster_events(events)
+        # events   = [c[len(c)//2] for c in clusters]
 
         possession = compute_possession(events)
         print(f"  SMART {len(events)} events | Possession: {possession}")
