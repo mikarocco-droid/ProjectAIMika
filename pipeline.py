@@ -208,11 +208,17 @@ def run_pipeline(
         return_frames     = True
     )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
-    if hasattr(tracker, 'reid'):
-        print(f"  ReID : {tracker.reid.stats()}")
-        
+
+    # FIX — log ReID stats si disponible via main module
+    try:
+        from main import get_tracker
+        _tracker = get_tracker()
+        if _tracker and hasattr(_tracker, 'reid'):
+            print(f"  ReID stats : {_tracker.reid.stats()}")
+    except Exception:
+        pass
+
     # FIX — enrichir time en secondes AVANT le post-processing
-    # sans ça, tous les events ont time=0 et le filtre temporel ne fonctionne pas
     for e in events:
         if not e.get("time"):
             frame = e.get("frame", 0) or 0
@@ -269,13 +275,11 @@ def run_pipeline(
     # 1c. SMART FILTERING V18
     # ─────────────────────────────────────────
     try:
-        from analysis.smart_game_ai import compute_possession, clean_events_smart, cluster_events
+        from analysis.smart_game_ai import compute_possession, clean_events_smart
         from analysis.ball_physics import detect_real_shot
 
-        # Nettoyage intelligent
         events = clean_events_smart(events)
 
-        # Validation tirs par vitesse balle
         validated = []
         for i in range(len(events)):
             e    = events[i]
@@ -286,10 +290,7 @@ def run_pipeline(
             validated.append(e)
         events = validated
 
-        # FIX — clustering spatial désactivé : trop agressif, détruit les passes
-        # clusters = cluster_events(events)
-        # events   = [c[len(c)//2] for c in clusters]
-
+        # clustering spatial désactivé — trop agressif
         possession = compute_possession(events)
         print(f"  SMART {len(events)} events | Possession: {possession}")
     except Exception as e:
@@ -305,11 +306,11 @@ def run_pipeline(
         from analysis.xa_model import compute_xa
         from analysis.tactical_v2 import detect_pressing_intensity, detect_play_style
 
-        events     = reidentify_players(events)
-        events     = assign_teams_by_color(events)
-        real_pass  = detect_passes(events)
+        events        = reidentify_players(events)
+        events        = assign_teams_by_color(events)
+        real_pass     = detect_passes(events)
         events.extend(real_pass)
-        events     = compute_xa(events)
+        events        = compute_xa(events)
 
         pressing_level = detect_pressing_intensity(events)
         play_style     = detect_play_style(events)
