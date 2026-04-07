@@ -9,6 +9,13 @@ from analysis.events import process_match, detect_events
 from rendering.overlay import Overlay, TeamColorDetector
 import config
 
+# ─────────────────────────────────────────
+# FRAME SKIP — saute 1 frame sur 3
+# Pattern : analyse 0,1 / skip 2 / analyse 3,4 / skip 5...
+# → 2 frames analysées sur 3 = ~33% plus rapide
+# ─────────────────────────────────────────
+FRAME_SKIP_EVERY = 3
+
 
 def default_progress(pct):
     print(f"  {pct}%", end="\r")
@@ -86,10 +93,14 @@ def process_video(
     save_annotated    = False,
     annotated_path    = None,
     shot_zones        = None,
-    return_frames     = False
+    return_frames     = False,
+    frame_skip_every  = None,
 ):
     if progress_callback is None:
         progress_callback = default_progress
+
+    # Priorité au paramètre, sinon constante globale
+    skip_every = frame_skip_every if frame_skip_every is not None else FRAME_SKIP_EVERY
 
     # FIX — instanciation ici (pas au niveau module) pour éviter crash au démarrage
     detector       = Detector(sport=sport)
@@ -115,10 +126,14 @@ def process_video(
     w            = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h            = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    analyzed_count = total_frames - (total_frames // skip_every)
+
     print(f"Video : {video_path}")
     print(f"  {total_frames} frames | {fps:.1f} fps | {total_frames / fps:.1f}s")
     print(f"  Resolution : {w}x{h}")
     print(f"  Sport : {sport}")
+    print(f"  Frame skip : 2/{skip_every} → ~{analyzed_count} frames analysées "
+          f"({analyzed_count * 100 // total_frames}%)")
 
     # Convertir shot_zones ratios → pixels si nécessaire
     if shot_zones:
@@ -140,20 +155,30 @@ def process_video(
     overlay = Overlay(fps=fps) if save_annotated else None
     writer  = None
     if save_annotated and annotated_path:
-        writer = cv2.VideoWriter(
+        # FPS de sortie réduit proportionnellement
+        out_fps = fps * (2 / skip_every)
+        writer  = cv2.VideoWriter(
             annotated_path,
             cv2.VideoWriter_fourcc(*"mp4v"),
-            fps, (w, h)
+            out_fps, (w, h)
         )
 
     frames_data = []
-    frame_id    = 0
+    frame_id    = 0   # numéro réel dans la vidéo source
+    analyzed    = 0   # compteur de frames effectivement analysées
     last_pct    = -1
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+
+        # ── FRAME SKIP ───────────────────
+        # Saute 1 frame toutes les `skip_every` frames
+        # Pattern pour skip_every=3 : analyse 0,1 / skip 2 / analyse 3,4 / skip 5...
+        if frame_id % skip_every == (skip_every - 1):
+            frame_id += 1
+            continue
 
         # ── Détection YOLO ───────────────
         players, yolo_ball = detector.detect(frame)
@@ -164,8 +189,9 @@ def process_video(
         # ── Assignation équipes ──────────
         tracked = assign_teams_by_color(frame, tracked, color_detector)
 
-        # ── OCR maillots (1/30) ──────────
-        tracked = ocr.read_all(frame, tracked, frame_id=frame_id)
+        # ── OCR maillots ─────────────────
+        # On passe analyzed (pas frame_id) pour garder le rythme 1/30 analysées
+        tracked = ocr.read_all(frame, tracked, frame_id=analyzed)
 
         # ── Ball Tracker ─────────────────
         if ball_tracker is not None:
@@ -215,12 +241,13 @@ def process_video(
                 last_pct = pct
 
         frame_id += 1
+        analyzed += 1
 
     cap.release()
     if writer:
         writer.release()
 
-    print(f"\n  {frame_id} frames traitees")
+    print(f"\n  {frame_id} frames lues | {analyzed} analysées")
 
     jersey_map = ocr.get_jersey_map()
     ocr.reset()
