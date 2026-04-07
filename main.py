@@ -12,25 +12,19 @@ import config
 
 # ─────────────────────────────────────────
 # FRAME SKIP — saute 1 frame sur 3
+# Pattern : analyse 0,1 / skip 2 / analyse 3,4 / skip 5...
+# → 2 frames analysées sur 3 = ~33% plus rapide
 # ─────────────────────────────────────────
 FRAME_SKIP_EVERY = 3
 
 # ─────────────────────────────────────────
-# BATCH YOLO — nombre de frames traitées
-# simultanément par le GPU
+# BATCH YOLO — frames traitées simultanément
 # 4 = bon équilibre mémoire/vitesse sur T4
 # ─────────────────────────────────────────
 YOLO_BATCH_SIZE = 4
 
 # ─────────────────────────────────────────
-# RÉSOLUTION YOLO — 960 au lieu de 1280
-# Suffisant pour détecter des joueurs
-# sur caméra latérale fixe
-# ─────────────────────────────────────────
-YOLO_IMGSZ = 960
-
-# ─────────────────────────────────────────
-# PRÉ-RESIZE — dimensions cibles avant YOLO
+# PRÉ-RESIZE — dimensions avant YOLO
 # Réduit la charge mémoire GPU
 # ─────────────────────────────────────────
 PROCESS_W = 960
@@ -75,12 +69,10 @@ def assign_teams_by_color(frame, tracked, color_detector):
 
 # ─────────────────────────────────────────
 # RESCALE BBOXES
-# Les détections YOLO sont sur la frame
-# réduite (PROCESS_W x PROCESS_H) →
-# on les remet à l'échelle originale
+# Les détections YOLO sont sur frame réduite
+# → on remet à l'échelle originale
 # ─────────────────────────────────────────
 def rescale_detections(players, yolo_ball, scale_x, scale_y):
-    """Remet les bboxes à l'échelle de la frame originale."""
     for p in players:
         x1, y1, x2, y2 = p["bbox"]
         p["bbox"]   = [x1*scale_x, y1*scale_y, x2*scale_x, y2*scale_y]
@@ -131,7 +123,7 @@ def ball_tuple_to_dict(ball_tuple, interpolated=False):
 # TRAITEMENT D'UN BATCH DE FRAMES
 # ─────────────────────────────────────────
 def process_batch(
-    batch_frames,       # liste de (frame_id, frame_orig, frame_small)
+    batch_frames,
     detector,
     tracker,
     ocr,
@@ -139,33 +131,29 @@ def process_batch(
     ball_tracker,
     sport,
     shot_zones,
-    w, h,               # dimensions originales
-    scale_x, scale_y,   # facteurs de rescale
-    analyzed_offset,    # pour le compteur OCR
+    w, h,
+    scale_x, scale_y,
+    analyzed_offset,
 ):
-    """
-    Traite un batch de frames avec YOLO en une seule passe GPU,
-    puis applique tracking/events individuellement.
-    """
     if not batch_frames:
         return []
 
-    # ── YOLO batch : une seule inférence pour N frames ──
-    small_frames = [bf[2] for bf in batch_frames]
+    # ── YOLO batch : une seule inférence GPU pour N frames ──
+    small_frames  = [bf[2] for bf in batch_frames]
     batch_results = detector.model(
         small_frames,
         conf    = config.YOLO_CONFIDENCE,
         verbose = False,
-        imgsz   = YOLO_IMGSZ
+        imgsz   = YOLO_BATCH_SIZE * 240   # 960 pour batch=4
     )
 
     batch_data = []
 
     for i, (frame_id, frame_orig, frame_small) in enumerate(batch_frames):
-        result    = batch_results[i]
-        analyzed  = analyzed_offset + i
+        result   = batch_results[i]
+        analyzed = analyzed_offset + i
 
-        # Parser résultats YOLO pour cette frame
+        # ── Parser résultats YOLO ────────
         players   = []
         yolo_ball = None
 
@@ -193,10 +181,19 @@ def process_batch(
                     "conf":   conf
                 }
 
-        # Détection ballon HSV sur frame réduite
-        yolo_ball = detector._detect_ball(frame_small, yolo_ball)
+        # ── Détection ballon HSV ─────────
+        # FIX — last_pos converti en coordonnées réduites
+        last_pos_small = None
+        if detector._last_ball_pos is not None:
+            lx, ly = detector._last_ball_pos
+            last_pos_small = (lx / scale_x, ly / scale_y)
 
-        # Rescale vers dimensions originales
+        yolo_ball = detector._detect_ball(
+            frame_small, yolo_ball,
+            last_pos_override=last_pos_small
+        )
+
+        # ── Rescale → dimensions originales ──
         players, yolo_ball = rescale_detections(
             players, yolo_ball, scale_x, scale_y
         )
@@ -237,13 +234,13 @@ def process_batch(
             e["frame"] = frame_id
 
         batch_data.append({
-            "players": tracked,
-            "ball":    ball,
-            "frame":   frame_id,
-            "frame_w": w,
-            "frame_h": h,
-            "events":  frame_events,
-            "_frame_orig": frame_orig,   # pour overlay si besoin
+            "players":     tracked,
+            "ball":        ball,
+            "frame":       frame_id,
+            "frame_w":     w,
+            "frame_h":     h,
+            "events":      frame_events,
+            "_frame_orig": frame_orig,
         })
 
     return batch_data
@@ -303,7 +300,7 @@ def process_video(
     print(f"  Sport : {sport}")
     print(f"  Frame skip  : 2/{skip_every} → ~{analyzed_count} frames analysées "
           f"({analyzed_count * 100 // total_frames}%)")
-    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={YOLO_IMGSZ}")
+    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={YOLO_BATCH_SIZE * 240}")
 
     # Convertir shot_zones ratios → pixels si nécessaire
     if shot_zones:
@@ -332,11 +329,34 @@ def process_video(
             out_fps, (w, h)
         )
 
-    frames_data     = []
-    frame_id        = 0
-    analyzed        = 0
-    last_pct        = -1
-    current_batch   = []   # buffer de frames en attente de traitement
+    frames_data   = []
+    frame_id      = 0
+    analyzed      = 0
+    last_pct      = -1
+    current_batch = []
+
+    def flush_batch(batch, analyzed_so_far):
+        """Traite un batch et l'ajoute à frames_data."""
+        if not batch:
+            return
+        data = process_batch(
+            batch, detector, tracker, ocr,
+            color_detector, ball_tracker,
+            sport, shot_zones, w, h, scale_x, scale_y,
+            analyzed_offset=analyzed_so_far - len(batch) + 1
+        )
+        for fd in data:
+            if writer and overlay:
+                orig = fd.pop("_frame_orig", None)
+                if orig is not None:
+                    ann = overlay.render(
+                        orig, fd["players"], fd["ball"],
+                        fd["events"], fd["frame"]
+                    )
+                    writer.write(ann)
+            else:
+                fd.pop("_frame_orig", None)
+            frames_data.append(fd)
 
     while True:
         ret, frame = cap.read()
@@ -349,35 +369,16 @@ def process_video(
             continue
 
         # ── PRÉ-RESIZE ───────────────────
-        # Réduction avant YOLO pour moins de mémoire GPU
-        frame_small = cv2.resize(frame, (PROCESS_W, PROCESS_H),
-                                 interpolation=cv2.INTER_LINEAR)
+        frame_small = cv2.resize(
+            frame, (PROCESS_W, PROCESS_H),
+            interpolation=cv2.INTER_LINEAR
+        )
 
         current_batch.append((frame_id, frame, frame_small))
 
         # ── BATCH COMPLET → traitement ────
         if len(current_batch) >= b_size:
-            batch_data = process_batch(
-                current_batch, detector, tracker, ocr,
-                color_detector, ball_tracker,
-                sport, shot_zones, w, h, scale_x, scale_y,
-                analyzed_offset=analyzed - len(current_batch) + 1
-            )
-
-            for fd in batch_data:
-                # Overlay si demandé
-                if writer and overlay:
-                    orig = fd.pop("_frame_orig", None)
-                    if orig is not None:
-                        ann = overlay.render(
-                            orig, fd["players"], fd["ball"],
-                            fd["events"], fd["frame"]
-                        )
-                        writer.write(ann)
-                else:
-                    fd.pop("_frame_orig", None)
-                frames_data.append(fd)
-
+            flush_batch(current_batch, analyzed)
             current_batch = []
 
         # ── Progression ───────────────────
@@ -391,25 +392,7 @@ def process_video(
         analyzed += 1
 
     # ── FLUSH dernier batch incomplet ────
-    if current_batch:
-        batch_data = process_batch(
-            current_batch, detector, tracker, ocr,
-            color_detector, ball_tracker,
-            sport, shot_zones, w, h, scale_x, scale_y,
-            analyzed_offset=analyzed - len(current_batch) + 1
-        )
-        for fd in batch_data:
-            if writer and overlay:
-                orig = fd.pop("_frame_orig", None)
-                if orig is not None:
-                    ann = overlay.render(
-                        orig, fd["players"], fd["ball"],
-                        fd["events"], fd["frame"]
-                    )
-                    writer.write(ann)
-            else:
-                fd.pop("_frame_orig", None)
-            frames_data.append(fd)
+    flush_batch(current_batch, analyzed)
 
     cap.release()
     if writer:
