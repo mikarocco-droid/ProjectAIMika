@@ -279,7 +279,7 @@ def detect_events(
         else:
             state["ball_in_goal_zone"] = 0
 
-        if state["ball_in_goal_zone"] >= 5 and state["goal_cd"] == 0:
+        if state["ball_in_goal_zone"] >= 12 and state["goal_cd"] == 0:
             events.append({
                 "type":   "goal",
                 "player": str(current["id"]),
