@@ -40,24 +40,14 @@ def temporal_filter(events, min_delta=None):
 
 
 # ─────────────────────────────────────────
-# FILTRE GOALS — version renforcée
-#
-# Règles anti-faux-positifs :
+# FILTRE GOALS
+# Règles :
 # 1. Cooldown 200s entre deux buts
-# 2. But dans les 30 premières secondes → suspect, exige validation Gemini
-# 3. xG minimum : un but sans xG > 0 et sans validation Gemini est rejeté
-# 4. Si deux buts détectés proches (<60s) → garder celui avec le meilleur score
+# 2. Tir précédent obligatoire dans les 12s
+#    (sauf si Gemini a explicitement validé)
+# 3. xG=0 + pas Gemini + danger faible → rejeté
 # ─────────────────────────────────────────
 def filter_goals(events, window=200.0, shot_before_goal_window=12.0):
-    """
-    Filtre les faux buts avec 3 règles :
-
-    1. Cooldown 200s entre deux buts
-    2. Un vrai but est TOUJOURS précédé d'un tir dans les
-       `shot_before_goal_window` secondes — sinon rejeté
-       (sauf si Gemini a explicitement validé le but)
-    3. xG=0 + pas de Gemini + danger faible → rejeté
-    """
     all_sorted     = sorted(events, key=lambda x: x.get("time", 0))
     goals_raw      = [e for e in all_sorted if e.get("type") in ["goal", "score"]]
     others         = [e for e in all_sorted if e.get("type") not in ["goal", "score"]]
@@ -78,8 +68,6 @@ def filter_goals(events, window=200.0, shot_before_goal_window=12.0):
             continue
 
         # ── Règle 2 : tir précédent obligatoire ──
-        # Un but sans tir dans les N secondes avant est une sortie de balle
-        # Exception : Gemini l'a explicitement validé (confiance haute)
         if not gem:
             shot_before = any(
                 0 < t - st <= shot_before_goal_window
@@ -87,7 +75,8 @@ def filter_goals(events, window=200.0, shot_before_goal_window=12.0):
             )
             if not shot_before:
                 print(f"  filter_goals : but à {t:.0f}s rejeté "
-                      f"(aucun tir dans les {shot_before_goal_window:.0f}s précédentes)")
+                      f"(aucun tir dans les {shot_before_goal_window:.0f}s "
+                      f"précédentes)")
                 continue
 
         # ── Règle 3 : xG + danger ──
