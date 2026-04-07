@@ -33,7 +33,8 @@ class Tracker:
             print("  Tracker : DeepSort (fallback)")
 
         # ── ReID hybride (position + couleur + embedding) ──
-        self.reid = PlayerReID(max_distance=80)
+        self.reid = PlayerReID(fps=config.FPS)
+        self.reid.set_spatial_max_dist(80)
 
     def update(self, players, frame):
         if not players:
