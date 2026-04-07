@@ -118,6 +118,7 @@ def init_state(learner=None):
         "pressing":                 False,
         "turnover_window":          0,
         "ball_in_goal_zone":        0,
+        "_goal_zone_speeds":        [],   # vitesses du ballon dans zone but
         "_shot_cd_max":             shot_cd_frames,
         "_goal_cd_max":             goal_cd_frames,
         "_ball_speed_min":          ball_speed_min,
@@ -150,6 +151,7 @@ def detect_events(
 
     if not players or not ball:
         state["ball_in_goal_zone"] = 0
+        state["_goal_zone_speeds"] = []
         return events, state
 
     # ── POSSESSION ───────────────────────
@@ -272,8 +274,6 @@ def detect_events(
             )
 
             # ── SHOT ─────────────────────────
-            # FIX — ball_speed valide uniquement si les deux frames
-            # (courante + précédente) sont de vraies détections
             ball_interpolated = ball.get("interpolated", False)
 
             if (state["last_ball_pos"]
@@ -281,7 +281,6 @@ def detect_events(
                     and not state.get("_last_ball_interpolated", False)):
                 ball_speed = speed(state["last_ball_pos"], ball["center"])
             else:
-                # Vitesse inconnue → valeur neutre conservative
                 ball_speed = frame_w * 0.025
 
             shot_speed_ok = (
@@ -308,34 +307,63 @@ def detect_events(
                     last_pass["xA"] = compute_xa(last_pass, shot)
 
             # ── GOAL ─────────────────────────
+            # FIX — on track la vitesse dans la zone but
+            # Vrai but : ballon ralentit dans le filet
+            # Dégagement : ballon traverse la zone à grande vitesse
             ball_is_real     = not ball_interpolated
             player_near_goal = dist < frame_w * player_near_pct
 
             if is_goal_zone:
                 if ball_is_real and player_near_goal:
                     state["ball_in_goal_zone"] += 1
+                    state["_goal_zone_speeds"].append(ball_speed)
                 elif state["ball_in_goal_zone"] > 0:
                     state["ball_in_goal_zone"] += 1
+                    state["_goal_zone_speeds"].append(ball_speed)
                 else:
                     state["ball_in_goal_zone"] = 0
+                    state["_goal_zone_speeds"]  = []
             else:
+                # Ballon sort de la zone — vérifier si c'était un dégagement
+                if state["ball_in_goal_zone"] > 0:
+                    speeds = state["_goal_zone_speeds"]
+                    if speeds:
+                        avg_speed = sum(speeds) / len(speeds)
+                        # Ballon traversait vite → dégagement → annuler
+                        if avg_speed > frame_w * 0.04:
+                            state["ball_in_goal_zone"] = 0
+                            state["_goal_zone_speeds"]  = []
                 state["ball_in_goal_zone"] = 0
+                state["_goal_zone_speeds"]  = []
 
+            # Validation finale du but
             if state["ball_in_goal_zone"] >= goal_frames_min \
                     and state["goal_cd"] == 0:
-                events.append({
-                    "type":   "goal",
-                    "player": str(current["id"]),
-                    "team":   current.get("team"),
-                    "x":      x,
-                    "y":      y,
-                    "danger": compute_danger({"type": "goal"})
-                })
-                state["goal_cd"]           = goal_cd_max
+                speeds    = state["_goal_zone_speeds"]
+                avg_speed = sum(speeds) / len(speeds) if speeds else 0
+
+                # Vrai but : vitesse moyenne faible (ballon dans filet)
+                if avg_speed < frame_w * 0.06:
+                    events.append({
+                        "type":   "goal",
+                        "player": str(current["id"]),
+                        "team":   current.get("team"),
+                        "x":      x,
+                        "y":      y,
+                        "danger": compute_danger({"type": "goal"})
+                    })
+                    state["goal_cd"] = goal_cd_max
+                else:
+                    print(f"  goal rejeté t={x:.0f} vitesse_avg="
+                          f"{avg_speed:.0f}px > seuil={frame_w * 0.06:.0f}px "
+                          f"(dégagement probable)")
+
                 state["ball_in_goal_zone"] = 0
+                state["_goal_zone_speeds"]  = []
 
     else:
         state["ball_in_goal_zone"] = 0
+        state["_goal_zone_speeds"]  = []
 
     # ── UPDATE STATE ─────────────────────
     state["last_player"]             = current
