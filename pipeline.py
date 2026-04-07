@@ -32,6 +32,11 @@ from ai.commentary import generate_commentary
 from ai.learning import cluster_actions, learn_action_importance, detect_key_moments
 from sports.config import get_sport_config, compute_xg_sport
 
+from analysis.player_reid import reidentify_players
+from analysis.team_cluster import assign_teams_by_color
+from analysis.pass_detector import detect_passes
+from analysis.xa_model import compute_xa
+from analysis.tactical_v2 import detect_pressing_intensity, detect_play_style
 
 # ─────────────────────────────────────────
 # NORMALIZE HIGHLIGHTS
@@ -319,6 +324,29 @@ from analysis.xg_model import compute_xg_advanced
     # 5. possession réelle
     possession = compute_possession(events)
     print(f"  Possession: {possession}")
+
+    # ─────────────────────────────────────────
+    # V19 GOD MODE
+    # ─────────────────────────────────────────
+
+    # 1. Re-ID joueurs
+    events = reidentify_players(events)
+
+    # 2. Teams auto
+    events = assign_teams_by_color(events)
+
+    # 3. Détection passes réelles
+    real_passes = detect_passes(events)
+    events.extend(real_passes)
+
+    # 4. xA
+    events = compute_xa(events)
+
+    # 5. Tactical avancé
+    pressing_level = detect_pressing_intensity(events)
+    play_style = detect_play_style(events)
+
+    print(f"  Pressing: {pressing_level} | Style: {play_style}")
 
     # ─────────────────────────────────────────
     # 2. ENRICH xG
