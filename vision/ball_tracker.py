@@ -5,15 +5,6 @@ import numpy as np
 from collections import deque
 
 
-def smooth_position(history, window=5):
-    if len(history) == 0:
-        return None
-    pts = list(history)[-window:]
-    x = int(np.mean([p[0] for p in pts]))
-    y = int(np.mean([p[1] for p in pts]))
-    return (x, y)
-
-
 def distance(p1, p2):
     return np.linalg.norm(np.array(p1) - np.array(p2))
 
@@ -32,6 +23,11 @@ def is_valid_ball(ball, frame_w, frame_h):
 
 
 class SimpleKalman:
+    """
+    Kalman simplifié avec réactivité améliorée.
+    FIX — coefficient velocity 0.6 → 0.9 pour mieux suivre
+    les ballons rapides sans trop lisser.
+    """
     def __init__(self):
         self.state    = None
         self.velocity = np.array([0.0, 0.0])
@@ -39,26 +35,45 @@ class SimpleKalman:
     def update(self, measurement):
         if measurement is None:
             if self.state is not None:
-                self.state = self.state + self.velocity
+                # FIX — on applique la vélocité mais on la réduit
+                # progressivement pour éviter la dérive
+                self.state    = self.state + self.velocity
+                self.velocity = self.velocity * 0.7
             return self.state
-        m = np.array(measurement)
+
+        m = np.array(measurement, dtype=float)
         if self.state is None:
-            self.state = m
+            self.state    = m
+            self.velocity = np.array([0.0, 0.0])
             return self.state
-        self.velocity = (m - self.state) * 0.6
-        self.state    = self.state + self.velocity
+
+        # FIX — coefficient 0.6 → 0.9 : suit mieux les mouvements rapides
+        self.velocity = (m - self.state) * 0.9
+        self.state    = m   # on prend la mesure directement (pas de lissage)
         return self.state
+
+    def reset(self):
+        self.state    = None
+        self.velocity = np.array([0.0, 0.0])
 
 
 class BallTracker:
+    """
+    FIX — max_lost réduit de 15 → 5 frames
+    Au-delà de 5 frames sans détection, on retourne None
+    plutôt qu'une position Kalman extrapolée.
+    Ça permet à events.py de calculer une vraie ball_speed
+    dès que le ballon réapparaît.
+    """
 
     def __init__(self, max_history=30):
-        self.history    = deque(maxlen=max_history)
-        self.kalman     = SimpleKalman()
-        self.last_seen  = 0
-        self.frame_id   = 0
+        self.history     = deque(maxlen=max_history)
+        self.kalman      = SimpleKalman()
+        self.last_seen   = 0
+        self.frame_id    = 0
         self.lost_frames = 0
-        self.max_lost   = 15
+        # FIX : 15 → 5 frames max d'interpolation (~0.2s à 25fps)
+        self.max_lost    = 5
 
     def select_best_ball(self, balls, last_pos):
         if not balls:
@@ -98,17 +113,22 @@ class BallTracker:
             self.last_seen   = self.frame_id
             self.lost_frames = 0
             pos = self.kalman.update((cx, cy))
+            return self.get_ball_bbox(pos), False   # interpolated=False
+
         else:
             self.lost_frames += 1
             if self.lost_frames < self.max_lost:
+                # Interpolation courte — Kalman prédit
                 pos = self.kalman.update(None)
                 if pos is not None:
                     self.history.append(tuple(pos.astype(int)))
+                    return self.get_ball_bbox(pos), True  # interpolated=True
             else:
-                pos = None
+                # Trop longtemps perdu → on coupe
                 self.history.clear()
+                self.kalman.reset()
 
-        return self.get_ball_bbox(pos)
+            return None, True  # pas de position fiable
 
     def get_ball_bbox(self, pos):
         if pos is None:
@@ -142,3 +162,10 @@ class BallTracker:
         if best_dist < 80:
             return best
         return None
+
+    def reset(self):
+        self.history.clear()
+        self.kalman.reset()
+        self.last_seen   = 0
+        self.frame_id    = 0
+        self.lost_frames = 0
