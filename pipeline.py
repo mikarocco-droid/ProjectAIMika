@@ -6,7 +6,7 @@ import json
 
 import config
 from main import process_video
-from analytics.stats import compute_stats
+from analytics.stats import compute_stats, compute_possession_from_stats
 from analytics.heatmap import generate_all_heatmaps
 from analytics.advanced import (
     build_pass_network,
@@ -144,6 +144,37 @@ def make_progress_callback(analysis_id=None):
 
 
 # ─────────────────────────────────────────
+# FIX MVP — résoudre label depuis jersey_map
+# ─────────────────────────────────────────
+def resolve_mvp_label(mvp, stats, jersey_map):
+    """
+    Retourne le label lisible du MVP :
+    - #9 si numéro maillot connu
+    - ID-{pid} sinon
+    Cherche aussi dans les stats pour récupérer le label déjà calculé.
+    """
+    if mvp is None:
+        return None
+
+    pid = str(mvp[0]) if isinstance(mvp, (list, tuple)) else str(mvp)
+
+    # Chercher dans les stats d'abord (label déjà résolu)
+    if pid in stats and stats[pid].get("label"):
+        return stats[pid]["label"]
+
+    # Chercher dans jersey_map
+    if jersey_map:
+        jersey = (
+            jersey_map.get(pid)
+            or jersey_map.get(int(pid) if pid.isdigit() else pid)
+        )
+        if jersey:
+            return f"#{jersey}"
+
+    return f"ID-{pid}"
+
+
+# ─────────────────────────────────────────
 # PIPELINE PRINCIPAL
 # ─────────────────────────────────────────
 def run_pipeline(
@@ -227,7 +258,7 @@ def run_pipeline(
     )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
-    # FIX — enrichir time en secondes AVANT le post-processing
+    # Enrichir time en secondes AVANT le post-processing
     for e in events:
         if not e.get("time"):
             frame = e.get("frame", 0) or 0
@@ -241,7 +272,7 @@ def run_pipeline(
             temporal_filter,
             filter_goals,
             merge_players,
-            infer_shots_from_goals,   # FIX — import ici
+            infer_shots_from_goals,
         )
 
         goal_cooldown = learner.get_thresholds().get("goal_cooldown", 150.0) \
@@ -250,7 +281,7 @@ def run_pipeline(
         events = merge_players(events)
         events = temporal_filter(events, min_delta=2.0)
         events = filter_goals(events, window=goal_cooldown)
-        events = infer_shots_from_goals(events)  # FIX — inférer shots depuis buts
+        events = infer_shots_from_goals(events)
         print(f"  CLEAN {len(events)} events | goal_cooldown={goal_cooldown:.0f}s")
     except Exception as e:
         print(f"  Post processing ignoré : {e}")
@@ -267,7 +298,8 @@ def run_pipeline(
             video_path = video_path,
             fps        = fps,
             sport      = sport,
-            min_conf   = 0.75
+            min_conf   = 0.75,
+            frame_w    = int(frames_data[0].get("frame_w", 1920)) if frames_data else 1920,
         )
 
         if learner:
@@ -302,9 +334,12 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 1c. SMART FILTERING V18
+    # FIX possession — on ne calcule plus ici,
+    # recalculé après Step 3 avec équipes corrigées
     # ─────────────────────────────────────────
+    possession = {}
     try:
-        from analysis.smart_game_ai import compute_possession, clean_events_smart
+        from analysis.smart_game_ai import clean_events_smart
         from analysis.ball_physics import detect_real_shot
 
         events = clean_events_smart(events)
@@ -319,8 +354,7 @@ def run_pipeline(
             validated.append(e)
         events = validated
 
-        possession = compute_possession(events)
-        print(f"  SMART {len(events)} events | Possession: {possession}")
+        print(f"  SMART {len(events)} events | Possession: (calculée après stats)")
     except Exception as e:
         print(f"  Smart filtering ignoré : {e}")
 
@@ -362,10 +396,18 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 3. STATS
+    # FIX — stats avant possession pour avoir les équipes corrigées
     # ─────────────────────────────────────────
     print("Step 3 : Stats...")
     stats = compute_stats(events, jersey_map=jersey_map)
     print(f"  OK {len(stats)} joueurs")
+
+    # FIX possession — recalcul avec équipes corrigées depuis stats
+    try:
+        possession = compute_possession_from_stats(events, stats)
+        print(f"  Possession corrigée : {possession}")
+    except Exception as e:
+        print(f"  Possession correction ignorée : {e}")
 
     # ─────────────────────────────────────────
     # 4. TACTICAL
@@ -483,7 +525,8 @@ def run_pipeline(
                 highlights     = highlights,
                 video_path     = video_path,
                 sport          = sport,
-                max_highlights = config.HIGHLIGHT_MAX
+                max_highlights = config.HIGHLIGHT_MAX,
+                frame_w        = frame_w,
             )
             highlights = normalize_highlights(highlights, mode=mode)
             print(f"  Gemini scoring : {len(highlights)} highlights scorés")
@@ -510,6 +553,7 @@ def run_pipeline(
     print("Step 10 : Ratings + Commentary...")
     ratings    = {}
     mvp        = None
+    mvp_label  = None
     commentary = []
     story      = ""
 
@@ -523,7 +567,9 @@ def run_pipeline(
         ratings           = compute_player_ratings(events)
         mvp               = get_mvp(ratings)
 
-        # FIX — commentary enrichi avec contexte match
+        # FIX MVP label — résoudre #numéro ou ID-xxx
+        mvp_label = resolve_mvp_label(mvp, stats, jersey_map)
+
         commentary = generate_commentary(
             ranked_highlights[:10],
             jersey_map = jersey_map,
@@ -532,7 +578,7 @@ def run_pipeline(
             style      = tactical.get("style"),
         )
         story = generate_match_story(events, fps=fps)
-        print(f"  OK MVP={mvp[0] if mvp else '?'} | commentary={len(commentary)} lines")
+        print(f"  OK MVP={mvp_label} | commentary={len(commentary)} lines")
     except Exception as e:
         print(f"  Ratings error : {e}")
 
@@ -541,8 +587,11 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 11 : Summary...")
     summary = compute_match_summary(events, stats, total_frames, fps)
+    # FIX possession — intégrer dans le summary
+    summary["possession"] = possession
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
           f"xG={summary['total_xg']} | joueurs={summary['players']}")
+    print(f"  Possession : {possession}")
 
     # ─────────────────────────────────────────
     # 11b. ENREGISTREMENT APPRENTISSAGE
@@ -598,10 +647,11 @@ def run_pipeline(
                     "heatmaps":       heatmap_paths,
                     "player_ratings": ratings,
                     "match_story":    story,
-                    "mvp":            str(mvp[0]) if mvp else None,
+                    "mvp":            mvp_label,   # FIX — label lisible
                     "formation":      formation,
                     "tactical":       tactical,
                     "commentary":     commentary,
+                    "possession":     possession,  # FIX — ajout possession
                 },
                 output_path = os.path.join(output_dir, "rapport.pdf"),
                 sport       = sport
@@ -642,10 +692,11 @@ def run_pipeline(
         "dominance":    dominance,
         "key_moments":  key_moments,
         "ratings":      ratings,
-        "mvp":          str(mvp[0]) if mvp else None,
+        "mvp":          mvp_label,   # FIX — label lisible
         "commentary":   commentary,
         "story":        story,
         "learning":     learning_result,
+        "possession":   possession,  # FIX — ajout possession
     }
 
     result = sanitize_for_json(result)
@@ -657,6 +708,7 @@ def run_pipeline(
     print(f"  {summary['goals']} buts | {summary['shots']} tirs | "
           f"xG: {summary['total_xg']} | {summary['players']} joueurs")
     print(f"  Formation: {formation} | Style: {tactical.get('style','?')}")
-    print(f"  MVP: {mvp[0] if mvp else '?'}")
+    print(f"  MVP: {mvp_label}")
+    print(f"  Possession: {possession}")
 
     return result
