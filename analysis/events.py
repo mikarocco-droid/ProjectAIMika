@@ -33,12 +33,10 @@ def get_closest_player(players, ball):
 
 # ─────────────────────────────────────────
 # FIX 1 — IDENTIFIER LE GARDIEN
-# Joueur le plus proche d'un bord x extrême
 # ─────────────────────────────────────────
 def get_goalkeeper(players, frame_w):
     """
     Retourne le joueur le plus proche d'une ligne de but (x < 15% ou x > 85%).
-    Retourne None si aucun joueur n'est dans cette zone.
     """
     threshold = frame_w * 0.15
     gks = [
@@ -47,43 +45,36 @@ def get_goalkeeper(players, frame_w):
     ]
     if not gks:
         return None
-    # Celui le plus près du bord
     return min(gks, key=lambda p: min(p["center"][0], frame_w - p["center"][0]))
 
 
 # ─────────────────────────────────────────
 # FIX 2 — DÉTECTION RELANCE À LA MAIN
-# Signature : balle qui part depuis zone gardien
-# avec trajectoire parabolique (dy montante)
-# et vitesse modérée
 # ─────────────────────────────────────────
 def is_goalkeeper_throw(ball_pos, last_ball_pos, frame_w, frame_h, gk):
     """
-    Retourne True si le mouvement de balle ressemble à une relance gardien :
-    - origine dans la zone gardien (x < 15% ou x > 85%)
-    - vitesse modérée (pas un dégagement fort)
-    - balle monte (dy < 0 en coordonnées image) ou trajectoire oblique
+    Retourne True si le mouvement ressemble à une relance gardien :
+    - origine dans la zone gardien
+    - vitesse modérée
+    - balle s'éloigne latéralement du but
     """
     if gk is None or last_ball_pos is None:
         return False
 
-    bx, by   = ball_pos
-    lx, ly   = last_ball_pos
-    gx       = gk["center"][0]
+    bx, by = ball_pos
+    lx, ly = last_ball_pos
+    gx     = gk["center"][0]
 
-    # La balle doit partir depuis la zone gardien
     in_gk_zone = (lx < frame_w * 0.15 or lx > frame_w * 0.85)
     if not in_gk_zone:
         return False
 
-    dx   = bx - lx
-    dy   = by - ly  # positif = vers le bas en coords image
-    spd  = math.hypot(dx, dy)
+    dx  = bx - lx
+    dy  = by - ly
+    spd = math.hypot(dx, dy)
 
-    # Vitesse modérée : pas un dégagement (trop rapide) ni arrêt (trop lent)
     speed_ok = frame_w * 0.01 < spd < frame_w * 0.08
 
-    # Balle qui s'éloigne latéralement du bord (relance vers le milieu)
     moves_away_from_goal = (
         (gx < frame_w * 0.15 and dx > 0) or
         (gx > frame_w * 0.85 and dx < 0)
@@ -188,12 +179,19 @@ def init_state(learner=None):
         "_last_ball_interpolated":  False,
         "_last_dribble_time":       -999.0,
         "_dribble_cooldown":        1.5,
-        # ── FIX 1 : possession gardien ──────────
-        "_gk_possession_frames":    0,
-        "_gk_possession_min":       20,   # ~0.8s à 25fps pour confirmer la prise en main
-        "_gk_holding_ball":         False,
-        "_gk_release_cd":           0,    # cooldown après relance
-        "_gk_release_cd_max":       75,   # 3s à 25fps
+        # ── FIX 1 : possession gardien ──
+        "_gk_possession_frames":   0,
+        "_gk_possession_min":      20,
+        "_gk_holding_ball":        False,
+        "_gk_release_cd":          0,
+        "_gk_release_cd_max":      75,
+        # ── FIX shot contré ──
+        # Quand un tir est contré, on réduit le cooldown
+        # pour permettre un nouveau tir rapide
+        "_last_shot_x":            None,
+        "_last_shot_y":            None,
+        "_shot_blocked_cd":        0,   # frames depuis le tir contré
+        "_shot_blocked_cd_max":    40,  # ~1.6s à 25fps
     }
 
 
@@ -216,11 +214,10 @@ def detect_events(
 
     events = []
 
-    state["shot_cd"] = max(0, state["shot_cd"] - 1)
-    state["goal_cd"] = max(0, state["goal_cd"] - 1)
-
-    # FIX 1 — décrémenter le cooldown relance gardien
-    state["_gk_release_cd"] = max(0, state["_gk_release_cd"] - 1)
+    state["shot_cd"]          = max(0, state["shot_cd"] - 1)
+    state["goal_cd"]          = max(0, state["goal_cd"] - 1)
+    state["_gk_release_cd"]   = max(0, state["_gk_release_cd"] - 1)
+    state["_shot_blocked_cd"] = max(0, state["_shot_blocked_cd"] - 1)
 
     if not players or not ball:
         state["ball_in_goal_zone"] = 0
@@ -260,44 +257,39 @@ def detect_events(
                     state["team_possession"][dominant] = \
                         state["team_possession"].get(dominant, 0) + 0.5
 
-    # ── FIX 1 : DÉTECTION POSSESSION GARDIEN ─────────────────────────────
-    # Si le joueur le plus proche de la balle est dans la zone gardien
-    # ET que la balle est quasi immobile → gardien tient le ballon
+    # ── FIX 1 : DÉTECTION POSSESSION GARDIEN ─────────
     gk = get_goalkeeper(players, frame_w)
 
     if gk and state["last_ball_pos"]:
         ball_spd     = speed(state["last_ball_pos"], ball["center"])
         gk_near_ball = distance(gk["center"], ball["center"]) < frame_w * 0.06
-        ball_slow    = ball_spd < frame_w * 0.015  # balle quasi immobile
+        ball_slow    = ball_spd < frame_w * 0.015
 
         if gk_near_ball and ball_slow:
             state["_gk_possession_frames"] += 1
             if state["_gk_possession_frames"] >= state["_gk_possession_min"]:
                 state["_gk_holding_ball"] = True
         else:
-            # FIX 2 : si le gardien lâche la balle → détecter relance à la main
             if state["_gk_holding_ball"]:
                 if is_goalkeeper_throw(
                     ball["center"], state["last_ball_pos"],
                     frame_w, frame_h, gk
                 ):
-                    # Relance détectée → bloquer goal pendant 3s
-                    state["_gk_release_cd"]      = state["_gk_release_cd_max"]
-                    state["_gk_holding_ball"]     = False
+                    state["_gk_release_cd"]       = state["_gk_release_cd_max"]
+                    state["_gk_holding_ball"]      = False
                     state["_gk_possession_frames"] = 0
-                    state["ball_in_goal_zone"]    = 0
-                    state["_goal_zone_speeds"]    = []
+                    state["ball_in_goal_zone"]     = 0
+                    state["_goal_zone_speeds"]     = []
                     print(f"  GK throw détecté à t={current_time:.1f}s — goal bloqué 3s")
                 else:
-                    state["_gk_holding_ball"]     = False
+                    state["_gk_holding_ball"]      = False
                     state["_gk_possession_frames"] = 0
             else:
                 state["_gk_possession_frames"] = max(
                     0, state["_gk_possession_frames"] - 1
                 )
     elif state["_gk_holding_ball"]:
-        # Plus de gardien détecté → réinitialiser
-        state["_gk_holding_ball"]     = False
+        state["_gk_holding_ball"]      = False
         state["_gk_possession_frames"] = 0
 
     # ── PRESSURE ─────────────────────────
@@ -359,7 +351,7 @@ def detect_events(
 
     # ── DRIBBLE ───────────────────────────
     if current and state["last_ball_pos"]:
-        ball_spd = speed(state["last_ball_pos"], ball["center"])
+        ball_spd           = speed(state["last_ball_pos"], ball["center"])
         time_since_dribble = current_time - state.get("_last_dribble_time", -999)
         if (ball_spd > frame_w * 0.025
                 and time_since_dribble >= state["_dribble_cooldown"]):
@@ -418,33 +410,90 @@ def detect_events(
                 or (is_goal_zone and ball_speed > frame_w * 0.01)
             )
 
+            # ── FIX shot contré ──────────────────────────────────────────
+            # Si le cooldown tir est actif mais qu'on détecte une balle
+            # rapide en zone de tir → probable tir contré + récupération
+            # On réduit le cooldown pour permettre le tir suivant
+            if (state["shot_cd"] > 0
+                    and is_shot
+                    and ball_speed > frame_w * 0.08
+                    and not state["_gk_holding_ball"]
+                    and state["_gk_release_cd"] == 0):
+                state["shot_cd"]          = min(state["shot_cd"], 15)
+                state["_shot_blocked_cd"] = state["_shot_blocked_cd_max"]
+                if state["_last_shot_x"] is not None:
+                    events.append({
+                        "type":   "shot_blocked",
+                        "player": str(current["id"]),
+                        "team":   current.get("team"),
+                        "x":      state["_last_shot_x"],
+                        "y":      state["_last_shot_y"],
+                        "danger": 5.0,
+                    })
+
+            # ── Tir rapide en lucarne ────────────────────────────────────
+            # Balle très rapide dans la zone de but → tir cadré
+            # Ne pas attendre goal_frames_min pour la détection
+            fast_shot_in_goal = (
+                is_goal_zone
+                and ball_speed > frame_w * 0.07
+                and state["shot_cd"] == 0
+                and not ball_interpolated
+                and not state.get("_last_ball_interpolated", False)
+                and not state["_gk_holding_ball"]
+                and state["_gk_release_cd"] == 0
+            )
+
             if is_shot and state["shot_cd"] == 0 and shot_speed_ok:
-                # FIX 1+2 — pas de tir si gardien tient le ballon ou vient de relancer
                 if state["_gk_holding_ball"] or state["_gk_release_cd"] > 0:
-                    pass  # shot bloqué — possession/relance gardien
+                    pass  # bloqué — possession/relance gardien
                 else:
                     xg_val = compute_xg(x, y, frame_w, frame_h, learner)
                     shot   = {
-                        "type":   "shot",
-                        "player": str(current["id"]),
-                        "team":   current.get("team"),
-                        "x":      x,
-                        "y":      y,
-                        "xg":     xg_val,
-                        "danger": compute_danger({"type": "shot", "xg": xg_val})
+                        "type":      "shot",
+                        "player":    str(current["id"]),
+                        "team":      current.get("team"),
+                        "x":         x,
+                        "y":         y,
+                        "xg":        xg_val,
+                        "danger":    compute_danger({"type": "shot", "xg": xg_val}),
+                        "on_target": fast_shot_in_goal,
                     }
                     events.append(shot)
-                    state["shot_cd"] = shot_cd_max
+                    state["shot_cd"]       = shot_cd_max
+                    state["_last_shot_x"]  = x
+                    state["_last_shot_y"]  = y
 
                     if state["events_buffer"]:
                         last_pass       = state["events_buffer"][-1]
                         last_pass["xA"] = compute_xa(last_pass, shot)
 
-            # ── GOAL ─────────────────────────
+            elif fast_shot_in_goal and state["shot_cd"] > 0:
+                # ── Tir en lucarne même si cooldown actif ────────────────
+                # Cas : tir contré → récupération → shot lucarne rapide
+                # Le cooldown réduit par le bloc "shot contré" ci-dessus
+                # permet déjà ce cas, mais on force ici si vitesse extrême
+                if ball_speed > frame_w * 0.10:
+                    xg_val = compute_xg(x, y, frame_w, frame_h, learner)
+                    shot   = {
+                        "type":      "shot",
+                        "player":    str(current["id"]),
+                        "team":      current.get("team"),
+                        "x":         x,
+                        "y":         y,
+                        "xg":        xg_val,
+                        "danger":    compute_danger({"type": "shot", "xg": xg_val}),
+                        "on_target": True,
+                        "fast_shot": True,
+                    }
+                    events.append(shot)
+                    state["shot_cd"]      = shot_cd_max
+                    state["_last_shot_x"] = x
+                    state["_last_shot_y"] = y
+
+            # ── GOAL ─────────────────────────────────────────────────────
             ball_is_real     = not ball_interpolated
             player_near_goal = dist < frame_w * player_near_pct
-
-            # FIX 1+2 — bloquer goal si gardien tient le ballon ou vient de relancer
             gk_blocking_goal = state["_gk_holding_ball"] or state["_gk_release_cd"] > 0
 
             if is_goal_zone and not gk_blocking_goal:
@@ -468,9 +517,17 @@ def detect_events(
                 state["ball_in_goal_zone"] = 0
                 state["_goal_zone_speeds"]  = []
 
-            if state["ball_in_goal_zone"] >= goal_frames_min \
-                    and state["goal_cd"] == 0 \
-                    and not gk_blocking_goal:
+            # ── Seuil frames but : réduit si tir rapide en lucarne ───────
+            # Un tir en lucarne traverse la zone en peu de frames →
+            # on accepte un seuil plus bas si ball_speed était élevé
+            goal_frames_threshold = goal_frames_min
+            if state.get("_shot_blocked_cd", 0) > 0:
+                # Séquence tir contré → but possible avec moins de frames
+                goal_frames_threshold = max(4, goal_frames_min // 2)
+
+            if (state["ball_in_goal_zone"] >= goal_frames_threshold
+                    and state["goal_cd"] == 0
+                    and not gk_blocking_goal):
                 speeds    = state["_goal_zone_speeds"]
                 avg_speed = sum(speeds) / len(speeds) if speeds else 0
 
