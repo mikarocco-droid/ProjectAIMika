@@ -244,7 +244,9 @@ def run_pipeline(
 
         events = merge_players(events)
         events = temporal_filter(events, min_delta=2.0)
-        events = filter_goals(events, window=goal_cooldown)
+        events = filter_goals(events, window=goal_cooldown
+        from analysis.post_processing import infer_shots_from_goals
+        events = infer_shots_from_goals(events)
         print(f"  CLEAN {len(events)} events | goal_cooldown={goal_cooldown:.0f}s")
     except Exception as e:
         print(f"  Post processing ignoré : {e}")
