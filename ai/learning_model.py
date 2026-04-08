@@ -474,7 +474,7 @@ class MatchLearner:
         n        = self.reid_cal.get("n_matches", 0)
         old_dist = self.reid_cal.get("spatial_max_dist", 200.0)
         new_dist = (old_dist * n + p95_dist) / (n + 1)
-        new_dist = max(100.0, min(400.0, new_dist))
+        new_dist = max(100.0, min(200.0, new_dist))
 
         self.reid_cal["spatial_max_dist"] = round(new_dist, 1)
         self.reid_cal["n_matches"]        = n + 1
