@@ -134,9 +134,10 @@ def process_batch(
     w, h,
     scale_x, scale_y,
     analyzed_offset,
+    events_state=None,   # FIX — state partagé entre tous les batches
 ):
     if not batch_frames:
-        return []
+        return [], events_state
 
     # ── YOLO batch : une seule inférence GPU pour N frames ──
     small_frames  = [bf[2] for bf in batch_frames]
@@ -222,10 +223,13 @@ def process_batch(
             ball = yolo_ball
 
         # ── Events ───────────────────────
-        frame_events, _ = detect_events(
+        # FIX — on passe le state entre frames pour que ball_speed
+        # soit calculé correctement d'une frame à l'autre
+        frame_events, events_state = detect_events(
             players    = tracked,
             ball       = ball,
             sport      = sport,
+            state      = events_state,
             shot_zones = shot_zones,
             frame_w    = w,
             frame_h    = h
@@ -243,7 +247,7 @@ def process_batch(
             "_frame_orig": frame_orig,
         })
 
-    return batch_data
+    return batch_data, events_state
 
 
 # ─────────────────────────────────────────
@@ -334,16 +338,18 @@ def process_video(
     analyzed      = 0
     last_pct      = -1
     current_batch = []
+    events_state  = None   # FIX — state partagé entre tous les batches
 
     def flush_batch(batch, analyzed_so_far):
-        """Traite un batch et l'ajoute à frames_data."""
+        nonlocal events_state
         if not batch:
             return
-        data = process_batch(
+        data, events_state = process_batch(
             batch, detector, tracker, ocr,
             color_detector, ball_tracker,
             sport, shot_zones, w, h, scale_x, scale_y,
-            analyzed_offset=analyzed_so_far - len(batch) + 1
+            analyzed_offset=analyzed_so_far - len(batch) + 1,
+            events_state=events_state
         )
         for fd in data:
             if writer and overlay:
