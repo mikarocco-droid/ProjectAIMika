@@ -234,19 +234,23 @@ def run_pipeline(
             e["time"] = round(frame / fps, 2) if fps > 0 else 0
 
     # ─────────────────────────────────────────
-    # 1a. POST PROCESSING V17
+    # 1a. POST PROCESSING
     # ─────────────────────────────────────────
     try:
-        from analysis.post_processing import temporal_filter, filter_goals, merge_players
+        from analysis.post_processing import (
+            temporal_filter,
+            filter_goals,
+            merge_players,
+            infer_shots_from_goals,   # FIX — import ici
+        )
 
         goal_cooldown = learner.get_thresholds().get("goal_cooldown", 150.0) \
                         if learner else 150.0
 
         events = merge_players(events)
         events = temporal_filter(events, min_delta=2.0)
-        events = filter_goals(events, window=goal_cooldown
-        from analysis.post_processing import infer_shots_from_goals
-        events = infer_shots_from_goals(events)
+        events = filter_goals(events, window=goal_cooldown)
+        events = infer_shots_from_goals(events)  # FIX — inférer shots depuis buts
         print(f"  CLEAN {len(events)} events | goal_cooldown={goal_cooldown:.0f}s")
     except Exception as e:
         print(f"  Post processing ignoré : {e}")
@@ -266,7 +270,6 @@ def run_pipeline(
             min_conf   = 0.75
         )
 
-        # FIX — filtrer les zones FP apprises avant d'envoyer à Gemini
         if learner:
             n_before = len(events)
             events   = [
@@ -316,7 +319,6 @@ def run_pipeline(
             validated.append(e)
         events = validated
 
-        # clustering spatial désactivé — trop agressif
         possession = compute_possession(events)
         print(f"  SMART {len(events)} events | Possession: {possession}")
     except Exception as e:
@@ -332,11 +334,11 @@ def run_pipeline(
         from analysis.xa_model import compute_xa
         from analysis.tactical_v2 import detect_pressing_intensity, detect_play_style
 
-        events        = reidentify_players(events)
-        events        = assign_teams_by_color(events)
-        real_pass     = detect_passes(events)
+        events         = reidentify_players(events)
+        events         = assign_teams_by_color(events)
+        real_pass      = detect_passes(events)
         events.extend(real_pass)
-        events        = compute_xa(events)
+        events         = compute_xa(events)
 
         pressing_level = detect_pressing_intensity(events)
         play_style     = detect_play_style(events)
@@ -345,7 +347,7 @@ def run_pipeline(
         print(f"  V19 ignoré : {e}")
 
     # ─────────────────────────────────────────
-    # 2. ENRICH xG — modèle appris si disponible
+    # 2. ENRICH xG
     # ─────────────────────────────────────────
     print("Step 2 : xG...")
     frame_w = getattr(config, 'FRAME_WIDTH', 1920) or 1920
@@ -520,8 +522,16 @@ def run_pipeline(
         ranked_highlights = rank_highlights(events)
         ratings           = compute_player_ratings(events)
         mvp               = get_mvp(ratings)
-        commentary        = generate_commentary(ranked_highlights[:10])
-        story             = generate_match_story(events, fps=fps)
+
+        # FIX — commentary enrichi avec contexte match
+        commentary = generate_commentary(
+            ranked_highlights[:10],
+            jersey_map = jersey_map,
+            sport      = sport,
+            formation  = formation,
+            style      = tactical.get("style"),
+        )
+        story = generate_match_story(events, fps=fps)
         print(f"  OK MVP={mvp[0] if mvp else '?'} | commentary={len(commentary)} lines")
     except Exception as e:
         print(f"  Ratings error : {e}")
@@ -536,7 +546,6 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 11b. ENREGISTREMENT APPRENTISSAGE
-    # APRÈS summary — passe jersey_map + highlights pour tout apprendre
     # ─────────────────────────────────────────
     learning_result = {}
     if learner:
@@ -590,6 +599,9 @@ def run_pipeline(
                     "player_ratings": ratings,
                     "match_story":    story,
                     "mvp":            str(mvp[0]) if mvp else None,
+                    "formation":      formation,
+                    "tactical":       tactical,
+                    "commentary":     commentary,
                 },
                 output_path = os.path.join(output_dir, "rapport.pdf"),
                 sport       = sport
