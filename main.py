@@ -69,8 +69,6 @@ def assign_teams_by_color(frame, tracked, color_detector):
 
 # ─────────────────────────────────────────
 # RESCALE BBOXES
-# Les détections YOLO sont sur frame réduite
-# → on remet à l'échelle originale
 # ─────────────────────────────────────────
 def rescale_detections(players, yolo_ball, scale_x, scale_y):
     for p in players:
@@ -134,18 +132,18 @@ def process_batch(
     w, h,
     scale_x, scale_y,
     analyzed_offset,
-    events_state=None,   # FIX — state partagé entre tous les batches
+    fps        = 25,
+    events_state = None,
 ):
     if not batch_frames:
         return [], events_state
 
-    # ── YOLO batch : une seule inférence GPU pour N frames ──
     small_frames  = [bf[2] for bf in batch_frames]
     batch_results = detector.model(
         small_frames,
         conf    = config.YOLO_CONFIDENCE,
         verbose = False,
-        imgsz   = YOLO_BATCH_SIZE * 240   # 960 pour batch=4
+        imgsz   = YOLO_BATCH_SIZE * 240
     )
 
     batch_data = []
@@ -154,7 +152,6 @@ def process_batch(
         result   = batch_results[i]
         analyzed = analyzed_offset + i
 
-        # ── Parser résultats YOLO ────────
         players   = []
         yolo_ball = None
 
@@ -182,8 +179,6 @@ def process_batch(
                     "conf":   conf
                 }
 
-        # ── Détection ballon HSV ─────────
-        # FIX — last_pos converti en coordonnées réduites
         last_pos_small = None
         if detector._last_ball_pos is not None:
             lx, ly = detector._last_ball_pos
@@ -194,25 +189,17 @@ def process_batch(
             last_pos_override=last_pos_small
         )
 
-        # ── Rescale → dimensions originales ──
         players, yolo_ball = rescale_detections(
             players, yolo_ball, scale_x, scale_y
         )
 
-        # ── Tracking ─────────────────────
         tracked = tracker.update(players, frame_orig)
-
-        # ── Équipes ──────────────────────
         tracked = assign_teams_by_color(frame_orig, tracked, color_detector)
-
-        # ── OCR ──────────────────────────
         tracked = ocr.read_all(frame_orig, tracked, frame_id=analyzed)
 
-        # ── Ball Tracker ─────────────────
         if ball_tracker is not None:
             yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
             balls_list      = [yolo_ball_tuple] if yolo_ball_tuple else []
-            # FIX — update() retourne (bbox, interpolated)
             ball_result, was_interpolated = ball_tracker.update(
                 detected_balls = balls_list,
                 frame_w        = w,
@@ -222,9 +209,6 @@ def process_batch(
         else:
             ball = yolo_ball
 
-        # ── Events ───────────────────────
-        # FIX — on passe le state entre frames pour que ball_speed
-        # soit calculé correctement d'une frame à l'autre
         frame_events, events_state = detect_events(
             players    = tracked,
             ball       = ball,
@@ -232,7 +216,8 @@ def process_batch(
             state      = events_state,
             shot_zones = shot_zones,
             frame_w    = w,
-            frame_h    = h
+            frame_h    = h,
+            fps        = fps,
         )
         for e in frame_events:
             e["frame"] = frame_id
@@ -243,6 +228,7 @@ def process_batch(
             "frame":       frame_id,
             "frame_w":     w,
             "frame_h":     h,
+            "fps":         fps,    # FIX — fps ajouté pour dribble cooldown en secondes
             "events":      frame_events,
             "_frame_orig": frame_orig,
         })
@@ -292,7 +278,6 @@ def process_video(
     w            = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h            = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Facteurs de rescale original → réduit
     scale_x = w / PROCESS_W
     scale_y = h / PROCESS_H
 
@@ -306,7 +291,6 @@ def process_video(
           f"({analyzed_count * 100 // total_frames}%)")
     print(f"  YOLO batch  : {b_size} frames/passe | imgsz={YOLO_BATCH_SIZE * 240}")
 
-    # Convertir shot_zones ratios → pixels si nécessaire
     if shot_zones:
         hi = shot_zones.get("threshold_hi", 0.85)
         lo = shot_zones.get("threshold_lo", 0.15)
@@ -338,7 +322,7 @@ def process_video(
     analyzed      = 0
     last_pct      = -1
     current_batch = []
-    events_state  = None   # FIX — state partagé entre tous les batches
+    events_state  = None
 
     def flush_batch(batch, analyzed_so_far):
         nonlocal events_state
@@ -348,8 +332,9 @@ def process_video(
             batch, detector, tracker, ocr,
             color_detector, ball_tracker,
             sport, shot_zones, w, h, scale_x, scale_y,
-            analyzed_offset=analyzed_so_far - len(batch) + 1,
-            events_state=events_state
+            analyzed_offset = analyzed_so_far - len(batch) + 1,
+            fps             = fps,
+            events_state    = events_state,
         )
         for fd in data:
             if writer and overlay:
@@ -369,12 +354,10 @@ def process_video(
         if not ret:
             break
 
-        # ── FRAME SKIP ───────────────────
         if frame_id % skip_every == (skip_every - 1):
             frame_id += 1
             continue
 
-        # ── PRÉ-RESIZE ───────────────────
         frame_small = cv2.resize(
             frame, (PROCESS_W, PROCESS_H),
             interpolation=cv2.INTER_LINEAR
@@ -382,12 +365,10 @@ def process_video(
 
         current_batch.append((frame_id, frame, frame_small))
 
-        # ── BATCH COMPLET → traitement ────
         if len(current_batch) >= b_size:
             flush_batch(current_batch, analyzed)
             current_batch = []
 
-        # ── Progression ───────────────────
         if total_frames > 0:
             pct = int((frame_id / total_frames) * 100)
             if pct % 5 == 0 and pct != last_pct:
@@ -397,7 +378,6 @@ def process_video(
         frame_id += 1
         analyzed += 1
 
-    # ── FLUSH dernier batch incomplet ────
     flush_batch(current_batch, analyzed)
 
     cap.release()
