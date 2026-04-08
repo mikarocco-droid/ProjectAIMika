@@ -35,9 +35,6 @@ def get_closest_player(players, ball):
 # FIX 1 — IDENTIFIER LE GARDIEN
 # ─────────────────────────────────────────
 def get_goalkeeper(players, frame_w):
-    """
-    Retourne le joueur le plus proche d'une ligne de but (x < 15% ou x > 85%).
-    """
     threshold = frame_w * 0.15
     gks = [
         p for p in players
@@ -52,12 +49,6 @@ def get_goalkeeper(players, frame_w):
 # FIX 2 — DÉTECTION RELANCE À LA MAIN
 # ─────────────────────────────────────────
 def is_goalkeeper_throw(ball_pos, last_ball_pos, frame_w, frame_h, gk):
-    """
-    Retourne True si le mouvement ressemble à une relance gardien :
-    - origine dans la zone gardien
-    - vitesse modérée
-    - balle s'éloigne latéralement du but
-    """
     if gk is None or last_ball_pos is None:
         return False
 
@@ -180,18 +171,19 @@ def init_state(learner=None):
         "_last_dribble_time":       -999.0,
         "_dribble_cooldown":        1.5,
         # ── FIX 1 : possession gardien ──
-        "_gk_possession_frames":   0,
-        "_gk_possession_min":      20,
-        "_gk_holding_ball":        False,
-        "_gk_release_cd":          0,
-        "_gk_release_cd_max":      75,
+        "_gk_possession_frames":    0,
+        "_gk_possession_min":       20,
+        "_gk_holding_ball":         False,
+        "_gk_release_cd":           0,
+        "_gk_release_cd_max":       75,
         # ── FIX shot contré ──
-        # Quand un tir est contré, on réduit le cooldown
-        # pour permettre un nouveau tir rapide
-        "_last_shot_x":            None,
-        "_last_shot_y":            None,
-        "_shot_blocked_cd":        0,   # frames depuis le tir contré
-        "_shot_blocked_cd_max":    40,  # ~1.6s à 25fps
+        "_last_shot_x":             None,
+        "_last_shot_y":             None,
+        "_last_shot_time":          -999.0,   # FIX — timestamp du dernier tir
+        "_shot_blocked_cd":         0,
+        "_shot_blocked_cd_max":     40,
+        # ── FIX touche devant but ──
+        "_last_event_types":        deque(maxlen=10),  # historique types récents
     }
 
 
@@ -411,29 +403,32 @@ def detect_events(
             )
 
             # ── FIX shot contré ──────────────────────────────────────────
-            # Si le cooldown tir est actif mais qu'on détecte une balle
-            # rapide en zone de tir → probable tir contré + récupération
-            # On réduit le cooldown pour permettre le tir suivant
+            # Seuil relevé à 0.12 (était 0.08) + contrainte :
+            # - _last_shot_x doit être défini (un vrai tir précédent existe)
+            # - balle dans zone de tir
+            # - cooldown tir encore actif
+            # - pas de possession gardien
+            time_since_last_shot = current_time - state.get("_last_shot_time", -999)
+
             if (state["shot_cd"] > 0
                     and is_shot
-                    and ball_speed > frame_w * 0.08
+                    and ball_speed > frame_w * 0.12           # FIX seuil 0.08→0.12
+                    and state["_last_shot_x"] is not None     # FIX contrainte tir précédent
+                    and time_since_last_shot < 8.0            # FIX max 8s depuis dernier tir
                     and not state["_gk_holding_ball"]
                     and state["_gk_release_cd"] == 0):
                 state["shot_cd"]          = min(state["shot_cd"], 15)
                 state["_shot_blocked_cd"] = state["_shot_blocked_cd_max"]
-                if state["_last_shot_x"] is not None:
-                    events.append({
-                        "type":   "shot_blocked",
-                        "player": str(current["id"]),
-                        "team":   current.get("team"),
-                        "x":      state["_last_shot_x"],
-                        "y":      state["_last_shot_y"],
-                        "danger": 5.0,
-                    })
+                events.append({
+                    "type":   "shot_blocked",
+                    "player": str(current["id"]),
+                    "team":   current.get("team"),
+                    "x":      state["_last_shot_x"],
+                    "y":      state["_last_shot_y"],
+                    "danger": 5.0,
+                })
 
             # ── Tir rapide en lucarne ────────────────────────────────────
-            # Balle très rapide dans la zone de but → tir cadré
-            # Ne pas attendre goal_frames_min pour la détection
             fast_shot_in_goal = (
                 is_goal_zone
                 and ball_speed > frame_w * 0.07
@@ -446,7 +441,7 @@ def detect_events(
 
             if is_shot and state["shot_cd"] == 0 and shot_speed_ok:
                 if state["_gk_holding_ball"] or state["_gk_release_cd"] > 0:
-                    pass  # bloqué — possession/relance gardien
+                    pass
                 else:
                     xg_val = compute_xg(x, y, frame_w, frame_h, learner)
                     shot   = {
@@ -460,19 +455,16 @@ def detect_events(
                         "on_target": fast_shot_in_goal,
                     }
                     events.append(shot)
-                    state["shot_cd"]       = shot_cd_max
-                    state["_last_shot_x"]  = x
-                    state["_last_shot_y"]  = y
+                    state["shot_cd"]         = shot_cd_max
+                    state["_last_shot_x"]    = x
+                    state["_last_shot_y"]    = y
+                    state["_last_shot_time"] = current_time   # FIX timestamp
 
                     if state["events_buffer"]:
                         last_pass       = state["events_buffer"][-1]
                         last_pass["xA"] = compute_xa(last_pass, shot)
 
             elif fast_shot_in_goal and state["shot_cd"] > 0:
-                # ── Tir en lucarne même si cooldown actif ────────────────
-                # Cas : tir contré → récupération → shot lucarne rapide
-                # Le cooldown réduit par le bloc "shot contré" ci-dessus
-                # permet déjà ce cas, mais on force ici si vitesse extrême
                 if ball_speed > frame_w * 0.10:
                     xg_val = compute_xg(x, y, frame_w, frame_h, learner)
                     shot   = {
@@ -487,9 +479,10 @@ def detect_events(
                         "fast_shot": True,
                     }
                     events.append(shot)
-                    state["shot_cd"]      = shot_cd_max
-                    state["_last_shot_x"] = x
-                    state["_last_shot_y"] = y
+                    state["shot_cd"]         = shot_cd_max
+                    state["_last_shot_x"]    = x
+                    state["_last_shot_y"]    = y
+                    state["_last_shot_time"] = current_time   # FIX timestamp
 
             # ── GOAL ─────────────────────────────────────────────────────
             ball_is_real     = not ball_interpolated
@@ -517,12 +510,8 @@ def detect_events(
                 state["ball_in_goal_zone"] = 0
                 state["_goal_zone_speeds"]  = []
 
-            # ── Seuil frames but : réduit si tir rapide en lucarne ───────
-            # Un tir en lucarne traverse la zone en peu de frames →
-            # on accepte un seuil plus bas si ball_speed était élevé
             goal_frames_threshold = goal_frames_min
             if state.get("_shot_blocked_cd", 0) > 0:
-                # Séquence tir contré → but possible avec moins de frames
                 goal_frames_threshold = max(4, goal_frames_min // 2)
 
             if (state["ball_in_goal_zone"] >= goal_frames_threshold
