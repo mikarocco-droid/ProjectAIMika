@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Scoring intelligent des highlights par Gemini Vision.
-FIX 4 — sur 503/indisponibilité : les goals non scorés
-         ne sont PAS promus automatiquement.
+FIX 4 — sur 503 : score fallback conservateur, pas de promotion automatique.
+FIX position — goalkeeper_action et defensive_clearance filtrés.
 """
 
 import os
@@ -22,7 +22,8 @@ from ai.gemini_validator import (
     get_client,
     frame_to_part,
     text_to_part,
-    _call_gemini,        # FIX 4 — utiliser _call_gemini au lieu de generate_content direct
+    _call_gemini,
+    _is_near_goal,
 )
 
 
@@ -55,12 +56,11 @@ def extract_clip_frames(video_path, time_start, time_end, n=4):
 
 # ─────────────────────────────────────────
 # SCORE FALLBACK (sans Gemini)
-# FIX 4 — score conservateur utilisé quand Gemini est indisponible
-#          au lieu d'attribuer un score arbitrairement élevé
+# FIX 4 — conservateur : jamais de promotion automatique à 10
 # ─────────────────────────────────────────
 FALLBACK_SCORES = {
-    "goal":             7.0,   # But confirmé par le pipeline → score honorable
-    "shot":             4.0,   # Tir → score moyen
+    "goal":             7.0,
+    "shot":             4.0,
     "dribble":          3.0,
     "interception":     3.0,
     "fast_break":       4.5,
@@ -70,10 +70,6 @@ FALLBACK_SCORES = {
 }
 
 def fallback_score(highlight):
-    """
-    Score conservateur basé sur le type, utilisé quand Gemini est indisponible.
-    Ne surclasse jamais un goal non confirmé.
-    """
     h_type = highlight.get("main_type", "action")
     return FALLBACK_SCORES.get(h_type, 2.0)
 
@@ -85,7 +81,7 @@ def score_highlight(video_path, highlight, sport="football"):
     """
     Score un highlight avec Gemini.
     FIX 4 — utilise _call_gemini() qui gère 503 proprement.
-    Retourne None si Gemini indisponible (pas de score fallback élevé).
+    Retourne None si Gemini indisponible.
     """
     if not GEMINI_AVAILABLE:
         return None
@@ -101,11 +97,11 @@ def score_highlight(video_path, highlight, sport="football"):
         return None
 
     try:
-        client    = get_client()
-        t         = highlight.get("time_start", 0)
-        mins      = int(t // 60)
-        secs      = int(t % 60)
-        h_type    = highlight.get("main_type", "action")
+        client = get_client()
+        t      = highlight.get("time_start", 0)
+        mins   = int(t // 60)
+        secs   = int(t % 60)
+        h_type = highlight.get("main_type", "action")
 
         parts = [text_to_part(
             f"Tu es un expert en {sport}. "
@@ -121,8 +117,11 @@ def score_highlight(video_path, highlight, sport="football"):
             f'  "titre": "Titre accrocheur"\n'
             f"}}\n"
             f"score : 0 (sans intérêt) à 10 (moment historique)\n\n"
-            f"ATTENTION : si le gardien tient le ballon ou effectue une relance, "
-            f"ce n'est PAS un but — type_reel = 'goalkeeper_action', score <= 2."
+            f"ATTENTION — ces situations NE sont PAS des buts, score <= 2 :\n"
+            f"- Gardien qui tient ou porte le ballon → type_reel = 'goalkeeper_action'\n"
+            f"- Relance à la main ou au pied du gardien → type_reel = 'goalkeeper_action'\n"
+            f"- Dégagement de tête d'un défenseur → type_reel = 'defensive_clearance'\n"
+            f"- Dégagement du poing du gardien → type_reel = 'goalkeeper_action'"
         )]
 
         for i, frame in enumerate(frames):
@@ -133,7 +132,6 @@ def score_highlight(video_path, highlight, sport="football"):
         response = _call_gemini(client, parts)
 
         if response is None:
-            # 503 ou quota → retourner None, pas de score fallback élevé
             return None
 
         text   = response.text.strip()
@@ -156,19 +154,21 @@ def score_highlight(video_path, highlight, sport="football"):
 
 # ─────────────────────────────────────────
 # SCORER TOUS LES HIGHLIGHTS
-# FIX 4 — sur 503 : score fallback conservateur au lieu de garder tout
+# FIX 4 + FIX position
 # ─────────────────────────────────────────
-def score_all_highlights(highlights, video_path, sport="football", max_highlights=15):
+def score_all_highlights(
+    highlights,
+    video_path,
+    sport          = "football",
+    max_highlights = 15,
+    frame_w        = 1920,   # FIX position
+):
     """
     Score tous les highlights avec Gemini et les trie par score décroissant.
-    FIX 4 :
-      - Si Gemini retourne None (503) → score fallback conservateur
-      - Les goals non confirmés par Gemini restent avec score 7.0 max
-        (jamais promus à 10 par défaut)
-      - Les goalkeeper_action détectés par Gemini sont filtrés
+    FIX 4 : score fallback conservateur sur 503.
+    FIX position : goalkeeper_action et defensive_clearance filtrés.
     """
     if not GEMINI_AVAILABLE or not highlights:
-        # Pas de Gemini du tout → fallback sur tous
         for h in highlights:
             if "score" not in h:
                 h["score"] = fallback_score(h)
@@ -176,8 +176,8 @@ def score_all_highlights(highlights, video_path, sport="football", max_highlight
 
     print(f"  Scoring Gemini : {len(highlights)} highlights...")
 
-    scored   = []
-    filtered = 0
+    scored                   = []
+    filtered                 = 0
     gemini_unavailable_count = 0
 
     for h in highlights:
@@ -186,19 +186,37 @@ def score_all_highlights(highlights, video_path, sport="football", max_highlight
         if result is None:
             # FIX 4 — Gemini indisponible → score fallback conservateur
             gemini_unavailable_count += 1
-            h["score"]             = fallback_score(h)
-            h["gemini_scored"]     = False
+            h["score"]              = fallback_score(h)
+            h["gemini_scored"]      = False
             h["gemini_unavailable"] = True
+
+            # FIX position — même en fallback, on vérifie la position
+            # Un goal dont la position x est loin des buts est dégradé
+            if h.get("main_type") == "goal":
+                # Récupère x depuis les events du highlight si disponible
+                events = h.get("events", [])
+                xs = [e.get("x", 0) for e in events if e.get("x")]
+                if xs:
+                    x_mean = sum(xs) / len(xs)
+                    if not _is_near_goal(x_mean, frame_w):
+                        h["score"] = 1.0  # dégagement → score minimal
+                        h["main_type"] = "defensive_clearance"
+                        filtered += 1
+                        print(f"  FIX position : highlight goal dégradé "
+                              f"(x_mean={x_mean:.0f}, loin du but)")
+                        continue
+
             scored.append(h)
             continue
 
-        # Filtrer goalkeeper_action et non-events avec score bas
-        if result["type_reel"] in ["goalkeeper_action", "touche", "corner", "none"] \
-                and result["score"] < 4:
+        # FIX position — filtrer goalkeeper_action, defensive_clearance
+        if result["type_reel"] in [
+            "goalkeeper_action", "defensive_clearance",
+            "touche", "corner", "none"
+        ] and result["score"] < 4:
             filtered += 1
             continue
 
-        # Enrichir le highlight
         h["score"]         = result["score"]
         h["main_type"]     = result["type_reel"]
         h["spectaculaire"] = result["spectaculaire"]
@@ -213,7 +231,7 @@ def score_all_highlights(highlights, video_path, sport="football", max_highlight
         print(f"  ⚠️  {gemini_unavailable_count} highlights scorés en fallback "
               f"(Gemini indisponible)")
 
-    # Trier : goals Gemini-confirmés > goals fallback > spectaculaires > reste
+    # Tri : goals Gemini-confirmés > goals fallback > spectaculaires > reste
     scored.sort(key=lambda x: (
         x.get("main_type") == "goal" and x.get("gemini_scored", False),
         x.get("main_type") == "goal",
