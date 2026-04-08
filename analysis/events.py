@@ -32,8 +32,68 @@ def get_closest_player(players, ball):
 
 
 # ─────────────────────────────────────────
+# FIX 1 — IDENTIFIER LE GARDIEN
+# Joueur le plus proche d'un bord x extrême
+# ─────────────────────────────────────────
+def get_goalkeeper(players, frame_w):
+    """
+    Retourne le joueur le plus proche d'une ligne de but (x < 15% ou x > 85%).
+    Retourne None si aucun joueur n'est dans cette zone.
+    """
+    threshold = frame_w * 0.15
+    gks = [
+        p for p in players
+        if p["center"][0] < threshold or p["center"][0] > frame_w - threshold
+    ]
+    if not gks:
+        return None
+    # Celui le plus près du bord
+    return min(gks, key=lambda p: min(p["center"][0], frame_w - p["center"][0]))
+
+
+# ─────────────────────────────────────────
+# FIX 2 — DÉTECTION RELANCE À LA MAIN
+# Signature : balle qui part depuis zone gardien
+# avec trajectoire parabolique (dy montante)
+# et vitesse modérée
+# ─────────────────────────────────────────
+def is_goalkeeper_throw(ball_pos, last_ball_pos, frame_w, frame_h, gk):
+    """
+    Retourne True si le mouvement de balle ressemble à une relance gardien :
+    - origine dans la zone gardien (x < 15% ou x > 85%)
+    - vitesse modérée (pas un dégagement fort)
+    - balle monte (dy < 0 en coordonnées image) ou trajectoire oblique
+    """
+    if gk is None or last_ball_pos is None:
+        return False
+
+    bx, by   = ball_pos
+    lx, ly   = last_ball_pos
+    gx       = gk["center"][0]
+
+    # La balle doit partir depuis la zone gardien
+    in_gk_zone = (lx < frame_w * 0.15 or lx > frame_w * 0.85)
+    if not in_gk_zone:
+        return False
+
+    dx   = bx - lx
+    dy   = by - ly  # positif = vers le bas en coords image
+    spd  = math.hypot(dx, dy)
+
+    # Vitesse modérée : pas un dégagement (trop rapide) ni arrêt (trop lent)
+    speed_ok = frame_w * 0.01 < spd < frame_w * 0.08
+
+    # Balle qui s'éloigne latéralement du bord (relance vers le milieu)
+    moves_away_from_goal = (
+        (gx < frame_w * 0.15 and dx > 0) or
+        (gx > frame_w * 0.85 and dx < 0)
+    )
+
+    return speed_ok and moves_away_from_goal
+
+
+# ─────────────────────────────────────────
 # SHOT ZONES MULTI SPORT
-# FIX — zones Y élargies pour inclure tirs bas (filet) et hauts (lucarne)
 # ─────────────────────────────────────────
 def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
     if shot_zones:
@@ -44,8 +104,6 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
         y_max = shot_zones.get("y_max", frame_h)
 
         if axis == "x":
-            # FIX — tolérance Y élargie à 50% pour inclure
-            # les tirs bas (filet bas, y>y_max) et hauts (lucarne)
             y_tol     = (y_max - y_min) * 0.50
             in_y_shot = (y_min - y_tol <= y <= y_max + y_tol)
             in_y_goal = (y_min - y_tol * 0.3 <= y <= y_max + y_tol * 0.3)
@@ -58,7 +116,6 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
             return in_zone, in_goal
 
     if sport == "football":
-        # FIX — zone Y élargie : inclut le bas du cadre (sol)
         in_y_shot = (frame_h * 0.15 <= y <= frame_h * 0.90)
         in_y_goal = (frame_h * 0.20 <= y <= frame_h * 0.90)
         in_zone   = (x > frame_w * 0.80 or x < frame_w * 0.20) and in_y_shot
@@ -129,9 +186,14 @@ def init_state(learner=None):
         "_player_near_goal":        player_near,
         "_goal_frames_min":         goal_frames,
         "_last_ball_interpolated":  False,
-        # FIX dribble cooldown — évite sur-détection
         "_last_dribble_time":       -999.0,
-        "_dribble_cooldown":        1.5,   # secondes
+        "_dribble_cooldown":        1.5,
+        # ── FIX 1 : possession gardien ──────────
+        "_gk_possession_frames":    0,
+        "_gk_possession_min":       20,   # ~0.8s à 25fps pour confirmer la prise en main
+        "_gk_holding_ball":         False,
+        "_gk_release_cd":           0,    # cooldown après relance
+        "_gk_release_cd_max":       75,   # 3s à 25fps
     }
 
 
@@ -157,12 +219,14 @@ def detect_events(
     state["shot_cd"] = max(0, state["shot_cd"] - 1)
     state["goal_cd"] = max(0, state["goal_cd"] - 1)
 
+    # FIX 1 — décrémenter le cooldown relance gardien
+    state["_gk_release_cd"] = max(0, state["_gk_release_cd"] - 1)
+
     if not players or not ball:
         state["ball_in_goal_zone"] = 0
         state["_goal_zone_speeds"] = []
         return events, state
 
-    # Temps courant en secondes (depuis frame si disponible)
     current_frame = ball.get("frame", 0) or 0
     current_time  = current_frame / fps
 
@@ -181,24 +245,60 @@ def detect_events(
             "y":      ball["center"][1]
         })
         state["possession_time"] += 1
-        # FIX possession — on compte les deux équipes correctement
         if team_key is not None:
             state["team_possession"][team_key] = \
                 state["team_possession"].get(team_key, 0) + 1
         else:
-            # Équipe inconnue → on répartit sur le joueur le plus proche
-            # pour éviter que tout aille à {1: 100%}
             if players:
                 team_counts = {}
                 for p in players:
                     t = p.get("team")
                     if t is not None:
                         team_counts[t] = team_counts.get(t, 0) + 1
-                # Donner à l'équipe avec le plus de joueurs détectés
                 if team_counts:
                     dominant = max(team_counts, key=team_counts.get)
                     state["team_possession"][dominant] = \
                         state["team_possession"].get(dominant, 0) + 0.5
+
+    # ── FIX 1 : DÉTECTION POSSESSION GARDIEN ─────────────────────────────
+    # Si le joueur le plus proche de la balle est dans la zone gardien
+    # ET que la balle est quasi immobile → gardien tient le ballon
+    gk = get_goalkeeper(players, frame_w)
+
+    if gk and state["last_ball_pos"]:
+        ball_spd     = speed(state["last_ball_pos"], ball["center"])
+        gk_near_ball = distance(gk["center"], ball["center"]) < frame_w * 0.06
+        ball_slow    = ball_spd < frame_w * 0.015  # balle quasi immobile
+
+        if gk_near_ball and ball_slow:
+            state["_gk_possession_frames"] += 1
+            if state["_gk_possession_frames"] >= state["_gk_possession_min"]:
+                state["_gk_holding_ball"] = True
+        else:
+            # FIX 2 : si le gardien lâche la balle → détecter relance à la main
+            if state["_gk_holding_ball"]:
+                if is_goalkeeper_throw(
+                    ball["center"], state["last_ball_pos"],
+                    frame_w, frame_h, gk
+                ):
+                    # Relance détectée → bloquer goal pendant 3s
+                    state["_gk_release_cd"]      = state["_gk_release_cd_max"]
+                    state["_gk_holding_ball"]     = False
+                    state["_gk_possession_frames"] = 0
+                    state["ball_in_goal_zone"]    = 0
+                    state["_goal_zone_speeds"]    = []
+                    print(f"  GK throw détecté à t={current_time:.1f}s — goal bloqué 3s")
+                else:
+                    state["_gk_holding_ball"]     = False
+                    state["_gk_possession_frames"] = 0
+            else:
+                state["_gk_possession_frames"] = max(
+                    0, state["_gk_possession_frames"] - 1
+                )
+    elif state["_gk_holding_ball"]:
+        # Plus de gardien détecté → réinitialiser
+        state["_gk_holding_ball"]     = False
+        state["_gk_possession_frames"] = 0
 
     # ── PRESSURE ─────────────────────────
     if current:
@@ -257,8 +357,7 @@ def detect_events(
             state["turnover_window"] = 0
     state["turnover_window"] = max(0, state["turnover_window"] - 1)
 
-    # ── DRIBBLE — avec cooldown ───────────
-    # FIX — cooldown 1.5s pour éviter 273 dribbles
+    # ── DRIBBLE ───────────────────────────
     if current and state["last_ball_pos"]:
         ball_spd = speed(state["last_ball_pos"], ball["center"])
         time_since_dribble = current_time - state.get("_last_dribble_time", -999)
@@ -320,28 +419,35 @@ def detect_events(
             )
 
             if is_shot and state["shot_cd"] == 0 and shot_speed_ok:
-                xg_val = compute_xg(x, y, frame_w, frame_h, learner)
-                shot   = {
-                    "type":   "shot",
-                    "player": str(current["id"]),
-                    "team":   current.get("team"),
-                    "x":      x,
-                    "y":      y,
-                    "xg":     xg_val,
-                    "danger": compute_danger({"type": "shot", "xg": xg_val})
-                }
-                events.append(shot)
-                state["shot_cd"] = shot_cd_max
+                # FIX 1+2 — pas de tir si gardien tient le ballon ou vient de relancer
+                if state["_gk_holding_ball"] or state["_gk_release_cd"] > 0:
+                    pass  # shot bloqué — possession/relance gardien
+                else:
+                    xg_val = compute_xg(x, y, frame_w, frame_h, learner)
+                    shot   = {
+                        "type":   "shot",
+                        "player": str(current["id"]),
+                        "team":   current.get("team"),
+                        "x":      x,
+                        "y":      y,
+                        "xg":     xg_val,
+                        "danger": compute_danger({"type": "shot", "xg": xg_val})
+                    }
+                    events.append(shot)
+                    state["shot_cd"] = shot_cd_max
 
-                if state["events_buffer"]:
-                    last_pass       = state["events_buffer"][-1]
-                    last_pass["xA"] = compute_xa(last_pass, shot)
+                    if state["events_buffer"]:
+                        last_pass       = state["events_buffer"][-1]
+                        last_pass["xA"] = compute_xa(last_pass, shot)
 
             # ── GOAL ─────────────────────────
             ball_is_real     = not ball_interpolated
             player_near_goal = dist < frame_w * player_near_pct
 
-            if is_goal_zone:
+            # FIX 1+2 — bloquer goal si gardien tient le ballon ou vient de relancer
+            gk_blocking_goal = state["_gk_holding_ball"] or state["_gk_release_cd"] > 0
+
+            if is_goal_zone and not gk_blocking_goal:
                 if ball_is_real and player_near_goal:
                     state["ball_in_goal_zone"] += 1
                     state["_goal_zone_speeds"].append(ball_speed)
@@ -352,7 +458,7 @@ def detect_events(
                     state["ball_in_goal_zone"] = 0
                     state["_goal_zone_speeds"]  = []
             else:
-                if state["ball_in_goal_zone"] > 0:
+                if state["ball_in_goal_zone"] > 0 and not gk_blocking_goal:
                     speeds = state["_goal_zone_speeds"]
                     if speeds:
                         avg_speed = sum(speeds) / len(speeds)
@@ -363,7 +469,8 @@ def detect_events(
                 state["_goal_zone_speeds"]  = []
 
             if state["ball_in_goal_zone"] >= goal_frames_min \
-                    and state["goal_cd"] == 0:
+                    and state["goal_cd"] == 0 \
+                    and not gk_blocking_goal:
                 speeds    = state["_goal_zone_speeds"]
                 avg_speed = sum(speeds) / len(speeds) if speeds else 0
 
