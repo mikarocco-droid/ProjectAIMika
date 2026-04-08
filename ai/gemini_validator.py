@@ -20,7 +20,6 @@ except ImportError:
 
 # ─────────────────────────────────────────
 # INIT CLIENT
-# FIX — get_client() séparé de _call_gemini (était fusionné par erreur)
 # ─────────────────────────────────────────
 _client = None
 
@@ -34,42 +33,65 @@ def get_client():
     return _client
 
 
-# Flag global — dès que le quota journalier est épuisé, on arrête tout
-_quota_exhausted = False
+# ─────────────────────────────────────────
+# FLAG QUOTA + FLAG 503
+# FIX 4 — deux flags distincts :
+#   _quota_exhausted : quota journalier épuisé → arrêt total
+#   _gemini_unavailable : 503 temporaire → on marque les events
+#     comme non-validés au lieu de les accepter automatiquement
+# ─────────────────────────────────────────
+_quota_exhausted   = False
+_gemini_unavailable = False   # FIX 4 — 503 en cours
 
 def _call_gemini(client, parts, max_retries=2):
     """
-    Appel Gemini avec retry limité sur 429.
-    FIX — si RESOURCE_EXHAUSTED (quota journalier), on lève le flag
-         et on abandonne immédiatement au lieu de retenter indéfiniment.
+    Appel Gemini avec retry limité.
+    FIX 4 — sur 503, on lève _gemini_unavailable au lieu
+             d'accepter l'event silencieusement.
     """
-    global _quota_exhausted
+    global _quota_exhausted, _gemini_unavailable
 
     if _quota_exhausted:
         return None
 
+    last_err = None
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
                 model    = "gemini-2.5-flash",
                 contents = parts
             )
+            # Succès → réinitialiser le flag 503
+            _gemini_unavailable = False
             return response
+
         except Exception as e:
             err_str = str(e)
+            last_err = err_str
+
             if "RESOURCE_EXHAUSTED" in err_str:
-                # Quota journalier épuisé — inutile de retenter
-                print("  ⚠️  Quota Gemini journalier épuisé — validation désactivée pour cette session")
+                print("  ⚠️  Quota Gemini journalier épuisé — validation désactivée")
                 _quota_exhausted = True
                 return None
+
+            elif "503" in err_str or "UNAVAILABLE" in err_str:
+                # FIX 4 — 503 : on lève le flag et on retourne None
+                # sans accepter l'event
+                _gemini_unavailable = True
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                return None  # après retries → None, event NON validé
+
             elif "429" in err_str and attempt < max_retries - 1:
                 m    = re.search(r"retryDelay.*?(\d+)s", err_str)
                 wait = int(m.group(1)) + 2 if m else 30
-                wait = min(wait, 30)  # max 30s, pas 65s
+                wait = min(wait, 30)
                 print(f"  ⏳ Rate limit Gemini — attente {wait}s...")
                 time.sleep(wait)
             else:
                 raise
+
     return None
 
 
@@ -80,13 +102,11 @@ def encode_frame(frame):
     _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
     return buf.tobytes()
 
-
 def frame_to_part(frame):
     return types.Part.from_bytes(
         data      = encode_frame(frame),
         mime_type = "image/jpeg"
     )
-
 
 def text_to_part(text):
     return types.Part.from_text(text=text)
@@ -94,13 +114,24 @@ def text_to_part(text):
 
 # ─────────────────────────────────────────
 # EXTRAIRE FRAMES AUTOUR D'UN EVENT
+# FIX 3 — on extrait aussi des frames AVANT l'event
+#          pour donner le contexte (gardien qui tient la balle, etc.)
 # ─────────────────────────────────────────
-def extract_frames_around(video_path, frame_id, fps=25, n_frames=3):
-    cap     = cv2.VideoCapture(video_path)
-    frames  = []
-    offsets = [-int(fps * 0.5), 0, int(fps * 0.5)]
+def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
+    """
+    Extrait n_before frames avant l'event + frame event + n_after frames après.
+    FIX 3 : le contexte avant est crucial pour distinguer
+            gardien-qui-tient-la-balle d'un vrai but.
+    """
+    cap    = cv2.VideoCapture(video_path)
+    frames = []
 
-    for offset in offsets[:n_frames]:
+    # Offsets : -2s, -1s, 0, +0.5s, +1s
+    before_offsets = [-int(fps * (n_before - i)) for i in range(n_before)]
+    after_offsets  = [int(fps * (i + 1) * 0.5)  for i in range(n_after)]
+    offsets        = before_offsets + [0] + after_offsets
+
+    for offset in offsets:
         target = max(0, frame_id + offset)
         cap.set(cv2.CAP_PROP_POS_FRAMES, target)
         ret, frame = cap.read()
@@ -108,7 +139,7 @@ def extract_frames_around(video_path, frame_id, fps=25, n_frames=3):
             h, w = frame.shape[:2]
             if w > 960:
                 frame = cv2.resize(frame, (960, int(h * 960 / w)))
-            frames.append(frame)
+            frames.append((offset, frame))
 
     cap.release()
     return frames
@@ -116,42 +147,66 @@ def extract_frames_around(video_path, frame_id, fps=25, n_frames=3):
 
 # ─────────────────────────────────────────
 # VALIDER UN EVENT (BUT / TIR)
+# FIX 3 — prompt enrichi avec :
+#   - description explicite du cas gardien
+#   - frames labellisées avant/après pour le contexte
+#   - danger score comme hint
 # ─────────────────────────────────────────
 def validate_event(video_path, event, fps=25, sport="football"):
     if not GEMINI_AVAILABLE:
         return None
 
-    frame_id = event.get("frame", 0)
-    frames   = extract_frames_around(video_path, frame_id, fps, n_frames=3)
-    if not frames:
+    frame_id     = event.get("frame", 0)
+    danger       = event.get("danger", 0)
+    event_type   = event.get("type", "?")
+    frames_data  = extract_frames_around(video_path, frame_id, fps, n_before=2, n_after=2)
+
+    if not frames_data:
         return None
 
     try:
         client = get_client()
 
+        # FIX 3 — prompt enrichi avec cas gardien explicitement mentionné
         parts = [text_to_part(
             f"Tu es un expert analyste de {sport}. "
-            f"Voici 3 frames autour d'un événement suspect "
-            f"(type détecté : {event.get('type','?')}).\n\n"
+            f"Voici {len(frames_data)} frames chronologiques autour d'un événement suspect "
+            f"(type détecté : {event_type}, danger score : {danger:.1f}/10).\n\n"
+            f"Les frames AVANT (offset négatif) montrent la situation AVANT l'événement. "
+            f"Utilise ce contexte pour ne pas confondre :\n"
+            f"- Un GARDIEN QUI TIENT LE BALLON devant son but avec un but\n"
+            f"- Une RELANCE À LA MAIN DU GARDIEN avec un tir\n"
+            f"- Un DÉGAGEMENT avec un but\n\n"
             f"Détermine exactement ce qui s'est passé.\n"
             f"Réponds UNIQUEMENT en JSON valide sans markdown :\n"
-            f'{{"type": "goal|shot|corner|touche|none", '
+            f'{{"type": "goal|shot|corner|touche|goalkeeper_hold|goalkeeper_throw|none", '
             f'"confiance": 0.95, '
             f'"equipe": 0, '
             f'"description": "description courte"}}\n\n'
-            f"- goal : ballon franchit la ligne de but\n"
-            f"- shot : tir cadré ou non\n"
-            f"- corner : corner ou remise en coin\n"
+            f"Types possibles :\n"
+            f"- goal : ballon franchit CLAIREMENT la ligne de but\n"
+            f"- shot : tir cadré ou non cadré\n"
+            f"- goalkeeper_hold : gardien qui tient/porte le ballon\n"
+            f"- goalkeeper_throw : relance à la main ou au pied du gardien\n"
+            f"- corner : remise en coin\n"
             f"- touche : sortie en touche\n"
             f"- none : rien de notable\n"
-            f"equipe : 0 ou 1 selon maillot, null si incertain"
+            f"equipe : 0 ou 1 selon couleur maillot, null si incertain"
         )]
 
-        for i, frame in enumerate(frames):
-            parts.append(text_to_part(f"Frame {i+1}/3 :"))
+        for offset, frame in frames_data:
+            label = (
+                f"Frame AVANT ({offset//fps:.1f}s)" if offset < 0
+                else "Frame ÉVÉNEMENT"              if offset == 0
+                else f"Frame APRÈS (+{offset//fps:.1f}s)"
+            )
+            parts.append(text_to_part(f"{label} :"))
             parts.append(frame_to_part(frame))
 
         response = _call_gemini(client, parts)
+
+        # FIX 4 — si Gemini indisponible, retourner None
+        # (l'appelant devra traiter ce cas explicitement)
         if response is None:
             return None
 
@@ -242,6 +297,9 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
 
 # ─────────────────────────────────────────
 # VALIDATION COMPLÈTE
+# FIX 4 — sur 503/None :
+#   - les goals NON validés par Gemini sont rejetés si danger < 8
+#   - les shots NON validés sont conservés (moins critique)
 # ─────────────────────────────────────────
 def validate_events_with_gemini(
     events,
@@ -250,6 +308,8 @@ def validate_events_with_gemini(
     sport    = "football",
     min_conf = 0.7
 ):
+    global _gemini_unavailable
+
     if not GEMINI_AVAILABLE:
         print("  Gemini non disponible — validation ignorée")
         return events
@@ -267,16 +327,31 @@ def validate_events_with_gemini(
     validated = corrected = removed = 0
 
     for event in candidates:
-        # FIX — si quota épuisé, arrêter immédiatement sans retenter
         if _quota_exhausted:
             print("  ⚠️  Quota épuisé — validation Gemini interrompue")
             break
 
         result = validate_event(video_path, event, fps, sport)
+
+        # FIX 4 — Gemini indisponible (503 ou None) :
+        # on NE valide PAS automatiquement
         if result is None:
+            if event.get("type") == "goal":
+                danger = event.get("danger", 0) or 0
+                if danger < 8.0:
+                    # FIX 4 — goal non validé + danger faible → rejeté
+                    event["_remove"] = True
+                    removed += 1
+                    print(f"  FIX4 : goal à t={event.get('time',0):.0f}s rejeté "
+                          f"(Gemini indisponible, danger={danger:.1f})")
+                else:
+                    # Danger très élevé → on garde avec flag d'avertissement
+                    event["gemini_validated"] = False
+                    event["gemini_unavailable"] = True
+            # Pour les shots → on conserve toujours (moins critique)
             continue
 
-        # FIX — pause de 2s entre chaque appel pour rester sous la RPM limit
+        # Pause entre appels pour rester sous la RPM limit
         time.sleep(2)
 
         validated  += 1
@@ -284,13 +359,20 @@ def validate_events_with_gemini(
         confiance   = result["confiance"]
 
         if confiance >= min_conf:
+            # FIX 3 — nouveaux types goalkeeper_hold / goalkeeper_throw → supprimer
             if gemini_type in ["goal", "shot"]:
                 if event["type"] != gemini_type:
                     event["type"] = gemini_type
                     corrected += 1
                 if result.get("equipe") is not None:
                     event["team"] = result["equipe"]
-            else:
+            elif gemini_type in ["goalkeeper_hold", "goalkeeper_throw",
+                                  "corner", "touche", "none"]:
+                event["_remove"] = True
+                removed += 1
+        else:
+            # Confiance insuffisante sur un goal → rejeté par précaution
+            if event.get("type") == "goal":
                 event["_remove"] = True
                 removed += 1
 
