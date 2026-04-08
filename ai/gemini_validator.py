@@ -4,7 +4,6 @@
 import os
 import cv2
 import json
-import base64
 import re
 import time
 import numpy as np
@@ -34,21 +33,12 @@ def get_client():
 
 
 # ─────────────────────────────────────────
-# FLAG QUOTA + FLAG 503
-# FIX 4 — deux flags distincts :
-#   _quota_exhausted  : quota journalier épuisé → arrêt total
-#   _gemini_unavailable : 503 temporaire → on marque les events
-#     comme non-validés au lieu de les accepter automatiquement
+# FLAGS
 # ─────────────────────────────────────────
 _quota_exhausted    = False
 _gemini_unavailable = False
 
 def _call_gemini(client, parts, max_retries=2):
-    """
-    Appel Gemini avec retry limité.
-    FIX 4 — sur 503, on lève _gemini_unavailable au lieu
-             d'accepter l'event silencieusement.
-    """
     global _quota_exhausted, _gemini_unavailable
 
     if _quota_exhausted:
@@ -72,7 +62,6 @@ def _call_gemini(client, parts, max_retries=2):
                 return None
 
             elif "503" in err_str or "UNAVAILABLE" in err_str:
-                # FIX 4 — 503 : flag levé, on retourne None sans valider
                 _gemini_unavailable = True
                 if attempt < max_retries - 1:
                     time.sleep(1)
@@ -92,22 +81,17 @@ def _call_gemini(client, parts, max_retries=2):
 
 
 # ─────────────────────────────────────────
-# HELPER — vérifier si position est proche d'un but
-# FIX position — évite les dégagements de tête détectés comme buts
+# HELPER — position proche d'un but
 # ─────────────────────────────────────────
 def _is_near_goal(x, frame_w, threshold=0.18):
-    """
-    Retourne True si x est dans la zone de but (< 18% ou > 82% du terrain).
-    Un dégagement de tête au milieu du terrain a x ~ 5-10% → rejeté.
-    """
     if frame_w <= 0:
-        return True  # pas d'info → on laisse passer (autre filtre s'en charge)
+        return True
     x_pct = x / frame_w
     return x_pct < threshold or x_pct > (1.0 - threshold)
 
 
 # ─────────────────────────────────────────
-# ENCODER FRAME → BYTES JPEG
+# ENCODER FRAME
 # ─────────────────────────────────────────
 def encode_frame(frame):
     _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -125,14 +109,8 @@ def text_to_part(text):
 
 # ─────────────────────────────────────────
 # EXTRAIRE FRAMES AUTOUR D'UN EVENT
-# FIX 3 — frames AVANT pour donner le contexte
 # ─────────────────────────────────────────
 def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
-    """
-    Extrait n_before frames avant l'event + frame event + n_after frames après.
-    FIX 3 : le contexte avant est crucial pour distinguer
-            gardien-qui-tient-la-balle ou dégagement d'un vrai but.
-    """
     cap    = cv2.VideoCapture(video_path)
     frames = []
 
@@ -155,8 +133,7 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
 
 
 # ─────────────────────────────────────────
-# VALIDER UN EVENT (BUT / TIR)
-# FIX 3 — prompt enrichi + contexte avant
+# VALIDER UN EVENT
 # ─────────────────────────────────────────
 def validate_event(video_path, event, fps=25, sport="football"):
     if not GEMINI_AVAILABLE:
@@ -182,7 +159,10 @@ def validate_event(video_path, event, fps=25, sport="football"):
             f"- Un GARDIEN QUI TIENT LE BALLON devant son but avec un but\n"
             f"- Une RELANCE À LA MAIN DU GARDIEN avec un tir\n"
             f"- Un DÉGAGEMENT DE TÊTE (défenseur qui repousse) avec un but\n"
-            f"- Un DÉGAGEMENT (gardien ou défenseur) avec un tir\n\n"
+            f"- Un CENTRE DÉGAGÉ EN TOUCHE par un défenseur avec un but\n"
+            f"  (situation : attaquant + défenseur + gardien devant le but,\n"
+            f"   le défenseur envoie la balle hors du terrain = PAS un but)\n"
+            f"- Un DÉGAGEMENT en touche ou en corner depuis la zone de but avec un but\n\n"
             f"Détermine exactement ce qui s'est passé.\n"
             f"Réponds UNIQUEMENT en JSON valide sans markdown :\n"
             f'{{"type": "goal|shot|corner|touche|goalkeeper_hold|goalkeeper_throw|defensive_clearance|none", '
@@ -190,15 +170,19 @@ def validate_event(video_path, event, fps=25, sport="football"):
             f'"equipe": 0, '
             f'"description": "description courte"}}\n\n'
             f"Types possibles :\n"
-            f"- goal : ballon franchit CLAIREMENT la ligne de but\n"
+            f"- goal : ballon franchit CLAIREMENT la ligne de but ET entre dans le filet\n"
             f"- shot : tir cadré ou non cadré vers le but\n"
             f"- goalkeeper_hold : gardien qui tient/porte le ballon\n"
             f"- goalkeeper_throw : relance à la main ou au pied du gardien\n"
-            f"- defensive_clearance : dégagement de tête ou du pied d'un défenseur\n"
+            f"- defensive_clearance : dégagement de tête ou du pied d'un défenseur,\n"
+            f"  ou centre renvoyé en touche/corner par un défenseur\n"
             f"- corner : remise en coin\n"
-            f"- touche : sortie en touche\n"
+            f"- touche : sortie en touche (y compris dégagement latéral)\n"
             f"- none : rien de notable\n"
-            f"equipe : 0 ou 1 selon couleur maillot, null si incertain"
+            f"equipe : 0 ou 1 selon couleur maillot, null si incertain\n\n"
+            f"RÈGLE IMPORTANTE : si tu vois plusieurs joueurs (attaquant + défenseur + gardien)\n"
+            f"se disputer la balle devant le but et que la balle sort du terrain\n"
+            f"= defensive_clearance ou touche, PAS un goal."
         )]
 
         for offset, frame in frames_data:
@@ -302,7 +286,6 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
 
 # ─────────────────────────────────────────
 # VALIDATION COMPLÈTE
-# FIX 3 + FIX 4 + FIX position
 # ─────────────────────────────────────────
 def validate_events_with_gemini(
     events,
@@ -310,7 +293,7 @@ def validate_events_with_gemini(
     fps        = 25,
     sport      = "football",
     min_conf   = 0.7,
-    frame_w    = 1920,   # FIX position — largeur de référence
+    frame_w    = 1920,
 ):
     global _gemini_unavailable
 
@@ -337,7 +320,6 @@ def validate_events_with_gemini(
 
         result = validate_event(video_path, event, fps, sport)
 
-        # ── FIX 4 + FIX position : Gemini indisponible (503 / None) ──
         if result is None:
             if event.get("type") == "goal":
                 danger    = event.get("danger", 0) or 0
@@ -362,7 +344,6 @@ def validate_events_with_gemini(
         confiance   = result["confiance"]
 
         if confiance >= min_conf:
-            # FIX 3 — nouveaux types rejetés
             if gemini_type in ["goal", "shot"]:
                 if event["type"] != gemini_type:
                     event["type"] = gemini_type
@@ -377,7 +358,6 @@ def validate_events_with_gemini(
                 event["_remove"] = True
                 removed += 1
         else:
-            # Confiance insuffisante sur un goal → rejeté par précaution
             if event.get("type") == "goal":
                 event["_remove"] = True
                 removed += 1
