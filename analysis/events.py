@@ -33,6 +33,7 @@ def get_closest_player(players, ball):
 
 # ─────────────────────────────────────────
 # SHOT ZONES MULTI SPORT
+# FIX — zones Y élargies pour inclure tirs bas (filet) et hauts (lucarne)
 # ─────────────────────────────────────────
 def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
     if shot_zones:
@@ -43,9 +44,11 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
         y_max = shot_zones.get("y_max", frame_h)
 
         if axis == "x":
-            y_tol     = (y_max - y_min) * 0.30
+            # FIX — tolérance Y élargie à 50% pour inclure
+            # les tirs bas (filet bas, y>y_max) et hauts (lucarne)
+            y_tol     = (y_max - y_min) * 0.50
             in_y_shot = (y_min - y_tol <= y <= y_max + y_tol)
-            in_y_goal = (y_min <= y <= y_max)
+            in_y_goal = (y_min - y_tol * 0.3 <= y <= y_max + y_tol * 0.3)
             in_zone   = (x > hi or x < lo) and in_y_shot
             in_goal   = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y_goal
             return in_zone or in_goal, in_goal
@@ -55,8 +58,9 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
             return in_zone, in_goal
 
     if sport == "football":
-        in_y_shot = (frame_h * 0.25 <= y <= frame_h * 0.75)
-        in_y_goal = (frame_h * 0.30 <= y <= frame_h * 0.70)
+        # FIX — zone Y élargie : inclut le bas du cadre (sol)
+        in_y_shot = (frame_h * 0.15 <= y <= frame_h * 0.90)
+        in_y_goal = (frame_h * 0.20 <= y <= frame_h * 0.90)
         in_zone   = (x > frame_w * 0.80 or x < frame_w * 0.20) and in_y_shot
         in_goal   = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y_goal
         return in_zone or in_goal, in_goal
@@ -67,8 +71,8 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
         return in_zone, in_goal
 
     if sport == "handball":
-        in_y_shot = (frame_h * 0.20 <= y <= frame_h * 0.80)
-        in_y_goal = (frame_h * 0.25 <= y <= frame_h * 0.75)
+        in_y_shot = (frame_h * 0.15 <= y <= frame_h * 0.85)
+        in_y_goal = (frame_h * 0.20 <= y <= frame_h * 0.85)
         in_zone   = (x > frame_w * 0.82 or x < frame_w * 0.18) and in_y_shot
         in_goal   = (x > frame_w * 0.90 or x < frame_w * 0.10) and in_y_goal
         return in_zone or in_goal, in_goal
@@ -118,13 +122,16 @@ def init_state(learner=None):
         "pressing":                 False,
         "turnover_window":          0,
         "ball_in_goal_zone":        0,
-        "_goal_zone_speeds":        [],   # vitesses du ballon dans zone but
+        "_goal_zone_speeds":        [],
         "_shot_cd_max":             shot_cd_frames,
         "_goal_cd_max":             goal_cd_frames,
         "_ball_speed_min":          ball_speed_min,
         "_player_near_goal":        player_near,
         "_goal_frames_min":         goal_frames,
         "_last_ball_interpolated":  False,
+        # FIX dribble cooldown — évite sur-détection
+        "_last_dribble_time":       -999.0,
+        "_dribble_cooldown":        1.5,   # secondes
     }
 
 
@@ -140,6 +147,7 @@ def detect_events(
     frame_w    = 1280,
     frame_h    = 720,
     learner    = None,
+    fps        = 25,
 ):
     if state is None:
         state = init_state(learner)
@@ -154,24 +162,43 @@ def detect_events(
         state["_goal_zone_speeds"] = []
         return events, state
 
+    # Temps courant en secondes (depuis frame si disponible)
+    current_frame = ball.get("frame", 0) or 0
+    current_time  = current_frame / fps
+
     # ── POSSESSION ───────────────────────
     closest, dist = get_closest_player(players, ball)
     threshold     = frame_w * 0.06
     current       = closest if dist < threshold else None
 
     if current:
+        team_key = current.get("team")
         events.append({
             "type":   "possession",
             "player": str(current["id"]),
-            "team":   current.get("team"),
+            "team":   team_key,
             "x":      ball["center"][0],
             "y":      ball["center"][1]
         })
         state["possession_time"] += 1
-        team_key = current.get("team")
+        # FIX possession — on compte les deux équipes correctement
         if team_key is not None:
             state["team_possession"][team_key] = \
                 state["team_possession"].get(team_key, 0) + 1
+        else:
+            # Équipe inconnue → on répartit sur le joueur le plus proche
+            # pour éviter que tout aille à {1: 100%}
+            if players:
+                team_counts = {}
+                for p in players:
+                    t = p.get("team")
+                    if t is not None:
+                        team_counts[t] = team_counts.get(t, 0) + 1
+                # Donner à l'équipe avec le plus de joueurs détectés
+                if team_counts:
+                    dominant = max(team_counts, key=team_counts.get)
+                    state["team_possession"][dominant] = \
+                        state["team_possession"].get(dominant, 0) + 0.5
 
     # ── PRESSURE ─────────────────────────
     if current:
@@ -230,9 +257,13 @@ def detect_events(
             state["turnover_window"] = 0
     state["turnover_window"] = max(0, state["turnover_window"] - 1)
 
-    # ── DRIBBLE ──────────────────────────
+    # ── DRIBBLE — avec cooldown ───────────
+    # FIX — cooldown 1.5s pour éviter 273 dribbles
     if current and state["last_ball_pos"]:
-        if speed(state["last_ball_pos"], ball["center"]) > frame_w * 0.025:
+        ball_spd = speed(state["last_ball_pos"], ball["center"])
+        time_since_dribble = current_time - state.get("_last_dribble_time", -999)
+        if (ball_spd > frame_w * 0.025
+                and time_since_dribble >= state["_dribble_cooldown"]):
             events.append({
                 "type":   "dribble",
                 "player": str(current["id"]),
@@ -240,6 +271,7 @@ def detect_events(
                 "x":      ball["center"][0],
                 "y":      ball["center"][1]
             })
+            state["_last_dribble_time"] = current_time
 
     # ── BUILD UP ─────────────────────────
     state["sequence"].append(ball["center"])
@@ -267,13 +299,12 @@ def detect_events(
         x, y = ball["center"]
 
         if learner and learner.is_fp_zone(x, y, frame_w, frame_h):
-            pass  # zone FP connue → skip
+            pass
         else:
             is_shot, is_goal_zone = is_shot_zone(
                 x, y, sport, shot_zones, frame_w, frame_h
             )
 
-            # ── SHOT ─────────────────────────
             ball_interpolated = ball.get("interpolated", False)
 
             if (state["last_ball_pos"]
@@ -307,9 +338,6 @@ def detect_events(
                     last_pass["xA"] = compute_xa(last_pass, shot)
 
             # ── GOAL ─────────────────────────
-            # FIX — on track la vitesse dans la zone but
-            # Vrai but : ballon ralentit dans le filet
-            # Dégagement : ballon traverse la zone à grande vitesse
             ball_is_real     = not ball_interpolated
             player_near_goal = dist < frame_w * player_near_pct
 
@@ -324,25 +352,21 @@ def detect_events(
                     state["ball_in_goal_zone"] = 0
                     state["_goal_zone_speeds"]  = []
             else:
-                # Ballon sort de la zone — vérifier si c'était un dégagement
                 if state["ball_in_goal_zone"] > 0:
                     speeds = state["_goal_zone_speeds"]
                     if speeds:
                         avg_speed = sum(speeds) / len(speeds)
-                        # Ballon traversait vite → dégagement → annuler
                         if avg_speed > frame_w * 0.04:
                             state["ball_in_goal_zone"] = 0
                             state["_goal_zone_speeds"]  = []
                 state["ball_in_goal_zone"] = 0
                 state["_goal_zone_speeds"]  = []
 
-            # Validation finale du but
             if state["ball_in_goal_zone"] >= goal_frames_min \
                     and state["goal_cd"] == 0:
                 speeds    = state["_goal_zone_speeds"]
                 avg_speed = sum(speeds) / len(speeds) if speeds else 0
 
-                # Vrai but : vitesse moyenne faible (ballon dans filet)
                 if avg_speed < frame_w * 0.06:
                     events.append({
                         "type":   "goal",
@@ -354,9 +378,8 @@ def detect_events(
                     })
                     state["goal_cd"] = goal_cd_max
                 else:
-                    print(f"  goal rejeté t={x:.0f} vitesse_avg="
-                          f"{avg_speed:.0f}px > seuil={frame_w * 0.06:.0f}px "
-                          f"(dégagement probable)")
+                    print(f"  goal rejeté vitesse_avg={avg_speed:.0f}px "
+                          f"> seuil={frame_w * 0.06:.0f}px (dégagement)")
 
                 state["ball_in_goal_zone"] = 0
                 state["_goal_zone_speeds"]  = []
@@ -380,6 +403,7 @@ def detect_events(
 def process_match(frames_data, sport="football", shot_zones=None, learner=None):
     state      = None
     all_events = []
+    fps        = frames_data[0].get("fps", 25) if frames_data else 25
 
     for frame in frames_data:
         events, state = detect_events(
@@ -391,6 +415,7 @@ def process_match(frames_data, sport="football", shot_zones=None, learner=None):
             frame_w    = frame.get("frame_w", 1280),
             frame_h    = frame.get("frame_h", 720),
             learner    = learner,
+            fps        = fps,
         )
         for e in events:
             e["frame"] = frame.get("frame")

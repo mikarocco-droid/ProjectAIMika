@@ -8,7 +8,7 @@ MIN_DELTA = {
     "goal":            150.0,
     "score":           150.0,
     "shot":              3.0,
-    "dribble":           1.0,
+    "dribble":           1.5,   # FIX: 1.0→1.5 pour réduire sur-détection
     "interception":      2.0,
     "fast_break":        3.0,
     "progressive_run":   1.0,
@@ -40,14 +40,73 @@ def temporal_filter(events, min_delta=None):
 
 
 # ─────────────────────────────────────────
-# FILTRE GOALS
-# Règles :
-# 1. Cooldown 200s entre deux buts
-# 2. Tir précédent obligatoire dans les 12s
-#    (sauf si Gemini a explicitement validé)
-# 3. xG=0 + pas Gemini + danger faible → rejeté
+# INFÉRENCE SHOT DEPUIS BUT
+# Si un but est détecté sans tir précédent,
+# on génère un shot synthétique à partir
+# du dribble le plus proche avant le but
 # ─────────────────────────────────────────
-def filter_goals(events, window=200.0, shot_before_goal_window=12.0):
+def infer_shots_from_goals(events):
+    """
+    Pour chaque but sans tir précédent dans les 15s,
+    crée un shot synthétique depuis le dribble précédent.
+    """
+    all_sorted = sorted(events, key=lambda x: x.get("time", 0))
+    shot_times = {e.get("time", 0) for e in all_sorted if e.get("type") == "shot"}
+    injected   = []
+
+    for g in all_sorted:
+        if g.get("type") not in ["goal", "score"]:
+            continue
+        t = g.get("time", 0)
+
+        # Vérifie si un tir existe déjà dans les 15s avant
+        has_shot = any(0 < t - st <= 15.0 for st in shot_times)
+        if has_shot:
+            continue
+
+        # Cherche le dribble le plus proche avant le but
+        candidates = [
+            e for e in all_sorted
+            if e.get("type") == "dribble"
+            and 0 < t - e.get("time", 0) <= 5.0
+        ]
+        if not candidates:
+            continue
+
+        # Prend le dribble le plus proche en temps
+        best = min(candidates, key=lambda e: t - e.get("time", 0))
+
+        shot = {
+            "type":             "shot",
+            "time":             best.get("time", t - 1.0),
+            "frame":            best.get("frame", g.get("frame", 0)),
+            "player":           best.get("player", g.get("player")),
+            "team":             best.get("team",   g.get("team")),
+            "x":                best.get("x",      g.get("x", 0)),
+            "y":                best.get("y",      g.get("y", 0)),
+            "xg":               0.35,   # xG par défaut pour tir menant à un but
+            "danger":           6.0,
+            "inferred":         True,   # marqué comme inféré
+        }
+        injected.append(shot)
+        shot_times.add(shot["time"])
+        print(f"  infer_shots : shot synthétique injecté à "
+              f"t={shot['time']:.1f}s avant but à {t:.1f}s")
+
+    return events + injected
+
+
+# ─────────────────────────────────────────
+# FILTRE GOALS
+# ─────────────────────────────────────────
+def filter_goals(events, window=200.0, shot_before_goal_window=15.0):
+    """
+    Filtre les faux buts :
+    1. Cooldown 200s entre deux buts
+    2. Tir précédent obligatoire dans les 15s
+       Exception : Gemini valide ET danger >= 8
+    3. xG=0 + pas Gemini + danger faible → rejeté
+    """
     all_sorted     = sorted(events, key=lambda x: x.get("time", 0))
     goals_raw      = [e for e in all_sorted if e.get("type") in ["goal", "score"]]
     others         = [e for e in all_sorted if e.get("type") not in ["goal", "score"]]
@@ -67,22 +126,19 @@ def filter_goals(events, window=200.0, shot_before_goal_window=12.0):
             print(f"  filter_goals : but à {t:.0f}s rejeté (cooldown)")
             continue
 
-        # ── Règle 2 : tir précédent obligatoire ──
-        if not gem:
-            shot_before = any(
-                0 < t - st <= shot_before_goal_window
-                for st in shot_times
-            )
-            if not shot_before:
-                print(f"  filter_goals : but à {t:.0f}s rejeté "
-                      f"(aucun tir dans les {shot_before_goal_window:.0f}s "
-                      f"précédentes)")
-                continue
+        # ── Règle 2 : tir précédent ──
+        shot_before  = any(0 < t - st <= shot_before_goal_window for st in shot_times)
+        gemini_strong = gem and dang >= 8.0
+
+        if not shot_before and not gemini_strong:
+            print(f"  filter_goals : but à {t:.0f}s rejeté "
+                  f"(pas de tir, gemini={gem}, danger={dang:.1f})")
+            continue
 
         # ── Règle 3 : xG + danger ──
         if xg == 0 and not gem and dang < 5:
             print(f"  filter_goals : but à {t:.0f}s rejeté "
-                  f"(xG=0, non validé Gemini, danger={dang})")
+                  f"(xG=0, non validé, danger={dang:.1f})")
             continue
 
         validated.append(g)
