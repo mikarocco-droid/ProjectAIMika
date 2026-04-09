@@ -147,22 +147,14 @@ def make_progress_callback(analysis_id=None):
 # FIX MVP — résoudre label depuis jersey_map
 # ─────────────────────────────────────────
 def resolve_mvp_label(mvp, stats, jersey_map):
-    """
-    Retourne le label lisible du MVP :
-    - #9 si numéro maillot connu
-    - ID-{pid} sinon
-    Cherche aussi dans les stats pour récupérer le label déjà calculé.
-    """
     if mvp is None:
         return None
 
     pid = str(mvp[0]) if isinstance(mvp, (list, tuple)) else str(mvp)
 
-    # Chercher dans les stats d'abord (label déjà résolu)
     if pid in stats and stats[pid].get("label"):
         return stats[pid]["label"]
 
-    # Chercher dans jersey_map
     if jersey_map:
         jersey = (
             jersey_map.get(pid)
@@ -275,15 +267,36 @@ def run_pipeline(
             infer_shots_from_goals,
         )
 
-        goal_cooldown = learner.get_thresholds().get("goal_cooldown", 150.0) \
-                        if learner else 150.0
+        # FIX résumé — détecter automatiquement si c'est un résumé de match
+        # Si durée < 5 min → résumé → cooldown et seuil position adaptés
+        video_duration = total_frames / fps if fps > 0 else 600
+        is_summary     = video_duration < 480  # moins de 8 minutes
 
-        # FIX — passer frame_w pour que la règle position fonctionne correctement
+        if is_summary:
+            goal_cooldown      = 20.0   # buts peuvent se succéder toutes les 20s
+            position_threshold = 0.35   # angles caméra variés dans un résumé
+            print(f"  Résumé détecté ({video_duration:.0f}s) — "
+                  f"goal_cooldown={goal_cooldown:.0f}s | "
+                  f"position_threshold={int(position_threshold*100)}%")
+        else:
+            goal_cooldown = learner.get_thresholds().get("goal_cooldown", 150.0) \
+                            if learner else 150.0
+            position_threshold = 0.20   # match complet → règle stricte
+            print(f"  Match complet ({video_duration:.0f}s) — "
+                  f"goal_cooldown={goal_cooldown:.0f}s | "
+                  f"position_threshold={int(position_threshold*100)}%")
+
+        # frame_w réel depuis les données trackées
         _frame_w = int(frames_data[0].get("frame_w", 1920)) if frames_data else 1920
 
         events = merge_players(events)
         events = temporal_filter(events, min_delta=2.0)
-        events = filter_goals(events, window=goal_cooldown, frame_w=_frame_w)
+        events = filter_goals(
+            events,
+            window             = goal_cooldown,
+            frame_w            = _frame_w,
+            position_threshold = position_threshold,
+        )
         events = infer_shots_from_goals(events)
         print(f"  CLEAN {len(events)} events | goal_cooldown={goal_cooldown:.0f}s")
     except Exception as e:
@@ -302,7 +315,7 @@ def run_pipeline(
             fps        = fps,
             sport      = sport,
             min_conf   = 0.75,
-            frame_w    = int(frames_data[0].get("frame_w", 1920)) if frames_data else 1920,
+            frame_w    = _frame_w,
         )
 
         if learner:
@@ -337,8 +350,7 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 1c. SMART FILTERING V18
-    # FIX possession — on ne calcule plus ici,
-    # recalculé après Step 3 avec équipes corrigées
+    # FIX possession — recalculé après Step 3
     # ─────────────────────────────────────────
     possession = {}
     try:
@@ -399,7 +411,7 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 3. STATS
-    # FIX — stats avant possession pour avoir les équipes corrigées
+    # FIX — stats avant possession pour équipes corrigées
     # ─────────────────────────────────────────
     print("Step 3 : Stats...")
     stats = compute_stats(events, jersey_map=jersey_map)
@@ -590,8 +602,8 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 11 : Summary...")
     summary = compute_match_summary(events, stats, total_frames, fps)
-    # FIX possession — intégrer dans le summary
     summary["possession"] = possession
+    summary["is_summary"] = is_summary if 'is_summary' in dir() else False
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
           f"xG={summary['total_xg']} | joueurs={summary['players']}")
     print(f"  Possession : {possession}")
@@ -650,11 +662,11 @@ def run_pipeline(
                     "heatmaps":       heatmap_paths,
                     "player_ratings": ratings,
                     "match_story":    story,
-                    "mvp":            mvp_label,   # FIX — label lisible
+                    "mvp":            mvp_label,
                     "formation":      formation,
                     "tactical":       tactical,
                     "commentary":     commentary,
-                    "possession":     possession,  # FIX — ajout possession
+                    "possession":     possession,
                 },
                 output_path = os.path.join(output_dir, "rapport.pdf"),
                 sport       = sport
@@ -695,11 +707,11 @@ def run_pipeline(
         "dominance":    dominance,
         "key_moments":  key_moments,
         "ratings":      ratings,
-        "mvp":          mvp_label,   # FIX — label lisible
+        "mvp":          mvp_label,
         "commentary":   commentary,
         "story":        story,
         "learning":     learning_result,
-        "possession":   possession,  # FIX — ajout possession
+        "possession":   possession,
     }
 
     result = sanitize_for_json(result)
@@ -713,5 +725,7 @@ def run_pipeline(
     print(f"  Formation: {formation} | Style: {tactical.get('style','?')}")
     print(f"  MVP: {mvp_label}")
     print(f"  Possession: {possession}")
+    if is_summary if 'is_summary' in dir() else False:
+        print(f"  ℹ️  Mode résumé détecté — paramètres adaptés")
 
     return result
