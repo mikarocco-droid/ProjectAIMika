@@ -222,11 +222,10 @@ def filter_goals(
             continue
 
         # ── Règle 4 : position STRICTE ──
-        # FIX — seuil élargi 18% → 20%
-        # FIX — Gemini ne peut plus bypasser cette règle
-        #        (frames CPU moins nettes = Gemini moins fiable)
+        # FIX — seuil paramétrable selon type vidéo
+        # match complet : 20% | résumé : 35%
         x_pct     = x / frame_w if frame_w > 0 else 0.5
-        near_goal = x_pct < 0.20 or x_pct > 0.80
+        near_goal = x_pct < position_threshold or x_pct > (1.0 - position_threshold)
 
         if not near_goal:
             print(f"  filter_goals : but à {t:.0f}s rejeté "
