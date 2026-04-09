@@ -61,7 +61,6 @@ def infer_shots_from_goals(events):
             continue
         t = g.get("time", 0)
 
-        # Déjà un tir dans les 15s avant → pas besoin d'inférer
         has_shot = any(0 < t - st <= 15.0 for st in shot_times)
         if has_shot:
             continue
@@ -92,7 +91,6 @@ def infer_shots_from_goals(events):
                   f"t={shot['time']:.1f}s avant but à {t:.1f}s")
 
         # ── Priorité 2 : shot_blocked dans les 10s ──
-        # FIX — tir contré suivi d'un but = séquence réelle
         if shot is None:
             blocked = [
                 e for e in all_sorted
@@ -102,16 +100,16 @@ def infer_shots_from_goals(events):
             if blocked:
                 best = min(blocked, key=lambda e: t - e.get("time", 0))
                 shot = {
-                    "type":     "shot",
-                    "time":     best.get("time", t - 1.0),
-                    "frame":    best.get("frame", g.get("frame", 0)),
-                    "player":   best.get("player", g.get("player")),
-                    "team":     best.get("team",   g.get("team")),
-                    "x":        best.get("x",      g.get("x", 0)),
-                    "y":        best.get("y",      g.get("y", 0)),
-                    "xg":       0.35,
-                    "danger":   6.0,
-                    "inferred": True,
+                    "type":         "shot",
+                    "time":         best.get("time", t - 1.0),
+                    "frame":        best.get("frame", g.get("frame", 0)),
+                    "player":       best.get("player", g.get("player")),
+                    "team":         best.get("team",   g.get("team")),
+                    "x":            best.get("x",      g.get("x", 0)),
+                    "y":            best.get("y",      g.get("y", 0)),
+                    "xg":           0.35,
+                    "danger":       6.0,
+                    "inferred":     True,
                     "from_blocked": True,
                 }
                 print(f"  infer_shots : shot depuis shot_blocked à "
@@ -173,18 +171,18 @@ def filter_goals(
     window                  = 200.0,
     shot_before_goal_window = 15.0,
     frame_w                 = 1920,
+    position_threshold      = 0.20,   # FIX résumé — paramétrable
+                                       # match complet : 0.20 | résumé : 0.35
 ):
     """
     Filtre les faux buts :
-    1. Cooldown 200s entre deux buts
+    1. Cooldown entre deux buts (réduit automatiquement pour résumés)
     2. Tir précédent obligatoire dans les 15s
        Exception : Gemini valide ET danger >= 8
     3. xG=0 + pas Gemini + danger faible → rejeté
     4. Position trop loin des cages → rejeté TOUJOURS
+       FIX — seuil paramétrable : 20% match complet, 35% résumé
        FIX — Gemini ne peut plus bypasser cette règle
-       car les frames CPU sont moins nettes et Gemini
-       peut valider des faux positifs visuels
-       Seuil élargi à 20% pour ne pas rater les vrais buts
     """
     all_sorted     = sorted(events, key=lambda x: x.get("time", 0))
     goals_raw      = [e for e in all_sorted if e.get("type") in ["goal", "score"]]
@@ -222,15 +220,15 @@ def filter_goals(
             continue
 
         # ── Règle 4 : position STRICTE ──
-        # FIX — seuil paramétrable selon type vidéo
-        # match complet : 20% | résumé : 35%
+        # Seuil paramétrable : 20% match complet, 35% résumé
+        # Gemini ne peut pas bypasser cette règle
         x_pct     = x / frame_w if frame_w > 0 else 0.5
         near_goal = x_pct < position_threshold or x_pct > (1.0 - position_threshold)
 
         if not near_goal:
             print(f"  filter_goals : but à {t:.0f}s rejeté "
                   f"(position trop loin des cages : x={x:.0f} "
-                  f"soit {x_pct*100:.1f}% du terrain, "
+                  f"soit {x_pct*100:.1f}% | seuil={position_threshold*100:.0f}% | "
                   f"gemini={gem})")
             continue
 
