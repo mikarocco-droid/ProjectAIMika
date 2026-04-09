@@ -278,9 +278,12 @@ def run_pipeline(
         goal_cooldown = learner.get_thresholds().get("goal_cooldown", 150.0) \
                         if learner else 150.0
 
+        # FIX — passer frame_w pour que la règle position fonctionne correctement
+        _frame_w = int(frames_data[0].get("frame_w", 1920)) if frames_data else 1920
+
         events = merge_players(events)
         events = temporal_filter(events, min_delta=2.0)
-        events = filter_goals(events, window=goal_cooldown)
+        events = filter_goals(events, window=goal_cooldown, frame_w=_frame_w)
         events = infer_shots_from_goals(events)
         print(f"  CLEAN {len(events)} events | goal_cooldown={goal_cooldown:.0f}s")
     except Exception as e:
