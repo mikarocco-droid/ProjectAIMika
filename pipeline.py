@@ -268,12 +268,12 @@ def run_pipeline(
         )
 
         # FIX résumé — détecter automatiquement si c'est un résumé de match
-        # Si durée < 5 min → résumé → cooldown et seuil position adaptés
+        # Si durée < 8 min → résumé → cooldown et seuil position adaptés
         video_duration = total_frames / fps if fps > 0 else 600
         is_summary     = video_duration < 480  # moins de 8 minutes
 
         if is_summary:
-            goal_cooldown      = 20.0   # buts peuvent se succéder toutes les 20s
+            goal_cooldown      = 10.0   # résumé : buts peuvent se succéder toutes les 10s
             position_threshold = 0.35   # angles caméra variés dans un résumé
             print(f"  Résumé détecté ({video_duration:.0f}s) — "
                   f"goal_cooldown={goal_cooldown:.0f}s | "
@@ -309,12 +309,15 @@ def run_pipeline(
     try:
         from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers
 
+        # FIX résumé — min_conf réduit pour résumé (angles variés)
+        _min_conf = 0.60 if is_summary else 0.75
+
         events = validate_events_with_gemini(
             events     = events,
             video_path = video_path,
             fps        = fps,
             sport      = sport,
-            min_conf   = 0.75,
+            min_conf   = _min_conf,
             frame_w    = _frame_w,
         )
 
