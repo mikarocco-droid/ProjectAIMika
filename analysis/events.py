@@ -172,7 +172,7 @@ def init_state(learner=None):
         "_dribble_cooldown":        1.5,
         # ── FIX 1 : possession gardien ──
         "_gk_possession_frames":    0,
-        "_gk_possession_min":       20,
+        "_gk_possession_min":       8,
         "_gk_holding_ball":         False,
         "_gk_release_cd":           0,
         "_gk_release_cd_max":       75,
@@ -255,7 +255,7 @@ def detect_events(
     if gk and state["last_ball_pos"]:
         ball_spd     = speed(state["last_ball_pos"], ball["center"])
         gk_near_ball = distance(gk["center"], ball["center"]) < frame_w * 0.06
-        ball_slow    = ball_spd < frame_w * 0.015
+        ball_slow    = ball_spd < frame_w * 0.025
 
         if gk_near_ball and ball_slow:
             state["_gk_possession_frames"] += 1
