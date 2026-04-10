@@ -524,15 +524,27 @@ def detect_events(
                 if _goal_confirmed and state["goal_cd"] == 0:
                     sc = _bt.get_shot_candidate()
                     if sc:
+                        # FIX — xG affiné depuis la vraie distance tir→but
+                        shot_dist    = sc.distance_to_goal(frame_w, frame_h)
+                        max_dist     = math.hypot(frame_w, frame_h / 2)
+                        xg_from_dist = round(max(0.01, min(0.5,
+                            1.0 - shot_dist / max_dist)), 3)
+                        # On prend le max entre xG du tir et xG distance
+                        # (le learner peut avoir un meilleur modèle)
+                        final_xg = max(sc.xg, xg_from_dist)
+
                         events.append({
-                            "type":          "goal",
-                            "player":        sc.player or str(current["id"]),
-                            "team":          sc.team   or current.get("team"),
-                            "x":             x,
-                            "y":             y,
-                            "xg":            sc.xg,
-                            "danger":        compute_danger({"type": "goal"}),
-                            "shot_linked":   True,   # traçabilité upgrade #5
+                            "type":        "goal",
+                            "player":      sc.player or str(current["id"]),
+                            "team":        sc.team   or current.get("team"),
+                            "x":           x,
+                            "y":           y,
+                            "xg":          final_xg,
+                            "shot_x":      sc.x,        # position du tir
+                            "shot_y":      sc.y,
+                            "shot_dist":   round(shot_dist, 1),
+                            "danger":      compute_danger({"type": "goal"}),
+                            "shot_linked": True,
                         })
                         state["goal_cd"] = goal_cd_max
                         state["ball_in_goal_zone"]     = 0
