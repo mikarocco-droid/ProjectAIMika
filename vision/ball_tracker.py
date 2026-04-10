@@ -1,9 +1,5 @@
 # vision/ball_tracker.py
 # -*- coding: utf-8 -*-
-"""
-FIX V23 — BallBuffer timestampé (x, y, t) au lieu de (x, y)
-Permet de calculer vitesse en px/seconde, robuste avec frame skip.
-"""
 
 import numpy as np
 from collections import deque
@@ -28,15 +24,9 @@ def is_valid_ball(ball, frame_w, frame_h):
 
 
 # ─────────────────────────────────────────
-# BALL BUFFER TIMESTAMPÉ — apport V23
-# Stocke (x, y, t) pour vitesse en px/s
-# robuste face au frame skip variable
+# BALL BUFFER TIMESTAMPÉ
 # ─────────────────────────────────────────
 class BallBuffer:
-    """
-    Buffer circulaire de positions ballon avec timestamp.
-    Remplace le simple deque (x,y) par (x, y, t).
-    """
     def __init__(self, size=30):
         self._buf = deque(maxlen=size)
 
@@ -53,32 +43,23 @@ class BallBuffer:
         return (x, y)
 
     def speed_px_per_sec(self):
-        """
-        Vitesse en px/seconde sur les 3 dernières positions.
-        Beaucoup plus fiable que px/frame avec frame skip.
-        """
+        """Vitesse en px/seconde — robuste frame skip."""
         pts = list(self._buf)
         if len(pts) < 2:
             return 0.0
-
-        # Moyenne glissante sur max 3 derniers segments
         n      = min(len(pts), 4)
         recent = pts[-n:]
         speeds = []
-
         for i in range(1, len(recent)):
             x1, y1, t1 = recent[i-1]
             x2, y2, t2 = recent[i]
             dt = max(t2 - t1, 1e-4)
             d  = math.hypot(x2 - x1, y2 - y1)
             speeds.append(d / dt)
-
         return sum(speeds) / len(speeds) if speeds else 0.0
 
     def speed_px_per_frame(self):
-        """
-        Compatibilité arrière — vitesse px/frame entre les 2 derniers points.
-        """
+        """Compatibilité arrière."""
         pts = list(self._buf)
         if len(pts) < 2:
             return 0.0
@@ -87,50 +68,66 @@ class BallBuffer:
         return math.hypot(x2 - x1, y2 - y1)
 
     def direction(self):
-        """
-        Vecteur direction normalisé depuis les 3 derniers points.
-        Plus stable qu'un simple vecteur 2 points.
-        """
+        """Vecteur direction normalisé sur les 4 derniers points."""
         pts = list(self._buf)
         if len(pts) < 2:
             return (0.0, 0.0)
-
-        # Régression linéaire simple sur les 4 derniers points
         recent = pts[-4:] if len(pts) >= 4 else pts
         xs = [p[0] for p in recent]
         ys = [p[1] for p in recent]
-
         dx = xs[-1] - xs[0]
         dy = ys[-1] - ys[0]
         norm = math.hypot(dx, dy) + 1e-6
         return (dx / norm, dy / norm)
 
+    # ── UPGRADE #2 — stabilité direction ─────────────────────────────────
+    def direction_stability(self, n_frames=3):
+        """
+        Mesure la cohérence de direction sur les n dernières frames.
+        Retourne 0.0 (chaotique) à 1.0 (trajectoire droite).
+        Évite de confondre rebond ou passe rapide avec un tir.
+        """
+        pts = list(self._buf)
+        if len(pts) < n_frames + 1:
+            return 0.0
+
+        recent = pts[-(n_frames + 1):]
+        dirs   = []
+        for i in range(1, len(recent)):
+            x1, y1, _ = recent[i-1]
+            x2, y2, _ = recent[i]
+            dx = x2 - x1
+            dy = y2 - y1
+            norm = math.hypot(dx, dy) + 1e-6
+            dirs.append((dx / norm, dy / norm))
+
+        if len(dirs) < 2:
+            return 1.0
+
+        # Moyenne des dot products entre directions consécutives
+        dots = [
+            dirs[i][0]*dirs[i+1][0] + dirs[i][1]*dirs[i+1][1]
+            for i in range(len(dirs) - 1)
+        ]
+        return max(0.0, sum(dots) / len(dots))
+
     def toward_goal(self, frame_w, frame_h, threshold=0.55):
-        """
-        Retourne True si le ballon se dirige vers un but.
-        Vérifie les deux buts (gauche et droite) en vue latérale.
-        Utilise shot_zones si disponible, sinon heuristique.
-        """
+        """Vérifie les deux buts en vue latérale."""
         if not self._buf:
             return False, None
-
         bx, by, _ = self._buf[-1]
         dx, dy    = self.direction()
-
         goal_centers = [
-            (0.0,         frame_h * 0.5),   # but gauche
-            (frame_w,     frame_h * 0.5),   # but droit
+            (0.0,     frame_h * 0.5),
+            (frame_w, frame_h * 0.5),
         ]
-
         for i, (gx, gy) in enumerate(goal_centers):
             to_goal_x = gx - bx
             to_goal_y = gy - by
             norm      = math.hypot(to_goal_x, to_goal_y) + 1e-6
-            to_goal_n = (to_goal_x / norm, to_goal_y / norm)
-            dot       = dx * to_goal_n[0] + dy * to_goal_n[1]
+            dot       = dx * (to_goal_x / norm) + dy * (to_goal_y / norm)
             if dot > threshold:
-                return True, i   # i=0 but gauche, i=1 but droit
-
+                return True, i
         return False, None
 
     def clear(self):
@@ -154,13 +151,11 @@ class SimpleKalman:
                 self.state    = self.state + self.velocity
                 self.velocity = self.velocity * 0.7
             return self.state
-
         m = np.array(measurement, dtype=float)
         if self.state is None:
             self.state    = m
             self.velocity = np.array([0.0, 0.0])
             return self.state
-
         self.velocity = (m - self.state) * 0.9
         self.state    = m
         return self.state
@@ -171,24 +166,52 @@ class SimpleKalman:
 
 
 # ─────────────────────────────────────────
+# SHOT CANDIDATE STATE — upgrade #5
+# ─────────────────────────────────────────
+class ShotCandidate:
+    """
+    Lie un tir détecté à un éventuel but.
+    Si le ballon reste en zone de but pendant > min_frames
+    après un tir candidate → confirme le lien tir → but.
+    Boost énorme pour le xG et la qualité des highlights.
+    """
+    def __init__(self, x, y, t, xg=0.0, player=None, team=None):
+        self.x       = x
+        self.y       = y
+        self.t       = t          # timestamp du tir
+        self.xg      = xg
+        self.player  = player
+        self.team    = team
+        self.frames  = 0          # frames passées en zone de but depuis le tir
+        self.active  = True
+
+    def tick_in_goal_zone(self):
+        self.frames += 1
+
+    def is_confirmed_goal(self, min_frames=3):
+        return self.active and self.frames >= min_frames
+
+    def expire(self, current_t, max_age=3.0):
+        """Expire si trop vieux (3s sans but)."""
+        if current_t - self.t > max_age:
+            self.active = False
+
+
+# ─────────────────────────────────────────
 # BALL TRACKER PRINCIPAL
 # ─────────────────────────────────────────
 class BallTracker:
-    """
-    Tracker ballon avec BallBuffer timestampé.
-    - vitesse en px/seconde (robuste frame skip)
-    - direction vers but intégrée
-    - compatibilité arrière totale avec le pipeline
-    """
 
     def __init__(self, max_history=30, fps=25):
-        self.fps         = fps
-        self.ball_buffer = BallBuffer(size=max_history)   # FIX V23
-        self.kalman      = SimpleKalman()
-        self.last_seen   = 0
-        self.frame_id    = 0
-        self.lost_frames = 0
-        self.max_lost    = 5   # ~0.2s à 25fps
+        self.fps           = fps
+        self.ball_buffer   = BallBuffer(size=max_history)
+        self.kalman        = SimpleKalman()
+        self.last_seen     = 0
+        self.frame_id      = 0
+        self.lost_frames   = 0
+        self.max_lost      = 5
+        # upgrade #5
+        self.shot_candidate: ShotCandidate | None = None
 
     def select_best_ball(self, balls, last_pos):
         if not balls:
@@ -210,13 +233,7 @@ class BallTracker:
         return best
 
     def update(self, detected_balls, frame_w, frame_h, timestamp=None):
-        """
-        FIX V23 — accepte un timestamp optionnel (en secondes).
-        Si absent, calcule depuis frame_id et fps.
-        """
         self.frame_id += 1
-
-        # Timestamp en secondes
         t = timestamp if timestamp is not None else self.frame_id / self.fps
 
         detected_balls = [
@@ -231,26 +248,22 @@ class BallTracker:
             x, y, w, h = best
             cx = x + w // 2
             cy = y + h // 2
-
-            self.ball_buffer.add(cx, cy, t)   # FIX V23 — avec timestamp
+            self.ball_buffer.add(cx, cy, t)
             self.last_seen   = self.frame_id
             self.lost_frames = 0
-
             pos = self.kalman.update((cx, cy))
-            return self.get_ball_bbox(pos), False   # interpolated=False
-
+            return self.get_ball_bbox(pos), False
         else:
             self.lost_frames += 1
             if self.lost_frames < self.max_lost:
                 pos = self.kalman.update(None)
                 if pos is not None:
                     cx, cy = int(pos[0]), int(pos[1])
-                    self.ball_buffer.add(cx, cy, t)   # FIX V23
+                    self.ball_buffer.add(cx, cy, t)
                     return self.get_ball_bbox(pos), True
             else:
                 self.ball_buffer.clear()
                 self.kalman.reset()
-
             return None, True
 
     def get_ball_bbox(self, pos):
@@ -261,56 +274,105 @@ class BallTracker:
         return (x - size, y - size, size * 2, size * 2)
 
     # ─────────────────────────────────────────
-    # GETTERS — interface enrichie V23
+    # GETTERS
     # ─────────────────────────────────────────
-
     def get_trajectory(self):
-        """Compatibilité arrière — retourne liste de (x, y)."""
         return [(x, y) for x, y, _ in self.ball_buffer.get()]
 
     def get_trajectory_with_time(self):
-        """Nouveau — retourne liste de (x, y, t)."""
         return self.ball_buffer.get()
 
     def get_speed(self):
-        """Compatibilité arrière — px/frame entre les 2 derniers points."""
         return self.ball_buffer.speed_px_per_frame()
 
     def get_speed_per_second(self):
-        """Nouveau V23 — vitesse en px/seconde, robuste frame skip."""
         return self.ball_buffer.speed_px_per_sec()
 
     def get_direction(self):
-        """Nouveau V23 — vecteur direction normalisé."""
         return self.ball_buffer.direction()
 
-    def is_shot_candidate(self, frame_w, frame_h,
-                          speed_threshold_px_per_sec=None):
+    def get_direction_stability(self, n=3):
+        return self.ball_buffer.direction_stability(n)
+
+    # ── UPGRADE #1 — seuil dynamique selon résolution ───────────────────
+    def _dynamic_shot_threshold(self, frame_w):
         """
-        Nouveau V23 — combine vitesse px/s + direction vers but.
-        Utilisé par events.py pour la détection de tirs.
+        Seuil en px/s calibré à la résolution.
+        ~77px/frame à 25fps sur 1920 = ~1925px/s.
+        On utilise 1.0 * frame_w comme base.
+        """
+        return frame_w * 1.0
+
+    # ── UPGRADE #1+2 — is_shot_candidate robuste ────────────────────────
+    def is_shot_candidate(self, frame_w, frame_h,
+                          speed_threshold_px_per_sec=None,
+                          alignment_threshold=0.70,
+                          stability_threshold=0.60):
+        """
+        Combine :
+        - vitesse px/s (upgrade #1 — dynamique)
+        - alignement vers but (> 0.70)
+        - stabilité direction (upgrade #2 — évite rebonds)
         """
         if speed_threshold_px_per_sec is None:
-            # ~77px/frame à 25fps sur 1920px = ~1925 px/s
-            speed_threshold_px_per_sec = frame_w * 1.0
+            speed_threshold_px_per_sec = self._dynamic_shot_threshold(frame_w)
 
-        speed       = self.get_speed_per_second()
-        toward, _   = self.ball_buffer.toward_goal(frame_w, frame_h)
+        speed     = self.get_speed_per_second()
+        toward, _ = self.ball_buffer.toward_goal(frame_w, frame_h,
+                                                   threshold=alignment_threshold)
+        stability = self.ball_buffer.direction_stability(3)
 
-        return speed > speed_threshold_px_per_sec and toward
+        return (speed > speed_threshold_px_per_sec
+                and toward
+                and stability > stability_threshold)
+
+    # ── UPGRADE #5 — gestion shot candidate ─────────────────────────────
+    def register_shot_candidate(self, x, y, t, xg=0.0,
+                                 player=None, team=None):
+        """Appelé quand un tir est détecté."""
+        self.shot_candidate = ShotCandidate(
+            x=x, y=y, t=t, xg=xg,
+            player=player, team=team
+        )
+
+    def tick_shot_candidate(self, in_goal_zone, current_t):
+        """
+        Appelé à chaque frame.
+        - in_goal_zone : True si le ballon est en zone de but
+        - Retourne True si le lien tir→but est confirmé
+        """
+        if self.shot_candidate is None:
+            return False
+
+        self.shot_candidate.expire(current_t)
+        if not self.shot_candidate.active:
+            self.shot_candidate = None
+            return False
+
+        if in_goal_zone:
+            self.shot_candidate.tick_in_goal_zone()
+            if self.shot_candidate.is_confirmed_goal(min_frames=3):
+                return True   # ← but confirmé avec lien tir→but
+
+        return False
+
+    def get_shot_candidate(self):
+        return self.shot_candidate
+
+    def clear_shot_candidate(self):
+        self.shot_candidate = None
 
     def closest_player(self, players):
         last = self.ball_buffer.last_pos()
         if last is None:
             return None
-        ball_pos  = last
         best      = None
         best_dist = 9999
         for p in players:
             x1, y1, x2, y2 = p["bbox"]
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
-            d  = distance((cx, cy), ball_pos)
+            d  = distance((cx, cy), last)
             if d < best_dist:
                 best_dist = d
                 best      = p
@@ -321,6 +383,7 @@ class BallTracker:
     def reset(self):
         self.ball_buffer.clear()
         self.kalman.reset()
-        self.last_seen   = 0
-        self.frame_id    = 0
-        self.lost_frames = 0
+        self.last_seen      = 0
+        self.frame_id       = 0
+        self.lost_frames    = 0
+        self.shot_candidate = None
