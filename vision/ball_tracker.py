@@ -80,7 +80,6 @@ class BallBuffer:
         norm = math.hypot(dx, dy) + 1e-6
         return (dx / norm, dy / norm)
 
-    # ── UPGRADE #2 — stabilité direction ─────────────────────────────────
     def direction_stability(self, n_frames=3):
         """
         Mesure la cohérence de direction sur les n dernières frames.
@@ -90,7 +89,6 @@ class BallBuffer:
         pts = list(self._buf)
         if len(pts) < n_frames + 1:
             return 0.0
-
         recent = pts[-(n_frames + 1):]
         dirs   = []
         for i in range(1, len(recent)):
@@ -100,11 +98,8 @@ class BallBuffer:
             dy = y2 - y1
             norm = math.hypot(dx, dy) + 1e-6
             dirs.append((dx / norm, dy / norm))
-
         if len(dirs) < 2:
             return 1.0
-
-        # Moyenne des dot products entre directions consécutives
         dots = [
             dirs[i][0]*dirs[i+1][0] + dirs[i][1]*dirs[i+1][1]
             for i in range(len(dirs) - 1)
@@ -166,7 +161,7 @@ class SimpleKalman:
 
 
 # ─────────────────────────────────────────
-# SHOT CANDIDATE STATE — upgrade #5
+# SHOT CANDIDATE — lien tir → but
 # ─────────────────────────────────────────
 class ShotCandidate:
     """
@@ -176,14 +171,14 @@ class ShotCandidate:
     Boost énorme pour le xG et la qualité des highlights.
     """
     def __init__(self, x, y, t, xg=0.0, player=None, team=None):
-        self.x       = x
-        self.y       = y
-        self.t       = t          # timestamp du tir
-        self.xg      = xg
-        self.player  = player
-        self.team    = team
-        self.frames  = 0          # frames passées en zone de but depuis le tir
-        self.active  = True
+        self.x      = x
+        self.y      = y
+        self.t      = t
+        self.xg     = xg
+        self.player = player
+        self.team   = team
+        self.frames = 0
+        self.active = True
 
     def tick_in_goal_zone(self):
         self.frames += 1
@@ -191,10 +186,19 @@ class ShotCandidate:
     def is_confirmed_goal(self, min_frames=3):
         return self.active and self.frames >= min_frames
 
-    def expire(self, current_t, max_age=3.0):
-        """Expire si trop vieux (3s sans but)."""
+    def expire(self, current_t, max_age=2.0):
+        """Expire après 2s sans but — évite les faux liens."""
         if current_t - self.t > max_age:
             self.active = False
+
+    def distance_to_goal(self, frame_w, frame_h):
+        """
+        Distance réelle du tir au but le plus proche.
+        Utilisée pour affiner le xG : tir de loin = xG bas.
+        """
+        dist_right = math.hypot(self.x - frame_w, self.y - frame_h / 2)
+        dist_left  = math.hypot(self.x,            self.y - frame_h / 2)
+        return min(dist_right, dist_left)
 
 
 # ─────────────────────────────────────────
@@ -210,7 +214,6 @@ class BallTracker:
         self.frame_id      = 0
         self.lost_frames   = 0
         self.max_lost      = 5
-        # upgrade #5
         self.shot_candidate: ShotCandidate | None = None
 
     def select_best_ball(self, balls, last_pos):
@@ -277,15 +280,19 @@ class BallTracker:
     # GETTERS
     # ─────────────────────────────────────────
     def get_trajectory(self):
+        """Compatibilité arrière — retourne liste de (x, y)."""
         return [(x, y) for x, y, _ in self.ball_buffer.get()]
 
     def get_trajectory_with_time(self):
+        """Retourne liste de (x, y, t)."""
         return self.ball_buffer.get()
 
     def get_speed(self):
+        """Compatibilité arrière — px/frame."""
         return self.ball_buffer.speed_px_per_frame()
 
     def get_speed_per_second(self):
+        """Vitesse en px/seconde, robuste frame skip."""
         return self.ball_buffer.speed_px_per_sec()
 
     def get_direction(self):
@@ -294,39 +301,33 @@ class BallTracker:
     def get_direction_stability(self, n=3):
         return self.ball_buffer.direction_stability(n)
 
-    # ── UPGRADE #1 — seuil dynamique selon résolution ───────────────────
     def _dynamic_shot_threshold(self, frame_w):
-        """
-        Seuil en px/s calibré à la résolution.
-        ~77px/frame à 25fps sur 1920 = ~1925px/s.
-        On utilise 1.0 * frame_w comme base.
-        """
+        """Seuil vitesse calibré à la résolution (~1925px/s sur 1920)."""
         return frame_w * 1.0
 
-    # ── UPGRADE #1+2 — is_shot_candidate robuste ────────────────────────
     def is_shot_candidate(self, frame_w, frame_h,
                           speed_threshold_px_per_sec=None,
                           alignment_threshold=0.70,
                           stability_threshold=0.60):
         """
-        Combine :
-        - vitesse px/s (upgrade #1 — dynamique)
-        - alignement vers but (> 0.70)
-        - stabilité direction (upgrade #2 — évite rebonds)
+        Combine vitesse px/s + alignement vers but + stabilité direction.
+        Évite les faux tirs sur rebonds et passes rapides.
         """
         if speed_threshold_px_per_sec is None:
             speed_threshold_px_per_sec = self._dynamic_shot_threshold(frame_w)
 
-        speed     = self.get_speed_per_second()
+        spd       = self.get_speed_per_second()
         toward, _ = self.ball_buffer.toward_goal(frame_w, frame_h,
-                                                   threshold=alignment_threshold)
+                                                  threshold=alignment_threshold)
         stability = self.ball_buffer.direction_stability(3)
 
-        return (speed > speed_threshold_px_per_sec
+        return (spd > speed_threshold_px_per_sec
                 and toward
                 and stability > stability_threshold)
 
-    # ── UPGRADE #5 — gestion shot candidate ─────────────────────────────
+    # ─────────────────────────────────────────
+    # SHOT CANDIDATE — gestion lien tir → but
+    # ─────────────────────────────────────────
     def register_shot_candidate(self, x, y, t, xg=0.0,
                                  player=None, team=None):
         """Appelé quand un tir est détecté."""
@@ -338,13 +339,14 @@ class BallTracker:
     def tick_shot_candidate(self, in_goal_zone, current_t):
         """
         Appelé à chaque frame.
-        - in_goal_zone : True si le ballon est en zone de but
-        - Retourne True si le lien tir→but est confirmé
+        Timeout systématique à 2s — évite les faux liens.
+        Retourne True si le lien tir→but est confirmé.
         """
         if self.shot_candidate is None:
             return False
 
-        self.shot_candidate.expire(current_t)
+        # Timeout systématique à chaque frame
+        self.shot_candidate.expire(current_t, max_age=2.0)
         if not self.shot_candidate.active:
             self.shot_candidate = None
             return False
@@ -352,7 +354,7 @@ class BallTracker:
         if in_goal_zone:
             self.shot_candidate.tick_in_goal_zone()
             if self.shot_candidate.is_confirmed_goal(min_frames=3):
-                return True   # ← but confirmé avec lien tir→but
+                return True
 
         return False
 
