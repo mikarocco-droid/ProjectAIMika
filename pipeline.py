@@ -144,7 +144,7 @@ def make_progress_callback(analysis_id=None):
 
 
 # ─────────────────────────────────────────
-# FIX MVP — résoudre label depuis jersey_map
+# FIX MVP
 # ─────────────────────────────────────────
 def resolve_mvp_label(mvp, stats, jersey_map):
     if mvp is None:
@@ -168,6 +168,7 @@ def resolve_mvp_label(mvp, stats, jersey_map):
 
 # ─────────────────────────────────────────
 # PIPELINE PRINCIPAL
+# FIX : ajout paramètre goals_real pour le learning
 # ─────────────────────────────────────────
 def run_pipeline(
     video_path,
@@ -177,7 +178,8 @@ def run_pipeline(
     save_annotated = False,
     plan           = "free",
     mode           = "match",
-    player_id      = None
+    player_id      = None,
+    goals_real     = None,   # FIX : vrai nombre de buts pour le learning
 ):
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
@@ -250,7 +252,6 @@ def run_pipeline(
     )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
-    # Enrichir time en secondes AVANT le post-processing
     for e in events:
         if not e.get("time"):
             frame = e.get("frame", 0) or 0
@@ -259,6 +260,7 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # 1a. POST PROCESSING
     # ─────────────────────────────────────────
+    is_summary = False
     try:
         from analysis.post_processing import (
             temporal_filter,
@@ -267,26 +269,23 @@ def run_pipeline(
             infer_shots_from_goals,
         )
 
-        # FIX résumé — détecter automatiquement si c'est un résumé de match
-        # Si durée < 8 min → résumé → cooldown et seuil position adaptés
         video_duration = total_frames / fps if fps > 0 else 600
-        is_summary     = video_duration < 480  # moins de 8 minutes
+        is_summary     = video_duration < 480
 
         if is_summary:
-            goal_cooldown      = 10.0   # résumé : buts peuvent se succéder toutes les 10s
-            position_threshold = 0.35   # angles caméra variés dans un résumé
+            goal_cooldown      = 10.0
+            position_threshold = 0.35
             print(f"  Résumé détecté ({video_duration:.0f}s) — "
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={int(position_threshold*100)}%")
         else:
             goal_cooldown = learner.get_thresholds().get("goal_cooldown", 150.0) \
                             if learner else 150.0
-            position_threshold = 0.20   # match complet → règle stricte
+            position_threshold = 0.20
             print(f"  Match complet ({video_duration:.0f}s) — "
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={int(position_threshold*100)}%")
 
-        # frame_w réel depuis les données trackées
         _frame_w = int(frames_data[0].get("frame_w", 1920)) if frames_data else 1920
 
         events = merge_players(events)
@@ -301,16 +300,18 @@ def run_pipeline(
         print(f"  CLEAN {len(events)} events | goal_cooldown={goal_cooldown:.0f}s")
     except Exception as e:
         print(f"  Post processing ignoré : {e}")
+        _frame_w = 1920
 
     # ─────────────────────────────────────────
     # 1b. VALIDATION GEMINI
+    # FIX : frame_h passé + min_conf 0.85 pour match complet
     # ─────────────────────────────────────────
     print("Step 1b : Validation Gemini...")
     try:
         from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers
 
-        # FIX résumé — min_conf réduit pour résumé (angles variés)
-        _min_conf = 0.60 if is_summary else 0.75
+        _min_conf = 0.60 if is_summary else 0.85   # FIX : 0.75 → 0.85
+        _frame_h  = int(frames_data[0].get("frame_h", 1080)) if frames_data else 1080  # FIX
 
         events = validate_events_with_gemini(
             events     = events,
@@ -319,6 +320,7 @@ def run_pipeline(
             sport      = sport,
             min_conf   = _min_conf,
             frame_w    = _frame_w,
+            frame_h    = _frame_h,   # FIX
         )
 
         if learner:
@@ -352,8 +354,7 @@ def run_pipeline(
         print(f"  Gemini validation ignoree : {e}")
 
     # ─────────────────────────────────────────
-    # 1c. SMART FILTERING V18
-    # FIX possession — recalculé après Step 3
+    # 1c. SMART FILTERING
     # ─────────────────────────────────────────
     possession = {}
     try:
@@ -414,13 +415,11 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 3. STATS
-    # FIX — stats avant possession pour équipes corrigées
     # ─────────────────────────────────────────
     print("Step 3 : Stats...")
     stats = compute_stats(events, jersey_map=jersey_map)
     print(f"  OK {len(stats)} joueurs")
 
-    # FIX possession — recalcul avec équipes corrigées depuis stats
     try:
         possession = compute_possession_from_stats(events, stats)
         print(f"  Possession corrigée : {possession}")
@@ -519,6 +518,7 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 8. HIGHLIGHTS
+    # FIX : tri chronologique après scoring
     # ─────────────────────────────────────────
     print("Step 8 : Highlights...")
     highlights = []
@@ -550,6 +550,9 @@ def run_pipeline(
             print(f"  Gemini scoring : {len(highlights)} highlights scorés")
         except Exception as eg:
             print(f"  Highlight scorer ignoré : {eg}")
+
+        # FIX : retri chronologique après scoring Gemini
+        highlights.sort(key=lambda h: h.get("time_start", 0))
 
         reel_path = create_highlight_reel(
             highlights  = highlights,
@@ -584,9 +587,7 @@ def run_pipeline(
         ranked_highlights = rank_highlights(events)
         ratings           = compute_player_ratings(events)
         mvp               = get_mvp(ratings)
-
-        # FIX MVP label — résoudre #numéro ou ID-xxx
-        mvp_label = resolve_mvp_label(mvp, stats, jersey_map)
+        mvp_label         = resolve_mvp_label(mvp, stats, jersey_map)
 
         commentary = generate_commentary(
             ranked_highlights[:10],
@@ -606,13 +607,14 @@ def run_pipeline(
     print("Step 11 : Summary...")
     summary = compute_match_summary(events, stats, total_frames, fps)
     summary["possession"] = possession
-    summary["is_summary"] = is_summary if 'is_summary' in dir() else False
+    summary["is_summary"] = is_summary
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
           f"xG={summary['total_xg']} | joueurs={summary['players']}")
     print(f"  Possession : {possession}")
 
     # ─────────────────────────────────────────
     # 11b. ENREGISTREMENT APPRENTISSAGE
+    # FIX : goals_real passé explicitement
     # ─────────────────────────────────────────
     learning_result = {}
     if learner:
@@ -622,7 +624,8 @@ def run_pipeline(
                 summary    = summary,
                 fps        = fps,
                 jersey_map = jersey_map,
-                highlights = highlights
+                highlights = highlights,
+                goals_real = goals_real,   # FIX : None si non fourni
             )
             print(f"  Learning : {learner.stats()}")
         except Exception as e:
@@ -728,7 +731,7 @@ def run_pipeline(
     print(f"  Formation: {formation} | Style: {tactical.get('style','?')}")
     print(f"  MVP: {mvp_label}")
     print(f"  Possession: {possession}")
-    if is_summary if 'is_summary' in dir() else False:
+    if is_summary:
         print(f"  ℹ️  Mode résumé détecté — paramètres adaptés")
 
     return result
