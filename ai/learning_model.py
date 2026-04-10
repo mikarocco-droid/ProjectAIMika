@@ -1,19 +1,11 @@
 # ai/learning_model.py
 # -*- coding: utf-8 -*-
-"""
-Modèle d'apprentissage cumulatif — s'améliore match après match.
 
-Ce qui est appris :
-1. Modèle xG (régression logistique position → probabilité but)
-2. Seuils temporels (goal_cooldown, shot_cooldown)
-3. Zones de faux positifs (zones qui génèrent toujours des faux tirs)
-4. Profils joueurs (vitesse, zone d'action, style)
-5. Patterns équipe (formation, côté dominant, pressing)
-6. Seuils ReID (SPATIAL_MAX_DIST optimal par terrain)
-7. Calibration OCR maillots (corrections récurrentes)
-8. Scores highlights (pré-filtrage avant Gemini)
-9. Historique matchs (progression vidéo après vidéo)
-"""
+try:
+    from sklearn.cluster import KMeans
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
 
 import os
 import json
@@ -24,14 +16,15 @@ from collections import defaultdict
 
 # ─────────────────────────────────────────
 # SEUILS PAR DÉFAUT
+# FIX : goal_frames_min 12 → 8
 # ─────────────────────────────────────────
 DEFAULT_THRESHOLDS = {
     "football": {
-        "goal_frames_min":   12,
-        "shot_cooldown":      3.0,
-        "goal_cooldown":    150.0,
-        "ball_speed_min":     0.02,   # FIX: réduit de 0.03 → 0.02
-        "player_near_goal":   0.15,
+        "goal_frames_min":   8,      # FIX : était 12
+        "shot_cooldown":     3.0,
+        "goal_cooldown":   150.0,
+        "ball_speed_min":    0.02,
+        "player_near_goal":  0.15,
         "spatial_max_dist": 200.0,
     },
     "basketball": {
@@ -107,11 +100,13 @@ class MatchLearner:
         self.hl_scores  = _read("highlights", {"by_type": {}, "by_position": []})
         self.history    = _read("history",    [])
 
-        # S'assurer que tous les seuils par défaut sont présents
+        # FIX : forcer goal_frames_min à 8 si le fichier sauvegardé contient encore 12
         defaults = DEFAULT_THRESHOLDS.get(self.sport, DEFAULT_THRESHOLDS["football"])
         for k, v in defaults.items():
             if k not in self.thresholds:
                 self.thresholds[k] = v
+        if self.thresholds.get("goal_frames_min", 12) > 8:
+            self.thresholds["goal_frames_min"] = 8
 
     def _save(self):
         data = {
@@ -135,13 +130,14 @@ class MatchLearner:
 
     # ─────────────────────────────────────────
     # 1. ENREGISTRER UN MATCH
+    # FIX : goals_real passé explicitement depuis le pipeline
     # ─────────────────────────────────────────
-    def record_match(self, events, summary, fps=25, jersey_map=None, highlights=None):
-        match_id   = datetime.now().strftime("%Y%m%d_%H%M%S")
-        n_matches  = len(self.history) + 1
+    def record_match(self, events, summary, fps=25, jersey_map=None,
+                     highlights=None, goals_real=None):
+        match_id  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        n_matches = len(self.history) + 1
         print(f"  Learning : enregistrement match #{n_matches} ({match_id})")
 
-        # Extraire events pertinents
         added = 0
         for e in events:
             if e.get("type") not in ["goal", "shot", "interception", "dribble"]:
@@ -161,18 +157,17 @@ class MatchLearner:
             })
             added += 1
 
-        # Mettre à jour tous les modèles
         self._update_xg_model()
-        self._recalibrate_thresholds(events, summary, fps)
+        # FIX : on passe goals_real explicitement
+        self._recalibrate_thresholds(events, summary, fps, goals_real=goals_real)
         self._update_fp_zones(events)
         self._update_player_profiles(events, fps)
         self._update_team_patterns(events, summary)
         self._update_reid_calibration(events)
         self._update_ocr_corrections(jersey_map or {})
         self._update_highlight_scores(highlights or [])
-
-        # Enregistrer dans l'historique
-        self._record_history(match_id, events, summary, highlights or [])
+        self._record_history(match_id, events, summary, highlights or [],
+                             goals_real=goals_real)
 
         self._save()
 
@@ -190,150 +185,117 @@ class MatchLearner:
         return result
 
     # ─────────────────────────────────────────
-    # HISTORIQUE MATCHS — progression vidéo/vidéo
+    # HISTORIQUE
+    # FIX : goals_real séparé de goals_detected
     # ─────────────────────────────────────────
-    def _record_history(self, match_id, events, summary, highlights):
-        shots  = sum(1 for e in events if e.get("type") == "shot")
-        goals  = sum(1 for e in events if e.get("type") == "goal")
-        passes = sum(1 for e in events if e.get("type") == "pass")
+    def _record_history(self, match_id, events, summary, highlights,
+                        goals_real=None):
+        shots        = sum(1 for e in events if e.get("type") == "shot")
+        goals_det    = sum(1 for e in events if e.get("type") == "goal")
+        passes       = sum(1 for e in events if e.get("type") == "pass")
+
+        # FIX : goals_real = valeur passée explicitement OU fallback summary
+        # Le pipeline doit passer le vrai nombre de buts
+        real = goals_real if goals_real is not None else summary.get("goals", goals_det)
 
         entry = {
-            "match_id":          match_id,
-            "date":              datetime.now().isoformat(),
-            "sport":             self.sport,
-            "goals_detected":    goals,
-            "goals_real":        summary.get("goals", 0),
-            "shots_detected":    shots,
-            "passes":            passes,
-            "players":           summary.get("players", 0),
-            "formation":         summary.get("formation", ""),
-            "n_highlights":      len(highlights),
-            "top_highlight":     highlights[0].get("title", "") if highlights else "",
-            "thresholds_used":   self.thresholds.copy(),
-            "spatial_max_dist":  self.reid_cal.get("spatial_max_dist", 200.0),
-            "fp_zones":          len(self.fp_zones),
-            "xg_samples":        self.xg_model["n_samples"],
+            "match_id":        match_id,
+            "date":            datetime.now().isoformat(),
+            "sport":           self.sport,
+            "goals_detected":  goals_det,
+            "goals_real":      real,           # FIX : maintenant distinct
+            "shots_detected":  shots,
+            "passes":          passes,
+            "players":         summary.get("players", 0),
+            "formation":       summary.get("formation", ""),
+            "n_highlights":    len(highlights),
+            "top_highlight":   highlights[0].get("title", "") if highlights else "",
+            "thresholds_used": self.thresholds.copy(),
+            "spatial_max_dist": self.reid_cal.get("spatial_max_dist", 200.0),
+            "fp_zones":        len(self.fp_zones),
+            "xg_samples":      self.xg_model["n_samples"],
         }
         self.history.append(entry)
 
-        # Résumé de progression
         n = len(self.history)
         if n >= 2:
-            prev = self.history[-2]
-            delta_acc = (goals / max(summary.get("goals", 1), 1)) - \
-                        (prev["goals_detected"] / max(prev["goals_real"], 1))
+            prev      = self.history[-2]
+            prev_real = max(prev.get("goals_real", 1), 1)
+            prev_acc  = prev["goals_detected"] / prev_real
+            cur_acc   = goals_det / max(real, 1) if real > 0 else 0
+            delta_acc = cur_acc - prev_acc
             print(f"  Learning progression : match {n-1}→{n} | "
                   f"précision buts {'+' if delta_acc >= 0 else ''}{delta_acc:.0%}")
 
     # ─────────────────────────────────────────
-    # 2. MODÈLE xG
+    # 3. RECALIBRATION SEUILS
+    # FIX : utilise goals_real passé en paramètre
     # ─────────────────────────────────────────
-    def _update_xg_model(self):
-        shots = [
-            e for e in self.events_db
-            if e.get("type") == "shot"
-            and e.get("gemini_validated")
-            and e.get("x", 0) > 0
-        ]
-
-        if len(shots) < 10:
-            return
-
-        X, y = [], []
-        for s in shots:
-            x_n  = s["x"] / 1920.0
-            y_n  = s["y"] / 1080.0
-            dist = math.sqrt((1.0 - x_n) ** 2 + (0.5 - y_n) ** 2)
-            ang  = abs(math.atan2(0.5 - y_n, 1.0 - x_n))
-            lbl  = 1 if (s.get("gemini_type") == "shot"
-                         and s.get("gemini_conf", 0) > 0.8) else 0
-            X.append([dist, ang])
-            y.append(lbl)
-
-        w0 = self.xg_model.get("w0", 0.0)
-        w1 = self.xg_model.get("w1", -2.0)
-        w2 = self.xg_model.get("w2", 1.0)
-        lr = 0.01
-
-        for _ in range(20):
-            dw0 = dw1 = dw2 = 0.0
-            for (d, a), lbl in zip(X, y):
-                z    = max(-100, min(100, w0 + w1 * d + w2 * a))
-                pred = 1 / (1 + math.exp(-z))
-                err  = pred - lbl
-                dw0 += err
-                dw1 += err * d
-                dw2 += err * a
-            n   = len(X)
-            w0 -= lr * dw0 / n
-            w1 -= lr * dw1 / n
-            w2 -= lr * dw2 / n
-
-        self.xg_model = {
-            "w0": round(w0, 4),
-            "w1": round(w1, 4),
-            "w2": round(w2, 4),
-            "n_samples": len(shots),
-        }
-        print(f"  Learning xG : modèle mis à jour ({len(shots)} tirs validés)")
-
-    # ─────────────────────────────────────────
-    # 3. RECALIBRATION SEUILS — apprentissage depuis les erreurs
-    # ─────────────────────────────────────────
-    def _recalibrate_thresholds(self, events, summary, fps):
+    def _recalibrate_thresholds(self, events, summary, fps, goals_real=None):
         goals_det  = sum(1 for e in events if e.get("type") == "goal")
-        goals_real = summary.get("goals", 0)
+        real       = goals_real if goals_real is not None else summary.get("goals", goals_det)
         shots_det  = sum(1 for e in events if e.get("type") == "shot")
         dur_min    = max(1, summary.get("total_frames", 15000) / fps / 60)
 
         changed = []
 
-        # ── goal_cooldown : trop de buts → augmenter le cooldown ──
-        if goals_real > 0 and goals_det > goals_real * 1.5:
+        # Trop de faux positifs buts → augmenter cooldown
+        if real > 0 and goals_det > real * 1.5:
             self.thresholds["goal_cooldown"] = min(
                 300.0, self.thresholds["goal_cooldown"] * 1.1
             )
             changed.append(f"goal_cooldown↑={self.thresholds['goal_cooldown']:.0f}s")
-        elif goals_real > 0 and goals_det < goals_real:
-            # Pas assez de buts détectés → réduire le cooldown
+
+        # Buts manqués → réduire le cooldown
+        elif real > 0 and goals_det < real:
             self.thresholds["goal_cooldown"] = max(
                 60.0, self.thresholds["goal_cooldown"] * 0.92
             )
             changed.append(f"goal_cooldown↓={self.thresholds['goal_cooldown']:.0f}s")
 
-        # ── shot_cooldown : trop de tirs → augmenter ──
+        # Trop de tirs → augmenter cooldown tir
         spm = shots_det / dur_min
         if spm > 5:
             self.thresholds["shot_cooldown"] = min(
                 6.0, self.thresholds["shot_cooldown"] * 1.1
             )
             changed.append(f"shot_cooldown↑={self.thresholds['shot_cooldown']:.1f}s")
-        elif spm < 0.5 and shots_det == 0 and goals_real > 0:
-            # Aucun tir détecté alors qu'il y a des buts → assouplir
+        elif spm < 0.5 and shots_det == 0 and real > 0:
             self.thresholds["ball_speed_min"] = max(
                 0.01, self.thresholds.get("ball_speed_min", 0.02) * 0.9
             )
-            changed.append(
-                f"ball_speed_min↓={self.thresholds['ball_speed_min']:.3f}"
-            )
+            changed.append(f"ball_speed_min↓={self.thresholds['ball_speed_min']:.3f}")
 
         if changed:
             print(f"  Learning seuils : {' | '.join(changed)}")
 
     # ─────────────────────────────────────────
     # 4. ZONES DE FAUX POSITIFS
+    # FIX : inclut aussi les buts rejetés géométriquement
     # ─────────────────────────────────────────
     def _update_fp_zones(self, events, frame_w=1920, frame_h=1080, grid=10):
         zone_stats = defaultdict(lambda: {"total": 0, "fp": 0})
 
         for e in events:
-            if e.get("type") != "shot" or not e.get("gemini_validated"):
+            if e.get("type") not in ["shot", "goal"]:
                 continue
+            if not e.get("gemini_validated") and not e.get("_geo_rejected"):
+                continue
+
             gx  = int(e.get("x", 0) / frame_w * grid)
             gy  = int(e.get("y", 0) / frame_h * grid)
             key = f"{gx}_{gy}"
             zone_stats[key]["total"] += 1
-            if e.get("gemini_type") in ["touche", "corner", "none", "hors_jeu"]:
+
+            # FIX : compter comme FP si rejeté géo OU si Gemini dit non
+            is_fp = (
+                e.get("_geo_rejected", False) or
+                e.get("gemini_type") in ["touche", "corner", "none",
+                                          "defensive_clearance",
+                                          "goalkeeper_hold",
+                                          "goalkeeper_throw"]
+            )
+            if is_fp:
                 zone_stats[key]["fp"] += 1
 
         for key, s in zone_stats.items():
@@ -375,25 +337,19 @@ class MatchLearner:
 
             profile = self.players_db.get(pid, {
                 "touches": 0, "zone_x": 0, "zone_y": 0,
-                "n_shots": 0, "n_goals": 0, "matches": 0,
-                "avg_xg": 0.0,
+                "n_shots": 0, "n_goals": 0, "matches": 0, "avg_xg": 0.0,
             })
 
             alpha = 0.3
             avg_x = sum(xs) / len(xs)
             avg_y = sum(ys) / len(ys)
-            profile["zone_x"]  = round(
-                alpha * avg_x + (1 - alpha) * profile.get("zone_x", avg_x), 1
-            )
-            profile["zone_y"]  = round(
-                alpha * avg_y + (1 - alpha) * profile.get("zone_y", avg_y), 1
-            )
+            profile["zone_x"]  = round(alpha * avg_x + (1 - alpha) * profile.get("zone_x", avg_x), 1)
+            profile["zone_y"]  = round(alpha * avg_y + (1 - alpha) * profile.get("zone_y", avg_y), 1)
             profile["touches"] = profile.get("touches", 0) + n
             profile["n_shots"] = profile.get("n_shots", 0) + types.count("shot")
             profile["n_goals"] = profile.get("n_goals", 0) + types.count("goal")
             profile["matches"] = profile.get("matches", 0) + 1
 
-            # xG moyen sur les tirs
             shot_xgs = [e.get("xg", 0) for e in evts
                         if e.get("type") == "shot" and e.get("xg")]
             if shot_xgs:
@@ -431,13 +387,10 @@ class MatchLearner:
                 "matches": 0, "dominant_side": side, "press_ratio": press_ratio
             })
             alpha = 0.4
-            pattern["press_ratio"]   = round(
-                alpha * press_ratio + (1 - alpha) * pattern.get("press_ratio", press_ratio), 3
-            )
+            pattern["press_ratio"]   = round(alpha * press_ratio + (1 - alpha) * pattern.get("press_ratio", press_ratio), 3)
             pattern["dominant_side"] = side
             pattern["matches"]       = pattern.get("matches", 0) + 1
 
-            # Formation depuis summary
             if summary.get("formation") and team_id == 0:
                 pattern["last_formation"] = summary.get("formation", "")
 
@@ -468,13 +421,11 @@ class MatchLearner:
             return
 
         sorted_moves = sorted(all_moves)
-        p95_idx      = int(len(sorted_moves) * 0.95)
-        p95_dist     = sorted_moves[p95_idx]
+        p95_dist     = sorted_moves[int(len(sorted_moves) * 0.95)]
 
         n        = self.reid_cal.get("n_matches", 0)
         old_dist = self.reid_cal.get("spatial_max_dist", 200.0)
-        new_dist = (old_dist * n + p95_dist) / (n + 1)
-        new_dist = max(100.0, min(200.0, new_dist))
+        new_dist = max(100.0, min(200.0, (old_dist * n + p95_dist) / (n + 1)))
 
         self.reid_cal["spatial_max_dist"] = round(new_dist, 1)
         self.reid_cal["n_matches"]        = n + 1
@@ -482,7 +433,7 @@ class MatchLearner:
               f"(après {n+1} match(s))")
 
     # ─────────────────────────────────────────
-    # 8. CORRECTIONS OCR MAILLOTS
+    # 8. OCR
     # ─────────────────────────────────────────
     def _update_ocr_corrections(self, jersey_map):
         for pid, number in jersey_map.items():
@@ -510,8 +461,7 @@ class MatchLearner:
         self.hl_scores["by_type"] = by_type
 
         if by_type:
-            top = sorted(by_type.items(),
-                         key=lambda x: x[1]["avg"], reverse=True)[:3]
+            top = sorted(by_type.items(), key=lambda x: x[1]["avg"], reverse=True)[:3]
             print(f"  Learning highlights : top → "
                   f"{', '.join(f'{t}={v[chr(97)+chr(118)+chr(103)]:.1f}' for t, v in top)}")
 
@@ -558,12 +508,11 @@ class MatchLearner:
         return max(1.0, avg * 0.7)
 
     def progression_report(self):
-        """Résumé de la progression vidéo après vidéo."""
         n = len(self.history)
         if n == 0:
             return {"n_matches": 0, "message": "Aucun match enregistré"}
 
-        recent = self.history[-5:]  # 5 derniers matchs
+        recent       = self.history[-5:]
         avg_goal_acc = []
         for h in recent:
             real = h.get("goals_real", 0)
@@ -572,18 +521,17 @@ class MatchLearner:
                 avg_goal_acc.append(min(1.0, det / real))
 
         return {
-            "n_matches":       n,
-            "sport":           self.sport,
-            "xg_samples":      self.xg_model["n_samples"],
-            "fp_zones":        len(self.fp_zones),
-            "player_profiles": len(self.players_db),
-            "spatial_max_dist": self.reid_cal.get("spatial_max_dist", 200.0),
-            "thresholds":      self.thresholds,
-            "recent_matches":  recent,
-            "avg_goal_accuracy": round(
-                sum(avg_goal_acc) / len(avg_goal_acc), 2
-            ) if avg_goal_acc else None,
-            "last_match":      self.history[-1] if self.history else None,
+            "n_matches":         n,
+            "sport":             self.sport,
+            "xg_samples":        self.xg_model["n_samples"],
+            "fp_zones":          len(self.fp_zones),
+            "player_profiles":   len(self.players_db),
+            "spatial_max_dist":  self.reid_cal.get("spatial_max_dist", 200.0),
+            "thresholds":        self.thresholds,
+            "recent_matches":    recent,
+            "avg_goal_accuracy": round(sum(avg_goal_acc) / len(avg_goal_acc), 2)
+                                  if avg_goal_acc else None,
+            "last_match":        self.history[-1] if self.history else None,
         }
 
     def stats(self):
