@@ -14,9 +14,6 @@ except ImportError:
 import config
 
 
-# ─────────────────────────────────────────
-# CLEAN TEXT
-# ─────────────────────────────────────────
 def clean(text):
     if not text:
         return ""
@@ -31,9 +28,6 @@ def clean(text):
     )
 
 
-# ─────────────────────────────────────────
-# RÉSOLUTION NOM JOUEUR
-# ─────────────────────────────────────────
 def player_label(pid, jersey_map=None):
     if jersey_map:
         jersey = jersey_map.get(str(pid)) or jersey_map.get(pid)
@@ -42,47 +36,40 @@ def player_label(pid, jersey_map=None):
     return f"ID-{pid}"
 
 
-# ─────────────────────────────────────────
-# FIX — DÉDUPLICATION MAILLOTS
-# ─────────────────────────────────────────
 def deduplicate_stats(stats, jersey_map):
-    """
-    Fusionne les entrées ayant le même numéro de maillot.
-    Additionne les stats, garde la meilleure note.
-    """
     merged = {}
-
     for pid, s in stats.items():
         label = s.get("label") or player_label(pid, jersey_map)
-
         if label not in merged:
             merged[label] = {
-                "touches":  s.get("touches",  0),
-                "passes":   s.get("passes",   0),
-                "tirs":     s.get("tirs",     0),
-                "buts":     s.get("buts",     0),
-                "xg_total": s.get("xg_total", 0),
-                "_rating":  s.get("_rating",  0),
-                "_pid":     pid,
+                "touches":       s.get("touches",       0),
+                "passes":        s.get("passes",        0),
+                "tirs":          s.get("tirs",          0),
+                "buts":          s.get("buts",          0),
+                "arrets":        s.get("arrets",        0),
+                "xg_total":      s.get("xg_total",      0),
+                "is_goalkeeper": s.get("is_goalkeeper", False),
+                "_rating":       s.get("_rating",       0),
+                "_pid":          pid,
             }
         else:
             merged[label]["touches"]  += s.get("touches",  0)
             merged[label]["passes"]   += s.get("passes",   0)
             merged[label]["tirs"]     += s.get("tirs",     0)
             merged[label]["buts"]     += s.get("buts",     0)
+            merged[label]["arrets"]   += s.get("arrets",   0)
             merged[label]["xg_total"] += s.get("xg_total", 0)
             merged[label]["_rating"]   = max(
                 merged[label]["_rating"], s.get("_rating", 0)
             )
+            # Un joueur est GK si au moins une entrée l'est
+            if s.get("is_goalkeeper"):
+                merged[label]["is_goalkeeper"] = True
 
     return merged
 
 
-# ─────────────────────────────────────────
-# FIX — VALIDATION TIMESTAMPS HIGHLIGHTS
-# ─────────────────────────────────────────
 def fix_highlight_times(highlights):
-    """S'assure que time_end >= time_start + 1s."""
     fixed = []
     for h in highlights:
         t_start = float(h.get("time_start") or 0)
@@ -96,9 +83,6 @@ def fix_highlight_times(highlights):
     return fixed
 
 
-# ─────────────────────────────────────────
-# COLORS
-# ─────────────────────────────────────────
 PRIMARY = (20, 110, 220)
 DARK    = (25, 25, 25)
 GRAY    = (120, 120, 120)
@@ -107,11 +91,9 @@ WHITE   = (255, 255, 255)
 GREEN   = (40, 180, 90)
 RED     = (220, 60, 60)
 YELLOW  = (250, 180, 20)
+CYAN    = (0, 180, 210)
 
 
-# ─────────────────────────────────────────
-# PDF CLASS
-# ─────────────────────────────────────────
 class ScoutPDF(FPDF):
 
     def __init__(self, sport="football"):
@@ -167,9 +149,6 @@ class ScoutPDF(FPDF):
         self.set_text_color(*DARK)
 
 
-# ─────────────────────────────────────────
-# MAIN EXPORT
-# ─────────────────────────────────────────
 def generate_pdf(result, output_path, sport="football"):
 
     if not FPDF_AVAILABLE:
@@ -185,7 +164,6 @@ def generate_pdf(result, output_path, sport="football"):
     story      = result.get("match_story")
     mvp_id     = result.get("mvp")
 
-    # FIX — corriger timestamps avant affichage
     highlights = fix_highlight_times(highlights)
 
     pdf = ScoutPDF(sport=sport)
@@ -249,25 +227,35 @@ def generate_pdf(result, output_path, sport="football"):
     if stats:
         pdf.section("Players Performance")
 
-        pdf.set_font("Helvetica", "B", 8)
-        headers = ["Joueur", "Touches", "Passes", "Tirs", "Buts", "xG",   "Note"]
-        widths  = [28,        22,        20,       18,     18,     18,      22]
+        # FIX — deux tableaux séparés : joueurs de champ / gardiens
+        deduped = deduplicate_stats(stats, jersey_map)
 
-        for h, w in zip(headers, widths):
+        field_players = {
+            lbl: s for lbl, s in deduped.items()
+            if not s.get("is_goalkeeper")
+        }
+        goalkeepers = {
+            lbl: s for lbl, s in deduped.items()
+            if s.get("is_goalkeeper")
+        }
+
+        # ── Tableau joueurs de champ ──
+        pdf.set_font("Helvetica", "B", 8)
+        headers_field = ["Joueur", "Touches", "Passes", "Tirs", "Buts", "xG",  "Note"]
+        widths_field  = [28,        22,        20,       18,     18,     18,     22]
+
+        for h, w in zip(headers_field, widths_field):
             pdf.cell(w, 6, clean(h), border=0, align="C")
         pdf.ln()
 
-        # FIX — dédupliquer les maillots avant affichage
-        deduped = deduplicate_stats(stats, jersey_map)
-
-        sorted_players = sorted(
-            deduped.items(),
+        sorted_field = sorted(
+            field_players.items(),
             key=lambda x: x[1].get("touches", 0),
             reverse=True
-        )[:20]
+        )[:18]
 
         pdf.set_font("Helvetica", "", 8)
-        for label, s in sorted_players:
+        for label, s in sorted_field:
             pid    = s.get("_pid")
             rating = ratings.get(str(pid), {}).get("rating") or \
                      ratings.get(pid,      {}).get("rating", "-") \
@@ -280,12 +268,45 @@ def generate_pdf(result, output_path, sport="football"):
                 s.get("passes",  0),
                 s.get("tirs",    0),
                 s.get("buts",    0),
-                xg_val,
+                xg_val if xg_val > 0 else "",
                 rating
             ]
-            for val, w in zip(row, widths):
+            for val, w in zip(row, widths_field):
                 pdf.cell(w, 6, clean(val), align="C")
             pdf.ln()
+
+        # ── Tableau gardiens ──
+        if goalkeepers:
+            pdf.ln(3)
+            pdf.set_font("Helvetica", "B", 8)
+            pdf.set_text_color(*CYAN)
+            pdf.cell(0, 5, "Gardien(s)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_text_color(*DARK)
+
+            headers_gk = ["Joueur", "Touches", "Arrets", "Note"]
+            widths_gk  = [28,        22,        22,       22]
+
+            pdf.set_font("Helvetica", "B", 8)
+            for h, w in zip(headers_gk, widths_gk):
+                pdf.cell(w, 6, clean(h), border=0, align="C")
+            pdf.ln()
+
+            pdf.set_font("Helvetica", "", 8)
+            for label, s in goalkeepers.items():
+                pid    = s.get("_pid")
+                rating = ratings.get(str(pid), {}).get("rating") or \
+                         ratings.get(pid,      {}).get("rating", "-") \
+                         if pid else "-"
+
+                row = [
+                    label,
+                    s.get("touches", 0),
+                    s.get("arrets",  0),
+                    rating
+                ]
+                for val, w in zip(row, widths_gk):
+                    pdf.cell(w, 6, clean(val), align="C")
+                pdf.ln()
 
     # ── HIGHLIGHTS ─────────────────────
     if highlights:
