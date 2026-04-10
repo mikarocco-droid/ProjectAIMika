@@ -4,7 +4,8 @@
 import os
 import json
 import threading
-from datetime import datetime
+import shutil
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv(".env/param.env")
@@ -62,6 +63,197 @@ login_manager.login_view = "login"
 
 
 # ─────────────────────────────────────────
+# R2 / S3 CLIENT (optionnel)
+# ─────────────────────────────────────────
+def get_r2_client():
+    """Retourne un client boto3 R2, ou None si R2 non configuré."""
+    if not config.R2_ENABLED:
+        return None
+    try:
+        import boto3
+        return boto3.client(
+            "s3",
+            endpoint_url          = config.R2_ENDPOINT_URL,
+            aws_access_key_id     = config.R2_ACCESS_KEY_ID,
+            aws_secret_access_key = config.R2_SECRET_ACCESS_KEY,
+            region_name           = "auto",
+        )
+    except ImportError:
+        print("⚠️  boto3 non installé — pip install boto3")
+        return None
+
+
+def r2_generate_presigned_upload(filename, content_type="video/mp4", expires=3600):
+    """
+    Génère un presigned URL pour upload direct depuis le navigateur vers R2.
+    Retourne (presigned_url, r2_key) ou (None, None) si R2 désactivé.
+    """
+    client = get_r2_client()
+    if not client:
+        return None, None
+
+    r2_key = f"uploads/{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{filename}"
+    try:
+        url = client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket":      config.R2_BUCKET_NAME,
+                "Key":         r2_key,
+                "ContentType": content_type,
+            },
+            ExpiresIn=expires,
+        )
+        return url, r2_key
+    except Exception as e:
+        print(f"R2 presigned URL error: {e}")
+        return None, None
+
+
+def r2_download_to_local(r2_key, local_path):
+    """Télécharge une vidéo depuis R2 vers le disque local du worker."""
+    client = get_r2_client()
+    if not client:
+        return False
+    try:
+        client.download_file(config.R2_BUCKET_NAME, r2_key, local_path)
+        return True
+    except Exception as e:
+        print(f"R2 download error: {e}")
+        return False
+
+
+def r2_delete(r2_key):
+    """Supprime un fichier sur R2."""
+    client = get_r2_client()
+    if not client or not r2_key:
+        return
+    try:
+        client.delete_object(Bucket=config.R2_BUCKET_NAME, Key=r2_key)
+        print(f"  R2 supprimé : {r2_key}")
+    except Exception as e:
+        print(f"R2 delete error: {e}")
+
+
+def r2_upload_outputs(local_dir, analysis_id):
+    """
+    Upload les outputs (highlights, PDF…) vers R2 après analyse.
+    Retourne le préfixe R2 utilisé, ou None si R2 désactivé.
+    """
+    client = get_r2_client()
+    if not client or not os.path.isdir(local_dir):
+        return None
+
+    prefix = f"outputs/{analysis_id}/"
+    for root, _, files in os.walk(local_dir):
+        for fname in files:
+            local_file = os.path.join(root, fname)
+            rel_path   = os.path.relpath(local_file, local_dir)
+            r2_key     = prefix + rel_path.replace("\\", "/")
+            try:
+                client.upload_file(local_file, config.R2_BUCKET_NAME, r2_key)
+            except Exception as e:
+                print(f"R2 upload output error ({fname}): {e}")
+    return prefix
+
+
+# ─────────────────────────────────────────
+# NETTOYAGE AUTOMATIQUE
+# ─────────────────────────────────────────
+def delete_raw_video(video_path, r2_key=None):
+    """Supprime la vidéo brute (local + R2) après analyse."""
+    if not config.DELETE_RAW_VIDEO_AFTER_ANALYSIS:
+        return
+
+    # Local
+    if video_path and os.path.exists(video_path):
+        try:
+            os.remove(video_path)
+            print(f"  Vidéo brute supprimée : {video_path}")
+        except Exception as e:
+            print(f"  Erreur suppression locale : {e}")
+
+    # R2
+    if r2_key:
+        r2_delete(r2_key)
+
+
+def cleanup_expired_outputs():
+    """
+    Supprime les dossiers outputs des analyses expirées selon le plan de l'utilisateur.
+    À appeler via un cron ou au démarrage.
+    """
+    with app.app_context():
+        analyses = Analysis.query.filter_by(status="done").all()
+        now      = datetime.utcnow()
+        deleted  = 0
+
+        for a in analyses:
+            user = db.session.get(User, a.user_id)
+            if not user:
+                continue
+
+            plan            = user.plan or "free"
+            retention_days  = config.FILE_RETENTION_DAYS.get(plan, 7)
+            expires_at      = a.created_at + timedelta(days=retention_days)
+
+            if now > expires_at:
+                # Supprime le dossier output local
+                out_dir = a.output_dir or os.path.join(
+                    config.OUTPUT_FOLDER, str(a.id)
+                )
+                if out_dir and os.path.isdir(out_dir):
+                    try:
+                        shutil.rmtree(out_dir)
+                        print(f"  Outputs expirés supprimés : analyse #{a.id}")
+                    except Exception as e:
+                        print(f"  Erreur suppression outputs #{a.id}: {e}")
+
+                # Supprime les outputs R2 si configuré
+                if config.R2_ENABLED and a.r2_output_prefix:
+                    _r2_delete_prefix(a.r2_output_prefix)
+
+                # Met à jour le statut
+                a.output_dir       = None
+                a.r2_output_prefix = None
+                db.session.commit()
+                deleted += 1
+
+        if deleted:
+            print(f"  Nettoyage : {deleted} analyse(s) expirée(s) purgées")
+
+
+def _r2_delete_prefix(prefix):
+    """Supprime tous les fichiers R2 sous un préfixe donné."""
+    client = get_r2_client()
+    if not client:
+        return
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=config.R2_BUCKET_NAME, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                client.delete_object(Bucket=config.R2_BUCKET_NAME, Key=obj["Key"])
+        print(f"  R2 préfixe supprimé : {prefix}")
+    except Exception as e:
+        print(f"  R2 delete prefix error: {e}")
+
+
+def start_cleanup_scheduler():
+    """Lance le nettoyage automatique toutes les 24h en background."""
+    def _loop():
+        import time
+        while True:
+            try:
+                cleanup_expired_outputs()
+            except Exception as e:
+                print(f"Cleanup scheduler error: {e}")
+            time.sleep(86400)  # 24h
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    print("✅  Scheduler nettoyage démarré (toutes les 24h)")
+
+
+# ─────────────────────────────────────────
 # HELPER PLAN
 # ─────────────────────────────────────────
 class PlanObj:
@@ -101,18 +293,21 @@ class User(UserMixin, db.Model):
 
 
 class Analysis(db.Model):
-    id           = db.Column(db.Integer,     primary_key=True)
-    user_id      = db.Column(db.Integer,     nullable=False)
-    filename     = db.Column(db.String(200))
-    sport        = db.Column(db.String(50),  default="football")
-    mode         = db.Column(db.String(20),  default="match")   # FIX
-    player_id    = db.Column(db.String(50),  nullable=True)      # FIX
-    status       = db.Column(db.String(20),  default="pending")
-    progress     = db.Column(db.Integer,     default=0)
-    progress_msg = db.Column(db.String(200), default="En attente...")
-    result_json  = db.Column(db.Text)
-    output_dir   = db.Column(db.String(300))
-    created_at   = db.Column(db.DateTime,    default=datetime.utcnow)
+    id                 = db.Column(db.Integer,     primary_key=True)
+    user_id            = db.Column(db.Integer,     nullable=False)
+    filename           = db.Column(db.String(200))
+    sport              = db.Column(db.String(50),  default="football")
+    mode               = db.Column(db.String(20),  default="match")
+    player_id          = db.Column(db.String(50),  nullable=True)
+    status             = db.Column(db.String(20),  default="pending")
+    progress           = db.Column(db.Integer,     default=0)
+    progress_msg       = db.Column(db.String(200), default="En attente...")
+    result_json        = db.Column(db.Text)
+    output_dir         = db.Column(db.String(300))
+    # Champs R2 (null si stockage local)
+    r2_video_key       = db.Column(db.String(500), nullable=True)
+    r2_output_prefix   = db.Column(db.String(500), nullable=True)
+    created_at         = db.Column(db.DateTime,    default=datetime.utcnow)
 
 
 @login_manager.user_loader
@@ -234,7 +429,86 @@ def results(id):
 
 
 # ─────────────────────────────────────────
-# UPLOAD
+# API — PRESIGNED URL (mode R2)
+# ─────────────────────────────────────────
+@app.route("/api/upload-url", methods=["POST"])
+@login_required
+def get_upload_url():
+    """
+    Génère un presigned URL pour upload direct vers R2.
+    Utilisé par le frontend JS quand R2 est activé.
+    Retourne : { presigned_url, r2_key, analysis_id }
+    """
+    if not config.R2_ENABLED:
+        return jsonify({"error": "R2 non configuré"}), 400
+
+    if current_user.analyses_left() <= 0:
+        return jsonify({"error": "quota_exceeded"}), 403
+
+    filename     = request.json.get("filename", "video.mp4")
+    content_type = request.json.get("content_type", "video/mp4")
+    sport        = request.json.get("sport", "football")
+    mode         = request.json.get("mode", "match")
+    player_id    = request.json.get("player_id") or None
+
+    if not allowed_file(filename):
+        return jsonify({"error": "format non supporté"}), 400
+
+    safe_filename = secure_filename(filename)
+    presigned_url, r2_key = r2_generate_presigned_upload(safe_filename, content_type)
+
+    if not presigned_url:
+        return jsonify({"error": "impossible de générer l'URL"}), 500
+
+    # Crée l'analyse en BDD dès maintenant (status=pending)
+    analysis = Analysis(
+        user_id      = current_user.id,
+        filename     = safe_filename,
+        sport        = sport,
+        mode         = mode,
+        player_id    = player_id,
+        status       = "pending",
+        r2_video_key = r2_key,
+    )
+    db.session.add(analysis)
+    db.session.commit()
+
+    return jsonify({
+        "presigned_url": presigned_url,
+        "r2_key":        r2_key,
+        "analysis_id":   analysis.id,
+    })
+
+
+# ─────────────────────────────────────────
+# API — CONFIRME UPLOAD R2 TERMINÉ
+# ─────────────────────────────────────────
+@app.route("/api/upload-complete/<int:id>", methods=["POST"])
+@login_required
+def upload_complete(id):
+    """
+    Appelé par le frontend après que l'upload R2 est terminé.
+    Lance l'analyse en background.
+    """
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        return jsonify({"error": "forbidden"}), 403
+    if a.status != "pending":
+        return jsonify({"error": "déjà lancé"}), 400
+
+    thread = threading.Thread(
+        target = run_analysis,
+        args   = (a.id, None, a.sport, current_user.plan, a.mode, a.player_id),
+        kwargs = {"r2_key": a.r2_video_key},
+        daemon = True,
+    )
+    thread.start()
+
+    return jsonify({"ok": True, "analysis_id": a.id})
+
+
+# ─────────────────────────────────────────
+# UPLOAD (mode local — fallback si R2 absent)
 # ─────────────────────────────────────────
 @app.route("/upload", methods=["POST"])
 @login_required
@@ -292,7 +566,10 @@ def upload():
 # ─────────────────────────────────────────
 # BACKGROUND PROCESS
 # ─────────────────────────────────────────
-def run_analysis(analysis_id, video_path, sport, plan, mode="match", player_id=None):
+def run_analysis(
+    analysis_id, video_path, sport, plan,
+    mode="match", player_id=None, r2_key=None
+):
     with app.app_context():
         a              = db.session.get(Analysis, analysis_id)
         a.status       = "processing"
@@ -300,7 +577,20 @@ def run_analysis(analysis_id, video_path, sport, plan, mode="match", player_id=N
         a.progress_msg = "Analyse en cours..."
         db.session.commit()
 
+    local_tmp = None  # chemin temporaire si téléchargé depuis R2
+
     try:
+        # ── Mode R2 : télécharge la vidéo localement pour le pipeline ──
+        if r2_key and config.R2_ENABLED:
+            local_tmp  = os.path.join(
+                config.UPLOAD_FOLDER,
+                f"tmp_{analysis_id}_{os.path.basename(r2_key)}"
+            )
+            ok = r2_download_to_local(r2_key, local_tmp)
+            if not ok:
+                raise RuntimeError("Impossible de télécharger la vidéo depuis R2")
+            video_path = local_tmp
+
         output_dir = os.path.join(config.OUTPUT_FOLDER, str(analysis_id))
 
         result = run_pipeline(
@@ -314,16 +604,29 @@ def run_analysis(analysis_id, video_path, sport, plan, mode="match", player_id=N
             player_id      = player_id
         )
 
+        # ── Supprime la vidéo brute dès que l'analyse est terminée ──
+        delete_raw_video(video_path, r2_key)
+
+        # ── Upload les outputs vers R2 si activé ──
+        r2_prefix = None
+        if config.R2_ENABLED:
+            r2_prefix = r2_upload_outputs(output_dir, analysis_id)
+
         with app.app_context():
-            a              = db.session.get(Analysis, analysis_id)
-            a.status       = "done"
-            a.progress     = 100
-            a.progress_msg = "Analyse terminee"
-            a.result_json  = json.dumps(result)
-            a.output_dir   = output_dir
+            a                  = db.session.get(Analysis, analysis_id)
+            a.status           = "done"
+            a.progress         = 100
+            a.progress_msg     = "Analyse terminee"
+            a.result_json      = json.dumps(result)
+            a.output_dir       = output_dir
+            a.r2_output_prefix = r2_prefix
             db.session.commit()
 
     except Exception as e:
+        # Nettoyage en cas d'erreur
+        if local_tmp and os.path.exists(local_tmp):
+            os.remove(local_tmp)
+
         with app.app_context():
             a              = db.session.get(Analysis, analysis_id)
             a.status       = "error"
@@ -360,6 +663,14 @@ def delete_analysis(id):
 
     if a.status == "processing":
         return jsonify({"error": "analyse en cours"}), 400
+
+    # Supprime les fichiers associés
+    out_dir = a.output_dir or os.path.join(config.OUTPUT_FOLDER, str(a.id))
+    if out_dir and os.path.isdir(out_dir):
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+    if config.R2_ENABLED and a.r2_output_prefix:
+        _r2_delete_prefix(a.r2_output_prefix)
 
     db.session.delete(a)
     db.session.commit()
@@ -608,6 +919,9 @@ def too_large(e):
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
+
+    # Lance le nettoyage automatique en background
+    start_cleanup_scheduler()
 
     app.run(
         debug = config.DEBUG,

@@ -21,6 +21,41 @@ MAX_UPLOAD_SIZE    = int(os.getenv("MAX_UPLOAD_SIZE", 10 * 1024 * 1024 * 1024))
 ALLOWED_EXTENSIONS = {"mp4", "avi", "mov", "mkv", "m4v"}
 
 # ─────────────────────────────────────────
+# CLOUDFLARE R2  (optionnel — stockage cloud)
+# Si R2_ACCOUNT_ID est absent → stockage local
+# ─────────────────────────────────────────
+R2_ACCOUNT_ID        = os.getenv("R2_ACCOUNT_ID",        "")
+R2_ACCESS_KEY_ID     = os.getenv("R2_ACCESS_KEY_ID",     "")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
+R2_BUCKET_NAME       = os.getenv("R2_BUCKET_NAME",       "scoutia-videos")
+R2_PUBLIC_URL        = os.getenv("R2_PUBLIC_URL",        "")  # ex: https://pub-xxx.r2.dev
+
+# True si R2 est configuré
+R2_ENABLED = bool(R2_ACCOUNT_ID and R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY)
+
+# URL endpoint S3-compatible pour R2
+R2_ENDPOINT_URL = (
+    f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+    if R2_ACCOUNT_ID else ""
+)
+
+# ─────────────────────────────────────────
+# RÉTENTION DES FICHIERS (en jours)
+# 0 = suppression immédiate après analyse
+# ─────────────────────────────────────────
+FILE_RETENTION_DAYS = {
+    "free":    int(os.getenv("RETENTION_FREE",    7)),
+    "starter": int(os.getenv("RETENTION_STARTER", 30)),
+    "pro":     int(os.getenv("RETENTION_PRO",     90)),
+    "unique":  int(os.getenv("RETENTION_UNIQUE",  30)),
+}
+
+# Suppression de la vidéo brute après analyse (recommandé : True)
+DELETE_RAW_VIDEO_AFTER_ANALYSIS = (
+    os.getenv("DELETE_RAW_VIDEO", "true").lower() == "true"
+)
+
+# ─────────────────────────────────────────
 # VIDÉO
 # ─────────────────────────────────────────
 VIDEO_PATH   = os.getenv("VIDEO_PATH",   "match.mp4")
@@ -64,8 +99,6 @@ HIGHLIGHT_AFTER_SEC     = int(os.getenv("HIGHLIGHT_AFTER_SEC",      4))
 
 # ─────────────────────────────────────────
 # MONTAGE
-# FIX — ces constantes étaient définies mais ignorées par create_montage (V18).
-# Elles sont conservées pour la config .env mais ne sont plus passées en kwargs.
 # ─────────────────────────────────────────
 MONTAGE_RESOLUTION  = os.getenv("MONTAGE_RESOLUTION", "1280x720")
 
@@ -142,6 +175,10 @@ def validate():
         warnings.append("⚠️  STRIPE_SECRET_KEY manquante — paiement désactivé")
     if not STRIPE_WEBHOOK_SECRET:
         warnings.append("⚠️  STRIPE_WEBHOOK_SECRET manquante — webhook désactivé")
+    if R2_ENABLED:
+        print("✅  Cloudflare R2 activé — stockage cloud")
+    else:
+        print("ℹ️   R2 non configuré — stockage local (mode test)")
     for w in warnings:
         print(w)
     return len(warnings) == 0
