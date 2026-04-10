@@ -4,19 +4,22 @@
 from collections import defaultdict
 
 
-def compute_stats(events, jersey_map=None):
-    """
-    Calcule les stats par joueur.
+# ─────────────────────────────────────────
+# DÉTECTION GARDIEN
+# Un joueur est gardien si sa zone d'action moyenne
+# est dans les 12% extrêmes du terrain (x < 0.12 ou x > 0.88)
+# ─────────────────────────────────────────
+def is_goalkeeper(player_stats, frame_w=1920):
+    zone_x = player_stats.get("_zone_x_sum", 0)
+    n      = player_stats.get("_zone_x_n",   1)
+    if n == 0:
+        return False
+    avg_x   = zone_x / n
+    avg_x_n = avg_x / frame_w   # normalisé 0-1
+    return avg_x_n < 0.12 or avg_x_n > 0.88
 
-    FIX label — priorité d'affichage :
-      1. Numéro maillot OCR  → #9
-      2. Numéro maillot Gemini → #9
-      3. Fallback             → ID-{pid}
 
-    FIX équipe — on déduit l'équipe majoritaire de chaque joueur
-    depuis ses events pour corriger les cas où team=None ou 100% équipe 1.
-    """
-
+def compute_stats(events, jersey_map=None, frame_w=1920):
     players = defaultdict(lambda: {
         "touches":            0,
         "passes":             0,
@@ -25,6 +28,7 @@ def compute_stats(events, jersey_map=None):
         "key_passes":         0,
         "tirs":               0,
         "buts":               0,
+        "arrets":             0,   # FIX — arrêts gardien
         "interceptions":      0,
         "dribbles":           0,
         "long_passes":        0,
@@ -32,10 +36,13 @@ def compute_stats(events, jersey_map=None):
         "xg_total":           0.0,
         "xa_total":           0.0,
         "danger_total":       0.0,
+        "is_goalkeeper":      False,
         "jersey":             None,
         "label":              None,
         "team":               None,
-        "_team_votes":        defaultdict(int),  # FIX équipe
+        "_team_votes":        defaultdict(int),
+        "_zone_x_sum":        0.0,   # pour détection gardien
+        "_zone_x_n":          0,
     })
 
     for e in events:
@@ -44,7 +51,7 @@ def compute_stats(events, jersey_map=None):
         if not pid:
             continue
 
-        # FIX label — assigner jersey dès le premier event
+        # Label jersey
         if players[pid]["jersey"] is None and jersey_map:
             jersey = (
                 jersey_map.get(pid)
@@ -54,10 +61,16 @@ def compute_stats(events, jersey_map=None):
                 players[pid]["jersey"] = jersey
                 players[pid]["label"]  = f"#{jersey}"
 
-        # FIX équipe — vote majoritaire sur tous les events du joueur
+        # Vote équipe
         team = e.get("team")
         if team is not None:
             players[pid]["_team_votes"][team] += 1
+
+        # Accumule position pour détection gardien
+        x = e.get("x")
+        if x is not None and float(x) > 0:
+            players[pid]["_zone_x_sum"] += float(x)
+            players[pid]["_zone_x_n"]   += 1
 
         if t == "possession":
             players[pid]["touches"] += 1
@@ -68,7 +81,6 @@ def compute_stats(events, jersey_map=None):
                 players[from_pid]["passes"]          += 1
                 players[from_pid]["passes_reussies"] += 1
                 players[from_pid]["xa_total"]        += e.get("xA", 0)
-                # vote équipe aussi pour from_pid
                 if team is not None:
                     players[from_pid]["_team_votes"][team] += 1
 
@@ -85,6 +97,10 @@ def compute_stats(events, jersey_map=None):
 
         elif t in ["goal", "score"]:
             players[pid]["buts"] += 1
+
+        elif t == "shot_blocked":
+            # Le joueur qui bloque = potentiellement le gardien
+            players[pid]["arrets"] += 1
 
         elif t == "interception":
             players[pid]["interceptions"] += 1
@@ -105,35 +121,37 @@ def compute_stats(events, jersey_map=None):
         if s["touches"] >= 15
     }
 
-    # ── FIX label + équipe — post-processing ──
+    # ── Post-processing : label, équipe, gardien ──
     for pid, s in filtered.items():
 
-        # Label fallback si pas de jersey
         if s["label"] is None:
             s["label"] = f"ID-{pid}"
 
-        # FIX équipe — assigner l'équipe majoritaire
         votes = s.pop("_team_votes", {})
         if votes:
             s["team"] = max(votes, key=votes.get)
         else:
             s["team"] = None
 
+        # FIX — détecter si gardien
+        s["is_goalkeeper"] = is_goalkeeper(s, frame_w)
+
+        # FIX — si gardien, ses "buts" sont des arrêts
+        if s["is_goalkeeper"] and s["buts"] > 0:
+            s["arrets"] += s["buts"]
+            s["buts"]    = 0
+
+        # Nettoyer les champs internes
+        s.pop("_zone_x_sum", None)
+        s.pop("_zone_x_n",   None)
+
     return filtered
 
 
 # ─────────────────────────────────────────
 # POSSESSION CORRIGÉE
-# FIX — utilise les stats joueurs (team majoritaire)
-# pour corriger la possession si smart_game_ai donne 100%
 # ─────────────────────────────────────────
 def compute_possession_from_stats(events, stats):
-    """
-    Calcule la possession en s'appuyant sur les équipes
-    déduites depuis les stats joueurs (vote majoritaire).
-    Évite le 100% équipe 1 quand player_reid n'a pas bien assigné.
-    """
-    # Construire un mapping pid → team depuis les stats
     pid_to_team = {
         pid: s["team"]
         for pid, s in stats.items()
@@ -151,7 +169,6 @@ def compute_possession_from_stats(events, stats):
         pid  = str(e1.get("player", ""))
         team = e1.get("team")
 
-        # FIX — si team=None dans l'event, chercher dans stats
         if team is None and pid in pid_to_team:
             team = pid_to_team[pid]
 
@@ -165,8 +182,6 @@ def compute_possession_from_stats(events, stats):
         for team, t in possession.items()
     }
 
-    # FIX — si toujours 100% équipe 1 (aucune équipe 0 détectée),
-    # estimer 50/50 plutôt que d'afficher une donnée trompeuse
     if len(result) <= 1:
         result = {0: 50.0, 1: 50.0}
 
