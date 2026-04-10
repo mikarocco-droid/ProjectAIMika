@@ -24,6 +24,6 @@ def rank_highlights(events):
         e["highlight_score"] = round(score, 2)
         ranked.append(e)
 
-    ranked.sort(key=lambda x: x["highlight_score"], reverse=True)
+    ranked.sort(key=lambda x: x.get("t", 0))
 
     return ranked

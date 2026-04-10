@@ -64,6 +64,7 @@ def extract_highlights(events, max_highlights=20, fps=30):
             "main_type":   max(seq, key=lambda e: compute_danger(e))["type"]
         })
 
-    scored.sort(key=lambda x: -x["score"])
+    # Tri chronologique uniquement
+    scored.sort(key=lambda x: x["frame_start"])
 
     return scored[:max_highlights]
