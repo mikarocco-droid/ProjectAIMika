@@ -1,0 +1,8 @@
+{
+  "goal_frames_min": 8,
+  "shot_cooldown": 3.0,
+  "goal_cooldown": 150.0,
+  "ball_speed_min": 0.01,
+  "player_near_goal": 0.15,
+  "spatial_max_dist": 200.0
+}

@@ -1,0 +1,23 @@
+{
+  "used_comments": {
+    "goal": {
+      "LE GARDIEN N'A PU QUE REGARDER PASSER CE TIR ! L'avantage au tableau d'affichage — l'équipe prend les commandes !": 1,
+      "IL NE POUVAIT PAS MIEUX PLACER ! 1-0 ! Quel moment crucial dans cette rencontre !": 2,
+      "BUUUUT ! Quelle finition imparable ! C'est peut-être le but qui fait la différence ce soir !": 1,
+      "IL NE POUVAIT PAS MIEUX PLACER ! 1-0 ! C'est peut-être le but qui fait la différence ce soir !": 1,
+      "BUUUUT ! Quelle finition imparable ! L'avantage au tableau d'affichage — l'équipe prend les commandes !": 1,
+      "BUUUUT ! Quelle finition imparable !": 18,
+      "MAGNIFIQUE ACTION COLLECTIVE qui se conclut par un but ! C'est peut-être le but qui fait la différence ce soir !": 1,
+      "MAGNIFIQUE ACTION COLLECTIVE qui se conclut par un but ! Le but qui relance complètement la rencontre !": 2
+    },
+    "interception": {
+      "Bonne récupération défensive !": 53
+    }
+  },
+  "sport_styles": {
+    "football": {
+      "possession": 8
+    }
+  },
+  "n_matches": 8
+}

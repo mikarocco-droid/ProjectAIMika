@@ -1,0 +1,1487 @@
+{
+  "7": {
+    "touches": 714,
+    "zone_x": 762.4,
+    "zone_y": 409.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "2": {
+    "touches": 648,
+    "zone_x": 558.0,
+    "zone_y": 516.0,
+    "n_shots": 0,
+    "n_goals": 1,
+    "matches": 8,
+    "avg_xg": 0.0
+  },
+  "14": {
+    "touches": 237,
+    "zone_x": 758.8,
+    "zone_y": 476.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "19": {
+    "touches": 138,
+    "zone_x": 1095.9,
+    "zone_y": 458.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 6,
+    "avg_xg": 0.0
+  },
+  "27": {
+    "touches": 542,
+    "zone_x": 995.7,
+    "zone_y": 580.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "16": {
+    "touches": 39,
+    "zone_x": 289.3,
+    "zone_y": 440.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "28": {
+    "touches": 339,
+    "zone_x": 598.2,
+    "zone_y": 423.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "10": {
+    "touches": 742,
+    "zone_x": 890.3,
+    "zone_y": 490.5,
+    "n_shots": 0,
+    "n_goals": 2,
+    "matches": 8,
+    "avg_xg": 0.0
+  },
+  "30": {
+    "touches": 69,
+    "zone_x": 659.2,
+    "zone_y": 464.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "21": {
+    "touches": 18,
+    "zone_x": 342.7,
+    "zone_y": 516.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "5": {
+    "touches": 140,
+    "zone_x": 1102.3,
+    "zone_y": 547.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 8,
+    "avg_xg": 0.0
+  },
+  "29": {
+    "touches": 232,
+    "zone_x": 837.1,
+    "zone_y": 495.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "26": {
+    "touches": 1588,
+    "zone_x": 905.4,
+    "zone_y": 579.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 8,
+    "avg_xg": 0.0
+  },
+  "35": {
+    "touches": 15,
+    "zone_x": 984.7,
+    "zone_y": 545.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "44": {
+    "touches": 270,
+    "zone_x": 742.7,
+    "zone_y": 652.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 8,
+    "avg_xg": 0.0
+  },
+  "0": {
+    "touches": 322,
+    "zone_x": 570.3,
+    "zone_y": 586.5,
+    "n_shots": 0,
+    "n_goals": 4,
+    "matches": 6,
+    "avg_xg": 0.0
+  },
+  "42": {
+    "touches": 148,
+    "zone_x": 1090.4,
+    "zone_y": 621.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 8,
+    "avg_xg": 0.0
+  },
+  "58": {
+    "touches": 165,
+    "zone_x": 752.7,
+    "zone_y": 321.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "60": {
+    "touches": 97,
+    "zone_x": 732.5,
+    "zone_y": 529.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "34": {
+    "touches": 156,
+    "zone_x": 396.8,
+    "zone_y": 417.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "61": {
+    "touches": 213,
+    "zone_x": 374.2,
+    "zone_y": 344.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "76": {
+    "touches": 24,
+    "zone_x": 103.9,
+    "zone_y": 247.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "70": {
+    "touches": 93,
+    "zone_x": 525.9,
+    "zone_y": 241.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "75": {
+    "touches": 402,
+    "zone_x": 657.7,
+    "zone_y": 318.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "64": {
+    "touches": 72,
+    "zone_x": 176.4,
+    "zone_y": 168.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "78": {
+    "touches": 120,
+    "zone_x": 611.8,
+    "zone_y": 530.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "67": {
+    "touches": 518,
+    "zone_x": 805.5,
+    "zone_y": 530.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 8,
+    "avg_xg": 0.0
+  },
+  "87": {
+    "touches": 63,
+    "zone_x": 321.5,
+    "zone_y": 375.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "79": {
+    "touches": 353,
+    "zone_x": 1198.5,
+    "zone_y": 512.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 8,
+    "avg_xg": 0.0
+  },
+  "89": {
+    "touches": 24,
+    "zone_x": 909.5,
+    "zone_y": 482.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "97": {
+    "touches": 48,
+    "zone_x": 648.7,
+    "zone_y": 290.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 6,
+    "avg_xg": 0.0
+  },
+  "68": {
+    "touches": 108,
+    "zone_x": 706.5,
+    "zone_y": 424.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "103": {
+    "touches": 57,
+    "zone_x": 1011.4,
+    "zone_y": 207.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "112": {
+    "touches": 387,
+    "zone_x": 968.0,
+    "zone_y": 568.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 6,
+    "avg_xg": 0.0
+  },
+  "113": {
+    "touches": 220,
+    "zone_x": 151.0,
+    "zone_y": 245.6,
+    "n_shots": 0,
+    "n_goals": 1,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "123": {
+    "touches": 48,
+    "zone_x": 861.7,
+    "zone_y": 359.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "69": {
+    "touches": 45,
+    "zone_x": 92.8,
+    "zone_y": 119.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "148": {
+    "touches": 90,
+    "zone_x": 613.8,
+    "zone_y": 262.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "154": {
+    "touches": 24,
+    "zone_x": 828.7,
+    "zone_y": 237.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "161": {
+    "touches": 15,
+    "zone_x": 876.9,
+    "zone_y": 243.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "188": {
+    "touches": 165,
+    "zone_x": 112.3,
+    "zone_y": 367.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "190": {
+    "touches": 27,
+    "zone_x": 960.5,
+    "zone_y": 369.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "198": {
+    "touches": 447,
+    "zone_x": 512.6,
+    "zone_y": 416.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "193": {
+    "touches": 24,
+    "zone_x": 256.5,
+    "zone_y": 432.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "204": {
+    "touches": 30,
+    "zone_x": 66.3,
+    "zone_y": 300.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "217": {
+    "touches": 15,
+    "zone_x": 472.4,
+    "zone_y": 463.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "178": {
+    "touches": 25,
+    "zone_x": 1046.4,
+    "zone_y": 600.2,
+    "n_shots": 0,
+    "n_goals": 1,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "220": {
+    "touches": 91,
+    "zone_x": 893.1,
+    "zone_y": 515.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "244": {
+    "touches": 36,
+    "zone_x": 435.5,
+    "zone_y": 368.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "235": {
+    "touches": 258,
+    "zone_x": 586.8,
+    "zone_y": 358.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "283": {
+    "touches": 24,
+    "zone_x": 399.8,
+    "zone_y": 200.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "284": {
+    "touches": 438,
+    "zone_x": 986.6,
+    "zone_y": 317.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "311": {
+    "touches": 30,
+    "zone_x": 683.9,
+    "zone_y": 320.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "309": {
+    "touches": 9,
+    "zone_x": 851.7,
+    "zone_y": 468.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "358": {
+    "touches": 36,
+    "zone_x": 444.9,
+    "zone_y": 282.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "366": {
+    "touches": 15,
+    "zone_x": 1189.4,
+    "zone_y": 381.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "369": {
+    "touches": 27,
+    "zone_x": 880.2,
+    "zone_y": 324.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "357": {
+    "touches": 63,
+    "zone_x": 264.6,
+    "zone_y": 254.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "370": {
+    "touches": 45,
+    "zone_x": 1118.3,
+    "zone_y": 331.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "6": {
+    "touches": 173,
+    "zone_x": 863.2,
+    "zone_y": 555.7,
+    "n_shots": 0,
+    "n_goals": 4,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "13": {
+    "touches": 297,
+    "zone_x": 319.7,
+    "zone_y": 413.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "20": {
+    "touches": 440,
+    "zone_x": 330.8,
+    "zone_y": 370.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "4": {
+    "touches": 1749,
+    "zone_x": 535.3,
+    "zone_y": 418.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "9": {
+    "touches": 93,
+    "zone_x": 558.2,
+    "zone_y": 421.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "45": {
+    "touches": 96,
+    "zone_x": 834.4,
+    "zone_y": 536.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "32": {
+    "touches": 105,
+    "zone_x": 313.6,
+    "zone_y": 303.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "39": {
+    "touches": 72,
+    "zone_x": 246.3,
+    "zone_y": 325.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "22": {
+    "touches": 573,
+    "zone_x": 374.6,
+    "zone_y": 497.3,
+    "n_shots": 0,
+    "n_goals": 1,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "52": {
+    "touches": 354,
+    "zone_x": 919.4,
+    "zone_y": 624.2,
+    "n_shots": 0,
+    "n_goals": 1,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "57": {
+    "touches": 33,
+    "zone_x": 592.2,
+    "zone_y": 320.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "46": {
+    "touches": 640,
+    "zone_x": 1065.1,
+    "zone_y": 478.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "59": {
+    "touches": 126,
+    "zone_x": 474.1,
+    "zone_y": 269.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "62": {
+    "touches": 24,
+    "zone_x": 426.1,
+    "zone_y": 364.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "83": {
+    "touches": 12,
+    "zone_x": 586.9,
+    "zone_y": 161.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "86": {
+    "touches": 43,
+    "zone_x": 852.8,
+    "zone_y": 488.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 5,
+    "avg_xg": 0.0
+  },
+  "109": {
+    "touches": 18,
+    "zone_x": 532.0,
+    "zone_y": 446.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "122": {
+    "touches": 12,
+    "zone_x": 492.4,
+    "zone_y": 156.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 3,
+    "avg_xg": 0.0
+  },
+  "3": {
+    "touches": 979,
+    "zone_x": 265.7,
+    "zone_y": 237.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "15": {
+    "touches": 1058,
+    "zone_x": 554.9,
+    "zone_y": 240.1,
+    "n_shots": 0,
+    "n_goals": 1,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "12": {
+    "touches": 38,
+    "zone_x": 28.8,
+    "zone_y": 220.7,
+    "n_shots": 0,
+    "n_goals": 2,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "18": {
+    "touches": 940,
+    "zone_x": 389.1,
+    "zone_y": 217.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "24": {
+    "touches": 1402,
+    "zone_x": 451.9,
+    "zone_y": 249.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "11": {
+    "touches": 605,
+    "zone_x": 174.2,
+    "zone_y": 267.9,
+    "n_shots": 0,
+    "n_goals": 2,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "31": {
+    "touches": 360,
+    "zone_x": 243.6,
+    "zone_y": 185.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "25": {
+    "touches": 692,
+    "zone_x": 249.1,
+    "zone_y": 281.5,
+    "n_shots": 0,
+    "n_goals": 2,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "43": {
+    "touches": 495,
+    "zone_x": 584.3,
+    "zone_y": 315.2,
+    "n_shots": 0,
+    "n_goals": 1,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "48": {
+    "touches": 24,
+    "zone_x": 604.7,
+    "zone_y": 456.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "63": {
+    "touches": 43,
+    "zone_x": 75.0,
+    "zone_y": 315.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "77": {
+    "touches": 300,
+    "zone_x": 115.3,
+    "zone_y": 267.1,
+    "n_shots": 0,
+    "n_goals": 2,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "73": {
+    "touches": 76,
+    "zone_x": 490.0,
+    "zone_y": 397.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "84": {
+    "touches": 10,
+    "zone_x": 198.2,
+    "zone_y": 417.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "96": {
+    "touches": 650,
+    "zone_x": 348.4,
+    "zone_y": 250.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "114": {
+    "touches": 57,
+    "zone_x": 284.5,
+    "zone_y": 350.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "125": {
+    "touches": 247,
+    "zone_x": 391.4,
+    "zone_y": 261.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "150": {
+    "touches": 675,
+    "zone_x": 507.2,
+    "zone_y": 220.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "167": {
+    "touches": 40,
+    "zone_x": 661.1,
+    "zone_y": 485.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "168": {
+    "touches": 134,
+    "zone_x": 631.4,
+    "zone_y": 377.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "170": {
+    "touches": 19,
+    "zone_x": 661.4,
+    "zone_y": 405.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "171": {
+    "touches": 26,
+    "zone_x": 540.6,
+    "zone_y": 462.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "162": {
+    "touches": 43,
+    "zone_x": 757.4,
+    "zone_y": 446.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "169": {
+    "touches": 18,
+    "zone_x": 718.4,
+    "zone_y": 471.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "124": {
+    "touches": 189,
+    "zone_x": 633.1,
+    "zone_y": 325.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "131": {
+    "touches": 151,
+    "zone_x": 691.3,
+    "zone_y": 228.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "181": {
+    "touches": 12,
+    "zone_x": 396.8,
+    "zone_y": 488.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "215": {
+    "touches": 101,
+    "zone_x": 129.1,
+    "zone_y": 129.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "186": {
+    "touches": 46,
+    "zone_x": 681.9,
+    "zone_y": 370.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "205": {
+    "touches": 61,
+    "zone_x": 797.8,
+    "zone_y": 174.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "243": {
+    "touches": 74,
+    "zone_x": 355.2,
+    "zone_y": 157.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "251": {
+    "touches": 142,
+    "zone_x": 689.6,
+    "zone_y": 186.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "254": {
+    "touches": 94,
+    "zone_x": 587.5,
+    "zone_y": 267.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "219": {
+    "touches": 24,
+    "zone_x": 371.5,
+    "zone_y": 389.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "290": {
+    "touches": 159,
+    "zone_x": 123.3,
+    "zone_y": 230.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "305": {
+    "touches": 24,
+    "zone_x": 693.2,
+    "zone_y": 141.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "303": {
+    "touches": 79,
+    "zone_x": 634.3,
+    "zone_y": 222.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "334": {
+    "touches": 81,
+    "zone_x": 238.2,
+    "zone_y": 318.6,
+    "n_shots": 0,
+    "n_goals": 1,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "340": {
+    "touches": 207,
+    "zone_x": 216.8,
+    "zone_y": 255.1,
+    "n_shots": 0,
+    "n_goals": 2,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "410": {
+    "touches": 123,
+    "zone_x": 472.7,
+    "zone_y": 284.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "423": {
+    "touches": 41,
+    "zone_x": 875.8,
+    "zone_y": 249.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "445": {
+    "touches": 46,
+    "zone_x": 99.0,
+    "zone_y": 230.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "418": {
+    "touches": 31,
+    "zone_x": 203.9,
+    "zone_y": 108.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "472": {
+    "touches": 53,
+    "zone_x": 762.6,
+    "zone_y": 233.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "486": {
+    "touches": 30,
+    "zone_x": 763.6,
+    "zone_y": 320.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 2,
+    "avg_xg": 0.0
+  },
+  "111": {
+    "touches": 23,
+    "zone_x": 522.1,
+    "zone_y": 180.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "133": {
+    "touches": 34,
+    "zone_x": 111.9,
+    "zone_y": 206.4,
+    "n_shots": 0,
+    "n_goals": 1,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "172": {
+    "touches": 3,
+    "zone_x": 563.5,
+    "zone_y": 276.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "209": {
+    "touches": 17,
+    "zone_x": 113.4,
+    "zone_y": 65.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "246": {
+    "touches": 5,
+    "zone_x": 559.8,
+    "zone_y": 249.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "253": {
+    "touches": 3,
+    "zone_x": 272.2,
+    "zone_y": 74.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "201": {
+    "touches": 101,
+    "zone_x": 187.5,
+    "zone_y": 100.8,
+    "n_shots": 0,
+    "n_goals": 1,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "247": {
+    "touches": 27,
+    "zone_x": 530.6,
+    "zone_y": 151.5,
+    "n_shots": 0,
+    "n_goals": 1,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "308": {
+    "touches": 26,
+    "zone_x": 483.0,
+    "zone_y": 103.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "319": {
+    "touches": 20,
+    "zone_x": 20.4,
+    "zone_y": 159.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "434": {
+    "touches": 134,
+    "zone_x": 350.1,
+    "zone_y": 100.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "433": {
+    "touches": 77,
+    "zone_x": 283.1,
+    "zone_y": 106.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "503": {
+    "touches": 224,
+    "zone_x": 180.8,
+    "zone_y": 106.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "523": {
+    "touches": 11,
+    "zone_x": 266.0,
+    "zone_y": 258.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "541": {
+    "touches": 30,
+    "zone_x": 220.7,
+    "zone_y": 167.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "561": {
+    "touches": 11,
+    "zone_x": 80.9,
+    "zone_y": 234.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "295": {
+    "touches": 265,
+    "zone_x": 353.6,
+    "zone_y": 121.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "574": {
+    "touches": 28,
+    "zone_x": 474.8,
+    "zone_y": 147.6,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "598": {
+    "touches": 88,
+    "zone_x": 470.9,
+    "zone_y": 202.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "589": {
+    "touches": 12,
+    "zone_x": 519.7,
+    "zone_y": 112.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "612": {
+    "touches": 21,
+    "zone_x": 30.4,
+    "zone_y": 87.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "531": {
+    "touches": 12,
+    "zone_x": 551.7,
+    "zone_y": 140.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "722": {
+    "touches": 7,
+    "zone_x": 135.9,
+    "zone_y": 225.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "747": {
+    "touches": 7,
+    "zone_x": 152.8,
+    "zone_y": 49.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "783": {
+    "touches": 33,
+    "zone_x": 108.1,
+    "zone_y": 81.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "792": {
+    "touches": 14,
+    "zone_x": 239.3,
+    "zone_y": 256.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "788": {
+    "touches": 4,
+    "zone_x": 570.3,
+    "zone_y": 178.9,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "844": {
+    "touches": 33,
+    "zone_x": 124.8,
+    "zone_y": 79.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "884": {
+    "touches": 9,
+    "zone_x": 183.1,
+    "zone_y": 78.4,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "898": {
+    "touches": 60,
+    "zone_x": 207.3,
+    "zone_y": 129.7,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "923": {
+    "touches": 5,
+    "zone_x": 38.0,
+    "zone_y": 258.1,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "1014": {
+    "touches": 7,
+    "zone_x": 371.3,
+    "zone_y": 103.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "1066": {
+    "touches": 23,
+    "zone_x": 540.8,
+    "zone_y": 123.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "1059": {
+    "touches": 37,
+    "zone_x": 241.5,
+    "zone_y": 80.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "1266": {
+    "touches": 10,
+    "zone_x": 397.6,
+    "zone_y": 73.2,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "1708": {
+    "touches": 6,
+    "zone_x": 505.4,
+    "zone_y": 269.5,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "1711": {
+    "touches": 5,
+    "zone_x": 73.0,
+    "zone_y": 210.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "1809": {
+    "touches": 4,
+    "zone_x": 206.5,
+    "zone_y": 223.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "1958": {
+    "touches": 10,
+    "zone_x": 137.8,
+    "zone_y": 64.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "1785": {
+    "touches": 21,
+    "zone_x": 83.0,
+    "zone_y": 86.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "2008": {
+    "touches": 16,
+    "zone_x": 340.7,
+    "zone_y": 143.8,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "2197": {
+    "touches": 10,
+    "zone_x": 488.7,
+    "zone_y": 258.0,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  },
+  "2201": {
+    "touches": 7,
+    "zone_x": 512.4,
+    "zone_y": 227.3,
+    "n_shots": 0,
+    "n_goals": 0,
+    "matches": 1,
+    "avg_xg": 0.0
+  }
+}

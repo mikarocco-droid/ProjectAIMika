@@ -1,0 +1,12 @@
+{
+  "0": {
+    "matches": 8,
+    "dominant_side": "center",
+    "press_ratio": 0.123
+  },
+  "1": {
+    "matches": 8,
+    "dominant_side": "center",
+    "press_ratio": 0.121
+  }
+}
