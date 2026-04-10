@@ -10,8 +10,7 @@ from analysis.events import process_match, detect_events
 from rendering.overlay import Overlay, TeamColorDetector
 import config
 
-FRAME_SKIP_EVERY = 3
-YOLO_BATCH_SIZE  = 4
+from config import FRAME_SKIP_EVERY, YOLO_BATCH_SIZE
 PROCESS_W        = 960
 PROCESS_H        = 540
 
@@ -20,16 +19,10 @@ def default_progress(pct):
     print(f"  {pct}%", end="\r")
 
 
-# ─────────────────────────────────────────
-# ASSIGNATION ÉQUIPE PAR COULEUR
-# FIX possession — on conserve l'équipe déjà assignée par le ReID
-# si elle est déjà définie, sinon on la calcule par couleur
-# ─────────────────────────────────────────
 def assign_teams_by_color(frame, tracked, color_detector):
     color_detector.update(frame, tracked)
 
     for p in tracked:
-        # FIX — si le ReID a déjà assigné une équipe, on la garde
         if p.get("team") is not None:
             continue
 
@@ -58,9 +51,6 @@ def assign_teams_by_color(frame, tracked, color_detector):
     return tracked
 
 
-# ─────────────────────────────────────────
-# RESCALE BBOXES
-# ─────────────────────────────────────────
 def rescale_detections(players, yolo_ball, scale_x, scale_y):
     for p in players:
         x1, y1, x2, y2 = p["bbox"]
@@ -78,9 +68,6 @@ def rescale_detections(players, yolo_ball, scale_x, scale_y):
     return players, yolo_ball
 
 
-# ─────────────────────────────────────────
-# CONVERSION DICT BALL → TUPLE (x,y,w,h)
-# ─────────────────────────────────────────
 def ball_dict_to_tuple(ball_dict):
     if ball_dict is None:
         return None
@@ -91,9 +78,6 @@ def ball_dict_to_tuple(ball_dict):
     return (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
 
 
-# ─────────────────────────────────────────
-# CONVERSION TUPLE → DICT BALL
-# ─────────────────────────────────────────
 def ball_tuple_to_dict(ball_tuple, interpolated=False):
     if ball_tuple is None:
         return None
@@ -108,9 +92,6 @@ def ball_tuple_to_dict(ball_tuple, interpolated=False):
     }
 
 
-# ─────────────────────────────────────────
-# TRAITEMENT D'UN BATCH DE FRAMES
-# ─────────────────────────────────────────
 def process_batch(
     batch_frames,
     detector,
@@ -185,9 +166,6 @@ def process_batch(
         )
 
         tracked = tracker.update(players, frame_orig)
-
-        # FIX possession — assign_teams_by_color ne réassigne PAS
-        # si le ReID a déjà une équipe (voir fonction ci-dessus)
         tracked = assign_teams_by_color(frame_orig, tracked, color_detector)
         tracked = ocr.read_all(frame_orig, tracked, frame_id=analyzed)
 
@@ -215,9 +193,6 @@ def process_batch(
         )
         for e in frame_events:
             e["frame"] = frame_id
-
-            # FIX possession — propager l'équipe depuis le joueur tracké
-            # vers l'event si team est None
             if e.get("team") is None:
                 pid = e.get("player")
                 if pid:
@@ -242,9 +217,6 @@ def process_batch(
     return batch_data, events_state
 
 
-# ─────────────────────────────────────────
-# PIPELINE PRINCIPAL
-# ─────────────────────────────────────────
 def process_video(
     video_path,
     sport             = "football",
@@ -407,9 +379,6 @@ def process_video(
         return events, jersey_map, fps, total_frames
 
 
-# ─────────────────────────────────────────
-# TEST LOCAL
-# ─────────────────────────────────────────
 if __name__ == "__main__":
     import sys
     video = sys.argv[1] if len(sys.argv) > 1 else config.VIDEO_PATH
