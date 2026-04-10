@@ -11,8 +11,9 @@ from rendering.overlay import Overlay, TeamColorDetector
 import config
 
 from config import FRAME_SKIP_EVERY, YOLO_BATCH_SIZE
-PROCESS_W        = 960
-PROCESS_H        = 540
+
+PROCESS_W = 960
+PROCESS_H = 540
 
 
 def default_progress(pct):
@@ -106,16 +107,20 @@ def process_batch(
     analyzed_offset,
     fps          = 25,
     events_state = None,
+    b_size       = None,   # ← taille effective du batch
 ):
     if not batch_frames:
         return [], events_state
+
+    # Utilise b_size effectif pour imgsz (impacte la qualité de détection YOLO)
+    effective_batch = b_size if b_size is not None else YOLO_BATCH_SIZE
 
     small_frames  = [bf[2] for bf in batch_frames]
     batch_results = detector.model(
         small_frames,
         conf    = config.YOLO_CONFIDENCE,
         verbose = False,
-        imgsz   = YOLO_BATCH_SIZE * 240
+        imgsz   = effective_batch * 240
     )
 
     batch_data = []
@@ -267,7 +272,7 @@ def process_video(
     print(f"  Sport : {sport}")
     print(f"  Frame skip  : 2/{skip_every} → ~{analyzed_count} frames analysées "
           f"({analyzed_count * 100 // total_frames}%)")
-    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={YOLO_BATCH_SIZE * 240}")
+    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={b_size * 240}")
 
     if shot_zones:
         hi = shot_zones.get("threshold_hi", 0.85)
@@ -313,6 +318,7 @@ def process_video(
             analyzed_offset = analyzed_so_far - len(batch) + 1,
             fps             = fps,
             events_state    = events_state,
+            b_size          = b_size,   # ← propagé jusqu'à imgsz
         )
         for fd in data:
             if writer and overlay:
