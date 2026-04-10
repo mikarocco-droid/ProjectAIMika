@@ -18,38 +18,79 @@ def compute_score(events):
 
 
 # ─────────────────────────────────────────
-# CONVERSION FRAME → MINUTE
-# FIX — utilise le fps réel stocké dans l'event si disponible
+# CONVERSION TEMPS → MINUTE LISIBLE
+# FIX — utilise "time" (secondes) en priorité,
+#        fallback sur frame / fps
 # ─────────────────────────────────────────
-def frame_to_minute(frame, fps=25):
-    """Convertit un numéro de frame en minute de match."""
-    if not frame or frame <= 0:
-        return None
-    return int(frame / fps / 60)
+def event_to_minute(event, fps=25):
+    """
+    Retourne le temps de l'event en secondes.
+    Priorité : champ "time" → champ "frame" / fps.
+    """
+    t = event.get("time")
+    if t and float(t) > 0:
+        return float(t)
+    frame = event.get("frame")
+    if frame and int(frame) > 0:
+        return int(frame) / fps
+    return None
 
 
-def frame_to_mmss(frame, fps=25):
-    """Convertit un numéro de frame en MM:SS."""
-    if not frame or frame <= 0:
+def seconds_to_label(t_sec):
+    """
+    Convertit des secondes en label lisible.
+    < 60s  → "à la 1ère minute"
+    sinon  → "à la 25e minute"
+    """
+    if t_sec is None:
         return None
-    total_sec = int(frame / fps)
-    return f"{total_sec // 60:02d}:{total_sec % 60:02d}"
+    minute = int(t_sec // 60) + 1   # +1 car la minute 0 = "1ère minute"
+    if minute == 1:
+        return "à la 1ère minute"
+    return f"à la {minute}e minute"
+
+
+def seconds_to_mmss(t_sec):
+    """Retourne MM:SS pour usage technique."""
+    if t_sec is None:
+        return None
+    t = int(t_sec)
+    return f"{t // 60:02d}:{t % 60:02d}"
 
 
 # ─────────────────────────────────────────
 # PHASES CLÉS
+# FIX — filtre les events sans temps valide
+#        + priorité aux events importants
 # ─────────────────────────────────────────
 def extract_key_moments(events, limit=5, fps=25):
+    # Priorité : buts > tirs > interceptions > dribbles
+    priority = {"goal": 0, "score": 0, "shot": 1, "interception": 2, "dribble": 3}
+
     moments = []
     for e in events:
-        if e.get("type") in ["goal", "shot", "interception", "dribble"]:
-            # FIX — ne garder que les events avec un frame valide
-            if e.get("frame") and e.get("frame") > 0:
-                moments.append(e)
+        if e.get("type") not in priority:
+            continue
+        t = event_to_minute(e, fps)
+        if t is None or t <= 0:
+            continue
+        moments.append((priority[e["type"]], t, e))
 
-    # Trier par frame pour avoir les moments dans l'ordre chronologique
-    moments.sort(key=lambda e: e.get("frame", 0))
-    return moments[:limit]
+    # Tri : d'abord par priorité type, puis chronologique
+    moments.sort(key=lambda x: (x[0], x[1]))
+
+    # Dédoublonner — pas deux events dans la même minute
+    seen_minutes = set()
+    result       = []
+    for _, t, e in moments:
+        minute = int(t // 60)
+        if minute not in seen_minutes:
+            seen_minutes.add(minute)
+            result.append(e)
+        if len(result) >= limit:
+            break
+
+    return result
 
 
 # ─────────────────────────────────────────
@@ -90,26 +131,47 @@ def generate_match_story(events, stats=None, fps=25):
     else:
         story += "Le rythme a été intermédiaire entre construction et jeu direct. "
 
+    # ── CONTEXTE TIRS (si context_engine actif) ──────────────────────────
+    shots_ctx = [e for e in events
+                 if e.get("type") == "shot" and e.get("shot_context")]
+    if shots_ctx:
+        under_pressure = sum(1 for e in shots_ctx
+                             if e.get("shot_context") == "under_pressure")
+        counter        = sum(1 for e in shots_ctx
+                             if e.get("shot_context") == "counter_attack")
+        if counter > len(shots_ctx) * 0.4:
+            story += "Les occasions ont souvent été créées en contre-attaque. "
+        elif under_pressure > len(shots_ctx) * 0.5:
+            story += "La majorité des tirs ont été effectués sous forte pression. "
+
     # ── MOMENTS CLÉS ─────────────────────
-    moments = extract_key_moments(events, fps=fps)
+    moments = extract_key_moments(events, limit=5, fps=fps)
 
     if moments:
         story += "Moments clés : "
         for m in moments:
-            mmss = frame_to_mmss(m.get("frame"), fps)
-            if not mmss:
+            t_sec = event_to_minute(m, fps)
+            label = seconds_to_label(t_sec)
+            if not label:
                 continue
 
             if m["type"] in ["goal", "score"]:
-                story += f"But à la {mmss}. "
+                story += f"But {label}. "
             elif m["type"] == "shot":
-                story += f"Tir dangereux à la {mmss}. "
+                # Enrichi si shot_context disponible
+                ctx = m.get("shot_context", "")
+                if ctx == "counter_attack":
+                    story += f"Tir en contre {label}. "
+                elif ctx == "under_pressure":
+                    story += f"Tir sous pression {label}. "
+                else:
+                    story += f"Tir dangereux {label}. "
             elif m["type"] == "interception":
-                story += f"Interception clé à la {mmss}. "
+                story += f"Interception clé {label}. "
             elif m["type"] == "dribble":
-                story += f"Belle percée individuelle à la {mmss}. "
+                story += f"Belle percée individuelle {label}. "
 
-    return story
+    return story.strip()
 
 
 # ─────────────────────────────────────────
@@ -118,8 +180,16 @@ def generate_match_story(events, stats=None, fps=25):
 def generate_match_summary_structured(events, fps=25):
     score     = compute_score(events)
     dominance = compute_team_dominance(events)
+    moments   = extract_key_moments(events, fps=fps)
+
+    # Enrichit les moments avec le label minute lisible
+    for m in moments:
+        t = event_to_minute(m, fps)
+        m["minute_label"] = seconds_to_label(t)
+        m["time_mmss"]    = seconds_to_mmss(t)
+
     return {
-        "score":        score,
-        "dominance":    dominance,
-        "key_moments":  extract_key_moments(events, fps=fps)
+        "score":       score,
+        "dominance":   dominance,
+        "key_moments": moments,
     }
