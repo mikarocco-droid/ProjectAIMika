@@ -30,6 +30,8 @@ from analysis.match_story import generate_match_story
 from ai.commentary import generate_commentary
 from ai.learning import cluster_actions, learn_action_importance, detect_key_moments
 from sports.config import get_sport_config, compute_xg_sport
+from analysis.event_validator import filter_events, detect_real_shots
+from analysis.context_engine import ContextEngine
 
 
 # ─────────────────────────────────────────
@@ -168,7 +170,6 @@ def resolve_mvp_label(mvp, stats, jersey_map):
 
 # ─────────────────────────────────────────
 # PIPELINE PRINCIPAL
-# FIX : ajout paramètre goals_real pour le learning
 # ─────────────────────────────────────────
 def run_pipeline(
     video_path,
@@ -179,7 +180,7 @@ def run_pipeline(
     plan           = "free",
     mode           = "match",
     player_id      = None,
-    goals_real     = None,   # FIX : vrai nombre de buts pour le learning
+    goals_real     = None,
 ):
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
@@ -261,16 +262,21 @@ def run_pipeline(
     # 1a. POST PROCESSING
     # ─────────────────────────────────────────
     is_summary = False
+    _frame_w   = 1920
+    _frame_h   = 1080
+
     try:
         from analysis.post_processing import (
             temporal_filter,
             filter_goals,
             merge_players,
-            infer_shots_from_goals,
         )
 
         video_duration = total_frames / fps if fps > 0 else 600
         is_summary     = video_duration < 480
+
+        _frame_w = int(frames_data[0].get("frame_w", 1920)) if frames_data else 1920
+        _frame_h = int(frames_data[0].get("frame_h", 1080)) if frames_data else 1080
 
         if is_summary:
             goal_cooldown      = 10.0
@@ -286,8 +292,6 @@ def run_pipeline(
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={int(position_threshold*100)}%")
 
-        _frame_w = int(frames_data[0].get("frame_w", 1920)) if frames_data else 1920
-
         events = merge_players(events)
         events = temporal_filter(events, min_delta=2.0)
         events = filter_goals(
@@ -296,22 +300,18 @@ def run_pipeline(
             frame_w            = _frame_w,
             position_threshold = position_threshold,
         )
-        events = infer_shots_from_goals(events)
         print(f"  CLEAN {len(events)} events | goal_cooldown={goal_cooldown:.0f}s")
     except Exception as e:
         print(f"  Post processing ignoré : {e}")
-        _frame_w = 1920
 
     # ─────────────────────────────────────────
     # 1b. VALIDATION GEMINI
-    # FIX : frame_h passé + min_conf 0.85 pour match complet
     # ─────────────────────────────────────────
     print("Step 1b : Validation Gemini...")
     try:
         from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers
 
-        _min_conf = 0.60 if is_summary else 0.85   # FIX : 0.75 → 0.85
-        _frame_h  = int(frames_data[0].get("frame_h", 1080)) if frames_data else 1080  # FIX
+        _min_conf = 0.60 if is_summary else 0.85
 
         events = validate_events_with_gemini(
             events     = events,
@@ -320,7 +320,7 @@ def run_pipeline(
             sport      = sport,
             min_conf   = _min_conf,
             frame_w    = _frame_w,
-            frame_h    = _frame_h,   # FIX
+            frame_h    = _frame_h,
         )
 
         if learner:
@@ -354,6 +354,41 @@ def run_pipeline(
         print(f"  Gemini validation ignoree : {e}")
 
     # ─────────────────────────────────────────
+    # 1b-bis. VALIDATION STRUCTURELLE
+    # ─────────────────────────────────────────
+    try:
+        events, val_stats = filter_events(
+            events  = events,
+            sport   = sport,
+            frame_w = _frame_w,
+            frame_h = _frame_h,
+            verbose = False,
+        )
+        if val_stats["invalid"] > 0:
+            print(f"  Validator : {val_stats['valid']} valides | "
+                  f"{val_stats['invalid']} rejetés | "
+                  f"{val_stats['by_reason']}")
+    except Exception as e:
+        print(f"  Event validator ignoré : {e}")
+
+    # ─────────────────────────────────────────
+    # 1b-ter. DÉTECTION RÉELLE DE TIRS
+    # ─────────────────────────────────────────
+    try:
+        real_shots = detect_real_shots(
+            events  = events,
+            frame_w = _frame_w,
+            frame_h = _frame_h,
+            sport   = sport,
+            fps     = fps,
+        )
+        if real_shots:
+            events.extend(real_shots)
+            events.sort(key=lambda e: e.get("time", 0))
+    except Exception as e:
+        print(f"  Shot detector ignoré : {e}")
+
+    # ─────────────────────────────────────────
     # 1c. SMART FILTERING
     # ─────────────────────────────────────────
     possession = {}
@@ -368,7 +403,7 @@ def run_pipeline(
             e    = events[i]
             prev = events[i-1] if i > 0 else None
             if e.get("type") == "shot":
-                if not detect_real_shot(e, prev):
+                if not e.get("detected_from") and not detect_real_shot(e, prev):
                     continue
             validated.append(e)
         events = validated
@@ -378,7 +413,7 @@ def run_pipeline(
         print(f"  Smart filtering ignoré : {e}")
 
     # ─────────────────────────────────────────
-    # 1d. RE-ID + TEAMS V19
+    # 1d. RE-ID + TEAMS
     # ─────────────────────────────────────────
     try:
         from analysis.player_reid import reidentify_players
@@ -395,23 +430,41 @@ def run_pipeline(
 
         pressing_level = detect_pressing_intensity(events)
         play_style     = detect_play_style(events)
-        print(f"  V19 Re-ID OK | Pressing: {pressing_level} | Style: {play_style}")
+        print(f"  Re-ID OK | Pressing: {pressing_level} | Style: {play_style}")
     except Exception as e:
-        print(f"  V19 ignoré : {e}")
+        print(f"  Re-ID ignoré : {e}")
+
+    # ─────────────────────────────────────────
+    # 1e. CONTEXT ENGINE
+    # Enrichit events avec shot_context + momentum
+    # ─────────────────────────────────────────
+    try:
+        ctx    = ContextEngine(fps=fps, frame_w=_frame_w, frame_h=_frame_h)
+        events = ctx.process_events(events, frames_data)
+        ctx_stats = ctx.get_match_stats(events)
+        print(f"  Context : shots_ctx={ctx_stats['shots_by_context']} | "
+              f"avg_pressure={ctx_stats['avg_pressure_on_shot']} | "
+              f"avg_seq={ctx_stats['avg_sequence_length']}")
+    except Exception as e:
+        print(f"  Context engine ignoré : {e}")
+        ctx_stats = {}
 
     # ─────────────────────────────────────────
     # 2. ENRICH xG
+    # Applique xg_context_mult si disponible
     # ─────────────────────────────────────────
     print("Step 2 : xG...")
     frame_w = getattr(config, 'FRAME_WIDTH', 1920) or 1920
     for e in events:
         if e.get("type") == "shot":
-            if learner and learner.xg_model.get("n_samples", 0) >= 10:
+            if learner and learner.xg_model.get("n_samples", 0) >= 20:
                 xg = learner.predict_xg(e.get("x", 0), e.get("y", 0), frame_w)
             else:
                 x_norm = e.get("x", 0) / frame_w
                 xg     = compute_xg_sport(x_norm, sport=sport)
-            e["xg"] = min(xg, 0.5)
+            # Applique le multiplicateur contexte si présent
+            mult    = e.get("xg_context_mult", 1.0)
+            e["xg"] = round(min(xg * mult, 0.5), 3)
 
     # ─────────────────────────────────────────
     # 3. STATS
@@ -438,7 +491,7 @@ def run_pipeline(
         tactical      = tactical_report(
             events,
             players_frames = [f.get("players", []) for f in frames_data[:100]],
-            frame_h        = int(frames_data[0].get("frame_h", 720)) if frames_data else 720
+            frame_h        = _frame_h
         )
 
         try:
@@ -518,7 +571,6 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 8. HIGHLIGHTS
-    # FIX : tri chronologique après scoring
     # ─────────────────────────────────────────
     print("Step 8 : Highlights...")
     highlights = []
@@ -551,7 +603,7 @@ def run_pipeline(
         except Exception as eg:
             print(f"  Highlight scorer ignoré : {eg}")
 
-        # FIX : retri chronologique après scoring Gemini
+        # Tri chronologique
         highlights.sort(key=lambda h: h.get("time_start", 0))
 
         reel_path = create_highlight_reel(
@@ -606,15 +658,15 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 11 : Summary...")
     summary = compute_match_summary(events, stats, total_frames, fps)
-    summary["possession"] = possession
-    summary["is_summary"] = is_summary
+    summary["possession"]    = possession
+    summary["is_summary"]    = is_summary
+    summary["context_stats"] = ctx_stats
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
           f"xG={summary['total_xg']} | joueurs={summary['players']}")
     print(f"  Possession : {possession}")
 
     # ─────────────────────────────────────────
     # 11b. ENREGISTREMENT APPRENTISSAGE
-    # FIX : goals_real passé explicitement
     # ─────────────────────────────────────────
     learning_result = {}
     if learner:
@@ -625,7 +677,7 @@ def run_pipeline(
                 fps        = fps,
                 jersey_map = jersey_map,
                 highlights = highlights,
-                goals_real = goals_real,   # FIX : None si non fourni
+                goals_real = goals_real,
             )
             print(f"  Learning : {learner.stats()}")
         except Exception as e:
@@ -673,6 +725,7 @@ def run_pipeline(
                     "tactical":       tactical,
                     "commentary":     commentary,
                     "possession":     possession,
+                    "context_stats":  ctx_stats,
                 },
                 output_path = os.path.join(output_dir, "rapport.pdf"),
                 sport       = sport
@@ -685,39 +738,40 @@ def run_pipeline(
     # 14. SAVE JSON
     # ─────────────────────────────────────────
     result = {
-        "summary":      summary,
-        "events":       events,
-        "stats":        stats,
-        "highlights":   highlights,
-        "jersey_map":   jersey_map,
-        "heatmaps":     heatmaps,
-        "heatmap":      heatmap_path,
-        "reel":         reel_path,
-        "montage":      montage_path,
-        "annotated":    annotated_path,
-        "ai_summary":   ai_summary,
-        "pdf":          pdf_path,
-        "sport":        sport,
-        "mode":         mode,
-        "player_id":    player_id,
-        "calib":        calib,
-        "fps":          fps,
-        "total_frames": total_frames,
-        "teams":        teams,
-        "formation":    formation,
-        "pressing":     pressing,
-        "phases":       phases,
-        "tactical":     tactical,
-        "pass_network": pass_network,
-        "offsides":     offsides,
-        "dominance":    dominance,
-        "key_moments":  key_moments,
-        "ratings":      ratings,
-        "mvp":          mvp_label,
-        "commentary":   commentary,
-        "story":        story,
-        "learning":     learning_result,
-        "possession":   possession,
+        "summary":       summary,
+        "events":        events,
+        "stats":         stats,
+        "highlights":    highlights,
+        "jersey_map":    jersey_map,
+        "heatmaps":      heatmaps,
+        "heatmap":       heatmap_path,
+        "reel":          reel_path,
+        "montage":       montage_path,
+        "annotated":     annotated_path,
+        "ai_summary":    ai_summary,
+        "pdf":           pdf_path,
+        "sport":         sport,
+        "mode":          mode,
+        "player_id":     player_id,
+        "calib":         calib,
+        "fps":           fps,
+        "total_frames":  total_frames,
+        "teams":         teams,
+        "formation":     formation,
+        "pressing":      pressing,
+        "phases":        phases,
+        "tactical":      tactical,
+        "pass_network":  pass_network,
+        "offsides":      offsides,
+        "dominance":     dominance,
+        "key_moments":   key_moments,
+        "ratings":       ratings,
+        "mvp":           mvp_label,
+        "commentary":    commentary,
+        "story":         story,
+        "learning":      learning_result,
+        "possession":    possession,
+        "context_stats": ctx_stats,
     }
 
     result = sanitize_for_json(result)
