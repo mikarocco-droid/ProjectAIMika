@@ -311,14 +311,15 @@ def run_pipeline(
     try:
         from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers
 
-        _min_conf = 0.60 if is_summary else 0.92
+        _min_conf = 0.70 if is_summary else 0.92
 
         events = validate_events_with_gemini(
             events     = events,
             video_path = video_path,
             fps        = fps,
             sport      = sport,
-            min_conf   = _min_conf,
+            MIN_CONF_GOAL = 0.90,
+            MIN_CONF_SHOT = _min_conf,
             frame_w    = _frame_w,
             frame_h    = _frame_h,
         )
