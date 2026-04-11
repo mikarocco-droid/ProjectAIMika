@@ -57,7 +57,7 @@ def _call_gemini(client, parts, max_retries=2):
             err_str = str(e)
 
             if "RESOURCE_EXHAUSTED" in err_str:
-                print("  ⚠️  Quota Gemini journalier épuisé — validation désactivée")
+                print("  Quota Gemini journalier épuisé — validation désactivée")
                 _quota_exhausted = True
                 return None
 
@@ -72,7 +72,7 @@ def _call_gemini(client, parts, max_retries=2):
                 m    = re.search(r"retryDelay.*?(\d+)s", err_str)
                 wait = int(m.group(1)) + 2 if m else 30
                 wait = min(wait, 30)
-                print(f"  ⏳ Rate limit Gemini — attente {wait}s...")
+                print(f"  Rate limit Gemini — attente {wait}s...")
                 time.sleep(wait)
             else:
                 raise
@@ -154,35 +154,28 @@ def validate_event(video_path, event, fps=25, sport="football"):
             f"Tu es un expert analyste de {sport}. "
             f"Voici {len(frames_data)} frames chronologiques autour d'un événement suspect "
             f"(type détecté : {event_type}, danger score : {danger:.1f}/10).\n\n"
-            f"Les frames AVANT (offset négatif) montrent la situation AVANT l'événement. "
-            f"Utilise ce contexte pour ne pas confondre :\n"
-            f"- Un GARDIEN QUI TIENT LE BALLON devant son but avec un but\n"
-            f"- Une RELANCE À LA MAIN DU GARDIEN avec un tir\n"
-            f"- Un DÉGAGEMENT DE TÊTE (défenseur qui repousse) avec un but\n"
-            f"- Un CENTRE DÉGAGÉ EN TOUCHE par un défenseur avec un but\n"
-            f"  (situation : attaquant + défenseur + gardien devant le but,\n"
-            f"   le défenseur envoie la balle hors du terrain = PAS un but)\n"
-            f"- Un DÉGAGEMENT en touche ou en corner depuis la zone de but avec un but\n\n"
-            f"Détermine exactement ce qui s'est passé.\n"
+            f"CRITÈRES STRICTS pour valider un BUT :\n"
+            f"- Le ballon doit CLAIREMENT franchir la ligne de but\n"
+            f"- Le ballon doit ENTRER dans le filet (visible dans les frames APRÈS)\n"
+            f"- Il doit y avoir un tir intentionnel d'un attaquant\n\n"
+            f"CRITÈRES STRICTS pour valider un TIR :\n"
+            f"- Le ballon doit être frappé intentionnellement vers le but\n"
+            f"- La trajectoire doit être dirigée vers les cages\n\n"
+            f"CE QUI N'EST PAS un but ni un tir :\n"
+            f"- Gardien qui tient ou porte le ballon\n"
+            f"- Relance du gardien à la main ou au pied\n"
+            f"- Dégagement de tête ou du pied d'un défenseur\n"
+            f"- Centre renvoyé en touche ou corner par un défenseur\n"
+            f"- Bataille brouillon devant le but sans tir cadré\n"
+            f"- Défenseur qui joue en retrait à son gardien\n"
+            f"- Tir qui passe clairement à côté ou au-dessus\n\n"
             f"Réponds UNIQUEMENT en JSON valide sans markdown :\n"
             f'{{"type": "goal|shot|corner|touche|goalkeeper_hold|goalkeeper_throw|defensive_clearance|none", '
             f'"confiance": 0.95, '
             f'"equipe": 0, '
             f'"description": "description courte"}}\n\n'
-            f"Types possibles :\n"
-            f"- goal : ballon franchit CLAIREMENT la ligne de but ET entre dans le filet\n"
-            f"- shot : tir cadré ou non cadré vers le but\n"
-            f"- goalkeeper_hold : gardien qui tient/porte le ballon\n"
-            f"- goalkeeper_throw : relance à la main ou au pied du gardien\n"
-            f"- defensive_clearance : dégagement de tête ou du pied d'un défenseur,\n"
-            f"  ou centre renvoyé en touche/corner par un défenseur\n"
-            f"- corner : remise en coin\n"
-            f"- touche : sortie en touche (y compris dégagement latéral)\n"
-            f"- none : rien de notable\n"
-            f"equipe : 0 ou 1 selon couleur maillot, null si incertain\n\n"
-            f"RÈGLE IMPORTANTE : si tu vois plusieurs joueurs (attaquant + défenseur + gardien)\n"
-            f"se disputer la balle devant le but et que la balle sort du terrain\n"
-            f"= defensive_clearance ou touche, PAS un goal."
+            f"EN CAS DE DOUTE → réponds 'none' avec confiance basse.\n"
+            f"Mieux vaut rater un vrai but que valider un faux."
         )]
 
         for offset, frame in frames_data:
@@ -288,14 +281,14 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
 # VALIDATION COMPLÈTE
 # ─────────────────────────────────────────
 def validate_events_with_gemini(
-    events, 
-    video_path, 
-    fps=25, 
-    sport="football", 
-    min_conf=0.7, 
-    frame_w=1920, 
-    frame_h=1080
-    ):
+    events,
+    video_path,
+    fps        = 25,
+    sport      = "football",
+    min_conf   = 0.7,
+    frame_w    = 1920,
+    frame_h    = 1080,
+):
     global _gemini_unavailable
 
     if not GEMINI_AVAILABLE:
@@ -316,26 +309,26 @@ def validate_events_with_gemini(
 
     for event in candidates:
         if _quota_exhausted:
-            print("  ⚠️  Quota épuisé — validation Gemini interrompue")
+            print("  Quota épuisé — tous les buts restants non validés sont rejetés")
+            for e in candidates:
+                if not e.get("gemini_validated") and e.get("type") == "goal":
+                    e["_remove"] = True
+                    removed += 1
             break
 
         result = validate_event(video_path, event, fps, sport)
 
         if result is None:
+            # ─────────────────────────────────────────
+            # RÈGLE STRICTE : pas de réponse Gemini
+            # → rejet systématique de tous les buts
+            # Les shots non validés sont gardés (moins critiques)
+            # ─────────────────────────────────────────
             if event.get("type") == "goal":
-                danger    = event.get("danger", 0) or 0
-                x         = event.get("x", 0) or 0
-                near_goal = _is_near_goal(x, frame_w)
-
-                if danger < 8.0 or not near_goal:
-                    event["_remove"] = True
-                    removed += 1
-                    print(f"  FIX : goal t={event.get('time',0):.0f}s rejeté "
-                          f"(Gemini indisponible | danger={danger:.1f} | "
-                          f"near_goal={near_goal} | x={x:.0f})")
-                else:
-                    event["gemini_validated"]   = False
-                    event["gemini_unavailable"] = True
+                event["_remove"] = True
+                removed += 1
+                print(f"  STRICT : goal t={event.get('time',0):.0f}s rejeté "
+                      f"(pas de réponse Gemini)")
             continue
 
         time.sleep(2)
@@ -359,6 +352,7 @@ def validate_events_with_gemini(
                 event["_remove"] = True
                 removed += 1
         else:
+            # Confiance insuffisante → rejet systématique
             if event.get("type") == "goal":
                 event["_remove"] = True
                 removed += 1
