@@ -173,6 +173,37 @@ SPORT_CONFIG = {
 
 
 # ─────────────────────────────────────────
+# MULTIPLICATEURS CONTEXTE xG
+# ─────────────────────────────────────────
+
+# Phase de jeu → impact sur la dangerosité
+# Contre-attaque = défense désorganisée → xG plus élevé
+PHASE_MULTIPLIERS = {
+    "set_play":       1.0,   # jeu placé, défense en place
+    "open_play":      1.0,   # jeu ouvert normal
+    "transition":     1.15,  # transition rapide
+    "counter_attack": 1.30,  # contre-attaque → défense désorganisée
+    "counter":        1.30,  # alias
+    "fast_break":     1.25,  # montée rapide
+    "press":          0.90,  # tir sous pressing défensif
+}
+
+# Action précédant le tir → impact sur la qualité
+# Dribble = espace créé → xG plus élevé
+# Centre = angle fermé → xG plus faible
+ACTION_BEFORE_MULTIPLIERS = {
+    "dribble":          1.15,  # dribble réussi → espace créé
+    "progressive_run":  1.10,  # course progressive → bonne position
+    "pass":             1.00,  # passe normale
+    "key_pass":         1.05,  # passe clé
+    "cross":            0.80,  # centre → angle souvent fermé
+    "long_pass":        0.90,  # long ball → contrôle difficile
+    "interception":     1.10,  # récupération → transition rapide
+    "none":             1.00,
+}
+
+
+# ─────────────────────────────────────────
 # GETTER
 # ─────────────────────────────────────────
 def get_sport_config(sport):
@@ -188,7 +219,7 @@ def get_highlight_types(sport, mode="match"):
 
 
 # ─────────────────────────────────────────
-# XG PAR SPORT — Version calibrée semi-pro
+# XG PAR SPORT — Version avancée calibrée
 #
 # Références StatsBomb / Opta :
 #   tir à 30m axe          → 0.01 – 0.03
@@ -199,24 +230,23 @@ def get_highlight_types(sport, mode="match"):
 #   1v1 gardien            → 0.60 – 0.80
 #   penalty                → 0.76
 #
-# Améliorations vs V2 :
-#   - Non-linéarité distance : (1-dist)^1.3 → punit plus les tirs lointains
-#   - Non-linéarité angle : angle^1.7 → punit plus les angles fermés
-#   - Biais -2.8 → distribution encore plus réaliste
-#   - Pression plus impactante : -50% au lieu de -40%
-#   - min_xg adaptatif selon distance
-#
-# Bonus optionnel :
-#   pressure : float 0.0-1.0 — pression défensive
-#              calculable via nombre de défenseurs proches
+# Features utilisées :
+#   1. distance + angle    (base géométrique)
+#   2. pressure            (pression défensive — ContextEngine)
+#   3. phase               (counter/transition/set_play)
+#   4. action_before       (dribble/cross/passe)
+#   5. sequence_length     (longueur de la séquence d'attaque)
 # ─────────────────────────────────────────
 def compute_xg_sport(
     x,
-    y          = None,
-    sport      = "football",
-    frame_w    = 1920,
-    frame_h    = 1080,
-    pressure   = 0.0,
+    y               = None,
+    sport           = "football",
+    frame_w         = 1920,
+    frame_h         = 1080,
+    pressure        = 0.0,
+    phase           = "open_play",
+    action_before   = "none",
+    sequence_length = 1,
 ):
     cfg       = get_sport_config(sport)
     goal_w_m  = cfg.get("goal_width_m",   7.32)
@@ -231,7 +261,7 @@ def compute_xg_sport(
     x = float(x)
     y = float(y)
 
-    # ── Centre du but (robuste caméra) ────
+    # ── Centre but le plus proche ─────────
     goal_y_px  = frame_h / 2.0
     goal_left  = (0.0,     goal_y_px)
     goal_right = (frame_w, goal_y_px)
@@ -261,30 +291,51 @@ def compute_xg_sport(
     angle = math.acos(cos_a)
 
     # ── Normalisation ─────────────────────
-    distance_norm = min(dist_m / pitch_l_m, 1.0)
-    angle_norm    = angle / math.pi
+    distance_norm   = min(dist_m / pitch_l_m, 1.0)
+    angle_norm      = angle / math.pi
 
     # ── Non-linéarités calibrées ──────────
-    # Distance : exposant 1.3 → punit fortement les tirs lointains
     distance_effect = (1.0 - distance_norm) ** 1.3
+    angle_effect    = angle_norm ** 1.7
 
-    # Angle : exposant 1.7 → punit fortement les angles fermés
-    angle_effect = angle_norm ** 1.7
-
-    # ── Score calibré (fit StatsBomb-like) ─
-    # -2.8 → force la majorité des tirs < 0.10
+    # ── Score de base calibré ─────────────
+    # -2.8 → distribution réaliste (majorité des tirs < 0.10)
     score = -2.8 + (3.5 * distance_effect) + (1.2 * angle_effect)
 
+    # ── Multiplicateur phase de jeu ───────
+    phase_key  = str(phase).lower().replace("-", "_").replace(" ", "_")
+    phase_mult = PHASE_MULTIPLIERS.get(phase_key, 1.0)
+
+    # ── Multiplicateur action avant tir ───
+    action_key   = str(action_before).lower().replace("-", "_")
+    action_mult  = ACTION_BEFORE_MULTIPLIERS.get(action_key, 1.0)
+
     # ── Pression défensive ────────────────
-    # -50% pour défenseur collé (vs -40% en V2)
+    # -50% pour défenseur collé
     pressure_mult = 1.0 - (0.5 * max(0.0, min(1.0, float(pressure))))
-    score *= pressure_mult
+
+    # ── Longueur de séquence ──────────────
+    # Séquence longue (>8 passes) = défense replacée → légère pénalité
+    # Séquence courte (<3) = transition rapide → léger bonus
+    seq = max(1, int(sequence_length))
+    if seq <= 2:
+        seq_mult = 1.05   # transition rapide
+    elif seq <= 5:
+        seq_mult = 1.0    # séquence normale
+    elif seq <= 10:
+        seq_mult = 0.95   # séquence longue
+    else:
+        seq_mult = 0.90   # très longue séquence → défense replacée
+
+    # ── Application des multiplicateurs ───
+    # On les applique sur le score (avant sigmoïde) pour éviter
+    # la saturation à 0.99 sur les très bons tirs
+    score = score * phase_mult * action_mult * pressure_mult * seq_mult
 
     # ── Sigmoïde → xG ─────────────────────
     xg = 1.0 / (1.0 + math.exp(-score))
 
     # ── xG minimum adaptatif ──────────────
-    # Tirs très lointains → xG quasi nul
     min_xg = 0.005 if distance_norm > 0.7 else 0.01
 
     return round(max(min_xg, min(0.99, xg)), 3)
@@ -294,19 +345,10 @@ def compute_xg_sport(
 # XA — EXPECTED ASSIST
 #
 # xA = xG du tir suivant * qualité de la passe
-# Utilisé pour valoriser les passes décisives
-#
-# pass_quality :
-#   0.0 = passe nulle (défenseur entre les deux)
-#   1.0 = passe parfaite (receveur seul face au but)
-#
-# Utilisation dans pipeline.py :
-#   xa = compute_xa(xg_of_shot, pass_quality)
-#   event["xa"] = xa
 # ─────────────────────────────────────────
 def compute_xa(xg_of_shot, pass_quality=1.0):
     """
-    xA = xG du tir * qualité de la passe
+    xA = xG du tir × qualité de la passe
     pass_quality ∈ [0, 1]
     """
     pass_quality = max(0.0, min(1.0, float(pass_quality)))
