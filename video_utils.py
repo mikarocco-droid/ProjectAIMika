@@ -8,7 +8,6 @@ from sports.config import get_sport_config, get_highlight_types
 
 # ─────────────────────────────────────────
 # SEUIL xG minimum pour inclure un tir
-# Un tir en dessous de ce seuil est ignoré
 # 0.35 = occasion très franche uniquement
 # ─────────────────────────────────────────
 XG_MIN_FOR_HIGHLIGHT = 0.35
@@ -43,6 +42,9 @@ def frame_to_time(frame, fps=25):
 
 # ─────────────────────────────────────────
 # MERGE EVENTS PROCHES
+# Les buts ne sont JAMAIS fusionnés avec
+# un autre event — ils ont toujours leur
+# propre clip
 # ─────────────────────────────────────────
 def merge_close_events(events, window=8, fps=25, mode="match"):
     merged = []
@@ -52,7 +54,18 @@ def merge_close_events(events, window=8, fps=25, mode="match"):
         if not merged:
             merged.append(e)
             continue
+
         last = merged[-1]
+
+        is_goal      = e.get("type") in ["goal", "score"]
+        last_is_goal = last.get("type") in ["goal", "score"]
+
+        # Un but n'est jamais fusionné — toujours son propre clip
+        if is_goal or last_is_goal:
+            merged.append(e)
+            continue
+
+        # Pour les autres events, fusion normale si trop proches
         if abs(e.get("frame", 0) - last.get("frame", 0)) < window * fps:
             if score_event(e, mode) > score_event(last, mode):
                 merged[-1] = e
@@ -99,15 +112,15 @@ def create_highlights(
 
     allowed_types  = get_highlight_types(sport, mode)
     cfg            = get_sport_config(sport)
-    context_before = cfg.get("context_before", 5)
-    context_after  = cfg.get("context_after",  4)
-    context_goal   = cfg.get("context_goal",   8)
+    context_before = cfg.get("context_before", 12)
+    context_after  = cfg.get("context_after",   4)
+    context_goal   = cfg.get("context_goal",     5)
 
     key_events = []
     for e in events:
         etype = e.get("type", "")
 
-        # Toujours exclure les types Gemini non pertinents
+        # Exclure les types Gemini non pertinents
         if e.get("gemini_type") in ["touche", "corner", "none",
                                      "defensive_clearance",
                                      "goalkeeper_hold", "goalkeeper_throw"]:
@@ -119,12 +132,6 @@ def create_highlights(
         if e.get("frame") is None or e.get("frame", 0) <= 0:
             continue
 
-        # ─────────────────────────────────────────
-        # FILTRE QUALITÉ en mode match :
-        # - Les buts passent toujours
-        # - Les tirs ne passent que si xG > seuil
-        #   ou s'ils ont été validés par Gemini
-        # ─────────────────────────────────────────
         if mode == "match":
             if etype in ["goal", "score"]:
                 key_events.append(e)
@@ -132,11 +139,9 @@ def create_highlights(
                 xg           = e.get("xg", 0) or 0
                 gemini_valid = e.get("gemini_validated", False)
                 gemini_type  = e.get("gemini_type", "")
-                # Tir inclus seulement si xG élevé OU Gemini confirme "shot"
                 if xg >= XG_MIN_FOR_HIGHLIGHT or (gemini_valid and gemini_type == "shot"):
                     key_events.append(e)
         else:
-            # Mode player : on garde tout ce qui est dans allowed_types
             key_events.append(e)
 
     # Filtrer par joueur si mode player
@@ -212,7 +217,7 @@ def create_highlight_reel(highlights, output_path="outputs/reel.mp4"):
     if not highlights:
         return None
 
-    # Reel = buts uniquement + tirs très dangereux (xG > seuil)
+    # Reel = buts + tirs très dangereux uniquement
     reel_events = [
         h for h in highlights
         if h.get("main_type") in ["goal", "score"]
@@ -220,7 +225,6 @@ def create_highlight_reel(highlights, output_path="outputs/reel.mp4"):
     ]
 
     if not reel_events:
-        # Fallback : si aucun event qualifié, prendre au moins les buts
         reel_events = [h for h in highlights if h.get("main_type") in ["goal", "score"]]
 
     if not reel_events:
