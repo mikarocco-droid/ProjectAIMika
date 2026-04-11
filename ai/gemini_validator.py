@@ -285,7 +285,7 @@ def validate_events_with_gemini(
     video_path,
     fps        = 25,
     sport      = "football",
-    MIN_CONF_GOAL = 0.90,
+    MIN_CONF_GOAL = 0.80,
     MIN_CONF_SHOT = 0.70,
     frame_w    = 1920,
     frame_h    = 1080,
