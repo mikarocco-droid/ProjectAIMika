@@ -201,6 +201,7 @@ def run_pipeline(
         print(f"  Learning : {ls['n_matches']} matchs | "
               f"{ls['n_events']} events | "
               f"xG n={ls['xg_samples']} | "
+              f"xG avancé={'✅' if ls.get('xg_advanced_ready') else f\"({ls.get('xg_advanced_samples',0)}/50)\"} | "
               f"FP zones={ls['fp_zones']} | "
               f"spatial={ls['spatial_max_dist']:.0f}px")
     except Exception as e:
@@ -435,7 +436,6 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 1e. CONTEXT ENGINE
-    # Enrichit events avec pressure, sequence_length, phase
     # ─────────────────────────────────────────
     try:
         ctx    = ContextEngine(fps=fps, frame_w=_frame_w, frame_h=_frame_h)
@@ -450,12 +450,18 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 2. ENRICH xG — version avancée
-    # Utilise distance + angle + phase + action + pression + séquence
+    #
+    # Priorité :
+    #   1. learner.predict_advanced_xg() — sklearn avec features complètes
+    #      (actif dès 50 tirs collectés)
+    #   2. compute_xg_sport() — modèle géométrique calibré
+    #      distance + angle + phase + action + pression + séquence
     # ─────────────────────────────────────────
     print("Step 2 : xG avancé...")
     frame_w = _frame_w
     frame_h = _frame_h
-    n_xg_advanced = 0
+    n_advanced = 0
+    n_geometric = 0
 
     for e in events:
         if e.get("type") != "shot":
@@ -464,29 +470,20 @@ def run_pipeline(
         x        = e.get("x", 0)
         y        = e.get("y", frame_h / 2)
         pressure = float(e.get("pressure", 0.0) or 0.0)
-
-        # Phase de jeu depuis le context engine
-        phase = e.get("shot_context", e.get("phase", "open_play")) or "open_play"
-
-        # Action avant le tir — regarder l'event précédent
-        action_before = e.get("action_before", "none") or "none"
-
-        # Longueur de séquence depuis le context engine
+        phase    = e.get("shot_context", e.get("phase", "open_play")) or "open_play"
+        action_before   = e.get("action_before", "none") or "none"
         sequence_length = int(e.get("sequence_length", 1) or 1)
 
-        if learner and learner.xg_model.get("n_samples", 0) >= 20:
-            # Modèle appris — utilise predict_xg du learner
-            xg = learner.predict_xg(x, y, frame_w=frame_w, frame_h=frame_h)
-            # Applique quand même les multiplicateurs contexte
-            from sports.config import PHASE_MULTIPLIERS, ACTION_BEFORE_MULTIPLIERS
-            phase_mult  = PHASE_MULTIPLIERS.get(
-                str(phase).lower().replace("-", "_"), 1.0)
-            action_mult = ACTION_BEFORE_MULTIPLIERS.get(
-                str(action_before).lower().replace("-", "_"), 1.0)
-            press_mult  = 1.0 - (0.5 * max(0.0, min(1.0, pressure)))
-            xg = xg * phase_mult * action_mult * press_mult
-        else:
-            # Modèle géométrique avancé
+        xg = None
+
+        # Priorité 1 — modèle sklearn avancé (apprend de tes données réelles)
+        if learner and learner.has_advanced_xg():
+            xg = learner.predict_advanced_xg(e, frame_w=frame_w, frame_h=frame_h)
+            if xg is not None:
+                n_advanced += 1
+
+        # Priorité 2 — modèle géométrique calibré (fallback)
+        if xg is None:
             xg = compute_xg_sport(
                 x               = x,
                 y               = y,
@@ -498,15 +495,19 @@ def run_pipeline(
                 action_before   = action_before,
                 sequence_length = sequence_length,
             )
-            n_xg_advanced += 1
+            n_geometric += 1
 
         e["xg"] = round(min(float(xg), 0.99), 3)
 
-    if n_xg_advanced > 0:
-        xg_values = [e["xg"] for e in events if e.get("type") == "shot"]
-        avg_xg    = sum(xg_values) / len(xg_values) if xg_values else 0
-        print(f"  xG avancé : {n_xg_advanced} tirs | avg={avg_xg:.3f} | "
-              f"features=distance+angle+phase+action+pression+séquence")
+    # Log du mode xG utilisé
+    n_shots = n_advanced + n_geometric
+    if n_shots > 0:
+        if n_advanced > 0:
+            print(f"  xG sklearn actif : {n_advanced}/{n_shots} tirs "
+                  f"(modèle appris sur {len(learner.xg_advanced) if learner else 0} samples)")
+        else:
+            print(f"  xG géométrique : {n_geometric} tirs "
+                  f"(features=distance+angle+phase+action+pression+séquence)")
 
     # ─────────────────────────────────────────
     # 3. STATS
@@ -677,7 +678,6 @@ def run_pipeline(
                 frame     = e.get("frame", 0) or 0
                 e["time"] = round(frame / fps, 2) if fps > 0 else 0
 
-        # Tag les passes clés avant de calculer les ratings
         events = tag_key_passes(events)
 
         ranked_highlights = rank_highlights(events)
