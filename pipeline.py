@@ -465,7 +465,7 @@ def run_pipeline(
                 xg     = compute_xg_sport(x_norm, sport=sport)
             # Applique le multiplicateur contexte si présent
             mult    = e.get("xg_context_mult", 1.0)
-            e["xg"] = round(min(xg * mult, 0.5), 3)
+            e["xg"] = round(min(xg * mult, 0.99), 3)
 
     # ─────────────────────────────────────────
     # 3. STATS
