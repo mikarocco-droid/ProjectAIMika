@@ -311,7 +311,7 @@ def run_pipeline(
     try:
         from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers
 
-        _min_conf = 0.60 if is_summary else 0.85
+        _min_conf = 0.60 if is_summary else 0.92
 
         events = validate_events_with_gemini(
             events     = events,
