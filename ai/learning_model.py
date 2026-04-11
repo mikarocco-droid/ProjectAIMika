@@ -47,13 +47,12 @@ DEFAULT_THRESHOLDS = {
     },
 }
 
-# FIX #3 — bornes de clamp pour chaque seuil (min, max)
 THRESHOLD_BOUNDS = {
     "football": {
         "goal_frames_min":   (4,    20),
         "shot_cooldown":     (1.0,  8.0),
         "goal_cooldown":     (60.0, 300.0),
-        "ball_speed_min":    (0.01, 0.05),   # jamais < 0.01 ni > 0.05
+        "ball_speed_min":    (0.01, 0.05),
         "player_near_goal":  (0.08, 0.25),
         "spatial_max_dist":  (100,  300),
     },
@@ -83,7 +82,6 @@ THRESHOLD_BOUNDS = {
     },
 }
 
-# FIX #5 — poids types d'events appris dynamiquement
 DEFAULT_TYPE_WEIGHTS = {
     "goal":            10.0,
     "shot":             5.0,
@@ -119,6 +117,8 @@ class MatchLearner:
             "highlights":   os.path.join(self.base_dir, "highlight_scores.json"),
             "history":      os.path.join(self.base_dir, "match_history.json"),
             "type_weights": os.path.join(self.base_dir, "type_weights.json"),
+            # MODIFICATION 1 — dataset xG training
+            "xg_training":  os.path.join(self.base_dir, "xg_training_data.json"),
         }
         self._load()
 
@@ -136,19 +136,20 @@ class MatchLearner:
                     return default
             return default
 
-        self.events_db   = _read("events",       [])
-        self.xg_model    = _read("xg",            {"w0": 0.0, "w1": -2.0, "w2": 1.0, "n_samples": 0})
-        self.thresholds  = _read("thresholds",    DEFAULT_THRESHOLDS.get(self.sport, DEFAULT_THRESHOLDS["football"]).copy())
-        self.fp_zones    = _read("fp_zones",      [])
-        self.players_db  = _read("players",       {})
-        self.teams_db    = _read("teams",         {})
-        self.reid_cal    = _read("reid",          {"spatial_max_dist": 200.0, "n_matches": 0})
-        self.ocr_db      = _read("ocr",           {})
-        self.hl_scores   = _read("highlights",    {"by_type": {}, "by_position": []})
-        self.history     = _read("history",       [])
-        self.type_weights = _read("type_weights", DEFAULT_TYPE_WEIGHTS.copy())  # FIX #5
+        self.events_db    = _read("events",       [])
+        self.xg_model     = _read("xg",            {"w0": 0.0, "w1": -2.0, "w2": 1.0, "n_samples": 0})
+        self.thresholds   = _read("thresholds",    DEFAULT_THRESHOLDS.get(self.sport, DEFAULT_THRESHOLDS["football"]).copy())
+        self.fp_zones     = _read("fp_zones",      [])
+        self.players_db   = _read("players",       {})
+        self.teams_db     = _read("teams",         {})
+        self.reid_cal     = _read("reid",          {"spatial_max_dist": 200.0, "n_matches": 0})
+        self.ocr_db       = _read("ocr",           {})
+        self.hl_scores    = _read("highlights",    {"by_type": {}, "by_position": []})
+        self.history      = _read("history",       [])
+        self.type_weights = _read("type_weights",  DEFAULT_TYPE_WEIGHTS.copy())
+        # MODIFICATION 2 — charger dataset xG training
+        self.xg_training  = _read("xg_training",  [])
 
-        # Compléter les seuils manquants + forcer goal_frames_min ≤ 8
         defaults = DEFAULT_THRESHOLDS.get(self.sport, DEFAULT_THRESHOLDS["football"])
         for k, v in defaults.items():
             if k not in self.thresholds:
@@ -156,7 +157,6 @@ class MatchLearner:
         if self.thresholds.get("goal_frames_min", 12) > 8:
             self.thresholds["goal_frames_min"] = 8
 
-        # FIX #3 — clamp tous les seuils chargés (corrige drift historique)
         self._clamp_all_thresholds()
 
     def _clamp_all_thresholds(self):
@@ -178,6 +178,8 @@ class MatchLearner:
             "highlights":   self.hl_scores,
             "history":      self.history,
             "type_weights": self.type_weights,
+            # MODIFICATION 3 — sauvegarder dataset xG training
+            "xg_training":  self.xg_training,
         }
         for key, obj in data.items():
             try:
@@ -188,27 +190,22 @@ class MatchLearner:
 
     # ─────────────────────────────────────────
     # FILTRE QUALITÉ EVENTS
-    # FIX #1 — ne pas apprendre sur du bruit
     # ─────────────────────────────────────────
     def _is_quality_event(self, e):
         etype = e.get("type")
 
-        # Buts : garder seulement ceux validés par Gemini avec bonne confiance
         if etype == "goal":
             return e.get("gemini_validated", False) and e.get("gemini_conf", 0) >= 0.85
 
-        # Tirs : garder seulement ceux validés
         if etype == "shot":
             return e.get("gemini_validated", False) and e.get("gemini_conf", 0) >= 0.70
 
-        # Dribbles : très bruyants → sous-échantillonnage 30%
         if etype == "dribble":
             conf = e.get("confidence", e.get("gemini_conf", 1.0))
             if conf < 0.7:
                 return False
-            return random.random() < 0.30   # garder 30% pour éviter le biais
+            return random.random() < 0.30
 
-        # Interceptions : garder (fiables, peu de FP)
         if etype == "interception":
             return True
 
@@ -223,7 +220,6 @@ class MatchLearner:
         n_matches = len(self.history) + 1
         print(f"  Learning : enregistrement match #{n_matches} ({match_id})")
 
-        # FIX #1 — filtre qualité avant d'apprendre
         added = skipped = 0
         for e in events:
             if e.get("type") not in ["goal", "shot", "interception", "dribble"]:
@@ -249,7 +245,8 @@ class MatchLearner:
         if skipped:
             print(f"  Learning qualité : {added} events retenus | {skipped} bruyants ignorés")
 
-        self._update_xg_model()
+        # MODIFICATION 4 — nouvelle _update_xg_model avec collecte training data
+        self._update_xg_model(match_id=match_id)
         self._recalibrate_thresholds(events, summary, fps, goals_real=goals_real)
         self._update_fp_zones(events)
         self._update_player_profiles(events, fps)
@@ -257,20 +254,20 @@ class MatchLearner:
         self._update_reid_calibration(events)
         self._update_ocr_corrections(jersey_map or {})
         self._update_highlight_scores(highlights or [])
-        self._update_type_weights(events)   # FIX #5
+        self._update_type_weights(events)
         self._record_history(match_id, events, summary, highlights or [],
                              goals_real=goals_real)
 
         self._save()
 
         result = {
-            "match_id":     match_id,
-            "match_number": n_matches,
-            "events_added": added,
+            "match_id":       match_id,
+            "match_number":   n_matches,
+            "events_added":   added,
             "events_skipped": skipped,
-            "total_events": len(self.events_db),
-            "xg_samples":   self.xg_model["n_samples"],
-            "thresholds":   self.thresholds,
+            "total_events":   len(self.events_db),
+            "xg_samples":     self.xg_model["n_samples"],
+            "thresholds":     self.thresholds,
         }
         print(f"  Learning OK : match #{n_matches} | {added} events | "
               f"total={len(self.events_db)} | "
@@ -317,12 +314,82 @@ class MatchLearner:
                   f"précision buts {'+' if delta >= 0 else ''}{delta:.0%}")
 
     # ─────────────────────────────────────────
-    # 2. MODÈLE xG
-    # FIX #2 — vraie mise à jour avec n_samples réels
+    # 2. MODÈLE xG — MODIFICATION 4
+    # Collecte les données training + SGD si assez de data
     # ─────────────────────────────────────────
-    def _update_xg_model(self):
-        # Seulement les tirs validés Gemini avec position connue
-        shots = [
+    def _update_xg_model(self, match_id="", frame_w=1920, frame_h=1080,
+                         pitch_l_m=105.0, goal_w_m=7.32):
+        """
+        Collecte distance + angle + is_goal pour chaque tir/but du match.
+        Sauvegarde dans xg_training_data.json pour calibration future.
+        Lance calibrate_xg.py quand n_samples > 200.
+        """
+
+        # ── Collecter samples du match courant ──
+        shots_this_match = [
+            e for e in self.events_db
+            if e.get("type") in ["shot", "goal"]
+            and e.get("x", 0) > 0
+            and e.get("match_id") == match_id
+        ]
+
+        for s in shots_this_match:
+            x  = float(s.get("x", 0))
+            y  = float(s.get("y", frame_h / 2))
+
+            # Centre but le plus proche
+            goal_y_px  = frame_h / 2.0
+            goal_left  = (0.0,     goal_y_px)
+            goal_right = (frame_w, goal_y_px)
+
+            dist_left  = math.hypot(x - goal_left[0],  y - goal_left[1])
+            dist_right = math.hypot(x - goal_right[0], y - goal_right[1])
+            goal_cx, goal_cy = goal_left if dist_left <= dist_right else goal_right
+
+            # Distance pixels → mètres
+            dist_px  = math.hypot(x - goal_cx, y - goal_cy)
+            px_per_m = frame_w / max(pitch_l_m, 1e-6)
+            dist_m   = dist_px / max(px_per_m, 1e-6)
+
+            # Angle entre les deux poteaux
+            half_goal_px = (goal_w_m / pitch_l_m) * frame_w * 0.5
+            post1 = (goal_cx, goal_cy - half_goal_px)
+            post2 = (goal_cx, goal_cy + half_goal_px)
+
+            v1x, v1y = post1[0] - x, post1[1] - y
+            v2x, v2y = post2[0] - x, post2[1] - y
+
+            dot   = v1x * v2x + v1y * v2y
+            norm1 = math.hypot(v1x, v1y) + 1e-6
+            norm2 = math.hypot(v2x, v2y) + 1e-6
+            cos_a = max(-1.0, min(1.0, dot / (norm1 * norm2)))
+            angle = math.acos(cos_a)
+
+            is_goal = 1 if s.get("type") == "goal" else 0
+
+            self.xg_training.append({
+                "match_id": match_id,
+                "x":        round(x, 1),
+                "y":        round(y, 1),
+                "dist_m":   round(dist_m, 2),
+                "angle":    round(angle, 4),
+                "is_goal":  is_goal,
+                "xg_model": round(s.get("xg", 0), 3),
+                "pressure": round(s.get("pressure", 0.0), 3),
+            })
+
+        n_total = len(self.xg_training)
+        n_goals = sum(1 for d in self.xg_training if d.get("is_goal"))
+        self.xg_model["n_samples"] = n_total
+
+        if n_total > 0:
+            print(f"  Learning xG : {n_total} tirs collectés "
+                  f"({n_goals} buts, taux={n_goals/n_total:.1%})"
+                  + (" → lance calibrate_xg.py !" if n_total >= 200 else
+                     f" → encore {200 - n_total} tirs avant calibration"))
+
+        # ── SGD si assez de données validées Gemini ──
+        shots_validated = [
             e for e in self.events_db
             if e.get("type") == "shot"
             and e.get("gemini_validated")
@@ -330,33 +397,26 @@ class MatchLearner:
             and e.get("gemini_conf", 0) >= 0.70
         ]
 
-        # FIX #2 — mettre à jour n_samples même sans entraînement
-        self.xg_model["n_samples"] = len(shots)
-
-        if len(shots) < 20:
-            # Pas assez de données — on garde le modèle par défaut
-            # mais on log le vrai nombre de samples disponibles
+        if len(shots_validated) < 20:
             return
 
         X, y = [], []
-        for s in shots:
-            x_n  = s["x"] / 1920.0
-            y_n  = s["y"] / 1080.0
+        for s in shots_validated:
+            x_n  = s["x"] / frame_w
+            y_n  = s["y"] / frame_h
             dist = math.sqrt((1.0 - x_n) ** 2 + (0.5 - y_n) ** 2)
             ang  = abs(math.atan2(0.5 - y_n, 1.0 - x_n))
-            # Label : 1 si le tir a précédé un but dans les 5s
             lbl  = 1 if (s.get("gemini_type") == "shot"
                          and s.get("gemini_conf", 0) > 0.8) else 0
             X.append([dist, ang])
             y.append(lbl)
 
-        # Régression logistique SGD
         w0 = self.xg_model.get("w0", 0.0)
         w1 = self.xg_model.get("w1", -2.0)
         w2 = self.xg_model.get("w2", 1.0)
         lr = 0.01
 
-        for _ in range(50):   # plus d'itérations qu'avant
+        for _ in range(50):
             dw0 = dw1 = dw2 = 0.0
             for (d, a), lbl in zip(X, y):
                 z    = _clamp(w0 + w1 * d + w2 * a, -100, 100)
@@ -370,18 +430,16 @@ class MatchLearner:
             w1 -= lr * dw1 / n
             w2 -= lr * dw2 / n
 
-        # FIX #3 — clamp les poids pour éviter l'explosion
-        self.xg_model = {
+        self.xg_model.update({
             "w0": round(_clamp(w0, -10, 10), 4),
-            "w1": round(_clamp(w1, -10,  0), 4),   # w1 doit être négatif (dist↑ = xG↓)
+            "w1": round(_clamp(w1, -10,  0), 4),
             "w2": round(_clamp(w2,   0, 10), 4),
-            "n_samples": len(shots),
-        }
-        print(f"  Learning xG : modèle mis à jour ({len(shots)} tirs validés)")
+            "n_samples": n_total,
+        })
+        print(f"  Learning xG : modèle SGD mis à jour ({len(shots_validated)} tirs validés Gemini)")
 
     # ─────────────────────────────────────────
     # 3. RECALIBRATION SEUILS
-    # FIX #3 — clamp obligatoire après chaque modification
     # ─────────────────────────────────────────
     def _recalibrate_thresholds(self, events, summary, fps, goals_real=None):
         goals_det  = sum(1 for e in events if e.get("type") == "goal")
@@ -397,20 +455,14 @@ class MatchLearner:
             self.thresholds[key] = clamped
             changed.append(f"{key}={'↑' if clamped > self.thresholds.get(key, clamped) else '↓'}{clamped:.3g}")
 
-        # Trop de faux buts → augmenter cooldown
         if real > 0 and goals_det > real * 1.5:
             _update("goal_cooldown", self.thresholds["goal_cooldown"] * 1.1)
-
-        # Buts manqués → réduire cooldown
         elif real > 0 and goals_det < real:
             _update("goal_cooldown", self.thresholds["goal_cooldown"] * 0.92)
 
-        # Trop de tirs → augmenter cooldown tir
         spm = shots_det / dur_min
         if spm > 5:
             _update("shot_cooldown", self.thresholds["shot_cooldown"] * 1.1)
-
-        # Aucun tir alors qu'il y a des buts → assouplir vitesse
         elif spm < 0.5 and shots_det == 0 and real > 0:
             _update("ball_speed_min", self.thresholds["ball_speed_min"] * 0.9)
 
@@ -575,7 +627,7 @@ class MatchLearner:
 
         n        = self.reid_cal.get("n_matches", 0)
         old_dist = self.reid_cal.get("spatial_max_dist", 200.0)
-        new_dist = _clamp((old_dist * n + p95_dist) / (n + 1), 100.0, 300.0)  # FIX #3
+        new_dist = _clamp((old_dist * n + p95_dist) / (n + 1), 100.0, 300.0)
 
         self.reid_cal["spatial_max_dist"] = round(new_dist, 1)
         self.reid_cal["n_matches"]        = n + 1
@@ -617,15 +669,8 @@ class MatchLearner:
 
     # ─────────────────────────────────────────
     # 10. POIDS TYPES D'EVENTS
-    # FIX #5 — apprentissage dynamique des poids
     # ─────────────────────────────────────────
     def _update_type_weights(self, events):
-        """
-        Ajuste le poids de chaque type d'event selon sa corrélation
-        avec les buts dans la même séquence temporelle.
-        Si un type précède souvent un but → son poids monte.
-        """
-        # Fenêtre de 20s avant un but
         goal_times = [e.get("time", 0) for e in events if e.get("type") == "goal"]
         if not goal_times:
             return
@@ -639,21 +684,17 @@ class MatchLearner:
                 continue
             t = e.get("time", 0)
             type_total[etype] += 1
-            # Est-ce que cet event précède un but dans les 20s ?
             if any(0 < (gt - t) <= 20 for gt in goal_times):
                 type_pre_goal[etype] += 1
 
-        alpha = 0.2   # lissage exponentiel léger
+        alpha = 0.2
         for etype, total in type_total.items():
             if total < 5:
                 continue
             pre_goal_rate = type_pre_goal[etype] / total
-            # Plus un type précède des buts, plus son poids monte
-            # base = poids par défaut, boosted selon taux pré-but
             base    = DEFAULT_TYPE_WEIGHTS.get(etype, 1.0)
             learned = base * (1 + pre_goal_rate * 2)
             current = self.type_weights.get(etype, base)
-            # FIX #3 — clamp entre 0.1 et 20
             new_w   = _clamp(alpha * learned + (1 - alpha) * current, 0.1, 20.0)
             self.type_weights[etype] = round(new_w, 3)
 
@@ -674,7 +715,7 @@ class MatchLearner:
                     + self.xg_model["w2"] * ang)
         z  = _clamp(z, -100, 100)
         xg = 1 / (1 + math.exp(-z))
-        return round(_clamp(xg, 0.01, 0.5), 3)
+        return round(_clamp(xg, 0.01, 0.99), 3)
 
     def get_thresholds(self):
         return self.thresholds.copy()
@@ -694,7 +735,6 @@ class MatchLearner:
     def get_player_profile(self, player_id):
         return self.players_db.get(str(player_id), {})
 
-    # FIX #5 — utilise les poids appris
     def get_event_weight(self, event_type):
         return self.type_weights.get(event_type, DEFAULT_TYPE_WEIGHTS.get(event_type, 1.0))
 
@@ -748,4 +788,5 @@ class MatchLearner:
             "spatial_max_dist": self.reid_cal.get("spatial_max_dist", 200.0),
             "thresholds":       self.thresholds,
             "type_weights":     self.type_weights,
+            "xg_training_total": len(self.xg_training),
         }
