@@ -285,7 +285,8 @@ def validate_events_with_gemini(
     video_path,
     fps        = 25,
     sport      = "football",
-    min_conf   = 0.7,
+    MIN_CONF_GOAL = 0.90
+    MIN_CONF_SHOT = 0.70
     frame_w    = 1920,
     frame_h    = 1080,
 ):
@@ -337,7 +338,8 @@ def validate_events_with_gemini(
         gemini_type = result["type"]
         confiance   = result["confiance"]
 
-        if confiance >= min_conf:
+        threshold = MIN_CONF_GOAL if event.get("type") == "goal" else MIN_CONF_SHOT
+        if confiance >= threshold:
             if gemini_type in ["goal", "shot"]:
                 if event["type"] != gemini_type:
                     event["type"] = gemini_type
