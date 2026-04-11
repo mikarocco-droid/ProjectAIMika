@@ -6,6 +6,13 @@ import subprocess
 
 from sports.config import get_sport_config, get_highlight_types
 
+# ─────────────────────────────────────────
+# SEUIL xG minimum pour inclure un tir
+# Un tir en dessous de ce seuil est ignoré
+# 0.35 = occasion très franche uniquement
+# ─────────────────────────────────────────
+XG_MIN_FOR_HIGHLIGHT = 0.35
+
 
 # ─────────────────────────────────────────
 # SCORE DES EVENTS
@@ -75,9 +82,8 @@ def cut_clip(video_path, start, end, output_path):
 
 # ─────────────────────────────────────────
 # HIGHLIGHTS
-# mode="match"  → goals + tirs uniquement
-# mode="player" → goals + tirs + dribbles + actions individuelles
-# sport         → adapte les types et le contexte temporel
+# mode="match"  → buts + tirs très dangereux (xG > 0.35)
+# mode="player" → buts + tirs + dribbles + actions individuelles
 # ─────────────────────────────────────────
 def create_highlights(
     video_path,
@@ -85,26 +91,53 @@ def create_highlights(
     output_dir = "outputs/highlights",
     fps        = 25,
     max_clips  = 20,
-    mode       = "match",      # "match" | "player"
-    player_id  = None,         # ID tracker du joueur ciblé (mode player)
-    sport      = "football"    # FIX — sport pour adapter les types et contexte
+    mode       = "match",
+    player_id  = None,
+    sport      = "football"
 ):
     os.makedirs(output_dir, exist_ok=True)
 
-    # FIX — types et contexte adaptés selon sport + mode
     allowed_types  = get_highlight_types(sport, mode)
     cfg            = get_sport_config(sport)
     context_before = cfg.get("context_before", 5)
     context_after  = cfg.get("context_after",  4)
     context_goal   = cfg.get("context_goal",   8)
 
-    key_events = [
-        e for e in events
-        if e.get("type") in allowed_types
-        and e.get("frame") is not None
-        and e.get("frame", 0) > 0
-        and e.get("gemini_type") not in ["touche", "corner", "none"]
-    ]
+    key_events = []
+    for e in events:
+        etype = e.get("type", "")
+
+        # Toujours exclure les types Gemini non pertinents
+        if e.get("gemini_type") in ["touche", "corner", "none",
+                                     "defensive_clearance",
+                                     "goalkeeper_hold", "goalkeeper_throw"]:
+            continue
+
+        if etype not in allowed_types:
+            continue
+
+        if e.get("frame") is None or e.get("frame", 0) <= 0:
+            continue
+
+        # ─────────────────────────────────────────
+        # FILTRE QUALITÉ en mode match :
+        # - Les buts passent toujours
+        # - Les tirs ne passent que si xG > seuil
+        #   ou s'ils ont été validés par Gemini
+        # ─────────────────────────────────────────
+        if mode == "match":
+            if etype in ["goal", "score"]:
+                key_events.append(e)
+            elif etype == "shot":
+                xg           = e.get("xg", 0) or 0
+                gemini_valid = e.get("gemini_validated", False)
+                gemini_type  = e.get("gemini_type", "")
+                # Tir inclus seulement si xG élevé OU Gemini confirme "shot"
+                if xg >= XG_MIN_FOR_HIGHLIGHT or (gemini_valid and gemini_type == "shot"):
+                    key_events.append(e)
+        else:
+            # Mode player : on garde tout ce qui est dans allowed_types
+            key_events.append(e)
 
     # Filtrer par joueur si mode player
     if mode == "player" and player_id is not None:
@@ -114,21 +147,24 @@ def create_highlights(
         ]
 
     if not key_events:
-        print("  ⚠️ Aucun event valide pour les highlights")
+        print("  Aucun event valide pour les highlights")
         return []
 
-    # Trier : goals en premier, puis par score décroissant
+    # Trier : goals en premier, puis par xG décroissant
     key_events = sorted(
         key_events,
         key=lambda e: (
             e.get("type") in ["goal", "score"],
+            e.get("xg", 0),
             score_event(e, mode),
-            e.get("xg", 0)
         ),
         reverse=True
     )
     key_events = key_events[:max_clips * 2]
     key_events = merge_close_events(key_events, fps=fps, mode=mode)
+
+    # Retrier chronologiquement pour le reel
+    key_events = sorted(key_events, key=lambda e: e.get("frame", 0))
     key_events = key_events[:max_clips]
 
     highlights = []
@@ -136,8 +172,6 @@ def create_highlights(
     for i, e in enumerate(key_events):
         frame      = e.get("frame", 0)
         t          = frame_to_time(frame, fps)
-
-        # Contexte selon type d'action et sport
         is_goal    = e.get("type") in ["goal", "score"]
         time_start = max(0, t - context_before)
         time_end   = t + (context_goal if is_goal else context_after)
@@ -148,7 +182,7 @@ def create_highlights(
         cut_clip(video_path, time_start, time_end, output_path)
 
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-            print(f"  ⚠️ Clip {i+1} vide, ignoré")
+            print(f"  Clip {i+1} vide, ignoré")
             continue
 
         highlights.append({
@@ -178,9 +212,24 @@ def create_highlight_reel(highlights, output_path="outputs/reel.mp4"):
     if not highlights:
         return None
 
-    valid = [h for h in highlights if os.path.exists(h.get("file", ""))]
+    # Reel = buts uniquement + tirs très dangereux (xG > seuil)
+    reel_events = [
+        h for h in highlights
+        if h.get("main_type") in ["goal", "score"]
+        or h.get("xg", 0) >= XG_MIN_FOR_HIGHLIGHT
+    ]
+
+    if not reel_events:
+        # Fallback : si aucun event qualifié, prendre au moins les buts
+        reel_events = [h for h in highlights if h.get("main_type") in ["goal", "score"]]
+
+    if not reel_events:
+        print("  Aucun clip valide pour le reel")
+        return None
+
+    valid = [h for h in reel_events if os.path.exists(h.get("file", ""))]
     if not valid:
-        print("  ⚠️ Aucun clip valide pour le reel")
+        print("  Aucun clip valide pour le reel")
         return None
 
     list_file = output_path + "_clips.txt"
