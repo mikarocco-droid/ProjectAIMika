@@ -298,7 +298,7 @@ def validate_events_with_gemini(
 
     candidates = [
         e for e in events
-        if e.get("type") in ["goal", "shot"]
+        if e.get("type") in ["goal"]
         and e.get("frame", 0) > 0
     ]
 
