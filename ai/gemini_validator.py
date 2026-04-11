@@ -288,13 +288,14 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
 # VALIDATION COMPLÈTE
 # ─────────────────────────────────────────
 def validate_events_with_gemini(
-    events,
-    video_path,
-    fps        = 25,
-    sport      = "football",
-    min_conf   = 0.7,
-    frame_w    = 1920,
-):
+    events, 
+    video_path, 
+    fps=25, 
+    sport="football", 
+    min_conf=0.7, 
+    frame_w=1920, 
+    frame_h=1080
+    ):
     global _gemini_unavailable
 
     if not GEMINI_AVAILABLE:
