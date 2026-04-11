@@ -25,7 +25,7 @@ from analysis.tactical import (
     detect_phases
 )
 from analysis.highlight_ranker import rank_highlights
-from analysis.player_rating import compute_player_ratings, get_mvp
+from analysis.player_rating import compute_player_ratings, get_mvp, tag_key_passes
 from analysis.match_story import generate_match_story
 from ai.commentary import generate_commentary
 from ai.learning import cluster_actions, learn_action_importance, detect_key_moments
@@ -311,17 +311,15 @@ def run_pipeline(
     try:
         from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers
 
-        _min_conf = 0.70 if is_summary else 0.92
-
         events = validate_events_with_gemini(
-            events     = events,
-            video_path = video_path,
-            fps        = fps,
-            sport      = sport,
-            MIN_CONF_GOAL = 0.90,
-            MIN_CONF_SHOT = _min_conf,
-            frame_w    = _frame_w,
-            frame_h    = _frame_h,
+            events        = events,
+            video_path    = video_path,
+            fps           = fps,
+            sport         = sport,
+            MIN_CONF_GOAL = 0.80,
+            MIN_CONF_SHOT = 0.70,
+            frame_w       = _frame_w,
+            frame_h       = _frame_h,
         )
 
         if learner:
@@ -437,7 +435,7 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 1e. CONTEXT ENGINE
-    # Enrichit events avec shot_context + momentum
+    # Enrichit events avec pressure, sequence_length, phase
     # ─────────────────────────────────────────
     try:
         ctx    = ContextEngine(fps=fps, frame_w=_frame_w, frame_h=_frame_h)
@@ -451,21 +449,64 @@ def run_pipeline(
         ctx_stats = {}
 
     # ─────────────────────────────────────────
-    # 2. ENRICH xG
-    # Applique xg_context_mult si disponible
+    # 2. ENRICH xG — version avancée
+    # Utilise distance + angle + phase + action + pression + séquence
     # ─────────────────────────────────────────
-    print("Step 2 : xG...")
-    frame_w = getattr(config, 'FRAME_WIDTH', 1920) or 1920
+    print("Step 2 : xG avancé...")
+    frame_w = _frame_w
+    frame_h = _frame_h
+    n_xg_advanced = 0
+
     for e in events:
-        if e.get("type") == "shot":
-            if learner and learner.xg_model.get("n_samples", 0) >= 20:
-                xg = learner.predict_xg(e.get("x", 0), e.get("y", 0), frame_w)
-            else:
-                x_norm = e.get("x", 0) / frame_w
-                xg     = compute_xg_sport(x_norm, sport=sport)
-            # Applique le multiplicateur contexte si présent
-            mult    = e.get("xg_context_mult", 1.0)
-            e["xg"] = round(min(xg * mult, 0.99), 3)
+        if e.get("type") != "shot":
+            continue
+
+        x        = e.get("x", 0)
+        y        = e.get("y", frame_h / 2)
+        pressure = float(e.get("pressure", 0.0) or 0.0)
+
+        # Phase de jeu depuis le context engine
+        phase = e.get("shot_context", e.get("phase", "open_play")) or "open_play"
+
+        # Action avant le tir — regarder l'event précédent
+        action_before = e.get("action_before", "none") or "none"
+
+        # Longueur de séquence depuis le context engine
+        sequence_length = int(e.get("sequence_length", 1) or 1)
+
+        if learner and learner.xg_model.get("n_samples", 0) >= 20:
+            # Modèle appris — utilise predict_xg du learner
+            xg = learner.predict_xg(x, y, frame_w=frame_w, frame_h=frame_h)
+            # Applique quand même les multiplicateurs contexte
+            from sports.config import PHASE_MULTIPLIERS, ACTION_BEFORE_MULTIPLIERS
+            phase_mult  = PHASE_MULTIPLIERS.get(
+                str(phase).lower().replace("-", "_"), 1.0)
+            action_mult = ACTION_BEFORE_MULTIPLIERS.get(
+                str(action_before).lower().replace("-", "_"), 1.0)
+            press_mult  = 1.0 - (0.5 * max(0.0, min(1.0, pressure)))
+            xg = xg * phase_mult * action_mult * press_mult
+        else:
+            # Modèle géométrique avancé
+            xg = compute_xg_sport(
+                x               = x,
+                y               = y,
+                sport           = sport,
+                frame_w         = frame_w,
+                frame_h         = frame_h,
+                pressure        = pressure,
+                phase           = phase,
+                action_before   = action_before,
+                sequence_length = sequence_length,
+            )
+            n_xg_advanced += 1
+
+        e["xg"] = round(min(float(xg), 0.99), 3)
+
+    if n_xg_advanced > 0:
+        xg_values = [e["xg"] for e in events if e.get("type") == "shot"]
+        avg_xg    = sum(xg_values) / len(xg_values) if xg_values else 0
+        print(f"  xG avancé : {n_xg_advanced} tirs | avg={avg_xg:.3f} | "
+              f"features=distance+angle+phase+action+pression+séquence")
 
     # ─────────────────────────────────────────
     # 3. STATS
@@ -604,7 +645,6 @@ def run_pipeline(
         except Exception as eg:
             print(f"  Highlight scorer ignoré : {eg}")
 
-        # Tri chronologique
         highlights.sort(key=lambda h: h.get("time_start", 0))
 
         reel_path = create_highlight_reel(
@@ -637,10 +677,17 @@ def run_pipeline(
                 frame     = e.get("frame", 0) or 0
                 e["time"] = round(frame / fps, 2) if fps > 0 else 0
 
+        # Tag les passes clés avant de calculer les ratings
+        events = tag_key_passes(events)
+
         ranked_highlights = rank_highlights(events)
-        ratings           = compute_player_ratings(events)
-        mvp               = get_mvp(ratings)
-        mvp_label         = resolve_mvp_label(mvp, stats, jersey_map)
+        ratings           = compute_player_ratings(
+            events,
+            jersey_map = jersey_map,
+            fps        = fps,
+        )
+        mvp       = get_mvp(ratings)
+        mvp_label = resolve_mvp_label(mvp, stats, jersey_map)
 
         commentary = generate_commentary(
             ranked_highlights[:10],
