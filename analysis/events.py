@@ -93,7 +93,8 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
     if sport == "football":
         in_y_shot = (frame_h * 0.15 <= y <= frame_h * 0.90)
         in_y_goal = (frame_h * 0.20 <= y <= frame_h * 0.90)
-        in_zone   = (x > frame_w * 0.80 or x < frame_w * 0.20) and in_y_shot
+        # Élargi 0.80 → 0.65 pour détecter tirs de l'extérieur de la surface
+        in_zone   = (x > frame_w * 0.65 or x < frame_w * 0.35) and in_y_shot
         in_goal   = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y_goal
         return in_zone or in_goal, in_goal
 
