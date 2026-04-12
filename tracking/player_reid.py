@@ -14,7 +14,8 @@ class PlayerReID:
     - contrainte inter-équipes (jamais fusion A/B)
     - TTL adaptatif (seuil plus strict pour joueurs en veille)
     - MAX_PLAYERS = 25
-    - FIX équipes : clustering dynamique des couleurs au lieu de seuils RGB codés en dur
+    - Calibration dynamique des couleurs équipes (KMeans)
+    - jersey_map intégré : stabilise les IDs via numéro maillot
     """
 
     TTL_ACTIVE  = 125    # 5s  @25fps
@@ -25,9 +26,8 @@ class PlayerReID:
     THRESHOLD_ACTIVE = 90.0
     THRESHOLD_SLEEP  = 120.0
 
-    # FIX équipes — on calibre les couleurs des 2 équipes sur les N premières frames
-    CALIB_FRAMES     = 50    # frames pour calibrer les couleurs équipes
-    CALIB_MIN_SAMPLE = 8     # joueurs minimum pour valider la calibration
+    CALIB_FRAMES     = 50
+    CALIB_MIN_SAMPLE = 8
 
     def __init__(self, fps=25):
         self.fps         = fps
@@ -35,13 +35,33 @@ class PlayerReID:
         self.next_id     = 0
         self.frame_count = 0
 
-        # FIX équipes — couleurs calibrées dynamiquement
+        # Calibration équipes
         self._team_colors_calibrated = False
-        self._team_color_samples     = []   # liste de (color_bgr,) collectées pendant calib
-        self._team_centroids         = None  # shape (2, 3) — centroïdes BGR équipe 0 et 1
+        self._team_color_samples     = []
+        self._team_centroids         = None
+
+        # jersey_map intégré : {reid_id → jersey_number}
+        # Permet de stabiliser les IDs via les numéros détectés
+        self._jersey_map             = {}
+        # Mapping inverse : jersey_number → reid_id canonique
+        self._jersey_to_canonical    = {}
 
     def set_spatial_max_dist(self, dist):
         self.SPATIAL_MAX_DIST = max(100.0, min(400.0, float(dist)))
+
+    def update_jersey_map(self, jersey_map):
+        """
+        Intègre le jersey_map externe (depuis Gemini OCR) dans le ReID.
+        Permet de lier les IDs numériques aux numéros de maillots.
+        """
+        for pid, jersey in jersey_map.items():
+            pid_str    = str(pid)
+            jersey_str = str(jersey) if jersey is not None else None
+            if jersey_str:
+                self._jersey_map[pid_str] = jersey_str
+                # Premier ID avec ce jersey = canonique
+                if jersey_str not in self._jersey_to_canonical:
+                    self._jersey_to_canonical[jersey_str] = pid_str
 
     # ─────────────────────────────────────────
     # COULEUR MAILLOT (torse)
@@ -61,24 +81,19 @@ class PlayerReID:
         return crop.mean(axis=(0, 1)).astype(float)
 
     # ─────────────────────────────────────────
-    # FIX équipes — CALIBRATION DYNAMIQUE
-    # On collecte les couleurs sur les premières frames
-    # puis on fait un k-means à 2 clusters pour trouver
-    # les 2 couleurs d'équipes réelles
+    # CALIBRATION ÉQUIPES (KMeans dynamique)
     # ─────────────────────────────────────────
     def _calibrate_teams(self):
         if len(self._team_color_samples) < self.CALIB_MIN_SAMPLE:
             return
 
-        samples = np.array(self._team_color_samples, dtype=np.float32)
-
-        # K-means à 2 clusters
+        samples  = np.array(self._team_color_samples, dtype=np.float32)
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
         _, labels, centroids = cv2.kmeans(
             samples, 2, None, criteria, 5, cv2.KMEANS_RANDOM_CENTERS
         )
 
-        self._team_centroids         = centroids  # shape (2, 3)
+        self._team_centroids         = centroids
         self._team_colors_calibrated = True
 
         c0 = centroids[0].astype(int)
@@ -89,28 +104,19 @@ class PlayerReID:
               f"({len(samples)} samples)")
 
     def _infer_team(self, color):
-        """
-        FIX — assignation équipe par distance au centroïde calibré.
-        Avant calibration : collecte les samples et retourne None.
-        Après calibration : retourne 0 ou 1 selon le centroïde le plus proche.
-        """
         c = color.astype(np.float32)
 
         if not self._team_colors_calibrated:
-            # Phase de collecte
-            if np.any(c > 10):  # ignorer les crops noirs (hors terrain)
+            if np.any(c > 10):
                 self._team_color_samples.append(c)
             if (len(self._team_color_samples) >= self.CALIB_MIN_SAMPLE
                     and self.frame_count >= self.CALIB_FRAMES):
                 self._calibrate_teams()
             return None
 
-        # Phase normale — distance aux centroïdes
         d0 = np.linalg.norm(c - self._team_centroids[0])
         d1 = np.linalg.norm(c - self._team_centroids[1])
 
-        # Seuil de confiance : si les deux distances sont trop proches
-        # (arbitre, gardien tenue différente) → None
         if abs(d0 - d1) < 15.0:
             return None
 
@@ -166,6 +172,7 @@ class PlayerReID:
 
     # ─────────────────────────────────────────
     # ASSIGNATION ID
+    # Amélioration : si deux IDs ont le même jersey → retourner le canonique
     # ─────────────────────────────────────────
     def _assign_id(self, det):
         active_count = sum(
@@ -196,13 +203,14 @@ class PlayerReID:
                 best_id    = pid
 
         if best_id is not None:
-            self.memory[best_id].update({
-                "center":    det["center"],
-                "color":     det["color"],
-                "embedding": det["embedding"],
-                "team":      det.get("team") or self.memory[best_id].get("team"),
-                "last_seen": self.frame_count,
-            })
+            # Mise à jour mémoire avec lissage exponentiel sur la couleur
+            alpha = 0.3
+            mem   = self.memory[best_id]
+            mem["center"]    = det["center"]
+            mem["color"]     = alpha * det["color"] + (1 - alpha) * mem["color"]
+            mem["embedding"] = alpha * det["embedding"] + (1 - alpha) * mem["embedding"]
+            mem["team"]      = det.get("team") or mem.get("team")
+            mem["last_seen"] = self.frame_count
             return best_id
 
         if active_count >= self.MAX_PLAYERS:
@@ -221,22 +229,6 @@ class PlayerReID:
         return pid
 
     # ─────────────────────────────────────────
-    # STATS
-    # ─────────────────────────────────────────
-    def stats(self):
-        active   = sum(1 for m in self.memory.values()
-                       if self.frame_count - m["last_seen"] <= self.TTL_ACTIVE)
-        sleeping = len(self.memory) - active
-        return {
-            "total_ids":        self.next_id,
-            "in_memory":        len(self.memory),
-            "active":           active,
-            "sleeping":         sleeping,
-            "spatial_max_dist": self.SPATIAL_MAX_DIST,
-            "teams_calibrated": self._team_colors_calibrated,
-        }
-
-    # ─────────────────────────────────────────
     # PROCESS FRAME
     # ─────────────────────────────────────────
     def process(self, frame, detections):
@@ -250,13 +242,8 @@ class PlayerReID:
             center = ((x1 + x2) / 2, (y1 + y2) / 2)
             color  = self._extract_color(frame, bbox)
 
-            # FIX équipes — team depuis calibration dynamique
-            # Si déjà assignée par color_detector dans main.py, on la garde
             existing_team = det.get("team")
-            if existing_team is not None:
-                team = existing_team
-            else:
-                team = self._infer_team(color)
+            team = existing_team if existing_team is not None else self._infer_team(color)
 
             enriched = {
                 "center":    center,
@@ -279,15 +266,25 @@ class PlayerReID:
         return results
 
     # ─────────────────────────────────────────
-    # POSSESSION — répartition par équipe
-    # FIX — expose les stats équipes pour smart_game_ai
+    # STATS
+    # ─────────────────────────────────────────
+    def stats(self):
+        active   = sum(1 for m in self.memory.values()
+                       if self.frame_count - m["last_seen"] <= self.TTL_ACTIVE)
+        sleeping = len(self.memory) - active
+        return {
+            "total_ids":        self.next_id,
+            "in_memory":        len(self.memory),
+            "active":           active,
+            "sleeping":         sleeping,
+            "spatial_max_dist": self.SPATIAL_MAX_DIST,
+            "teams_calibrated": self._team_colors_calibrated,
+        }
+
+    # ─────────────────────────────────────────
+    # TEAM DISTRIBUTION
     # ─────────────────────────────────────────
     def get_team_distribution(self):
-        """
-        Retourne le nombre de joueurs identifiés par équipe
-        parmi les joueurs actifs en mémoire.
-        Utile pour valider la calibration.
-        """
         dist = defaultdict(int)
         for mem in self.memory.values():
             t = mem.get("team")
@@ -302,3 +299,5 @@ class PlayerReID:
         self._team_colors_calibrated = False
         self._team_color_samples     = []
         self._team_centroids         = None
+        self._jersey_map             = {}
+        self._jersey_to_canonical    = {}
