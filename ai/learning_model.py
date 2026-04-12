@@ -117,10 +117,14 @@ class MatchLearner:
             "highlights":   os.path.join(self.base_dir, "highlight_scores.json"),
             "history":      os.path.join(self.base_dir, "match_history.json"),
             "type_weights": os.path.join(self.base_dir, "type_weights.json"),
-            # MODIFICATION 1 — dataset xG training
             "xg_training":  os.path.join(self.base_dir, "xg_training_data.json"),
+            # Données features avancées pour sklearn
+            "xg_advanced":  os.path.join(self.base_dir, "xg_advanced_data.json"),
         }
+        self._sklearn_model = None
         self._load()
+        # Entraîner le modèle sklearn si assez de données
+        self._train_advanced_if_possible()
 
     # ─────────────────────────────────────────
     # LOAD / SAVE
@@ -136,19 +140,19 @@ class MatchLearner:
                     return default
             return default
 
-        self.events_db    = _read("events",       [])
-        self.xg_model     = _read("xg",            {"w0": 0.0, "w1": -2.0, "w2": 1.0, "n_samples": 0})
-        self.thresholds   = _read("thresholds",    DEFAULT_THRESHOLDS.get(self.sport, DEFAULT_THRESHOLDS["football"]).copy())
-        self.fp_zones     = _read("fp_zones",      [])
-        self.players_db   = _read("players",       {})
-        self.teams_db     = _read("teams",         {})
-        self.reid_cal     = _read("reid",          {"spatial_max_dist": 200.0, "n_matches": 0})
-        self.ocr_db       = _read("ocr",           {})
-        self.hl_scores    = _read("highlights",    {"by_type": {}, "by_position": []})
-        self.history      = _read("history",       [])
-        self.type_weights = _read("type_weights",  DEFAULT_TYPE_WEIGHTS.copy())
-        # MODIFICATION 2 — charger dataset xG training
-        self.xg_training  = _read("xg_training",  [])
+        self.events_db     = _read("events",       [])
+        self.xg_model      = _read("xg",            {"w0": 0.0, "w1": -2.0, "w2": 1.0, "n_samples": 0})
+        self.thresholds    = _read("thresholds",    DEFAULT_THRESHOLDS.get(self.sport, DEFAULT_THRESHOLDS["football"]).copy())
+        self.fp_zones      = _read("fp_zones",      [])
+        self.players_db    = _read("players",       {})
+        self.teams_db      = _read("teams",         {})
+        self.reid_cal      = _read("reid",          {"spatial_max_dist": 200.0, "n_matches": 0})
+        self.ocr_db        = _read("ocr",           {})
+        self.hl_scores     = _read("highlights",    {"by_type": {}, "by_position": []})
+        self.history       = _read("history",       [])
+        self.type_weights  = _read("type_weights",  DEFAULT_TYPE_WEIGHTS.copy())
+        self.xg_training   = _read("xg_training",  [])
+        self.xg_advanced   = _read("xg_advanced",  [])
 
         defaults = DEFAULT_THRESHOLDS.get(self.sport, DEFAULT_THRESHOLDS["football"])
         for k, v in defaults.items():
@@ -178,8 +182,8 @@ class MatchLearner:
             "highlights":   self.hl_scores,
             "history":      self.history,
             "type_weights": self.type_weights,
-            # MODIFICATION 3 — sauvegarder dataset xG training
             "xg_training":  self.xg_training,
+            "xg_advanced":  self.xg_advanced,
         }
         for key, obj in data.items():
             try:
@@ -193,23 +197,134 @@ class MatchLearner:
     # ─────────────────────────────────────────
     def _is_quality_event(self, e):
         etype = e.get("type")
-
         if etype == "goal":
             return e.get("gemini_validated", False) and e.get("gemini_conf", 0) >= 0.85
-
         if etype == "shot":
             return e.get("gemini_validated", False) and e.get("gemini_conf", 0) >= 0.70
-
         if etype == "dribble":
             conf = e.get("confidence", e.get("gemini_conf", 1.0))
             if conf < 0.7:
                 return False
             return random.random() < 0.30
-
         if etype == "interception":
             return True
-
         return False
+
+    # ─────────────────────────────────────────
+    # FEATURE ENGINEERING — xG avancé
+    # Utilisé pour sklearn LogisticRegression
+    # Features : distance, angle, pressure, séquence, phase
+    # ─────────────────────────────────────────
+    def _compute_advanced_features(self, e, frame_w=1920, frame_h=1080,
+                                   pitch_l_m=105.0, goal_w_m=7.32):
+        x = float(e.get("x", 0))
+        y = float(e.get("y", frame_h / 2))
+
+        # Centre du but le plus proche
+        goal_y_px  = frame_h / 2.0
+        goal_left  = (0.0,     goal_y_px)
+        goal_right = (frame_w, goal_y_px)
+
+        dist_left  = math.hypot(x - goal_left[0],  y - goal_left[1])
+        dist_right = math.hypot(x - goal_right[0], y - goal_right[1])
+        goal_cx, goal_cy = goal_left if dist_left <= dist_right else goal_right
+
+        # Distance pixels → mètres
+        dist_px  = math.hypot(x - goal_cx, y - goal_cy)
+        px_per_m = frame_w / max(pitch_l_m, 1e-6)
+        dist_m   = dist_px / max(px_per_m, 1e-6)
+
+        # Angle entre les deux poteaux
+        half_goal_px = (goal_w_m / pitch_l_m) * frame_w * 0.5
+        post1 = (goal_cx, goal_cy - half_goal_px)
+        post2 = (goal_cx, goal_cy + half_goal_px)
+
+        v1x, v1y = post1[0] - x, post1[1] - y
+        v2x, v2y = post2[0] - x, post2[1] - y
+
+        dot   = v1x * v2x + v1y * v2y
+        norm1 = math.hypot(v1x, v1y) + 1e-6
+        norm2 = math.hypot(v2x, v2y) + 1e-6
+        cos_a = max(-1.0, min(1.0, dot / (norm1 * norm2)))
+        angle = math.acos(cos_a)
+
+        # Normalisation + non-linéarités calibrées
+        distance_norm   = min(dist_m / pitch_l_m, 1.0)
+        angle_norm      = angle / math.pi
+        distance_effect = (1.0 - distance_norm) ** 1.3
+        angle_effect    = angle_norm ** 1.7
+
+        # Features contextuelles
+        pressure    = float(e.get("pressure", 0.0) or 0.0)
+        seq_len     = float(e.get("sequence_length", 1) or 1)
+        seq_norm    = min(seq_len / 10.0, 1.0)
+        phase       = str(e.get("shot_context", e.get("phase", "open_play")) or "open_play")
+        is_counter  = 1.0 if "counter" in phase.lower() else 0.0
+        is_on_target = 1.0 if e.get("on_target", False) else 0.0
+
+        return [
+            distance_effect,   # distance non-linéaire
+            angle_effect,      # angle non-linéaire
+            pressure,          # pression défensive
+            seq_norm,          # longueur séquence normalisée
+            is_counter,        # contre-attaque
+            is_on_target,      # tir cadré
+        ]
+
+    # ─────────────────────────────────────────
+    # ENTRAÎNEMENT SKLEARN
+    # Actif dès 50 samples, très fiable à 500+
+    # ─────────────────────────────────────────
+    def _train_advanced_if_possible(self):
+        if len(self.xg_advanced) < 50:
+            self._sklearn_model = None
+            return
+
+        try:
+            from sklearn.linear_model import LogisticRegression
+            import numpy as np
+
+            X = np.array([d["features"] for d in self.xg_advanced])
+            y = np.array([d["is_goal"]  for d in self.xg_advanced])
+
+            # Vérifier qu'on a les deux classes
+            if len(set(y)) < 2:
+                self._sklearn_model = None
+                return
+
+            model = LogisticRegression(max_iter=500, C=1.0)
+            model.fit(X, y)
+            self._sklearn_model = model
+            print(f"  Learning xG avancé : modèle sklearn actif "
+                  f"({len(self.xg_advanced)} samples, "
+                  f"{int(sum(y))} buts / {int(len(y)-sum(y))} non-buts)")
+        except Exception as ex:
+            self._sklearn_model = None
+            print(f"  Learning xG avancé ignoré : {ex}")
+
+    # ─────────────────────────────────────────
+    # HAS ADVANCED XG
+    # Retourne True si le modèle sklearn est prêt
+    # ─────────────────────────────────────────
+    def has_advanced_xg(self):
+        return self._sklearn_model is not None
+
+    # ─────────────────────────────────────────
+    # PREDICT ADVANCED XG
+    # Utilise sklearn LogisticRegression
+    # Fallback automatique si modèle pas prêt
+    # ─────────────────────────────────────────
+    def predict_advanced_xg(self, e, frame_w=1920, frame_h=1080):
+        if self._sklearn_model is None:
+            return None
+
+        try:
+            import numpy as np
+            features = self._compute_advanced_features(e, frame_w, frame_h)
+            proba    = self._sklearn_model.predict_proba([features])[0][1]
+            return float(max(0.01, min(0.99, proba)))
+        except Exception:
+            return None
 
     # ─────────────────────────────────────────
     # 1. ENREGISTRER UN MATCH
@@ -245,8 +360,8 @@ class MatchLearner:
         if skipped:
             print(f"  Learning qualité : {added} events retenus | {skipped} bruyants ignorés")
 
-        # MODIFICATION 4 — nouvelle _update_xg_model avec collecte training data
         self._update_xg_model(match_id=match_id)
+        self._collect_advanced_features(events, match_id)
         self._recalibrate_thresholds(events, summary, fps, goals_real=goals_real)
         self._update_fp_zones(events)
         self._update_player_profiles(events, fps)
@@ -258,6 +373,9 @@ class MatchLearner:
         self._record_history(match_id, events, summary, highlights or [],
                              goals_real=goals_real)
 
+        # Ré-entraîner le modèle sklearn avec les nouvelles données
+        self._train_advanced_if_possible()
+
         self._save()
 
         result = {
@@ -267,12 +385,67 @@ class MatchLearner:
             "events_skipped": skipped,
             "total_events":   len(self.events_db),
             "xg_samples":     self.xg_model["n_samples"],
+            "xg_advanced_samples": len(self.xg_advanced),
+            "xg_advanced_ready":   self.has_advanced_xg(),
             "thresholds":     self.thresholds,
         }
         print(f"  Learning OK : match #{n_matches} | {added} events | "
               f"total={len(self.events_db)} | "
-              f"xG_samples={self.xg_model['n_samples']}")
+              f"xG_samples={self.xg_model['n_samples']} | "
+              f"xG_avancé={'✅' if self.has_advanced_xg() else f'({len(self.xg_advanced)}/50)'}")
         return result
+
+    # ─────────────────────────────────────────
+    # COLLECTE FEATURES AVANCÉES
+    # Stocke features + label (is_goal) pour sklearn
+    # ─────────────────────────────────────────
+    def _collect_advanced_features(self, events, match_id,
+                                   frame_w=1920, frame_h=1080):
+        """
+        Collecte les features avancées pour chaque tir/but.
+        is_goal = 1 si le tir est rentré, 0 sinon.
+        """
+        # Timestamps des buts pour labelliser les tirs proches
+        goal_times = [
+            e.get("time", 0) for e in events
+            if e.get("type") == "goal"
+        ]
+
+        new_samples = 0
+        for e in events:
+            if e.get("type") not in ["shot", "goal"]:
+                continue
+            if e.get("x", 0) <= 0:
+                continue
+
+            features = self._compute_advanced_features(e, frame_w, frame_h)
+
+            # Label : 1 si but, sinon vérifier si un but arrive dans les 5s
+            if e.get("type") == "goal":
+                is_goal = 1
+            else:
+                t       = e.get("time", 0)
+                is_goal = 1 if any(0 <= gt - t <= 5.0 for gt in goal_times) else 0
+
+            self.xg_advanced.append({
+                "match_id": match_id,
+                "features": features,
+                "is_goal":  is_goal,
+                "x":        round(float(e.get("x", 0)), 1),
+                "y":        round(float(e.get("y", frame_h/2)), 1),
+            })
+            new_samples += 1
+
+        # Limite dataset à 5000 samples récents
+        self.xg_advanced = self.xg_advanced[-5000:]
+
+        n_goals = sum(1 for d in self.xg_advanced if d.get("is_goal"))
+        n_total = len(self.xg_advanced)
+        if new_samples > 0:
+            print(f"  Learning xG avancé : {n_total} samples "
+                  f"({n_goals} buts, taux={n_goals/n_total:.1%})"
+                  + (" → modèle actif ✅" if n_total >= 50
+                     else f" → encore {50 - n_total} avant activation"))
 
     # ─────────────────────────────────────────
     # HISTORIQUE
@@ -300,6 +473,7 @@ class MatchLearner:
             "spatial_max_dist": self.reid_cal.get("spatial_max_dist", 200.0),
             "fp_zones":        len(self.fp_zones),
             "xg_samples":      self.xg_model["n_samples"],
+            "xg_advanced_samples": len(self.xg_advanced),
         }
         self.history.append(entry)
 
@@ -314,18 +488,10 @@ class MatchLearner:
                   f"précision buts {'+' if delta >= 0 else ''}{delta:.0%}")
 
     # ─────────────────────────────────────────
-    # 2. MODÈLE xG — MODIFICATION 4
-    # Collecte les données training + SGD si assez de data
+    # 2. MODÈLE xG SGD
     # ─────────────────────────────────────────
     def _update_xg_model(self, match_id="", frame_w=1920, frame_h=1080,
                          pitch_l_m=105.0, goal_w_m=7.32):
-        """
-        Collecte distance + angle + is_goal pour chaque tir/but du match.
-        Sauvegarde dans xg_training_data.json pour calibration future.
-        Lance calibrate_xg.py quand n_samples > 200.
-        """
-
-        # ── Collecter samples du match courant ──
         shots_this_match = [
             e for e in self.events_db
             if e.get("type") in ["shot", "goal"]
@@ -337,7 +503,6 @@ class MatchLearner:
             x  = float(s.get("x", 0))
             y  = float(s.get("y", frame_h / 2))
 
-            # Centre but le plus proche
             goal_y_px  = frame_h / 2.0
             goal_left  = (0.0,     goal_y_px)
             goal_right = (frame_w, goal_y_px)
@@ -346,12 +511,10 @@ class MatchLearner:
             dist_right = math.hypot(x - goal_right[0], y - goal_right[1])
             goal_cx, goal_cy = goal_left if dist_left <= dist_right else goal_right
 
-            # Distance pixels → mètres
             dist_px  = math.hypot(x - goal_cx, y - goal_cy)
             px_per_m = frame_w / max(pitch_l_m, 1e-6)
             dist_m   = dist_px / max(px_per_m, 1e-6)
 
-            # Angle entre les deux poteaux
             half_goal_px = (goal_w_m / pitch_l_m) * frame_w * 0.5
             post1 = (goal_cx, goal_cy - half_goal_px)
             post2 = (goal_cx, goal_cy + half_goal_px)
@@ -386,9 +549,8 @@ class MatchLearner:
             print(f"  Learning xG : {n_total} tirs collectés "
                   f"({n_goals} buts, taux={n_goals/n_total:.1%})"
                   + (" → lance calibrate_xg.py !" if n_total >= 200 else
-                     f" → encore {200 - n_total} tirs avant calibration"))
+                     f" → encore {200 - n_total} tirs avant calibration externe"))
 
-        # ── SGD si assez de données validées Gemini ──
         shots_validated = [
             e for e in self.events_db
             if e.get("type") == "shot"
@@ -436,7 +598,6 @@ class MatchLearner:
             "w2": round(_clamp(w2,   0, 10), 4),
             "n_samples": n_total,
         })
-        print(f"  Learning xG : modèle SGD mis à jour ({len(shots_validated)} tirs validés Gemini)")
 
     # ─────────────────────────────────────────
     # 3. RECALIBRATION SEUILS
@@ -453,7 +614,7 @@ class MatchLearner:
             lo, hi = bounds.get(key, (-1e9, 1e9))
             clamped = _clamp(new_val, lo, hi)
             self.thresholds[key] = clamped
-            changed.append(f"{key}={'↑' if clamped > self.thresholds.get(key, clamped) else '↓'}{clamped:.3g}")
+            changed.append(f"{key}={clamped:.3g}")
 
         if real > 0 and goals_det > real * 1.5:
             _update("goal_cooldown", self.thresholds["goal_cooldown"] * 1.1)
@@ -702,6 +863,7 @@ class MatchLearner:
     # PRÉDICTIONS / GETTERS
     # ─────────────────────────────────────────
     def predict_xg(self, x, y, frame_w=1920, frame_h=1080):
+        """Modèle SGD simple — utilisé quand sklearn pas encore actif."""
         if self.xg_model.get("n_samples", 0) < 20:
             x_norm = x / frame_w
             z      = -4 * (abs(1.0 - x_norm) - 0.5)
@@ -743,34 +905,6 @@ class MatchLearner:
         avg   = entry.get("avg", 5.0)
         return max(1.0, avg * 0.7)
 
-    def progression_report(self):
-        n = len(self.history)
-        if n == 0:
-            return {"n_matches": 0, "message": "Aucun match enregistré"}
-
-        recent       = self.history[-5:]
-        avg_goal_acc = []
-        for h in recent:
-            real = h.get("goals_real", 0)
-            det  = h.get("goals_detected", 0)
-            if real > 0:
-                avg_goal_acc.append(min(1.0, det / real))
-
-        return {
-            "n_matches":         n,
-            "sport":             self.sport,
-            "xg_samples":        self.xg_model["n_samples"],
-            "fp_zones":          len(self.fp_zones),
-            "player_profiles":   len(self.players_db),
-            "spatial_max_dist":  self.reid_cal.get("spatial_max_dist", 200.0),
-            "thresholds":        self.thresholds,
-            "type_weights":      self.type_weights,
-            "recent_matches":    recent,
-            "avg_goal_accuracy": round(sum(avg_goal_acc) / len(avg_goal_acc), 2)
-                                  if avg_goal_acc else None,
-            "last_match":        self.history[-1] if self.history else None,
-        }
-
     def stats(self):
         matches = list({e["match_id"] for e in self.events_db})
         types   = defaultdict(int)
@@ -778,15 +912,17 @@ class MatchLearner:
             types[e["type"]] += 1
 
         return {
-            "sport":            self.sport,
-            "n_matches":        len(matches),
-            "n_events":         len(self.events_db),
-            "event_types":      dict(types),
-            "xg_samples":       self.xg_model["n_samples"],
-            "fp_zones":         len(self.fp_zones),
-            "player_profiles":  len(self.players_db),
-            "spatial_max_dist": self.reid_cal.get("spatial_max_dist", 200.0),
-            "thresholds":       self.thresholds,
-            "type_weights":     self.type_weights,
-            "xg_training_total": len(self.xg_training),
+            "sport":                 self.sport,
+            "n_matches":             len(matches),
+            "n_events":              len(self.events_db),
+            "event_types":           dict(types),
+            "xg_samples":            self.xg_model["n_samples"],
+            "xg_advanced_samples":   len(self.xg_advanced),
+            "xg_advanced_ready":     self.has_advanced_xg(),
+            "fp_zones":              len(self.fp_zones),
+            "player_profiles":       len(self.players_db),
+            "spatial_max_dist":      self.reid_cal.get("spatial_max_dist", 200.0),
+            "thresholds":            self.thresholds,
+            "type_weights":          self.type_weights,
+            "xg_training_total":     len(self.xg_training),
         }
