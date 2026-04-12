@@ -330,6 +330,10 @@ def validate_events_with_gemini(
         validated  += 1
         gemini_type = result["type"]
         confiance   = result["confiance"]
+        t_sec = event.get("time", 0)
+        print(f"  Gemini but {int(t_sec//60):02d}:{int(t_sec%60):02d} → "
+              f"type={gemini_type} conf={confiance:.2f} "
+              f"desc={result.get('description', '')}")
 
         threshold = MIN_CONF_GOAL if event.get("type") == "goal" else MIN_CONF_SHOT
 
