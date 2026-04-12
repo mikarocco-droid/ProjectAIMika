@@ -11,7 +11,7 @@ from sports.config import get_sport_config, get_highlight_types
 # Avec le vrai xG calibré (distance + angle + contexte) :
 #   0.30 = tir dangereux depuis l'intérieur de la surface
 # ─────────────────────────────────────────
-XG_MIN_FOR_HIGHLIGHT = 0.30
+XG_MIN_FOR_HIGHLIGHT = 0.50
 
 
 # ─────────────────────────────────────────
