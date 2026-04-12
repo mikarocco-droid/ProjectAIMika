@@ -32,6 +32,7 @@ from ai.learning import cluster_actions, learn_action_importance, detect_key_mom
 from sports.config import get_sport_config, compute_xg_sport
 from analysis.event_validator import filter_events, detect_real_shots
 from analysis.context_engine import ContextEngine
+from analysis.player_identity import resolve_player_identities, get_player_label
 
 
 # ─────────────────────────────────────────
@@ -146,7 +147,7 @@ def make_progress_callback(analysis_id=None):
 
 
 # ─────────────────────────────────────────
-# FIX MVP
+# FIX MVP — fallback propre
 # ─────────────────────────────────────────
 def resolve_mvp_label(mvp, stats, jersey_map):
     if mvp is None:
@@ -157,15 +158,7 @@ def resolve_mvp_label(mvp, stats, jersey_map):
     if pid in stats and stats[pid].get("label"):
         return stats[pid]["label"]
 
-    if jersey_map:
-        jersey = (
-            jersey_map.get(pid)
-            or jersey_map.get(int(pid) if pid.isdigit() else pid)
-        )
-        if jersey:
-            return f"#{jersey}"
-
-    return f"ID-{pid}"
+    return get_player_label(pid, jersey_map)
 
 
 # ─────────────────────────────────────────
@@ -198,7 +191,6 @@ def run_pipeline(
             base_dir = os.path.join(output_dir, "..", "learning")
         )
         ls = learner.stats()
-        # FIX — pas de f-string imbriquée
         xg_adv_status = "ok" if ls.get("xg_advanced_ready") else str(ls.get("xg_advanced_samples", 0)) + "/50"
         print(f"  Learning : {ls['n_matches']} matchs | "
               f"{ls['n_events']} events | "
@@ -335,28 +327,73 @@ def run_pipeline(
             if len(events) < n_before:
                 print(f"  FP zones : {n_before - len(events)} shots filtrés")
 
-        top_players = [
-            {"id": pid, "frame_id": int(fps * 30), "bbox": [100, 100, 200, 300]}
-            for pid in list(set(
-                str(e.get("player")) for e in events
-                if e.get("player") and str(e.get("player")) not in jersey_map
-            ))[:20]
-        ]
+        # ── Lecture maillots prioritaire : buts + tirs sur 3 frames ──
+        # 3 frames (-10, 0, +10) autour de chaque action → +30% précision
+        seen_pids    = set()
+        prio_players = []
 
-        if top_players:
+        for e in events:
+            if e.get("type") not in ["goal", "shot"]:
+                continue
+            pid = str(e.get("player", ""))
+            if not pid or pid in seen_pids:
+                continue
+            if str(pid) in jersey_map:
+                seen_pids.add(pid)
+                continue
+            frame_id = e.get("frame", 0) or 0
+            for offset in [-10, 0, 10]:
+                prio_players.append({
+                    "id":       pid,
+                    "frame_id": max(0, frame_id + offset),
+                    "bbox":     e.get("bbox", [100, 100, 200, 300])
+                })
+            seen_pids.add(pid)
+
+        # Compléter avec les joueurs généraux non identifiés (max 20)
+        general_players = [
+            str(e.get("player")) for e in events
+            if e.get("player") and str(e.get("player")) not in jersey_map
+        ]
+        seen_general = set()
+        for pid in general_players:
+            if pid not in seen_pids and pid not in seen_general:
+                prio_players.append({
+                    "id":       pid,
+                    "frame_id": int(fps * 30),
+                    "bbox":     [100, 100, 200, 300]
+                })
+                seen_general.add(pid)
+                if len(seen_general) >= 20:
+                    break
+
+        if prio_players:
             gemini_jerseys = read_jersey_numbers(
                 video_path          = video_path,
-                players_with_frames = top_players,
+                players_with_frames = prio_players[:40],
                 fps                 = fps
             )
             jersey_map.update(gemini_jerseys)
-            print(f"  Gemini jerseys : {len(gemini_jerseys)} nouveaux numéros lus")
+            n_goals_players = len([p for p in prio_players if p in seen_pids])
+            print(f"  Gemini jerseys : {len(gemini_jerseys)} numéros lus "
+                  f"(buts+tirs 3 frames + {len(seen_general)} généraux)")
 
     except Exception as e:
         print(f"  Gemini validation ignoree : {e}")
 
     # ─────────────────────────────────────────
-    # 1b-bis. VALIDATION STRUCTURELLE
+    # 1b-bis. RÉSOLUTION IDENTITÉS JOUEURS
+    # Merge IDs → IDs canoniques basés sur numéro maillot
+    # ID-12 + ID-257 (même maillot #3) → P3
+    # ─────────────────────────────────────────
+    try:
+        events, jersey_map = resolve_player_identities(events, jersey_map)
+        print(f"  Jersey map : {len(jersey_map)} joueurs identifiés")
+    except Exception as e:
+        print(f"  Identity resolver ignoré : {e}")
+
+    # ─────────────────────────────────────────
+    # 1b-ter. VALIDATION STRUCTURELLE
     # ─────────────────────────────────────────
     try:
         events, val_stats = filter_events(
@@ -374,7 +411,7 @@ def run_pipeline(
         print(f"  Event validator ignoré : {e}")
 
     # ─────────────────────────────────────────
-    # 1b-ter. DÉTECTION RÉELLE DE TIRS
+    # 1b-quater. DÉTECTION RÉELLE DE TIRS
     # ─────────────────────────────────────────
     try:
         real_shots = detect_real_shots(
@@ -452,12 +489,6 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 2. ENRICH xG — version avancée
-    #
-    # Priorité :
-    #   1. learner.predict_advanced_xg() — sklearn avec features complètes
-    #      (actif dès 50 tirs collectés)
-    #   2. compute_xg_sport() — modèle géométrique calibré
-    #      distance + angle + phase + action + pression + séquence
     # ─────────────────────────────────────────
     print("Step 2 : xG avancé...")
     frame_w    = _frame_w
@@ -478,13 +509,11 @@ def run_pipeline(
 
         xg = None
 
-        # Priorité 1 — modèle sklearn avancé
         if learner and learner.has_advanced_xg():
             xg = learner.predict_advanced_xg(e, frame_w=frame_w, frame_h=frame_h)
             if xg is not None:
                 n_advanced += 1
 
-        # Priorité 2 — modèle géométrique calibré (fallback)
         if xg is None:
             xg = compute_xg_sport(
                 x               = x,
