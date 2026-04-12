@@ -374,7 +374,6 @@ def run_pipeline(
                 fps                 = fps
             )
             jersey_map.update(gemini_jerseys)
-            n_goals_players = len([p for p in prio_players if p in seen_pids])
             print(f"  Gemini jerseys : {len(gemini_jerseys)} numéros lus "
                   f"(buts+tirs 3 frames + {len(seen_general)} généraux)")
 
