@@ -198,10 +198,12 @@ def run_pipeline(
             base_dir = os.path.join(output_dir, "..", "learning")
         )
         ls = learner.stats()
+        # FIX — pas de f-string imbriquée
+        xg_adv_status = "ok" if ls.get("xg_advanced_ready") else str(ls.get("xg_advanced_samples", 0)) + "/50"
         print(f"  Learning : {ls['n_matches']} matchs | "
               f"{ls['n_events']} events | "
               f"xG n={ls['xg_samples']} | "
-              f"xG avancé={'✅' if ls.get('xg_advanced_ready') else f\"({ls.get('xg_advanced_samples',0)}/50)\"} | "
+              f"xG avancé={xg_adv_status} | "
               f"FP zones={ls['fp_zones']} | "
               f"spatial={ls['spatial_max_dist']:.0f}px")
     except Exception as e:
@@ -458,25 +460,25 @@ def run_pipeline(
     #      distance + angle + phase + action + pression + séquence
     # ─────────────────────────────────────────
     print("Step 2 : xG avancé...")
-    frame_w = _frame_w
-    frame_h = _frame_h
-    n_advanced = 0
+    frame_w    = _frame_w
+    frame_h    = _frame_h
+    n_advanced  = 0
     n_geometric = 0
 
     for e in events:
         if e.get("type") != "shot":
             continue
 
-        x        = e.get("x", 0)
-        y        = e.get("y", frame_h / 2)
-        pressure = float(e.get("pressure", 0.0) or 0.0)
-        phase    = e.get("shot_context", e.get("phase", "open_play")) or "open_play"
+        x               = e.get("x", 0)
+        y               = e.get("y", frame_h / 2)
+        pressure        = float(e.get("pressure", 0.0) or 0.0)
+        phase           = e.get("shot_context", e.get("phase", "open_play")) or "open_play"
         action_before   = e.get("action_before", "none") or "none"
         sequence_length = int(e.get("sequence_length", 1) or 1)
 
         xg = None
 
-        # Priorité 1 — modèle sklearn avancé (apprend de tes données réelles)
+        # Priorité 1 — modèle sklearn avancé
         if learner and learner.has_advanced_xg():
             xg = learner.predict_advanced_xg(e, frame_w=frame_w, frame_h=frame_h)
             if xg is not None:
@@ -499,12 +501,12 @@ def run_pipeline(
 
         e["xg"] = round(min(float(xg), 0.99), 3)
 
-    # Log du mode xG utilisé
     n_shots = n_advanced + n_geometric
     if n_shots > 0:
         if n_advanced > 0:
+            n_adv_samples = len(learner.xg_advanced) if learner else 0
             print(f"  xG sklearn actif : {n_advanced}/{n_shots} tirs "
-                  f"(modèle appris sur {len(learner.xg_advanced) if learner else 0} samples)")
+                  f"(modèle appris sur {n_adv_samples} samples)")
         else:
             print(f"  xG géométrique : {n_geometric} tirs "
                   f"(features=distance+angle+phase+action+pression+séquence)")
