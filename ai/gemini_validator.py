@@ -154,28 +154,27 @@ def validate_event(video_path, event, fps=25, sport="football"):
             f"Tu es un expert analyste de {sport}. "
             f"Voici {len(frames_data)} frames chronologiques autour d'un événement suspect "
             f"(type détecté : {event_type}, danger score : {danger:.1f}/10).\n\n"
-            f"CRITÈRES STRICTS pour valider un BUT :\n"
-            f"- Le ballon doit CLAIREMENT franchir la ligne de but\n"
-            f"- Le ballon doit ENTRER dans le filet (visible dans les frames APRÈS)\n"
-            f"- Il doit y avoir un tir intentionnel d'un attaquant\n\n"
-            f"CRITÈRES STRICTS pour valider un TIR :\n"
-            f"- Le ballon doit être frappé intentionnellement vers le but\n"
-            f"- La trajectoire doit être dirigée vers les cages\n\n"
+            f"CRITÈRES pour valider un BUT :\n"
+            f"- Le ballon franchit ou a franchi la ligne de but\n"
+            f"- Le ballon est dans le filet ou vient d'y entrer\n"
+            f"- Un joueur célèbre ou réagit\n"
+            f"- ATTENTION : si le gardien récupère le ballon DANS son but → c'est un but\n"
+            f"- ATTENTION : but contre son camp = aussi un but\n\n"
+            f"CRITÈRES pour valider un TIR :\n"
+            f"- Le ballon est frappé intentionnellement vers le but\n"
+            f"- La trajectoire est dirigée vers les cages\n\n"
             f"CE QUI N'EST PAS un but ni un tir :\n"
-            f"- Gardien qui tient ou porte le ballon\n"
-            f"- Relance du gardien à la main ou au pied\n"
-            f"- Dégagement de tête ou du pied d'un défenseur\n"
-            f"- Centre renvoyé en touche ou corner par un défenseur\n"
-            f"- Bataille brouillon devant le but sans tir cadré\n"
-            f"- Défenseur qui joue en retrait à son gardien\n"
-            f"- Tir qui passe clairement à côté ou au-dessus\n\n"
+            f"- Gardien qui tient le ballon DEVANT sa ligne (pas dedans)\n"
+            f"- Relance du gardien depuis sa surface\n"
+            f"- Dégagement défensif loin du but\n"
+            f"- Tir qui passe clairement à côté ou très au-dessus\n\n"
             f"Réponds UNIQUEMENT en JSON valide sans markdown :\n"
             f'{{"type": "goal|shot|corner|touche|goalkeeper_hold|goalkeeper_throw|defensive_clearance|none", '
             f'"confiance": 0.95, '
             f'"equipe": 0, '
             f'"description": "description courte"}}\n\n'
-            f"EN CAS DE DOUTE → réponds 'none' avec confiance basse.\n"
-            f"Mieux vaut rater un vrai but que valider un faux."
+            f"EN CAS DE DOUTE sur un but → réponds 'goal' avec confiance 0.65.\n"
+            f"Un faux négatif (but raté) est pire qu'un faux positif (faux but)."
         )]
 
         for offset, frame in frames_data:
@@ -320,16 +319,10 @@ def validate_events_with_gemini(
         result = validate_event(video_path, event, fps, sport)
 
         if result is None:
-            # ─────────────────────────────────────────
-            # RÈGLE STRICTE : pas de réponse Gemini
-            # → rejet systématique de tous les buts
-            # Les shots non validés sont gardés (moins critiques)
-            # ─────────────────────────────────────────
-            if event.get("type") == "goal":
-                event["_remove"] = True
-                removed += 1
-                print(f"  STRICT : goal t={event.get('time',0):.0f}s rejeté "
-                      f"(pas de réponse Gemini)")
+            # Pas de réponse Gemini → garder le but
+            print(f"  Gemini no response : goal t={event.get('time',0):.0f}s gardé")
+            event["gemini_validated"] = False
+            event["gemini_conf"]      = 0.0
             continue
 
         time.sleep(2)
@@ -339,6 +332,7 @@ def validate_events_with_gemini(
         confiance   = result["confiance"]
 
         threshold = MIN_CONF_GOAL if event.get("type") == "goal" else MIN_CONF_SHOT
+
         if confiance >= threshold:
             if gemini_type in ["goal", "shot"]:
                 if event["type"] != gemini_type:
@@ -354,8 +348,15 @@ def validate_events_with_gemini(
                 event["_remove"] = True
                 removed += 1
         else:
-            # Confiance insuffisante → rejet systématique
+            # Confiance insuffisante
+            # Pour un but : garder sauf si Gemini très sûr que c est faux
             if event.get("type") == "goal":
+                if gemini_type in ["goalkeeper_hold", "goalkeeper_throw",
+                                   "defensive_clearance"] and confiance >= 0.85:
+                    event["_remove"] = True
+                    removed += 1
+                # sinon garder le but
+            else:
                 event["_remove"] = True
                 removed += 1
 
