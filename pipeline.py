@@ -33,6 +33,7 @@ from sports.config import get_sport_config, compute_xg_sport
 from analysis.event_validator import filter_events, detect_real_shots
 from analysis.context_engine import ContextEngine
 from analysis.player_identity import resolve_player_identities, get_player_label
+from analysis.goal_posthoc import detect_fast_goals_from_ball
 
 
 # ─────────────────────────────────────────
@@ -147,7 +148,7 @@ def make_progress_callback(analysis_id=None):
 
 
 # ─────────────────────────────────────────
-# FIX MVP — fallback propre
+# FIX MVP
 # ─────────────────────────────────────────
 def resolve_mvp_label(mvp, stats, jersey_map):
     if mvp is None:
@@ -255,6 +256,12 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 1a. POST PROCESSING
+    # Ordre critique :
+    #   1. goal_posthoc (physique ballon) — avant filtre pour enrichir
+    #   2. merge_players
+    #   3. temporal_filter
+    #   4. infer_shots_from_goals — crée shots synthétiques
+    #   5. filter_goals — accepte shots réels ET synthétiques
     # ─────────────────────────────────────────
     is_summary = False
     _frame_w   = 1920
@@ -265,6 +272,7 @@ def run_pipeline(
             temporal_filter,
             filter_goals,
             merge_players,
+            infer_shots_from_goals,
         )
 
         video_duration = total_frames / fps if fps > 0 else 600
@@ -287,15 +295,40 @@ def run_pipeline(
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={int(position_threshold*100)}%")
 
+        # ── 1. Détecteur physique buts rapides ──
+        try:
+            fast_goals = detect_fast_goals_from_ball(
+                frames_data = frames_data,
+                events      = events,
+                fps         = fps,
+                frame_w     = _frame_w,
+                frame_h     = _frame_h,
+            )
+            if fast_goals:
+                events.extend(fast_goals)
+                events.sort(key=lambda e: e.get("time", 0))
+                print(f"  goal_posthoc : {len(fast_goals)} but(s) physique détecté(s)")
+        except Exception as eg:
+            print(f"  goal_posthoc ignoré : {eg}")
+
+        # ── 2. Fusion joueurs proches ──
         events = merge_players(events)
+
+        # ── 3. Filtre temporel ──
         events = temporal_filter(events, min_delta=2.0)
+
+        # ── 4. Inférence shots synthétiques depuis buts ──
+        events = infer_shots_from_goals(events)
+
+        # ── 5. Filtre buts (accepte shots réels + synthétiques) ──
         events = filter_goals(
             events,
             window             = goal_cooldown,
             frame_w            = _frame_w,
             position_threshold = position_threshold,
         )
-        print(f"  CLEAN {len(events)} events | goal_cooldown={goal_cooldown:.0f}s")
+        n_goals = sum(1 for e in events if e.get("type") in ["goal", "score"])
+        print(f"  CLEAN {len(events)} events | {n_goals} but(s) | goal_cooldown={goal_cooldown:.0f}s")
     except Exception as e:
         print(f"  Post processing ignoré : {e}")
 
@@ -327,8 +360,7 @@ def run_pipeline(
             if len(events) < n_before:
                 print(f"  FP zones : {n_before - len(events)} shots filtrés")
 
-        # ── Lecture maillots prioritaire : buts + tirs sur 3 frames ──
-        # 3 frames (-10, 0, +10) autour de chaque action → +30% précision
+        # ── Lecture maillots prioritaire sur 3 frames ──
         seen_pids    = set()
         prio_players = []
 
@@ -350,7 +382,6 @@ def run_pipeline(
                 })
             seen_pids.add(pid)
 
-        # Compléter avec les joueurs généraux non identifiés (max 20)
         general_players = [
             str(e.get("player")) for e in events
             if e.get("player") and str(e.get("player")) not in jersey_map
@@ -382,8 +413,6 @@ def run_pipeline(
 
     # ─────────────────────────────────────────
     # 1b-bis. RÉSOLUTION IDENTITÉS JOUEURS
-    # Merge IDs → IDs canoniques basés sur numéro maillot
-    # ID-12 + ID-257 (même maillot #3) → P3
     # ─────────────────────────────────────────
     try:
         events, jersey_map = resolve_player_identities(events, jersey_map)
@@ -441,7 +470,7 @@ def run_pipeline(
             e    = events[i]
             prev = events[i-1] if i > 0 else None
             if e.get("type") == "shot":
-                if not e.get("detected_from") and not detect_real_shot(e, prev):
+                if not e.get("detected_from") and not e.get("synthetic") and not detect_real_shot(e, prev):
                     continue
             validated.append(e)
         events = validated
@@ -487,7 +516,7 @@ def run_pipeline(
         ctx_stats = {}
 
     # ─────────────────────────────────────────
-    # 2. ENRICH xG — version avancée
+    # 2. ENRICH xG
     # ─────────────────────────────────────────
     print("Step 2 : xG avancé...")
     frame_w    = _frame_w
