@@ -319,7 +319,7 @@ def run_pipeline(
             video_path    = video_path,
             fps           = fps,
             sport         = sport,
-            MIN_CONF_GOAL = 0.80,
+            MIN_CONF_GOAL = 0.70,
             MIN_CONF_SHOT = 0.70,
             frame_w       = _frame_w,
             frame_h       = _frame_h,
