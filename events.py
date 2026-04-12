@@ -32,7 +32,7 @@ def get_closest_player(players, ball):
 
 
 # ─────────────────────────────────────────
-# FIX 1 — IDENTIFIER LE GARDIEN
+# IDENTIFIER LE GARDIEN
 # ─────────────────────────────────────────
 def get_goalkeeper(players, frame_w):
     threshold = frame_w * 0.15
@@ -46,31 +46,25 @@ def get_goalkeeper(players, frame_w):
 
 
 # ─────────────────────────────────────────
-# FIX 2 — DÉTECTION RELANCE À LA MAIN
+# DÉTECTION RELANCE À LA MAIN
 # ─────────────────────────────────────────
 def is_goalkeeper_throw(ball_pos, last_ball_pos, frame_w, frame_h, gk):
     if gk is None or last_ball_pos is None:
         return False
-
     bx, by = ball_pos
     lx, ly = last_ball_pos
     gx     = gk["center"][0]
-
     in_gk_zone = (lx < frame_w * 0.15 or lx > frame_w * 0.85)
     if not in_gk_zone:
         return False
-
     dx  = bx - lx
     dy  = by - ly
     spd = math.hypot(dx, dy)
-
     speed_ok = frame_w * 0.01 < spd < frame_w * 0.08
-
     moves_away_from_goal = (
         (gx < frame_w * 0.15 and dx > 0) or
         (gx > frame_w * 0.85 and dx < 0)
     )
-
     return speed_ok and moves_away_from_goal
 
 
@@ -84,7 +78,6 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
         lo    = shot_zones.get("threshold_lo", frame_w * 0.15)
         y_min = shot_zones.get("y_min", 0)
         y_max = shot_zones.get("y_max", frame_h)
-
         if axis == "x":
             y_tol     = (y_max - y_min) * 0.50
             in_y_shot = (y_min - y_tol <= y <= y_max + y_tol)
@@ -100,7 +93,8 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
     if sport == "football":
         in_y_shot = (frame_h * 0.15 <= y <= frame_h * 0.90)
         in_y_goal = (frame_h * 0.20 <= y <= frame_h * 0.90)
-        in_zone   = (x > frame_w * 0.80 or x < frame_w * 0.20) and in_y_shot
+        # Élargi 0.80 → 0.65 pour détecter tirs de l'extérieur de la surface
+        in_zone   = (x > frame_w * 0.65 or x < frame_w * 0.35) and in_y_shot
         in_goal   = (x > frame_w * 0.88 or x < frame_w * 0.12) and in_y_goal
         return in_zone or in_goal, in_goal
 
@@ -122,10 +116,66 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
 
 
 # ─────────────────────────────────────────
+# ON TARGET — détection tir cadré
+#
+# Un tir est "on_target" (cadré) si :
+#   1. fast_shot_in_goal : tir rapide dans la zone de but
+#   2. in_goal_zone : ballon dans la zone de but au moment du tir
+#   3. trajectoire vers le centre du but (angle < seuil)
+#   4. proximité des poteaux (poteau = tir cadré dévié)
+# ─────────────────────────────────────────
+def compute_on_target(
+    x, y,
+    ball_speed,
+    ball_tracker=None,
+    frame_w=1280,
+    frame_h=720,
+    in_goal_zone=False,
+    fast_shot=False,
+):
+    """
+    Retourne True si le tir est cadré ou proche du cadre.
+
+    Critères :
+      - fast_shot_in_goal → cadré ✅
+      - in_goal_zone → ballon dans la zone de but → cadré ✅
+      - trajectoire du ballon vers le centre du but (via BallTracker) ✅
+      - ballon très proche des poteaux (< 8% frame_w) → poteau probable ✅
+    """
+    # Critère 1 — tir rapide dans la zone de but
+    if fast_shot or in_goal_zone:
+        return True
+
+    # Critère 2 — trajectoire via BallTracker
+    if ball_tracker is not None and hasattr(ball_tracker, "toward_goal"):
+        toward, _ = ball_tracker.toward_goal(
+            frame_w, frame_h, threshold=0.50
+        )
+        if toward:
+            stability = ball_tracker.get_direction_stability(3)
+            if stability > 0.55:
+                return True
+
+    # Critère 3 — proximité des poteaux
+    # But gauche : x ≈ 0, but droit : x ≈ frame_w
+    # Poteaux verticaux : y ≈ frame_h * 0.45 et y ≈ frame_h * 0.85
+    goal_y_top    = frame_h * 0.45
+    goal_y_bottom = frame_h * 0.85
+    near_left_goal  = x < frame_w * 0.08
+    near_right_goal = x > frame_w * 0.92
+    near_post_y     = (goal_y_top - frame_h * 0.05 <= y <= goal_y_bottom + frame_h * 0.05)
+
+    if (near_left_goal or near_right_goal) and near_post_y:
+        return True
+
+    return False
+
+
+# ─────────────────────────────────────────
 # CALCUL xG
 # ─────────────────────────────────────────
 def compute_xg(x, y, frame_w=1280, frame_h=720, learner=None):
-    if learner and learner.xg_model.get("n_samples", 0) >= 10:
+    if learner and learner.xg_model.get("n_samples", 0) >= 20:
         return learner.predict_xg(x, y, frame_w, frame_h)
     dist_right = math.hypot(x - frame_w, y - frame_h / 2)
     dist_left  = math.hypot(x,           y - frame_h / 2)
@@ -140,13 +190,11 @@ def compute_xg(x, y, frame_w=1280, frame_h=720, learner=None):
 # ─────────────────────────────────────────
 def init_state(learner=None):
     thr = learner.get_thresholds() if learner else {}
-
     fps            = 25
     shot_cd_frames = int(thr.get("shot_cooldown",   3.0) * fps)
     goal_cd_frames = int(thr.get("goal_cooldown", 150.0) * fps)
     ball_speed_min = thr.get("ball_speed_min",    0.02)
     player_near    = thr.get("player_near_goal",  0.15)
-    # FIX : 12 → 8 frames (~0.32s à 25fps effectif après frame skip)
     goal_frames    = int(thr.get("goal_frames_min", 8))
 
     return {
@@ -163,7 +211,7 @@ def init_state(learner=None):
         "turnover_window":          0,
         "ball_in_goal_zone":        0,
         "_goal_zone_speeds":        [],
-        "_goal_zone_speeds_gap":    0,   # FIX : tolérance frames manquantes
+        "_goal_zone_speeds_gap":    0,
         "_shot_cd_max":             shot_cd_frames,
         "_goal_cd_max":             goal_cd_frames,
         "_ball_speed_min":          ball_speed_min,
@@ -172,20 +220,20 @@ def init_state(learner=None):
         "_last_ball_interpolated":  False,
         "_last_dribble_time":       -999.0,
         "_dribble_cooldown":        1.5,
-        # ── FIX 1 : possession gardien ──
         "_gk_possession_frames":    0,
         "_gk_possession_min":       8,
         "_gk_holding_ball":         False,
         "_gk_release_cd":           0,
         "_gk_release_cd_max":       75,
-        # ── FIX shot contré ──
         "_last_shot_x":             None,
         "_last_shot_y":             None,
         "_last_shot_time":          -999.0,
         "_shot_blocked_cd":         0,
         "_shot_blocked_cd_max":     40,
-        # ── FIX touche devant but ──
         "_last_event_types":        deque(maxlen=10),
+        "_shot_candidate_xg":       None,
+        "_shot_candidate_player":   None,
+        "_shot_candidate_team":     None,
     }
 
 
@@ -252,7 +300,7 @@ def detect_events(
                     state["team_possession"][dominant] = \
                         state["team_possession"].get(dominant, 0) + 0.5
 
-    # ── FIX 1 : DÉTECTION POSSESSION GARDIEN ─────────
+    # ── POSSESSION GARDIEN ───────────────
     gk = get_goalkeeper(players, frame_w)
 
     if gk and state["last_ball_pos"]:
@@ -299,7 +347,7 @@ def detect_events(
             events.append({"type": "under_pressure", "player": str(current["id"])})
             state["pressing"] = True
 
-    # ── PROGRESSIVE RUN ───────────────────
+    # ── PROGRESSIVE RUN ──────────────────
     if state["last_ball_pos"] and current:
         if is_progressive(state["last_ball_pos"][0], ball["center"][0], frame_w):
             events.append({
@@ -310,11 +358,15 @@ def detect_events(
                 "y":      ball["center"][1]
             })
 
-    # ── PASS / INTERCEPTION ───────────────
+    # ── PASS / INTERCEPTION ──────────────
     last = state["last_player"]
     if last and current and str(last["id"]) != str(current["id"]):
         same_team = last.get("team") == current.get("team")
-        if same_team:
+
+        _pass_dist     = distance(last["center"], current["center"])
+        _min_pass_dist = frame_w * 0.05
+
+        if same_team and _pass_dist > _min_pass_dist:
             pass_event = {
                 "type":   "pass",
                 "from":   str(last["id"]),
@@ -327,7 +379,7 @@ def detect_events(
             }
             events.append(pass_event)
             state["events_buffer"].append(pass_event)
-        else:
+        elif not same_team:
             events.append({
                 "type":   "interception",
                 "player": str(current["id"]),
@@ -345,11 +397,14 @@ def detect_events(
             state["turnover_window"] = 0
     state["turnover_window"] = max(0, state["turnover_window"] - 1)
 
-    # ── DRIBBLE ───────────────────────────
+    # ── DRIBBLE ──────────────────────────
     if current and state["last_ball_pos"]:
         ball_spd           = speed(state["last_ball_pos"], ball["center"])
         time_since_dribble = current_time - state.get("_last_dribble_time", -999)
-        if (ball_spd > frame_w * 0.025
+        _dribble_dist      = distance(state["last_ball_pos"], ball["center"])
+
+        if (_dribble_dist > 5
+                and ball_spd > frame_w * 0.025
                 and time_since_dribble >= state["_dribble_cooldown"]):
             events.append({
                 "type":   "dribble",
@@ -375,7 +430,7 @@ def detect_events(
                 "team":   current.get("team") if current else None
             })
 
-    # ── SHOTS / GOALS ─────────────────────
+    # ── SHOTS / GOALS ────────────────────
     ball_speed_min  = state.get("_ball_speed_min",   0.02)
     player_near_pct = state.get("_player_near_goal", 0.15)
     goal_frames_min = state.get("_goal_frames_min",  8)
@@ -388,13 +443,16 @@ def detect_events(
         if learner and learner.is_fp_zone(x, y, frame_w, frame_h):
             pass
         else:
-            is_shot, is_goal_zone = is_shot_zone(
+            is_shot_z, is_goal_zone = is_shot_zone(
                 x, y, sport, shot_zones, frame_w, frame_h
             )
 
             ball_interpolated = ball.get("interpolated", False)
 
-            if (state["last_ball_pos"]
+            _bt = ball.get("_tracker_ref")
+            if _bt is not None and hasattr(_bt, "get_speed_per_second"):
+                ball_speed = _bt.get_speed_per_second() / max(fps, 1)
+            elif (state["last_ball_pos"]
                     and not ball_interpolated
                     and not state.get("_last_ball_interpolated", False)):
                 ball_speed = speed(state["last_ball_pos"], ball["center"])
@@ -406,11 +464,11 @@ def detect_events(
                 or (is_goal_zone and ball_speed > frame_w * 0.01)
             )
 
-            # ── FIX shot contré ──────────────────────────────────────────
+            # ── SHOT CONTRÉ ──────────────────────────────────────────────
             time_since_last_shot = current_time - state.get("_last_shot_time", -999)
 
             if (state["shot_cd"] > 0
-                    and is_shot
+                    and is_shot_z
                     and ball_speed > frame_w * 0.12
                     and state["_last_shot_x"] is not None
                     and time_since_last_shot < 8.0
@@ -427,7 +485,7 @@ def detect_events(
                     "danger": 5.0,
                 })
 
-            # ── Tir rapide en lucarne ────────────────────────────────────
+            # ── SHOT RAPIDE EN LUCARNE ───────────────────────────────────
             fast_shot_in_goal = (
                 is_goal_zone
                 and ball_speed > frame_w * 0.07
@@ -438,59 +496,127 @@ def detect_events(
                 and state["_gk_release_cd"] == 0
             )
 
-            if is_shot and state["shot_cd"] == 0 and shot_speed_ok:
-                if state["_gk_holding_ball"] or state["_gk_release_cd"] > 0:
-                    pass
-                else:
-                    xg_val = compute_xg(x, y, frame_w, frame_h, learner)
-                    shot   = {
-                        "type":      "shot",
-                        "player":    str(current["id"]),
-                        "team":      current.get("team"),
-                        "x":         x,
-                        "y":         y,
-                        "xg":        xg_val,
-                        "danger":    compute_danger({"type": "shot", "xg": xg_val}),
-                        "on_target": fast_shot_in_goal,
-                    }
-                    events.append(shot)
-                    state["shot_cd"]         = shot_cd_max
-                    state["_last_shot_x"]    = x
-                    state["_last_shot_y"]    = y
-                    state["_last_shot_time"] = current_time
+            # ── HELPER _register_shot ────────────────────────────────────
+            def _register_shot(xg_val, source, on_target=False, fast=False):
+                # Calcul on_target enrichi
+                _on_target = on_target or compute_on_target(
+                    x, y,
+                    ball_speed  = ball_speed,
+                    ball_tracker = _bt,
+                    frame_w     = frame_w,
+                    frame_h     = frame_h,
+                    in_goal_zone = is_goal_zone,
+                    fast_shot   = fast,
+                )
+                shot = {
+                    "type":      "shot",
+                    "player":    str(current["id"]),
+                    "team":      current.get("team"),
+                    "x":         x,
+                    "y":         y,
+                    "xg":        xg_val,
+                    "danger":    compute_danger({"type": "shot", "xg": xg_val}),
+                    "on_target": _on_target,
+                    "source":    source,
+                }
+                if fast:
+                    shot["fast_shot"] = True
+                events.append(shot)
+                state["shot_cd"]         = shot_cd_max
+                state["_last_shot_x"]    = x
+                state["_last_shot_y"]    = y
+                state["_last_shot_time"] = current_time
+                if _bt is not None and hasattr(_bt, "register_shot_candidate"):
+                    _bt.register_shot_candidate(
+                        x=x, y=y, t=current_time,
+                        xg=xg_val,
+                        player=str(current["id"]),
+                        team=current.get("team")
+                    )
+                if state["events_buffer"]:
+                    state["events_buffer"][-1]["xA"] = compute_xa(
+                        state["events_buffer"][-1], shot
+                    )
 
-                    if state["events_buffer"]:
-                        last_pass       = state["events_buffer"][-1]
-                        last_pass["xA"] = compute_xa(last_pass, shot)
+            if is_shot_z and state["shot_cd"] == 0 and shot_speed_ok:
+                if not (state["_gk_holding_ball"] or state["_gk_release_cd"] > 0):
+                    _register_shot(
+                        compute_xg(x, y, frame_w, frame_h, learner),
+                        source    = "events_standard",
+                        on_target = fast_shot_in_goal
+                    )
 
             elif fast_shot_in_goal and state["shot_cd"] > 0:
                 if ball_speed > frame_w * 0.10:
-                    xg_val = compute_xg(x, y, frame_w, frame_h, learner)
-                    shot   = {
-                        "type":      "shot",
-                        "player":    str(current["id"]),
-                        "team":      current.get("team"),
-                        "x":         x,
-                        "y":         y,
-                        "xg":        xg_val,
-                        "danger":    compute_danger({"type": "shot", "xg": xg_val}),
-                        "on_target": True,
-                        "fast_shot": True,
-                    }
-                    events.append(shot)
-                    state["shot_cd"]         = shot_cd_max
-                    state["_last_shot_x"]    = x
-                    state["_last_shot_y"]    = y
-                    state["_last_shot_time"] = current_time
+                    _register_shot(
+                        compute_xg(x, y, frame_w, frame_h, learner),
+                        source    = "events_fast",
+                        on_target = True,
+                        fast      = True
+                    )
 
-            # ── GOAL ─────────────────────────────────────────────────────
+            elif (_bt is not None
+                    and hasattr(_bt, "is_shot_candidate")
+                    and state["shot_cd"] == 0
+                    and not state["_gk_holding_ball"]
+                    and state["_gk_release_cd"] == 0
+                    and not ball_interpolated):
+
+                if _bt.is_shot_candidate(frame_w, frame_h):
+                    _in_shot, _in_goal = is_shot_zone(
+                        x, y, sport, shot_zones, frame_w, frame_h
+                    )
+                    if _in_shot:
+                        _register_shot(
+                            compute_xg(x, y, frame_w, frame_h, learner),
+                            source    = "ball_tracker_v23",
+                            on_target = _in_goal
+                        )
+
+            # ── UPGRADE #5 — tick shot candidate → lien tir→but ─────────
+            _in_goal_zone_now = is_goal_zone
+            if _bt is not None and hasattr(_bt, "tick_shot_candidate"):
+                _goal_confirmed = _bt.tick_shot_candidate(
+                    in_goal_zone = _in_goal_zone_now,
+                    current_t    = current_time
+                )
+                if _goal_confirmed and state["goal_cd"] == 0:
+                    sc = _bt.get_shot_candidate()
+                    if sc:
+                        shot_dist    = sc.distance_to_goal(frame_w, frame_h)
+                        max_dist     = math.hypot(frame_w, frame_h / 2)
+                        xg_from_dist = round(max(0.01, min(0.5,
+                            1.0 - shot_dist / max_dist)), 3)
+                        final_xg = max(sc.xg, xg_from_dist)
+
+                        events.append({
+                            "type":        "goal",
+                            "player":      sc.player or str(current["id"]),
+                            "team":        sc.team   or current.get("team"),
+                            "x":           x,
+                            "y":           y,
+                            "xg":          final_xg,
+                            "shot_x":      sc.x,
+                            "shot_y":      sc.y,
+                            "shot_dist":   round(shot_dist, 1),
+                            "danger":      compute_danger({"type": "goal"}),
+                            "shot_linked": True,
+                            "on_target":   True,   # but = tir cadré par définition
+                        })
+                        state["goal_cd"] = goal_cd_max
+                        state["ball_in_goal_zone"]     = 0
+                        state["_goal_zone_speeds"]     = []
+                        state["_goal_zone_speeds_gap"] = 0
+                        _bt.clear_shot_candidate()
+
+            # ── GOAL — logique standard (fallback) ───────────────────────
             ball_is_real     = not ball_interpolated
             player_near_goal = dist < frame_w * player_near_pct
             gk_blocking_goal = state["_gk_holding_ball"] or state["_gk_release_cd"] > 0
 
-            if is_goal_zone and not gk_blocking_goal:
-                # FIX : tolère jusqu'à 4 frames sans joueur détecté
-                # pour ne pas casser le compteur sur tracking raté (CPU sans GPU)
+            _goal_already_added = any(e.get("type") == "goal" for e in events)
+
+            if is_goal_zone and not gk_blocking_goal and not _goal_already_added:
                 if ball_is_real and (player_near_goal or state["ball_in_goal_zone"] >= 3):
                     state["ball_in_goal_zone"] += 1
                     state["_goal_zone_speeds"].append(ball_speed)
@@ -528,20 +654,21 @@ def detect_events(
 
             if (state["ball_in_goal_zone"] >= goal_frames_threshold
                     and state["goal_cd"] == 0
-                    and not gk_blocking_goal):
+                    and not gk_blocking_goal
+                    and not _goal_already_added):
                 speeds    = state["_goal_zone_speeds"]
                 avg_speed = sum(speeds) / len(speeds) if speeds else 0
 
-                # FIX : seuil vitesse rejet relevé 0.06 → 0.09
-                # (115px → 172px sur 1920px) pour ne plus rejeter les vrais buts rapides
                 if avg_speed < frame_w * 0.09:
                     events.append({
-                        "type":   "goal",
-                        "player": str(current["id"]),
-                        "team":   current.get("team"),
-                        "x":      x,
-                        "y":      y,
-                        "danger": compute_danger({"type": "goal"})
+                        "type":        "goal",
+                        "player":      str(current["id"]),
+                        "team":        current.get("team"),
+                        "x":           x,
+                        "y":           y,
+                        "danger":      compute_danger({"type": "goal"}),
+                        "shot_linked": False,
+                        "on_target":   True,   # but = tir cadré par définition
                     })
                     state["goal_cd"] = goal_cd_max
                 else:
