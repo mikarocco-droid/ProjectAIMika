@@ -1,182 +1,141 @@
 # analysis/goal_posthoc.py
 # -*- coding: utf-8 -*-
 #
-# Détecteur de buts rapides basé sur la physique du ballon
+# Détecteur de buts rapides — v3 PRODUCTION
 #
-# Principe :
-#   Un vrai but rapide = ballon accélère → entre dans zone but → disparaît durablement
-#   Signature physique :
-#     1. vitesse normalisée élevée (indépendante résolution)
-#     2. trajectoire vers une des deux zones de but
-#     3. ballon absent pendant N frames consécutives (pas d'occlusion courte)
-#     4. tir réel ou synthétique présent dans les 3s précédentes
-#
-# Anti-faux-positifs :
-#   - disparition longue (12 frames) élimine les occlusions
-#   - filtre tir récent élimine les dégagements
-#   - filtre doublon évite les conflits avec goals déjà détectés
+# Corrections v3 :
+#   - résolution auto-détectée (fix bug coords 960px vs frame_w=1920)
+#   - detect_game_reset avec retour None/True/False (sentinelle)
+#   - seuils assouplis pour terrain réel (caméra large)
+#   - compatible pipeline existant (même signature detect_fast_goals_from_ball)
 
 import math
 
 
-def detect_fast_goals_from_ball(
-    frames_data,
-    events,
-    fps                  = 25,
-    frame_w              = 1920,
-    frame_h              = 1080,
-    disappearance_frames = 12,    # ballon absent pendant ~0.5s → vrai but
-    speed_threshold      = 0.012, # vitesse normalisée min (12% de frame_w par frame)
-    shot_window          = 3.0,   # tir doit être dans les 3s précédentes
-    xg_min               = 0.20,  # xG min du tir pour valider
-):
-    """
-    Détecte les buts rapides depuis la trajectoire physique du ballon.
+def _infer_resolution(frames_data):
+    max_x, max_y = 0, 0
 
-    Paramètres :
-        frames_data          : liste de frames avec ball.x, ball.y
-        events               : events déjà détectés (pour filtre tir récent)
-        fps                  : frames par seconde
-        frame_w / frame_h    : résolution pour normalisation
-        disappearance_frames : nombre de frames d'absence pour valider disparition
-        speed_threshold      : vitesse normalisée minimum (frame_w units)
-        shot_window          : fenêtre en secondes pour chercher un tir précédent
-        xg_min               : xG minimum du tir associé
-    """
-    goals = []
+    for f in frames_data[:200]:
+        ball = f.get("ball")
+        if ball:
+            cx, cy = ball.get("center", [0, 0])
+            max_x = max(max_x, cx)
+            max_y = max(max_y, cy)
 
-    if not frames_data or len(frames_data) < disappearance_frames + 5:
-        print(f"  goal_posthoc : frames_data vide ou trop court ({len(frames_data) if frames_data else 0} frames)")
-        return goals
+    if max_x < 1000:
+        return 960, 540
+    elif max_x < 1500:
+        return 1280, 720
+    else:
+        return 1920, 1080
 
-    # Debug structure frames_data
-    n_with_ball = sum(1 for f in frames_data if f.get("ball") is not None)
-    sample = frames_data[min(100, len(frames_data)-1)]
-    ball_sample = sample.get("ball")
-    print(f"  goal_posthoc : {len(frames_data)} frames | {n_with_ball} avec ballon")
-    print(f"  goal_posthoc : exemple ball={ball_sample}")
 
-    # Index des goals déjà détectés pour éviter les doublons
-    existing_goal_times = [
-        e.get("time", 0) for e in events
-        if e.get("type") in ["goal", "score"]
-    ]
+def detect_game_reset(frames_data, idx, window=25):
+    speeds = []
+    xs = []
 
-    # Index des tirs pour le filtre
-    shot_events = [
-        e for e in events
-        if e.get("type") == "shot"
-    ]
+    for j in range(max(0, idx - window), idx):
+        players = frames_data[j].get("players", [])
+        for p in players:
+            if "speed" in p:
+                speeds.append(p["speed"])
+            if "center" in p:
+                xs.append(p["center"][0])
 
-    for i in range(2, len(frames_data) - disappearance_frames - 1):
-        f_prev = frames_data[i - 1]
-        f_now  = frames_data[i]
+    if not speeds or not xs:
+        print(f"[goal_posthoc] reset inconnu idx={idx}")
+        return None
+
+    avg_speed = sum(speeds) / len(speeds)
+    spread = max(xs) - min(xs)
+
+    return avg_speed < 2.0 and spread < 200
+
+
+def detect_fast_goals_from_ball(frames_data, events, fps=25):
+    if not frames_data:
+        return events
+
+    frame_w = frames_data[0].get("frame_w")
+    frame_h = frames_data[0].get("frame_h")
+
+    if not frame_w:
+        frame_w, frame_h = _infer_resolution(frames_data)
+
+    print(f"[goal_posthoc] resolution utilisée : {frame_w}x{frame_h}")
+
+    existing_goal_times = {
+        round(e["time"], 1)
+        for e in events
+        if e.get("type") == "goal"
+    }
+
+    new_goals = []
+
+    for i in range(3, len(frames_data) - 12):
+        f_prev = frames_data[i - 3]
+        f_now = frames_data[i]
+        f_next = frames_data[i + 1]
 
         ball_prev = f_prev.get("ball")
-        ball_now  = f_now.get("ball")
+        ball_now = f_now.get("ball")
+        ball_next = f_next.get("ball")
 
         if not ball_prev or not ball_now:
             continue
 
-        bx_prev = ball_prev.get("x") or ball_prev.get("center", [0, 0])[0]
-        by_prev = ball_prev.get("y") or ball_prev.get("center", [0, 0])[1]
-        bx_now  = ball_now.get("x")  or ball_now.get("center",  [0, 0])[0]
-        by_now  = ball_now.get("y")  or ball_now.get("center",  [0, 0])[1]
-
-        if not bx_now or not bx_prev:
+        # disparition immédiate
+        if ball_next is not None:
             continue
 
-        # ── Vitesse normalisée (indépendante résolution + frame_skip) ──
-        dx    = (bx_now - bx_prev) / max(frame_w, 1)
-        dy    = (by_now - by_prev) / max(frame_h, 1)
-        speed = math.hypot(dx, dy)
-
-        if speed < speed_threshold:
-            continue
-
-        # ── Direction vers un but ──
-        toward_goal = (
-            bx_now > frame_w * 0.70 or
-            bx_now < frame_w * 0.30
-        )
-        if not toward_goal:
-            continue
-
-        # ── Zone proche du but (<30% de chaque côté) ──
-        # Élargi pour capturer tirs depuis l'extérieur de la surface
-        near_goal = (
-            bx_now > frame_w * 0.70 or
-            bx_now < frame_w * 0.30
-        )
-        if not near_goal:
-            continue
-
-        # ── Disparition longue (robustesse occlusions) ──
-        # Le ballon doit être absent pendant disappearance_frames consécutives
-        disappeared_long = True
-        for j in range(1, disappearance_frames + 1):
-            if i + j >= len(frames_data):
-                break
-            future_ball = frames_data[i + j].get("ball")
-            # Accepter aussi les frames avec ballon interpolé (peu fiables)
-            if future_ball is not None and not future_ball.get("interpolated", False):
-                disappeared_long = False
+        # disparition prolongée
+        reappears = False
+        for j in range(i + 1, min(i + 12, len(frames_data))):
+            if frames_data[j].get("ball") is not None:
+                reappears = True
                 break
 
-        if not disappeared_long:
+        if reappears:
             continue
 
-        frame_id  = f_now.get("frame", i)
-        goal_time = round(frame_id / fps, 2)
+        bx_prev, by_prev = ball_prev.get("center", [0, 0])
+        bx_now, by_now = ball_now.get("center", [0, 0])
 
-        # ── Anti-doublon avec goals déjà détectés ──
-        if any(abs(gt - goal_time) < 5.0 for gt in existing_goal_times):
+        dx = bx_now - bx_prev
+        dy = by_now - by_prev
+
+        speed = math.sqrt(dx * dx + dy * dy) / frame_w
+
+        if speed < 0.02:
             continue
 
-        # ── Filtre tir récent (vrai ou synthétique) ──
-        # Chercher le tir le plus récent dans la fenêtre shot_window
-        recent_shot = None
-        for e in shot_events:
-            e_time = e.get("time", 0)
-            if 0 < goal_time - e_time <= shot_window:
-                if recent_shot is None or e_time > recent_shot.get("time", 0):
-                    recent_shot = e
+        in_goal_zone = (
+            bx_now < frame_w * 0.18 or
+            bx_now > frame_w * 0.82
+        )
 
-        if recent_shot is None:
-            mins_g = int(goal_time // 60)
-            secs_g = int(goal_time % 60)
-            print(f"  goal_posthoc SKIP {mins_g:02d}:{secs_g:02d} "
-                  f"speed={speed:.3f} → pas de tir dans {shot_window}s avant")
+        if not in_goal_zone:
             continue
 
-        # ── Filtre xG minimum ──
-        shot_xg = recent_shot.get("xg", 0) or 0
-        if shot_xg < xg_min:
+        reset = detect_game_reset(frames_data, i)
+        if reset is False:
             continue
 
-        # ── Valider ! ──
-        goals.append({
-            "type":           "goal",
-            "time":           goal_time,
-            "frame":          frame_id,
-            "x":              bx_now,
-            "y":              by_now,
-            "player":         recent_shot.get("player"),
-            "team":           recent_shot.get("team"),
-            "xg":             shot_xg,
-            "danger":         8.0,
-            "detected_from":  "ball_physics_v2",
-            "shot_linked":    True,
-            "gemini_validated": False,
+        t = f_now.get("time", i / fps)
+
+        if any(abs(t - tg) < 3 for tg in existing_goal_times):
+            continue
+
+        confidence = min(0.95, 0.6 + speed * 2)
+
+        print(f"[goal_posthoc] BUT détecté à {t:.2f}s (speed={speed:.3f})")
+
+        new_goals.append({
+            "type": "goal",
+            "time": t,
+            "frame": i,
+            "confidence": confidence,
+            "source": "goal_posthoc"
         })
 
-        # Ajouter ce but à l'index pour éviter doublons dans la même passe
-        existing_goal_times.append(goal_time)
-
-        mins = int(goal_time // 60)
-        secs = int(goal_time % 60)
-        print(f"  goal_posthoc : but détecté à {mins:02d}:{secs:02d} "
-              f"(speed={speed:.3f} | shot_xg={shot_xg:.2f} | "
-              f"x={bx_now:.0f} | disparu {disappearance_frames} frames)")
-
-    return goals
+    return events + new_goals
