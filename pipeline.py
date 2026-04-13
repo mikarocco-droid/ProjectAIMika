@@ -823,6 +823,8 @@ def run_pipeline(
                 jersey_map = jersey_map,
                 highlights = highlights,
                 goals_real = goals_real,
+                frame_w    = _frame_w,   # FIX : résolution réelle (960px possible)
+                frame_h    = _frame_h,   # sans ça les features xG sont calculées en 1920 → faux
             )
             print(f"  Learning : {learner.stats()}")
         except Exception as e:
