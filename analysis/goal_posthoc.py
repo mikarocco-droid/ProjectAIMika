@@ -46,7 +46,15 @@ def detect_fast_goals_from_ball(
     goals = []
 
     if not frames_data or len(frames_data) < disappearance_frames + 5:
+        print(f"  goal_posthoc : frames_data vide ou trop court ({len(frames_data) if frames_data else 0} frames)")
         return goals
+
+    # Debug structure frames_data
+    n_with_ball = sum(1 for f in frames_data if f.get("ball") is not None)
+    sample = frames_data[min(100, len(frames_data)-1)]
+    ball_sample = sample.get("ball")
+    print(f"  goal_posthoc : {len(frames_data)} frames | {n_with_ball} avec ballon")
+    print(f"  goal_posthoc : exemple ball={ball_sample}")
 
     # Index des goals déjà détectés pour éviter les doublons
     existing_goal_times = [
@@ -94,10 +102,11 @@ def detect_fast_goals_from_ball(
         if not toward_goal:
             continue
 
-        # ── Zone proche du but (<15% de chaque côté) ──
+        # ── Zone proche du but (<30% de chaque côté) ──
+        # Élargi pour capturer tirs depuis l'extérieur de la surface
         near_goal = (
-            bx_now > frame_w * 0.85 or
-            bx_now < frame_w * 0.15
+            bx_now > frame_w * 0.70 or
+            bx_now < frame_w * 0.30
         )
         if not near_goal:
             continue
@@ -125,16 +134,19 @@ def detect_fast_goals_from_ball(
             continue
 
         # ── Filtre tir récent (vrai ou synthétique) ──
+        # Chercher le tir le plus récent dans la fenêtre shot_window
         recent_shot = None
-        for e in reversed(shot_events):
+        for e in shot_events:
             e_time = e.get("time", 0)
-            if e_time < goal_time - shot_window:
-                break
-            if 0 <= goal_time - e_time <= shot_window:
-                recent_shot = e
-                break
+            if 0 < goal_time - e_time <= shot_window:
+                if recent_shot is None or e_time > recent_shot.get("time", 0):
+                    recent_shot = e
 
         if recent_shot is None:
+            mins_g = int(goal_time // 60)
+            secs_g = int(goal_time % 60)
+            print(f"  goal_posthoc SKIP {mins_g:02d}:{secs_g:02d} "
+                  f"speed={speed:.3f} → pas de tir dans {shot_window}s avant")
             continue
 
         # ── Filtre xG minimum ──
