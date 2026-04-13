@@ -1,141 +1,154 @@
 # analysis/goal_posthoc.py
 # -*- coding: utf-8 -*-
-#
-# Détecteur de buts rapides — v3 PRODUCTION
-#
-# Corrections v3 :
-#   - résolution auto-détectée (fix bug coords 960px vs frame_w=1920)
-#   - detect_game_reset avec retour None/True/False (sentinelle)
-#   - seuils assouplis pour terrain réel (caméra large)
-#   - compatible pipeline existant (même signature detect_fast_goals_from_ball)
 
 import math
 
 
-def _infer_resolution(frames_data):
-    max_x, max_y = 0, 0
+# ─────────────────────────────────────────────
+# UTILS
+# ─────────────────────────────────────────────
 
-    for f in frames_data[:200]:
-        ball = f.get("ball")
-        if ball:
-            cx, cy = ball.get("center", [0, 0])
-            max_x = max(max_x, cx)
-            max_y = max(max_y, cy)
-
-    if max_x < 1000:
-        return 960, 540
-    elif max_x < 1500:
-        return 1280, 720
-    else:
-        return 1920, 1080
-
-
-def detect_game_reset(frames_data, idx, window=25):
-    speeds = []
-    xs = []
-
-    for j in range(max(0, idx - window), idx):
-        players = frames_data[j].get("players", [])
-        for p in players:
-            if "speed" in p:
-                speeds.append(p["speed"])
-            if "center" in p:
-                xs.append(p["center"][0])
-
-    if not speeds or not xs:
-        print(f"[goal_posthoc] reset inconnu idx={idx}")
+def _get_ball_center(ball):
+    if not ball:
         return None
+    c = ball.get("center")
+    if c and len(c) >= 2:
+        return float(c[0]), float(c[1])
+    bbox = ball.get("bbox")
+    if bbox and len(bbox) == 4:
+        return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+    return None
 
-    avg_speed = sum(speeds) / len(speeds)
-    spread = max(xs) - min(xs)
 
-    return avg_speed < 2.0 and spread < 200
+def _in_goal_zone(x, w):
+    return x < w * 0.08 or x > w * 0.92
 
 
-def detect_fast_goals_from_ball(frames_data, events, fps=25):
-    if not frames_data:
-        return events
+# ─────────────────────────────────────────────
+# CALIBRATION
+# ─────────────────────────────────────────────
 
-    frame_w = frames_data[0].get("frame_w")
-    frame_h = frames_data[0].get("frame_h")
+def calibrate_match_context(frames_data):
+    speeds = []
+    visibility = []
 
-    if not frame_w:
-        frame_w, frame_h = _infer_resolution(frames_data)
+    for i in range(1, min(500, len(frames_data))):
+        c1 = _get_ball_center(frames_data[i].get("ball"))
+        c0 = _get_ball_center(frames_data[i - 1].get("ball"))
 
-    print(f"[goal_posthoc] resolution utilisée : {frame_w}x{frame_h}")
+        if c1 and c0:
+            speeds.append(abs(c1[0] - c0[0]))
 
-    existing_goal_times = {
-        round(e["time"], 1)
-        for e in events
-        if e.get("type") == "goal"
+        visibility.append(frames_data[i].get("ball") is not None)
+
+    if not speeds:
+        return {}
+
+    speeds_sorted = sorted(speeds)
+
+    return {
+        "speed_base": speeds_sorted[int(len(speeds)*0.5)],
+        "speed_peak": speeds_sorted[int(len(speeds)*0.95)],
+        "tracking_quality": sum(visibility)/len(visibility)
     }
 
-    new_goals = []
 
-    for i in range(3, len(frames_data) - 12):
-        f_prev = frames_data[i - 3]
-        f_now = frames_data[i]
-        f_next = frames_data[i + 1]
+# ─────────────────────────────────────────────
+# MAIN V6
+# ─────────────────────────────────────────────
 
-        ball_prev = f_prev.get("ball")
-        ball_now = f_now.get("ball")
-        ball_next = f_next.get("ball")
+def detect_fast_goals_from_ball(frames_data, events, fps=25, frame_w=1920, frame_h=1080):
 
-        if not ball_prev or not ball_now:
+    goals = []
+
+    if not frames_data:
+        return goals
+
+    ctx = calibrate_match_context(frames_data)
+
+    speed_base = ctx.get("speed_base", 5)
+    tracking_quality = ctx.get("tracking_quality", 1.0)
+
+    SPEED_THRESHOLD = speed_base * 1.4
+    STUCK_MIN = 3 if tracking_quality < 0.8 else 5
+    SCORE_THRESHOLD = 3.0 if tracking_quality < 0.8 else 3.5
+
+    print(f"goal_posthoc V6 | speed_base={speed_base:.2f} | tracking={tracking_quality:.2f}")
+
+    speeds = [0.0]
+    for i in range(1, len(frames_data)):
+        c1 = _get_ball_center(frames_data[i].get("ball"))
+        c0 = _get_ball_center(frames_data[i-1].get("ball"))
+
+        if c1 and c0:
+            dx = (c1[0] - c0[0]) / frame_w
+            speeds.append(abs(dx))
+        else:
+            speeds.append(0.0)
+
+    shots = sorted(
+        [e for e in events if e.get("type") == "shot"],
+        key=lambda e: e.get("time", 0)
+    )
+
+    existing = [e.get("time", 0) for e in events if e.get("type") == "goal"]
+
+    for i in range(5, len(frames_data)-10):
+
+        c = _get_ball_center(frames_data[i].get("ball"))
+        if not c:
             continue
 
-        # disparition immédiate
-        if ball_next is not None:
+        x, y = c
+
+        if not _in_goal_zone(x, frame_w):
             continue
 
-        # disparition prolongée
-        reappears = False
-        for j in range(i + 1, min(i + 12, len(frames_data))):
-            if frames_data[j].get("ball") is not None:
-                reappears = True
+        score = 2
+
+        peak = max(speeds[i-5:i+1])
+        if peak > SPEED_THRESHOLD / frame_w:
+            score += 1
+
+        # stuck
+        stuck = 0
+        for j in range(i, i+15):
+            cj = _get_ball_center(frames_data[j].get("ball"))
+            if cj and _in_goal_zone(cj[0], frame_w):
+                stuck += 1
+            else:
                 break
 
-        if reappears:
+        if stuck >= STUCK_MIN:
+            score += 2
+        elif stuck >= 2:
+            score += 1
+
+        goal_time = frames_data[i].get("frame", i) / fps
+
+        if any(abs(s.get("time", 0) - goal_time) < 5 for s in shots):
+            score += 0.5
+
+        if score < SCORE_THRESHOLD:
             continue
 
-        bx_prev, by_prev = ball_prev.get("center", [0, 0])
-        bx_now, by_now = ball_now.get("center", [0, 0])
-
-        dx = bx_now - bx_prev
-        dy = by_now - by_prev
-
-        speed = math.sqrt(dx * dx + dy * dy) / frame_w
-
-        if speed < 0.02:
+        if any(abs(goal_time - t) < 5 for t in existing):
             continue
 
-        in_goal_zone = (
-            bx_now < frame_w * 0.18 or
-            bx_now > frame_w * 0.82
-        )
-
-        if not in_goal_zone:
-            continue
-
-        reset = detect_game_reset(frames_data, i)
-        if reset is False:
-            continue
-
-        t = f_now.get("time", i / fps)
-
-        if any(abs(t - tg) < 3 for tg in existing_goal_times):
-            continue
-
-        confidence = min(0.95, 0.6 + speed * 2)
-
-        print(f"[goal_posthoc] BUT détecté à {t:.2f}s (speed={speed:.3f})")
-
-        new_goals.append({
+        goals.append({
             "type": "goal",
-            "time": t,
-            "frame": i,
-            "confidence": confidence,
-            "source": "goal_posthoc"
+            "time": round(goal_time, 2),
+            "frame": frames_data[i].get("frame", i),
+            "x": x,
+            "y": y,
+            "confidence": round(min(0.5 + score*0.1, 0.95), 2),
+            "score": round(score, 2),
+            "detected_from": "goal_posthoc_v6",
+            "gemini_validated": False
         })
 
-    return events + new_goals
+        print(f"🔥 V6 GOAL {goal_time:.2f}s score={score}")
+
+        existing.append(goal_time)
+
+    return goals
