@@ -163,6 +163,31 @@ def resolve_mvp_label(mvp, stats, jersey_map):
 
 
 # ─────────────────────────────────────────
+# DÉDUPLICATION BUTS (niveau pipeline)
+# ─────────────────────────────────────────
+def deduplicate_goals(events, window=3.0):
+    """
+    Fusionne les buts détectés en doublon (events + posthoc + Gemini).
+    Conserve le but avec la meilleure confidence dans chaque fenêtre.
+    """
+    goals  = sorted(
+        [e for e in events if e.get("type") in ("goal", "score")],
+        key=lambda x: x.get("time", 0)
+    )
+    others = [e for e in events if e.get("type") not in ("goal", "score")]
+
+    kept = []
+    for g in goals:
+        if kept and abs(g["time"] - kept[-1]["time"]) < window:
+            if g.get("confidence", 0) > kept[-1].get("confidence", 0):
+                kept[-1] = g
+        else:
+            kept.append(g)
+
+    return sorted(others + kept, key=lambda x: x.get("time", 0))
+
+
+# ─────────────────────────────────────────
 # PIPELINE PRINCIPAL
 # ─────────────────────────────────────────
 def run_pipeline(
@@ -251,35 +276,56 @@ def run_pipeline(
 
     for e in events:
         if not e.get("time"):
-            frame = e.get("frame", 0) or 0
+            frame     = e.get("frame", 0) or 0
             e["time"] = round(frame / fps, 2) if fps > 0 else 0
 
     # ─────────────────────────────────────────
     # 1a. POST PROCESSING
+    #
     # Ordre critique :
-    #   1. goal_posthoc (physique ballon) — avant filtre pour enrichir
-    #   2. merge_players
-    #   3. temporal_filter
-    #   4. infer_shots_from_goals — crée shots synthétiques
-    #   5. filter_goals — accepte shots réels ET synthétiques
+    #   1. Résolution réelle (une fois, hors boucle)
+    #   2. detect_goals_robust → remplace ancienne logique events.py
+    #   3. goal_posthoc → rattrapage tirs rapides
+    #   4. deduplicate_goals → fusion par confidence
+    #   5. merge_players + temporal_filter
+    #   6. infer_shots_from_goals
+    #   7. filter_goals (cooldown)
     # ─────────────────────────────────────────
     is_summary = False
-    _frame_w   = 1920
-    _frame_h   = 1080
+
+    # ── Résolution réelle (UNE SEULE FOIS, hors boucle) ──────────────────────
+    # FIX CRITIQUE : ne jamais utiliser 1920 hardcodé si les coords sont en 960px
+    if frames_data:
+        _frame_w = int(frames_data[0].get("frame_w") or 1920)
+        _frame_h = int(frames_data[0].get("frame_h") or 1080)
+    else:
+        _frame_w, _frame_h = 1920, 1080
+
+    # Vérification cohérence résolution vs coordonnées réelles
+    _max_ball_x = 0
+    for f in frames_data[:200]:
+        ball = f.get("ball")
+        if ball:
+            c = ball.get("center") or [ball.get("x", 0), 0]
+            if c[0]:
+                _max_ball_x = max(_max_ball_x, c[0])
+
+    if _max_ball_x > 0 and _max_ball_x < _frame_w * 0.6:
+        # Coordonnées ballon bien inférieures à frame_w → résolution incohérente
+        if _max_ball_x > 900:
+            _frame_w, _frame_h = 1280, 720
+        else:
+            _frame_w, _frame_h = 960, 540
+        print(f"  WARNING résolution corrigée → {_frame_w}x{_frame_h} "
+              f"(max_ball_x={_max_ball_x:.0f} incohérent avec frame_w original)")
+
+    print(f"  Résolution pipeline : {_frame_w}x{_frame_h}")
 
     try:
-        from analysis.post_processing import (
-            temporal_filter,
-            filter_goals,
-            merge_players,
-            infer_shots_from_goals,
-        )
+        from analysis.post_processing import post_process_events
 
         video_duration = total_frames / fps if fps > 0 else 600
         is_summary     = video_duration < 480
-
-        _frame_w = int(frames_data[0].get("frame_w", 1920)) if frames_data else 1920
-        _frame_h = int(frames_data[0].get("frame_h", 1080)) if frames_data else 1080
 
         if is_summary:
             goal_cooldown      = 10.0
@@ -295,40 +341,58 @@ def run_pipeline(
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={int(position_threshold*100)}%")
 
-        # ── 1. Détecteur physique buts rapides ──
+        # ── FILTRE XG == 0 SUR BUTS BRUTS (avant tout le reste) ──────────────
+        # Supprime les faux buts générés par events.py sans contexte tir
+        n_goals_raw = sum(1 for e in events if e.get("type") in ("goal", "score"))
+        events = [
+            e for e in events
+            if not (
+                e.get("type") in ("goal", "score")
+                and (e.get("xg", 0) or 0) <= 0.01
+                and e.get("source") not in ("goal_posthoc", "ball_physics_v3",
+                                            "ball_physics_v2", "events_v2")
+            )
+        ]
+        n_goals_filtered = sum(1 for e in events if e.get("type") in ("goal", "score"))
+        if n_goals_raw != n_goals_filtered:
+            print(f"  Filtre xG=0 : {n_goals_raw - n_goals_filtered} faux but(s) "
+                  f"supprimés à la source")
+
+        # ── 1. Détecteur physique buts rapides (posthoc) ──────────────────────
         try:
             fast_goals = detect_fast_goals_from_ball(
                 frames_data = frames_data,
                 events      = events,
                 fps         = fps,
-                frame_w     = _frame_w,
+                frame_w     = _frame_w,   # résolution corrigée
                 frame_h     = _frame_h,
             )
             if fast_goals:
                 events.extend(fast_goals)
                 events.sort(key=lambda e: e.get("time", 0))
-                print(f"  goal_posthoc : {len(fast_goals)} but(s) physique détecté(s)")
+                print(f"  goal_posthoc : {len(fast_goals)} but(s) détecté(s)")
         except Exception as eg:
             print(f"  goal_posthoc ignoré : {eg}")
 
-        # ── 2. Fusion joueurs proches ──
-        events = merge_players(events)
+        # ── 2. Déduplication par confidence (avant merge) ─────────────────────
+        n_before = sum(1 for e in events if e.get("type") in ("goal", "score"))
+        events   = deduplicate_goals(events, window=3.0)
+        n_after  = sum(1 for e in events if e.get("type") in ("goal", "score"))
+        if n_before != n_after:
+            print(f"  Dedup buts : {n_before} → {n_after} (doublons fusionnés par confidence)")
 
-        # ── 3. Filtre temporel ──
-        events = temporal_filter(events, min_delta=2.0)
-
-        # ── 4. Inférence shots synthétiques depuis buts ──
-        events = infer_shots_from_goals(events)
-
-        # ── 5. Filtre buts (accepte shots réels + synthétiques) ──
-        events = filter_goals(
-            events,
-            window             = goal_cooldown,
-            frame_w            = _frame_w,
-            position_threshold = position_threshold,
+        # ── 3. Fusion joueurs proches ──────────────────────────────────────────
+        events = post_process_events(
+            events=events,
+            frames_data=frames_data,
+            fps=fps,
+            frame_w=_frame_w,
+            frame_h=_frame_h
         )
         n_goals = sum(1 for e in events if e.get("type") in ["goal", "score"])
-        print(f"  CLEAN {len(events)} events | {n_goals} but(s) | goal_cooldown={goal_cooldown:.0f}s")
+        print(f"  CLEAN {len(events)} events | {n_goals} but(s) | "
+              f"goal_cooldown={goal_cooldown:.0f}s")
+
     except Exception as e:
         print(f"  Post processing ignoré : {e}")
 
@@ -344,7 +408,7 @@ def run_pipeline(
             video_path    = video_path,
             fps           = fps,
             sport         = sport,
-            MIN_CONF_GOAL = 0.70,
+            MIN_CONF_GOAL = 0.80,   # FIX : était 0.70 → trop permissif (ex: 0.65 accepté)
             MIN_CONF_SHOT = 0.70,
             frame_w       = _frame_w,
             frame_h       = _frame_h,
@@ -429,45 +493,19 @@ def run_pipeline(
             sport   = sport,
             frame_w = _frame_w,
             frame_h = _frame_h,
-            verbose = False,
         )
-        if val_stats["invalid"] > 0:
-            print(f"  Validator : {val_stats['valid']} valides | "
-                  f"{val_stats['invalid']} rejetés | "
-                  f"{val_stats['by_reason']}")
+        print(f"  Validation structurelle : {val_stats}")
     except Exception as e:
-        print(f"  Event validator ignoré : {e}")
-
-    # ─────────────────────────────────────────
-    # 1b-quater. DÉTECTION RÉELLE DE TIRS
-    # ─────────────────────────────────────────
-    try:
-        real_shots = detect_real_shots(
-            events  = events,
-            frame_w = _frame_w,
-            frame_h = _frame_h,
-            sport   = sport,
-            fps     = fps,
-        )
-        if real_shots:
-            events.extend(real_shots)
-            events.sort(key=lambda e: e.get("time", 0))
-    except Exception as e:
-        print(f"  Shot detector ignoré : {e}")
+        print(f"  filter_events ignoré : {e}")
 
     # ─────────────────────────────────────────
     # 1c. SMART FILTERING
     # ─────────────────────────────────────────
-    possession = {}
     try:
-        from analysis.smart_game_ai import clean_events_smart
-        from analysis.ball_physics import detect_real_shot
-
-        events = clean_events_smart(events)
+        from analysis.event_validator import detect_real_shots as detect_real_shot
 
         validated = []
-        for i in range(len(events)):
-            e    = events[i]
+        for i, e in enumerate(events):
             prev = events[i-1] if i > 0 else None
             if e.get("type") == "shot":
                 if not e.get("detected_from") and not e.get("synthetic") and not detect_real_shot(e, prev):
@@ -886,6 +924,9 @@ def run_pipeline(
     with open(os.path.join(output_dir, "analysis.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 
+    # ─────────────────────────────────────────
+    # RÉSUMÉ FINAL
+    # ─────────────────────────────────────────
     print(f"\nPIPELINE DONE")
     print(f"  {summary['goals']} buts | {summary['shots']} tirs | "
           f"xG: {summary['total_xg']} | {summary['players']} joueurs")
@@ -894,5 +935,29 @@ def run_pipeline(
     print(f"  Possession: {possession}")
     if is_summary:
         print(f"  ℹ️  Mode résumé détecté — paramètres adaptés")
+
+    # ─────────────────────────────────────────
+    # DEBUG BUTS (toujours affiché)
+    # ─────────────────────────────────────────
+    goal_events = [e for e in events if e.get("type") in ("goal", "score")]
+    shot_events_final = [e for e in events if e.get("type") == "shot"]
+    print(f"\n{'='*50}")
+    print(f"DEBUG — Analyse buts + joueurs")
+    print(f"{'='*50}")
+    print(f"\n  Buts          : {len(goal_events)}")
+    print(f"  Tirs          : {len(shot_events_final)}")
+    print(f"  Jersey map    : {len(jersey_map)} joueurs identifiés")
+    for g in goal_events:
+        t  = g.get("time", 0)
+        mm = int(t // 60)
+        ss = int(t % 60)
+        print(f"\n  ── But à {mm:02d}:{ss:02d} ──")
+        pid = g.get("player")
+        label = get_player_label(str(pid), jersey_map) if pid else "?"
+        print(f"     Buteur    : {label} (ID={pid})")
+        print(f"     Source    : {g.get('source', g.get('detected_from', '?'))}")
+        print(f"     gemini    : {g.get('gemini_validated', False)}")
+        print(f"     conf      : {g.get('confidence', '?')}")
+        print(f"     xG        : {g.get('xg', 0):.3f}")
 
     return result
