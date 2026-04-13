@@ -234,6 +234,8 @@ def init_state(learner=None):
         "_shot_candidate_xg":       None,
         "_shot_candidate_player":   None,
         "_shot_candidate_team":     None,
+        # ── AJOUT v2 : buffer tirs récents pour filtre xG=0 ──
+        "_recent_shots_buffer":     deque(maxlen=20),
     }
 
 
@@ -515,6 +517,7 @@ def detect_events(
                     "x":         x,
                     "y":         y,
                     "xg":        xg_val,
+                    "time":      current_time,
                     "danger":    compute_danger({"type": "shot", "xg": xg_val}),
                     "on_target": _on_target,
                     "source":    source,
@@ -526,6 +529,11 @@ def detect_events(
                 state["_last_shot_x"]    = x
                 state["_last_shot_y"]    = y
                 state["_last_shot_time"] = current_time
+                # ── AJOUT v2 : alimenter le buffer tirs récents ──
+                state["_recent_shots_buffer"].append({
+                    "time": current_time,
+                    "xg":   xg_val,
+                })
                 if _bt is not None and hasattr(_bt, "register_shot_candidate"):
                     _bt.register_shot_candidate(
                         x=x, y=y, t=current_time,
@@ -596,12 +604,15 @@ def detect_events(
                             "x":           x,
                             "y":           y,
                             "xg":          final_xg,
+                            "time":        current_time,
                             "shot_x":      sc.x,
                             "shot_y":      sc.y,
                             "shot_dist":   round(shot_dist, 1),
                             "danger":      compute_danger({"type": "goal"}),
                             "shot_linked": True,
-                            "on_target":   True,   # but = tir cadré par définition
+                            "on_target":   True,
+                            "source":      "events_bt",
+                            "confidence":  0.85,
                         })
                         state["goal_cd"] = goal_cd_max
                         state["ball_in_goal_zone"]     = 0
@@ -660,17 +671,39 @@ def detect_events(
                 avg_speed = sum(speeds) / len(speeds) if speeds else 0
 
                 if avg_speed < frame_w * 0.09:
-                    events.append({
-                        "type":        "goal",
-                        "player":      str(current["id"]),
-                        "team":        current.get("team"),
-                        "x":           x,
-                        "y":           y,
-                        "danger":      compute_danger({"type": "goal"}),
-                        "shot_linked": False,
-                        "on_target":   True,   # but = tir cadré par définition
-                    })
-                    state["goal_cd"] = goal_cd_max
+                    # ── FIX v2 : filtre xG=0 — chercher tir récent ───────
+                    # Un but sans tir associé dans les 5s = tracking artifact
+                    _recent_shot_xg = 0.0
+                    _recent_shot_player = None
+                    _recent_shot_team   = None
+                    for _s in reversed(list(state.get("_recent_shots_buffer", []))):
+                        if 0 < current_time - _s["time"] <= 5.0:
+                            _recent_shot_xg     = _s.get("xg", 0) or 0
+                            _recent_shot_player = _s.get("player")
+                            _recent_shot_team   = _s.get("team")
+                            break
+
+                    if _recent_shot_xg <= 0.01:
+                        # Pas de tir récent avec xG > 0 → faux positif
+                        print(f"  goal REJETÉ à t={current_time:.1f}s "
+                              f"(xG=0.000 — pas de tir récent → faux positif)")
+                    else:
+                        # Tir récent confirmé → but valide
+                        events.append({
+                            "type":        "goal",
+                            "player":      str(current["id"]),
+                            "team":        current.get("team"),
+                            "x":           x,
+                            "y":           y,
+                            "xg":          _recent_shot_xg,
+                            "time":        current_time,
+                            "danger":      compute_danger({"type": "goal"}),
+                            "shot_linked": True,
+                            "on_target":   True,
+                            "source":      "events_standard",
+                            "confidence":  min(0.5 + _recent_shot_xg, 0.90),
+                        })
+                        state["goal_cd"] = goal_cd_max
                 else:
                     print(f"  goal rejeté vitesse_avg={avg_speed:.0f}px "
                           f"> seuil={frame_w * 0.09:.0f}px (dégagement)")
@@ -718,3 +751,19 @@ def process_match(frames_data, sport="football", shot_zones=None, learner=None):
         all_events.extend(events)
 
     return all_events
+    
+def process_events(raw_events):
+    clean_events = []
+
+    for event in raw_events:
+
+        if event.get("type") == "goal":
+
+            # 🔥 FIX CRITIQUE
+            if event.get("xg", 0) == 0.0 and event.get("source") != "goal_posthoc":
+                print(f"[events] rejet but sans xG à {event.get('time')}")
+                continue
+
+        clean_events.append(event)
+
+    return clean_events
