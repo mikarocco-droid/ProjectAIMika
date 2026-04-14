@@ -30,7 +30,7 @@ from analysis.match_story import generate_match_story
 from ai.commentary import generate_commentary
 from ai.learning import cluster_actions, learn_action_importance, detect_key_moments
 from sports.config import get_sport_config, compute_xg_sport
-from analysis.event_validator import filter_events, detect_real_shots
+from analysis.event_validator import detect_real_shots
 from analysis.context_engine import ContextEngine
 from analysis.player_identity import resolve_player_identities, get_player_label
 from analysis.goal_posthoc import detect_fast_goals_from_ball
@@ -77,9 +77,9 @@ def normalize_highlights(highlights, mode="match"):
 
     if mode == "player":
         allowed = ["goal", "shot", "score", "dribble",
-                   "progressive_run", "interception", "fast_break"]
+                   "progressive_run", "interception", "fast_break", "big_chance", "assist"]
     else:
-        allowed = ["goal", "shot", "score"]
+        allowed = ["goal", "shot", "score", "big_chance", "assist"]
 
     fixed = [h for h in fixed if h["main_type"] in allowed]
     return fixed
@@ -312,10 +312,11 @@ def run_pipeline(
 
     if _max_ball_x > 0 and _max_ball_x < _frame_w * 0.6:
         # Coordonnées ballon bien inférieures à frame_w → résolution incohérente
-        if _max_ball_x > 900:
-            _frame_w, _frame_h = 1280, 720
-        else:
-            _frame_w, _frame_h = 960, 540
+        ratio = _max_ball_x / _frame_w
+
+        if ratio < 0.5:
+            _frame_w = int(_max_ball_x * 2)
+
         print(f"  WARNING résolution corrigée → {_frame_w}x{_frame_h} "
               f"(max_ball_x={_max_ball_x:.0f} incohérent avec frame_w original)")
 
@@ -329,14 +330,14 @@ def run_pipeline(
 
         if is_summary:
             goal_cooldown      = 10.0
-            position_threshold = 0.35
+            position_threshold = 0.05
             print(f"  Résumé détecté ({video_duration:.0f}s) — "
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={int(position_threshold*100)}%")
         else:
             goal_cooldown = learner.get_thresholds().get("goal_cooldown", 150.0) \
                             if learner else 150.0
-            position_threshold = 0.20
+            position_threshold = 0.05
             print(f"  Match complet ({video_duration:.0f}s) — "
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={int(position_threshold*100)}%")
@@ -349,6 +350,7 @@ def run_pipeline(
             if not (
                 e.get("type") in ("goal", "score")
                 and (e.get("xg", 0) or 0) <= 0.01
+                and e.get("confidence", 0) < 0.5
                 and e.get("source") not in ("goal_posthoc", "ball_physics_v3",
                                             "ball_physics_v2", "events_v2")
             )
@@ -359,6 +361,7 @@ def run_pipeline(
                   f"supprimés à la source")
 
         # ── 1. Détecteur physique buts rapides (posthoc) ──────────────────────
+        fast_goals = []
         try:
             fast_goals = detect_fast_goals_from_ball(
                 frames_data = frames_data,
@@ -381,6 +384,10 @@ def run_pipeline(
         if n_before != n_after:
             print(f"  Dedup buts : {n_before} → {n_after} (doublons fusionnés par confidence)")
 
+        for e in events:
+            if e.get("detected_from") == "goal_posthoc_v8":
+                e["_keep"] = True
+
         # ── 3. Fusion joueurs proches ──────────────────────────────────────────
         events = post_process_events(
             events=events,
@@ -389,9 +396,25 @@ def run_pipeline(
             frame_w=_frame_w,
             frame_h=_frame_h
         )
+        print("  DEBUG buts après post_process:")
+        for e in events:
+            if e.get("type") in ("goal", "score"):
+                print(f"    t={e.get('time'):.2f} | conf={e.get('confidence')} | src={e.get('detected_from')}")
+
         n_goals = sum(1 for e in events if e.get("type") in ["goal", "score"])
         print(f"  CLEAN {len(events)} events | {n_goals} but(s) | "
               f"goal_cooldown={goal_cooldown:.0f}s")
+
+        # Réinjecter buts critiques si supprimés
+        post_times = {round(e.get("time", 0), 1) for e in events}
+
+        for e in fast_goals:
+            t = round(e.get("time", 0), 1)
+            if t not in post_times:
+                print(f"  ⚠️ BUT RÉINJECTÉ {t}s (perdu dans post_process)")
+                events.append(e)
+
+        events.sort(key=lambda x: x.get("time", 0))
 
     except Exception as e:
         print(f"  Post processing ignoré : {e}")
@@ -401,6 +424,17 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 1b : Validation Gemini...")
     try:
+        # protéger les buts physiques forts
+        protected_goals = []
+
+        for e in events:
+            if (
+                e.get("type") == "goal"
+                and e.get("detected_from") == "goal_posthoc_v8"
+                and e.get("confidence", 0) >= 0.7
+            ):
+                e["_protected"] = True
+
         from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers
 
         events = validate_events_with_gemini(
@@ -408,7 +442,7 @@ def run_pipeline(
             video_path    = video_path,
             fps           = fps,
             sport         = sport,
-            MIN_CONF_GOAL = 0.80,   # FIX : était 0.70 → trop permissif (ex: 0.65 accepté)
+            MIN_CONF_GOAL = 0.85 if not is_summary else 0.75,   # FIX : était 0.70 → trop permissif (ex: 0.65 accepté)
             MIN_CONF_SHOT = 0.70,
             frame_w       = _frame_w,
             frame_h       = _frame_h,
@@ -502,8 +536,7 @@ def run_pipeline(
     # 1c. SMART FILTERING
     # ─────────────────────────────────────────
     try:
-        from analysis.event_validator import detect_real_shots as detect_real_shot
-
+        
         validated = []
         for i, e in enumerate(events):
             prev = events[i-1] if i > 0 else None
@@ -768,7 +801,8 @@ def run_pipeline(
     mvp_label  = None
     commentary = []
     story      = ""
-
+    possession = {}
+    
     try:
         for e in events:
             if not e.get("time"):
