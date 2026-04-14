@@ -256,7 +256,7 @@ def detect_fast_goals_from_ball(
                 break
 
         if stuck >= STUCK_MIN_OTHER:
-            score += stuck
+            i += stuck + 1
             continue
         if stuck >= STUCK_MIN_HIGH:
             score += 2.0
