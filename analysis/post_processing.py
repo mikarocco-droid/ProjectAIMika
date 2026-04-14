@@ -263,7 +263,7 @@ def post_process_events(
             is_summary     = video_duration < 480
         goal_cooldown = 10.0 if is_summary else 30.0  # FIX : 150s → 30s
 
-    position_threshold = 0.25 if is_summary else 0.15  # FIX : zone but stricte
+    position_threshold = 0.15 if is_summary else 0.06  # aligné sur GOAL_PCT=0.05 de goal_posthoc
 
     events = filter_goals(
         events,

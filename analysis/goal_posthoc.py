@@ -65,7 +65,9 @@ def _trajectory_ok(frames_data, i):
     if len(dxs) < 2:
         return False
 
-    return all(d > 0 for d in dxs) or all(d < 0 for d in dxs)
+    pos = sum(1 for d in dxs if d > 0)
+    neg = sum(1 for d in dxs if d < 0)
+    return pos >= 3 or neg >= 3
 
 
 def _post_event_signature(frames_data, i, GOAL_X_LEFT, GOAL_X_RIGHT):
@@ -117,12 +119,13 @@ def _net_rebound_signature(speeds, frames_data, i):
 
     # 2. mini inversion direction (optionnel mais fort)
     c_before = _get_ball_center(frames_data[i - 1].get("ball"))
-    c_after = _get_ball_center(frames_data[i + 2].get("ball"))
+    c_curr   = _get_ball_center(frames_data[i].get("ball"))
+    c_after  = _get_ball_center(frames_data[i + 2].get("ball"))
 
     direction_flip = False
-    if c_before and c_after:
-        dx1 = frames_data[i]["ball"]["center"][0] - c_before[0] if frames_data[i].get("ball") else 0
-        dx2 = c_after[0] - frames_data[i]["ball"]["center"][0] if frames_data[i].get("ball") else 0
+    if c_before and c_curr and c_after:
+        dx1 = c_curr[0] - c_before[0]
+        dx2 = c_after[0] - c_curr[0]
         if dx1 * dx2 < 0:
             direction_flip = True
 
