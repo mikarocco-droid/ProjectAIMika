@@ -1,11 +1,10 @@
-# analysis/goal_posthoc.py
 # -*- coding: utf-8 -*-
 
 import math
 
 
 # =========================================================
-# Utils
+# UTILS
 # =========================================================
 
 def _get_ball_center(ball):
@@ -20,68 +19,118 @@ def _get_ball_center(ball):
     if bbox and len(bbox) == 4:
         return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
 
-    x = ball.get("x")
-    y = ball.get("y")
-    if x is not None:
-        return float(x), float(y or 0)
+    if ball.get("x") is not None:
+        return float(ball["x"]), float(ball.get("y", 0))
 
     return None
 
 
-def _resolve_resolution(frames_data, frame_w_hint, frame_h_hint):
-    if frames_data:
-        fw = frames_data[0].get("frame_w")
-        fh = frames_data[0].get("frame_h")
-        if fw and fh:
-            return int(fw), int(fh)
+def _resolve_resolution(frames_data, fw, fh):
+    if frames_data and frames_data[0].get("frame_w"):
+        return int(frames_data[0]["frame_w"]), int(frames_data[0]["frame_h"])
 
     max_x = 0
-    for f in frames_data[:300]:
+    for f in frames_data[:200]:
         c = _get_ball_center(f.get("ball"))
         if c:
             max_x = max(max_x, c[0])
 
     if max_x > 1500:
         return 1920, 1080
-    elif max_x > 900:
+    if max_x > 900:
         return 1280, 720
-    elif max_x > 0:
-        return 960, 540
-
-    return frame_w_hint, frame_h_hint
+    return fw, fh
 
 
-def calibrate_match_context(frames_data, frame_w):
-    speeds = []
-    visibility = []
-
-    for i in range(1, min(500, len(frames_data))):
+def _compute_speeds(frames_data):
+    speeds = [0.0]
+    for i in range(1, len(frames_data)):
         c1 = _get_ball_center(frames_data[i].get("ball"))
         c0 = _get_ball_center(frames_data[i - 1].get("ball"))
-
         if c1 and c0:
             speeds.append(abs(c1[0] - c0[0]))
+        else:
+            speeds.append(0.0)
+    return speeds
 
-        visibility.append(frames_data[i].get("ball") is not None)
 
-    if not speeds:
-        return {
-            "speed_base": frame_w * 0.005,
-            "speed_peak": frame_w * 0.02,
-            "tracking_quality": 1.0
-        }
+def _trajectory_ok(frames_data, i):
+    dxs = []
+    for k in range(1, 5):
+        c_prev = _get_ball_center(frames_data[i - k].get("ball")) if i - k >= 0 else None
+        c_curr = _get_ball_center(frames_data[i].get("ball"))
+        if c_prev and c_curr:
+            dxs.append(c_curr[0] - c_prev[0])
 
-    s = sorted(speeds)
+    if len(dxs) < 2:
+        return False
 
-    return {
-        "speed_base": s[int(len(s) * 0.50)],
-        "speed_peak": s[int(len(s) * 0.95)],
-        "tracking_quality": sum(visibility) / len(visibility),
-    }
+    return all(d > 0 for d in dxs) or all(d < 0 for d in dxs)
+
+
+def _post_event_signature(frames_data, i, GOAL_X_LEFT, GOAL_X_RIGHT):
+    stuck = 0
+    disappear = 0
+
+    for j in range(i, min(i + 15, len(frames_data))):
+        c = _get_ball_center(frames_data[j].get("ball"))
+
+        if c is None:
+            disappear += 1
+            continue
+
+        if c[0] < GOAL_X_LEFT or c[0] > GOAL_X_RIGHT:
+            stuck += 1
+        else:
+            break
+
+    return stuck, disappear
 
 
 # =========================================================
-# MAIN
+# 🔥 NOUVEAU : REBOND FILET
+# =========================================================
+
+def _net_rebound_signature(speeds, frames_data, i):
+    """
+    Détecte :
+    - décélération brutale
+    - petit rebond (changement de direction)
+    """
+
+    if i < 5 or i + 5 >= len(speeds):
+        return False
+
+    # vitesse avant impact
+    pre = max(speeds[i - 5:i])
+
+    # vitesse après impact
+    post = max(speeds[i:i + 5])
+
+    # 1. chute brutale
+    if pre < 1e-3:
+        return False
+
+    drop_ratio = post / pre
+
+    strong_drop = drop_ratio < 0.5
+
+    # 2. mini inversion direction (optionnel mais fort)
+    c_before = _get_ball_center(frames_data[i - 1].get("ball"))
+    c_after = _get_ball_center(frames_data[i + 2].get("ball"))
+
+    direction_flip = False
+    if c_before and c_after:
+        dx1 = frames_data[i]["ball"]["center"][0] - c_before[0] if frames_data[i].get("ball") else 0
+        dx2 = c_after[0] - frames_data[i]["ball"]["center"][0] if frames_data[i].get("ball") else 0
+        if dx1 * dx2 < 0:
+            direction_flip = True
+
+    return strong_drop or direction_flip
+
+
+# =========================================================
+# MAIN V9.5
 # =========================================================
 
 def detect_fast_goals_from_ball(
@@ -97,18 +146,8 @@ def detect_fast_goals_from_ball(
     if not frames_data:
         return goals
 
-    # -----------------------------------------------------
-    # Résolution
-    # -----------------------------------------------------
     frame_w, frame_h = _resolve_resolution(frames_data, frame_w, frame_h)
 
-    ctx = calibrate_match_context(frames_data, frame_w)
-    speed_base = ctx["speed_base"]
-
-    SPEED_THRESHOLD = speed_base * 2.0
-    SCORE_THRESHOLD = 4.5
-
-    # Zone but (5%)
     GOAL_PCT = 0.05
     GOAL_X_LEFT = frame_w * GOAL_PCT
     GOAL_X_RIGHT = frame_w * (1 - GOAL_PCT)
@@ -118,32 +157,17 @@ def detect_fast_goals_from_ball(
 
     LINE_MARGIN = frame_w * 0.002
 
-    print(f"[goal_posthoc_v8] res={frame_w}x{frame_h} speed_base={speed_base:.1f}")
+    speeds = _compute_speeds(frames_data)
+    speed_base = sorted(speeds)[int(len(speeds) * 0.5)]
+    SPEED_THRESHOLD = speed_base * 2.0
 
-    # -----------------------------------------------------
-    # Vitesses
-    # -----------------------------------------------------
-    speeds = [0.0]
-    for i in range(1, len(frames_data)):
-        c1 = _get_ball_center(frames_data[i].get("ball"))
-        c0 = _get_ball_center(frames_data[i - 1].get("ball"))
+    print(f"[goal_posthoc_v9.5] speed_base={speed_base:.2f}")
 
-        if c1 and c0:
-            speeds.append(abs(c1[0] - c0[0]))
-        else:
-            speeds.append(0.0)
-
-    # Shots
-    shots = sorted(
-        [e for e in events if e.get("type") == "shot"],
-        key=lambda e: e.get("time", 0)
-    )
+    shots = sorted([e for e in events if e.get("type") == "shot"],
+                   key=lambda e: e.get("time", 0))
 
     existing = [e.get("time", 0) for e in events if e.get("type") == "goal"]
 
-    # -----------------------------------------------------
-    # LOOP
-    # -----------------------------------------------------
     i = 5
 
     while i < len(frames_data) - 10:
@@ -155,16 +179,10 @@ def detect_fast_goals_from_ball(
 
         x, y = c
 
-        # -----------------------------
-        # Zone verticale
-        # -----------------------------
         if not (GOAL_Y_TOP < y < GOAL_Y_BOTTOM):
             i += 1
             continue
 
-        # -----------------------------
-        # Frame précédente
-        # -----------------------------
         c_prev = _get_ball_center(frames_data[i - 1].get("ball"))
         if not c_prev:
             i += 1
@@ -172,73 +190,46 @@ def detect_fast_goals_from_ball(
 
         x_prev, _ = c_prev
 
-        # -----------------------------
-        # CROSSING (clé)
-        # -----------------------------
-        cross_left = (
-            x_prev > GOAL_X_LEFT + LINE_MARGIN and
-            x <= GOAL_X_LEFT - LINE_MARGIN
-        )
-
-        cross_right = (
-            x_prev < GOAL_X_RIGHT - LINE_MARGIN and
-            x >= GOAL_X_RIGHT + LINE_MARGIN
-        )
+        cross_left = (x_prev > GOAL_X_LEFT + LINE_MARGIN and x <= GOAL_X_LEFT)
+        cross_right = (x_prev < GOAL_X_RIGHT - LINE_MARGIN and x >= GOAL_X_RIGHT)
 
         if not (cross_left or cross_right):
             i += 1
             continue
 
-        # -----------------------------
-        # Direction cohérente
-        # -----------------------------
-        dx = x - x_prev
-
-        if cross_left and dx > 0:
+        if not _trajectory_ok(frames_data, i):
             i += 1
             continue
 
-        if cross_right and dx < 0:
-            i += 1
-            continue
-
-        # -----------------------------
-        # SCORE
-        # -----------------------------
-        score = 0.0
-
-        # 1. Crossing validé
-        score += 3.0
-
-        # -----------------------------
-        # Vitesse (obligatoire)
-        # -----------------------------
         peak = max(speeds[max(0, i - 8):i + 1])
-        if peak > SPEED_THRESHOLD:
-            score += 1.5
-        else:
+        if peak < SPEED_THRESHOLD:
             i += 1
             continue
 
-        # -----------------------------
-        # STUCK (balle reste dedans)
-        # -----------------------------
-        stuck = 0
-        for j in range(i, min(i + 20, len(frames_data))):
-            cj = _get_ball_center(frames_data[j].get("ball"))
-            if cj and (cj[0] < GOAL_X_LEFT or cj[0] > GOAL_X_RIGHT):
-                stuck += 1
-            else:
-                break
+        stuck, disappear = _post_event_signature(
+            frames_data, i, GOAL_X_LEFT, GOAL_X_RIGHT
+        )
+
+        rebound = _net_rebound_signature(speeds, frames_data, i)
+
+        # 🔥 règle clé V9.5
+        if stuck < 3 and disappear < 2 and not rebound:
+            i += 1
+            continue
+
+        score = 3.0 + 1.5
 
         if stuck >= 6:
-            score += 1.5
-        elif stuck >= 4:
-            score += 0.5
+            score += 2.0
+        elif stuck >= 3:
+            score += 1.0
 
-        # -----------------------------
-        # Shot récent
-        # -----------------------------
+        if disappear >= 2:
+            score += 1.0
+
+        if rebound:
+            score += 1.5  # 🔥 signal très fort
+
         goal_time = i / fps
 
         recent_shot = None
@@ -250,19 +241,15 @@ def detect_fast_goals_from_ball(
         if recent_shot:
             score += 0.5
 
-        # -----------------------------
-        # Validation
-        # -----------------------------
-        if score < SCORE_THRESHOLD:
+        if score < 5.0:
             i += 1
             continue
 
-        # Anti doublon
         if any(abs(goal_time - t) < 5 for t in existing):
-            i += stuck + 1
+            i += 5
             continue
 
-        confidence = round(min(0.5 + score * 0.08, 0.95), 2)
+        confidence = round(min(0.6 + score * 0.07, 0.97), 2)
 
         goals.append({
             "type": "goal",
@@ -272,11 +259,11 @@ def detect_fast_goals_from_ball(
             "y": y,
             "confidence": confidence,
             "score": round(score, 2),
-            "detected_from": "goal_posthoc_v8",
+            "detected_from": "goal_posthoc_v9.5",
             "shot_linked": recent_shot is not None,
         })
 
-        print(f"⚽ BUT détecté {goal_time:.2f}s | score={score:.2f} | stuck={stuck}")
+        print(f"⚽ GOAL {goal_time:.2f}s | score={score:.2f} | stuck={stuck} | rebound={rebound}")
 
         existing.append(goal_time)
         i += max(stuck, 5)
