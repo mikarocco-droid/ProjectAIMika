@@ -113,13 +113,18 @@ def detect_fast_goals_from_ball(
     SPEED_THRESHOLD = speed_base * 2.0     # pic de vitesse pour un vrai tir
     STUCK_MIN_HIGH  = 6                    # frames pour +2 points
     STUCK_MIN_LOW   = 4                    # frames pour +1 point
+    STUCK_MIN_OTHER   = 12                    # frames pour +1 point
     SCORE_THRESHOLD = 4.5                  # relevé de 3.5 → 4.5
 
     # Zone de but réduite à 5% (au lieu de 8%)
     # Sur 1920px : [0, 96] ∪ [1824, 1920] → vraiment dans le filet
     GOAL_PCT        = 0.05
+    GOAL_Y_TOP    = frame_h * 0.2
+    GOAL_Y_BOTTOM = frame_h * 0.8
     GOAL_X_LEFT     = frame_w * GOAL_PCT
     GOAL_X_RIGHT    = frame_w * (1 - GOAL_PCT)
+    DIR_EPS = 0.5  # tolérance
+    LINE_MARGIN = frame_w * 0.002  # ~4px en 1920
 
     print(f"  goal_posthoc V8 | res={frame_w}x{frame_h} | "
           f"speed_base={speed_base:.1f}px | tracking={tracking_quality:.2f} | "
@@ -143,15 +148,96 @@ def detect_fast_goals_from_ball(
         if not c:
             i += 1
             continue
-
+        
         x, y = c
 
-        # Zone de but stricte (5%)
+        # ===== Direction passée =====
+        dxs = []
+        for k in range(1, 6):
+            c_prev = _get_ball_center(frames_data[i - k].get("ball")) if i - k >= 0 else None
+            if c_prev:
+                dxs.append(x - c_prev[0])
+
+        avg_dx = sum(dxs) / len(dxs) if dxs else 0
+
+
+        # ===== Direction future =====
+        forward_dxs = []
+        for k in range(1, 4):
+            c_next = _get_ball_center(frames_data[i + k].get("ball")) if i + k < len(frames_data) else None
+            if c_next:
+                forward_dxs.append(c_next[0] - x)
+
+        avg_dx_forward = sum(forward_dxs) / len(forward_dxs) if forward_dxs else 0
+
+
+        # ===== Sécurité données =====
+        if not dxs or not forward_dxs:
+            i += 1
+            continue
+
+
+        # ===== Cohérence direction =====
+        if (avg_dx * avg_dx_forward) < 0:
+            i += 1
+            continue  # rebond / déviation
+
+
+        # ===== Filtre vertical =====
+        if not (GOAL_Y_TOP < y < GOAL_Y_BOTTOM):
+            i += 1
+            continue
+
+        # ===== Franchissement de ligne =====
+        c_prev = _get_ball_center(frames_data[i - 1].get("ball")) if i > 0 else None
+
+        if not c_prev:
+            i += 1
+            continue
+
+        x_prev, _ = c_prev
+        
+        cross_left = (
+            x_prev > GOAL_X_LEFT + LINE_MARGIN and
+            x <= GOAL_X_LEFT - LINE_MARGIN
+        )
+
+        cross_right = (
+            x_prev < GOAL_X_RIGHT - LINE_MARGIN and
+            x >= GOAL_X_RIGHT + LINE_MARGIN
+        )
+
+        if not (cross_left or cross_right):
+            i += 1
+            continue
+
+        # ===== Zone de but =====
         if not (x < GOAL_X_LEFT or x > GOAL_X_RIGHT):
             i += 1
             continue
 
-        score = 2.0  # base : zone de but = +2
+
+        is_left_goal  = x < GOAL_X_LEFT
+        is_right_goal = x > GOAL_X_RIGHT
+
+
+        # ===== Filtre directionnel =====
+        if is_left_goal and avg_dx > DIR_EPS:
+            i += 1
+            continue
+
+        if is_right_goal and avg_dx < -DIR_EPS:
+            i += 1
+            continue
+
+
+        # ===== Anti-bruit =====
+        if abs(avg_dx) < speed_base * 0.3:
+            i += 1
+            continue
+
+
+        score = 2.0
 
         # Vitesse pic obligatoire (+1) — REQUIS pour valider
         peak = max(speeds[max(0, i - 8):i + 1])
@@ -169,13 +255,18 @@ def detect_fast_goals_from_ball(
             else:
                 break
 
+        if stuck >= STUCK_MIN_OTHER:
+            score += stuck
+            continue
         if stuck >= STUCK_MIN_HIGH:
             score += 2.0
         elif stuck >= STUCK_MIN_LOW:
             score += 1.0
         # stuck < 4 → 0 points (trop peu fiable)
 
-        goal_time = frames_data[i].get("frame", i) / fps
+        # Moment réel = milieu de la phase "stuck"
+        goal_frame = i + stuck // 2
+        goal_time  = goal_frame / fps
 
         # Tir récent (+0.5)
         recent_shot = None

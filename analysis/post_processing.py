@@ -182,8 +182,8 @@ def filter_goals(events, window=30.0, frame_w=1920, position_threshold=0.15):
     current  = [goals[0]]
 
     for g in goals[1:]:
-        # Comparer avec le PREMIER but du groupe (ancrage fixe)
-        if abs(g["time"] - current[0]["time"]) < window:
+        # Comparer avec le PREMIER but du groupe (ancrage fixe), Ça crée des groupes glissants, beaucoup plus réalistes
+        if abs(g["time"] - current[-1]["time"]) < window:
             current.append(g)
         else:
             groups.append(current)
