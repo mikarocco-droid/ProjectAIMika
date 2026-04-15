@@ -216,7 +216,7 @@ def detect_fast_goals_from_ball(
         rebound = _net_rebound_signature(speeds, frames_data, i)
 
         # 🔥 règle clé V9.5
-        if stuck < 3 and disappear < 2 and not rebound:
+        if stuck < 2 or (stuck < 3 and disappear < 2 and not rebound):
             i += 1
             continue
 
