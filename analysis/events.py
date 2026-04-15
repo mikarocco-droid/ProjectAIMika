@@ -116,6 +116,49 @@ def is_shot_zone(x, y, sport, shot_zones=None, frame_w=1280, frame_h=720):
 
 
 # ─────────────────────────────────────────
+# FILTRE TIR PHYSIQUE
+# Élimine : touches, passes, balles arrêtées
+# Garde   : vrais tirs (vitesse + trajectoire + direction but)
+# ─────────────────────────────────────────
+def is_valid_shot(_bt, frame_w, frame_h):
+    """
+    Valide un tir par critères physiques du BallTracker.
+    Version robuste : garde les tirs lents mais propres (penalties, reprises).
+
+    Critères :
+      - toward  : direction vers but (obligatoire)
+      - speed   : > 25% frame_w/s  (souple pour tirs lents)
+      - stability > 0.5 si rapide
+      - stability > 0.75 fallback tirs lents mais droits
+
+    Élimine : touches, centres, rebonds, balles arrêtées.
+    Garde   : tirs puissants + tirs lents propres + penalties.
+    """
+    if _bt is None:
+        return True  # pas de tracker → on laisse passer (compatibilité)
+
+    speed     = _bt.get_speed_per_second()
+    toward, _ = _bt.ball_buffer.toward_goal(frame_w, frame_h)
+    stability = _bt.get_direction_stability(3)
+
+    # direction vers but = condition obligatoire
+    if not toward:
+        return False
+
+    speed_ok = speed > frame_w * 0.25
+
+    # cas principal : tir rapide + trajectoire stable
+    if speed_ok and stability > 0.5:
+        return True
+
+    # fallback : tir lent mais trajectoire très propre (penalty, reprise)
+    if stability > 0.75:
+        return True
+
+    return False
+
+
+# ─────────────────────────────────────────
 # ON TARGET — détection tir cadré
 #
 # Un tir est "on_target" (cadré) si :
@@ -548,11 +591,12 @@ def detect_events(
 
             if is_shot_z and state["shot_cd"] == 0 and shot_speed_ok:
                 if not (state["_gk_holding_ball"] or state["_gk_release_cd"] > 0):
-                    _register_shot(
-                        compute_xg(x, y, frame_w, frame_h, learner),
-                        source    = "events_standard",
-                        on_target = fast_shot_in_goal
-                    )
+                    if is_valid_shot(_bt, frame_w, frame_h):
+                        _register_shot(
+                            compute_xg(x, y, frame_w, frame_h, learner),
+                            source    = "events_standard",
+                            on_target = fast_shot_in_goal
+                        )
 
             elif fast_shot_in_goal and state["shot_cd"] > 0:
                 if ball_speed > frame_w * 0.10:
@@ -574,7 +618,7 @@ def detect_events(
                     _in_shot, _in_goal = is_shot_zone(
                         x, y, sport, shot_zones, frame_w, frame_h
                     )
-                    if _in_shot:
+                    if _in_shot and is_valid_shot(_bt, frame_w, frame_h):
                         _register_shot(
                             compute_xg(x, y, frame_w, frame_h, learner),
                             source    = "ball_tracker_v23",
