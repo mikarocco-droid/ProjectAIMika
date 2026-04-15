@@ -202,6 +202,21 @@ class ShotCandidate:
 
 
 # ─────────────────────────────────────────
+# ANTI-SAUT — filtre faux positifs tracking
+# ─────────────────────────────────────────
+def is_valid_jump(prev, new_pos, max_dist=150):
+    """
+    Rejette les sauts impossibles du ballon.
+    Un ballon ne peut pas téléporter à > 150px entre 2 frames.
+    """
+    if prev is None:
+        return True
+    dx = prev[0] - new_pos[0]
+    dy = prev[1] - new_pos[1]
+    return (dx * dx + dy * dy) < max_dist * max_dist
+
+
+# ─────────────────────────────────────────
 # BALL TRACKER PRINCIPAL
 # ─────────────────────────────────────────
 class BallTracker:
@@ -213,8 +228,13 @@ class BallTracker:
         self.last_seen     = 0
         self.frame_id      = 0
         self.lost_frames   = 0
-        self.max_lost      = 5
+        self.max_lost      = 12   # V9.6 : tolérance élargie pour tirs rapides
         self.shot_candidate: ShotCandidate | None = None
+
+        # V9.6 — mémoire position + vélocité prédictive
+        self.last_valid_ball  = None   # dernière position fiable
+        self.last_valid_frame = -1     # frame correspondante
+        self.velocity         = (0.0, 0.0)  # vélocité estimée
 
     def select_best_ball(self, balls, last_pos):
         if not balls:
@@ -251,22 +271,59 @@ class BallTracker:
             x, y, w, h = best
             cx = x + w // 2
             cy = y + h // 2
-            self.ball_buffer.add(cx, cy, t)
-            self.last_seen   = self.frame_id
-            self.lost_frames = 0
-            pos = self.kalman.update((cx, cy))
-            return self.get_ball_bbox(pos), False
-        else:
+
+            # MODIF 3 — anti-saut : rejeter faux positifs
+            if is_valid_jump(self.last_valid_ball, (cx, cy)):
+                # MODIF 4 — lissage exponentiel vélocité (alpha=0.6)
+                if self.last_valid_ball is not None:
+                    vx = cx - self.last_valid_ball[0]
+                    vy = cy - self.last_valid_ball[1]
+                    alpha = 0.6
+                    self.velocity = (
+                        alpha * vx + (1 - alpha) * self.velocity[0],
+                        alpha * vy + (1 - alpha) * self.velocity[1],
+                    )
+                # MODIF 2 — mémoriser dernière position fiable
+                self.last_valid_ball  = (cx, cy)
+                self.last_valid_frame = self.frame_id
+
+                self.ball_buffer.add(cx, cy, t)
+                self.last_seen   = self.frame_id
+                self.lost_frames = 0
+                pos = self.kalman.update((cx, cy))
+                return self.get_ball_bbox(pos), False
+            else:
+                # Saut invalide → traiter comme perte
+                best = None
+
+        if best is None:
             self.lost_frames += 1
-            if self.lost_frames < self.max_lost:
+            if self.lost_frames <= self.max_lost:
                 pos = self.kalman.update(None)
                 if pos is not None:
                     cx, cy = int(pos[0]), int(pos[1])
                     self.ball_buffer.add(cx, cy, t)
                     return self.get_ball_bbox(pos), True
+                # MODIF 4 — prédiction par vélocité si Kalman échoue
+                elif self.last_valid_ball is not None:
+                    px = int(self.last_valid_ball[0] + self.velocity[0])
+                    py = int(self.last_valid_ball[1] + self.velocity[1])
+                    # FIX 3 — clamp dans l'image (évite sortie d'écran)
+                    px = max(0, min(frame_w - 1, px))
+                    py = max(0, min(frame_h - 1, py))
+                    # amortir la vélocité à chaque frame perdue
+                    self.velocity = (
+                        self.velocity[0] * 0.7,
+                        self.velocity[1] * 0.7
+                    )
+                    self.ball_buffer.add(px, py, t)
+                    return self.get_ball_bbox(np.array([px, py])), True
             else:
                 self.ball_buffer.clear()
                 self.kalman.reset()
+                self.last_valid_ball  = None
+                self.last_valid_frame = -1
+                self.velocity         = (0.0, 0.0)
             return None, True
 
     def get_ball_bbox(self, pos):
@@ -385,7 +442,10 @@ class BallTracker:
     def reset(self):
         self.ball_buffer.clear()
         self.kalman.reset()
-        self.last_seen      = 0
-        self.frame_id       = 0
-        self.lost_frames    = 0
-        self.shot_candidate = None
+        self.last_seen        = 0
+        self.frame_id         = 0
+        self.lost_frames      = 0
+        self.shot_candidate   = None
+        self.last_valid_ball  = None
+        self.last_valid_frame = -1
+        self.velocity         = (0.0, 0.0)
