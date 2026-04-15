@@ -1,40 +1,18 @@
 # analysis/post_processing.py
 # -*- coding: utf-8 -*-
 #
-# POST PROCESSING — VERSION PRO
+# POST PROCESSING — VERSION PROPRE
 #
-# Fix v3 (critique) :
-#   - filter_goals : garde le but avec la meilleure confidence dans chaque
-#     fenêtre, PAS le premier arrivé (l'ancien code laissait passer des faux
-#     buts précoces qui bloquaient les vrais buts dans la fenêtre de cooldown)
-#   - cooldown réduit à 30s (150s = trop long, bloquait 02:14 et 09:44)
-#   - merge_players : fenêtre 0.5s + contrainte position (évite 16→5 joueurs)
-#   - temporal_filter : buts et tirs exemptés du filtre temporel
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DÉDUPLICATION BUTS (confidence-aware, fenêtre courte)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def deduplicate_goals(events, window=3.0):
-    """
-    Dans une fenêtre de 3s, garde le but avec la meilleure confidence.
-    """
-    goals  = sorted(
-        [e for e in events if e.get("type") in ("goal", "score")],
-        key=lambda x: x.get("time", 0)
-    )
-    others = [e for e in events if e.get("type") not in ("goal", "score")]
-
-    kept = []
-    for g in goals:
-        if kept and abs(g["time"] - kept[-1]["time"]) < window:
-            if g.get("confidence", 0) > kept[-1].get("confidence", 0):
-                kept[-1] = g
-        else:
-            kept.append(g)
-
-    return sorted(others + kept, key=lambda x: x.get("time", 0))
+# Responsabilité de ce module :
+#   merge_players, temporal_filter, infer_shots_from_goals, filter_goals
+#
+# Ce module NE gère PAS :
+#   - deduplicate_goals  → géré dans pipeline.py (source unique)
+#   - goal_cooldown      → calculé dans pipeline.py, passé en paramètre
+#   - position_threshold → calculé dans pipeline.py, passé en paramètre
+#
+# Règle : pipeline.py est le chef d'orchestre.
+# post_processing.py est un module de transformation pure, sans décision métier.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44,8 +22,9 @@ def deduplicate_goals(events, window=3.0):
 def merge_players(events, time_window=0.5):
     """
     Fusionne uniquement les événements strictement identiques :
-    même joueur + même type + < 0.5s + position < 50px.
-    Évite la fusion 16 joueurs → 5.
+      même joueur + même type + < 0.5s + position < 50px.
+
+    Les buts ne sont jamais fusionnés pour ne pas perdre de détections.
     """
     if not events:
         return events
@@ -57,6 +36,11 @@ def merge_players(events, time_window=0.5):
             continue
 
         prev = merged[-1]
+
+        # Buts protégés de toute fusion
+        if e.get("type") in ("goal", "score"):
+            merged.append(e)
+            continue
 
         same_player = (e.get("player") is not None and
                        str(e.get("player")) == str(prev.get("player")))
@@ -83,7 +67,7 @@ def merge_players(events, time_window=0.5):
 def temporal_filter(events, min_delta=2.0):
     """
     Supprime événements trop rapprochés du même type.
-    Buts et tirs sont exemptés (ne pas filtrer des vrais buts rapprochés).
+    Buts et tirs sont TOUJOURS exemptés.
     """
     filtered  = []
     last_time = {}
@@ -92,7 +76,6 @@ def temporal_filter(events, min_delta=2.0):
         t     = e.get("time", 0)
         etype = e.get("type")
 
-        # Buts et tirs : jamais filtrés temporellement ici
         if etype in ("goal", "score", "shot"):
             filtered.append(e)
             continue
@@ -144,29 +127,22 @@ def infer_shots_from_goals(events):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FILTRE BUTS — PAR CONFIDENCE, PAS PAR ORDRE D'ARRIVÉE
+# FILTRE BUTS — paramètres TOUJOURS fournis par pipeline.py
 # ─────────────────────────────────────────────────────────────────────────────
 
-def filter_goals(events, window=30.0, frame_w=1920, position_threshold=0.15):
+def filter_goals(events, window, frame_w, position_threshold):
     """
-    FIX CRITIQUE v3 :
     Dans chaque fenêtre de `window` secondes, garde le but avec la
-    MEILLEURE CONFIDENCE — pas le premier arrivé.
+    meilleure confidence.
 
-    L'ancienne logique (premier arrivé) laissait passer des faux buts
-    précoces (ex: 00:06 avec conf=0.68) qui bloquaient les vrais buts
-    (02:14, 09:44) dans la fenêtre de cooldown.
+    Pas de valeurs par défaut : tous les paramètres viennent de pipeline.py
+    pour éviter tout conflit silencieux.
 
-    Paramètres :
-      window             : durée de la fenêtre anti-doublon (30s par défaut)
-                           150s était beaucoup trop long pour un match réel
-      position_threshold : fraction de frame_w depuis chaque bord
-                           0.15 = les 15% gauche + 15% droite (zone filet)
+    Priorité : gemini_validated=True > confidence > score
     """
     if not events:
         return events
 
-    # Séparer buts et autres events
     goals  = sorted(
         [e for e in events if e.get("type") in ("goal", "score")],
         key=lambda x: x.get("time", 0)
@@ -176,13 +152,9 @@ def filter_goals(events, window=30.0, frame_w=1920, position_threshold=0.15):
     if not goals:
         return events
 
-    # Regrouper les buts par fenêtres temporelles
-    # Méthode : scan linéaire, regrouper si < window secondes du dernier groupe
-    groups   = []
-    current  = [goals[0]]
-
+    groups  = []
+    current = [goals[0]]
     for g in goals[1:]:
-        # Comparer avec le PREMIER but du groupe (ancrage fixe), Ça crée des groupes glissants, beaucoup plus réalistes
         if abs(g["time"] - current[-1]["time"]) < window:
             current.append(g)
         else:
@@ -190,10 +162,8 @@ def filter_goals(events, window=30.0, frame_w=1920, position_threshold=0.15):
             current = [g]
     groups.append(current)
 
-    # Dans chaque groupe, garder le but avec la meilleure confidence
     kept = []
     for group in groups:
-        # Filtrer d'abord par position (zone de but)
         in_zone = [
             g for g in group
             if frame_w > 0 and (
@@ -201,69 +171,56 @@ def filter_goals(events, window=30.0, frame_w=1920, position_threshold=0.15):
                 g.get("x", 0) > frame_w * (1 - position_threshold)
             )
         ]
-
         candidates = in_zone if in_zone else group
 
-        # Prioriser : gemini_validated=True > confidence > score
         def _sort_key(g):
-            gemini_ok = 1 if g.get("gemini_validated") else 0
-            conf      = g.get("confidence", 0)
-            score     = g.get("score", 0)
-            return (gemini_ok, conf, score)
+            return (
+                1 if g.get("gemini_validated") else 0,
+                g.get("confidence", 0),
+                g.get("score", 0),
+            )
 
-        best = max(candidates, key=_sort_key)
-        kept.append(best)
+        kept.append(max(candidates, key=_sort_key))
 
     return sorted(others + kept, key=lambda x: x.get("time", 0))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ORCHESTRATEUR GLOBAL
+# ORCHESTRATEUR — appelé depuis pipeline.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 def post_process_events(
     events,
-    frames_data    = None,
-    fps            = 25,
-    frame_w        = 1920,
-    frame_h        = 1080,
-    goal_cooldown  = None,
-    is_summary     = False,
+    goal_cooldown,
+    position_threshold,
+    frame_w     = 1920,
+    frame_h     = 1080,
+    frames_data = None,
+    fps         = 25,
 ):
     """
-    Pipeline complet post-processing.
-    Appelé une seule fois depuis pipeline.py après goal_posthoc.
+    Transformations post-tracking.
+
+    Paramètres obligatoires (décidés par pipeline.py) :
+      goal_cooldown      : fenêtre anti-doublon en secondes
+      position_threshold : fraction de frame_w pour la zone de but
+
+    Ce module n'a AUCUNE valeur par défaut pour ces deux paramètres :
+    ils sont toujours fournis depuis pipeline.py pour garantir la cohérence.
     """
     if not events:
         return events
 
     print(f"  post_processing : START ({len(events)} events)")
 
-    # ── 1. Deduplicate goals (fenêtre courte 3s) ──────────────────────────────
-    n_before = len(events)
-    events   = deduplicate_goals(events, window=3.0)
-    print(f"  deduplicate_goals : {n_before} → {len(events)}")
-
-    # ── 2. Merge players (non-agressif) ───────────────────────────────────────
     events = merge_players(events, time_window=0.5)
     print(f"  merge_players : OK")
 
-    # ── 3. Temporal filter (buts exemptés) ───────────────────────────────────
     events = temporal_filter(events)
     print(f"  temporal_filter : OK")
 
-    # ── 4. Infer shots ────────────────────────────────────────────────────────
     events = infer_shots_from_goals(events)
     print(f"  infer_shots : OK")
-
-    # ── 5. Filter goals par confidence dans fenêtre ───────────────────────────
-    if goal_cooldown is None:
-        if frames_data:
-            video_duration = len(frames_data) / fps
-            is_summary     = video_duration < 480
-        goal_cooldown = 10.0 if is_summary else 30.0  # FIX : 150s → 30s
-
-    position_threshold = 0.15 if is_summary else 0.06  # aligné sur GOAL_PCT=0.05 de goal_posthoc
 
     events = filter_goals(
         events,
@@ -271,7 +228,8 @@ def post_process_events(
         frame_w            = frame_w,
         position_threshold = position_threshold,
     )
-    print(f"  filter_goals : cooldown={goal_cooldown}s | sélection par confidence")
+    print(f"  filter_goals : cooldown={goal_cooldown}s | "
+          f"position={position_threshold * 100:.0f}% | sélection par confidence")
 
     events  = sorted(events, key=lambda x: x.get("time", 0))
     n_goals = sum(1 for e in events if e.get("type") in ("goal", "score"))
