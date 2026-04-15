@@ -1,5 +1,13 @@
 # pipeline.py
 # -*- coding: utf-8 -*-
+#
+# Chef d'orchestre du pipeline.
+#
+# Règles de responsabilité :
+#   - deduplicate_goals   : défini et appelé ICI uniquement
+#   - goal_cooldown       : calculé ICI, passé à post_process_events
+#   - position_threshold  : calculé ICI (GOAL_PCT = 0.05), passé à post_process_events
+#   - post_processing.py  : module de transformation pure, sans décision métier
 
 import os
 import json
@@ -34,6 +42,12 @@ from analysis.event_validator import detect_real_shots
 from analysis.context_engine import ContextEngine
 from analysis.player_identity import resolve_player_identities, get_player_label
 from analysis.goal_posthoc import detect_fast_goals_from_ball
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONSTANTE ZONE DE BUT — source unique
+# Alignée avec goal_posthoc.py (GOAL_PCT = 0.05)
+# ─────────────────────────────────────────────────────────────────────────────
+GOAL_POSITION_THRESHOLD = 0.05   # 5% de chaque côté = zone filet réelle
 
 
 # ─────────────────────────────────────────
@@ -153,22 +167,21 @@ def make_progress_callback(analysis_id=None):
 def resolve_mvp_label(mvp, stats, jersey_map):
     if mvp is None:
         return None
-
     pid = str(mvp[0]) if isinstance(mvp, (list, tuple)) else str(mvp)
-
     if pid in stats and stats[pid].get("label"):
         return stats[pid]["label"]
-
     return get_player_label(pid, jersey_map)
 
 
-# ─────────────────────────────────────────
-# DÉDUPLICATION BUTS (niveau pipeline)
-# ─────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# DÉDUPLICATION BUTS — SOURCE UNIQUE (définie ici, nulle part ailleurs)
+# ─────────────────────────────────────────────────────────────────────────────
 def deduplicate_goals(events, window=3.0):
     """
-    Fusionne les buts détectés en doublon (events + posthoc + Gemini).
-    Conserve le but avec la meilleure confidence dans chaque fenêtre.
+    Dans une fenêtre de `window` secondes, garde le but avec la meilleure
+    confidence. Appelé plusieurs fois dans le pipeline à des moments précis.
+
+    Priorité : gemini_validated=True > confidence > score
     """
     goals  = sorted(
         [e for e in events if e.get("type") in ("goal", "score")],
@@ -179,7 +192,14 @@ def deduplicate_goals(events, window=3.0):
     kept = []
     for g in goals:
         if kept and abs(g["time"] - kept[-1]["time"]) < window:
-            if g.get("confidence", 0) > kept[-1].get("confidence", 0):
+            # Priorité : gemini_validated > confidence > score
+            cur_key  = (1 if kept[-1].get("gemini_validated") else 0,
+                        kept[-1].get("confidence", 0),
+                        kept[-1].get("score", 0))
+            new_key  = (1 if g.get("gemini_validated") else 0,
+                        g.get("confidence", 0),
+                        g.get("score", 0))
+            if new_key > cur_key:
                 kept[-1] = g
         else:
             kept.append(g)
@@ -282,19 +302,17 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # 1a. POST PROCESSING
     #
-    # Ordre critique :
-    #   1. Résolution réelle (une fois, hors boucle)
-    #   2. detect_goals_robust → remplace ancienne logique events.py
-    #   3. goal_posthoc → rattrapage tirs rapides
-    #   4. deduplicate_goals → fusion par confidence
-    #   5. merge_players + temporal_filter
-    #   6. infer_shots_from_goals
-    #   7. filter_goals (cooldown)
+    # Ordre et responsabilités :
+    #   pipeline.py décide : résolution, goal_cooldown, position_threshold
+    #   Étape 1 : filtre xG=0 sur buts bruts (events.py artifacts)
+    #   Étape 2 : goal_posthoc (détection physique)
+    #   Étape 3 : deduplicate_goals fenêtre courte 3s (fusion doublons immédiats)
+    #   Étape 4 : post_process_events (merge, temporal, infer, filter_goals)
+    #   Étape 5 : deduplicate_goals fenêtre 2s (sécurité post-traitement)
     # ─────────────────────────────────────────
     is_summary = False
 
-    # ── Résolution réelle (UNE SEULE FOIS, hors boucle) ──────────────────────
-    # FIX CRITIQUE : ne jamais utiliser 1920 hardcodé si les coords sont en 960px
+    # ── Résolution réelle ─────────────────────────────────────────────────────
     if frames_data:
         _frame_w = int(frames_data[0].get("frame_w") or 1920)
         _frame_h = int(frames_data[0].get("frame_h") or 1080)
@@ -311,14 +329,11 @@ def run_pipeline(
                 _max_ball_x = max(_max_ball_x, c[0])
 
     if _max_ball_x > 0 and _max_ball_x < _frame_w * 0.6:
-        # Coordonnées ballon bien inférieures à frame_w → résolution incohérente
         ratio = _max_ball_x / _frame_w
-
         if ratio < 0.5:
             _frame_w = int(_max_ball_x * 2)
-
         print(f"  WARNING résolution corrigée → {_frame_w}x{_frame_h} "
-              f"(max_ball_x={_max_ball_x:.0f} incohérent avec frame_w original)")
+              f"(max_ball_x={_max_ball_x:.0f})")
 
     print(f"  Résolution pipeline : {_frame_w}x{_frame_h}")
 
@@ -328,22 +343,26 @@ def run_pipeline(
         video_duration = total_frames / fps if fps > 0 else 600
         is_summary     = video_duration < 480
 
+        # ── PARAMÈTRES DÉCIDÉS ICI — source unique ────────────────────────────
         if is_summary:
-            goal_cooldown      = 10.0
-            position_threshold = 0.05
+            goal_cooldown = 10.0
             print(f"  Résumé détecté ({video_duration:.0f}s) — "
                   f"goal_cooldown={goal_cooldown:.0f}s | "
-                  f"position_threshold={int(position_threshold*100)}%")
+                  f"position_threshold={GOAL_POSITION_THRESHOLD*100:.0f}%")
         else:
-            goal_cooldown = learner.get_thresholds().get("goal_cooldown", 150.0) \
-                            if learner else 150.0
-            position_threshold = 0.05
+            goal_cooldown = learner.get_thresholds().get("goal_cooldown", 30.0) \
+                            if learner else 30.0
+            # Clamp : le learner peut stocker 150s (ancien défaut) → on plafonne à 60s
+            goal_cooldown = min(goal_cooldown, 60.0)
             print(f"  Match complet ({video_duration:.0f}s) — "
                   f"goal_cooldown={goal_cooldown:.0f}s | "
-                  f"position_threshold={int(position_threshold*100)}%")
+                  f"position_threshold={GOAL_POSITION_THRESHOLD*100:.0f}%")
 
-        # ── FILTRE XG == 0 SUR BUTS BRUTS (avant tout le reste) ──────────────
-        # Supprime les faux buts générés par events.py sans contexte tir
+        # position_threshold = GOAL_POSITION_THRESHOLD (0.05) dans tous les cas
+        # Légèrement élargi à 0.06 pour absorber le bruit de tracking (±1px)
+        _position_threshold = 0.06
+
+        # ── Étape 1 : filtre xG=0 sur buts bruts ─────────────────────────────
         n_goals_raw = sum(1 for e in events if e.get("type") in ("goal", "score"))
         events = [
             e for e in events
@@ -352,22 +371,21 @@ def run_pipeline(
                 and (e.get("xg", 0) or 0) <= 0.01
                 and e.get("confidence", 0) < 0.5
                 and e.get("source") not in ("goal_posthoc", "ball_physics_v3",
-                                            "ball_physics_v2", "events_v2")
+                                            "ball_physics_v2", "events_v2",
+                                            "goal_posthoc_v9", "goal_posthoc_v9.5")
             )
         ]
         n_goals_filtered = sum(1 for e in events if e.get("type") in ("goal", "score"))
         if n_goals_raw != n_goals_filtered:
-            print(f"  Filtre xG=0 : {n_goals_raw - n_goals_filtered} faux but(s) "
-                  f"supprimés à la source")
+            print(f"  Filtre xG=0 : {n_goals_raw - n_goals_filtered} faux but(s) supprimés")
 
-        # ── 1. Détecteur physique buts rapides (posthoc) ──────────────────────
-        fast_goals = []
+        # ── Étape 2 : goal_posthoc ────────────────────────────────────────────
         try:
             fast_goals = detect_fast_goals_from_ball(
                 frames_data = frames_data,
                 events      = events,
                 fps         = fps,
-                frame_w     = _frame_w,   # résolution corrigée
+                frame_w     = _frame_w,
                 frame_h     = _frame_h,
             )
             if fast_goals:
@@ -377,46 +395,31 @@ def run_pipeline(
         except Exception as eg:
             print(f"  goal_posthoc ignoré : {eg}")
 
-        # ── 2. Déduplication par confidence (avant merge) ─────────────────────
+        # ── Étape 3 : dedup fenêtre courte 3s (doublons immédiats posthoc/events)
         n_before = sum(1 for e in events if e.get("type") in ("goal", "score"))
         events   = deduplicate_goals(events, window=3.0)
         n_after  = sum(1 for e in events if e.get("type") in ("goal", "score"))
         if n_before != n_after:
-            print(f"  Dedup buts : {n_before} → {n_after} (doublons fusionnés par confidence)")
+            print(f"  Dedup 3s : {n_before} → {n_after} buts")
 
-        for e in events:
-            if e.get("detected_from") == "goal_posthoc_v8":
-                e["_keep"] = True
-
-        # ── 3. Fusion joueurs proches ──────────────────────────────────────────
+        # ── Étape 4 : post_process_events ─────────────────────────────────────
+        # On lui passe TOUS les paramètres décidés ici
         events = post_process_events(
-            events=events,
-            frames_data=frames_data,
-            fps=fps,
-            frame_w=_frame_w,
-            frame_h=_frame_h
+            events             = events,
+            goal_cooldown      = goal_cooldown,
+            position_threshold = _position_threshold,
+            frame_w            = _frame_w,
+            frame_h            = _frame_h,
+            frames_data        = frames_data,
+            fps                = fps,
         )
+
+        # ── Étape 5 : dedup fenêtre 2s (sécurité après post-traitement) ───────
         events = deduplicate_goals(events, window=2.0)
-        
-        print("  DEBUG buts après post_process:")
-        for e in events:
-            if e.get("type") in ("goal", "score"):
-                print(f"    t={e.get('time'):.2f} | conf={e.get('confidence')} | src={e.get('detected_from')}")
 
         n_goals = sum(1 for e in events if e.get("type") in ["goal", "score"])
         print(f"  CLEAN {len(events)} events | {n_goals} but(s) | "
               f"goal_cooldown={goal_cooldown:.0f}s")
-
-        # Réinjecter buts critiques si supprimés
-        post_times = {round(e.get("time", 0), 1) for e in events}
-
-        for e in fast_goals:
-            t = round(e.get("time", 0), 1)
-            if t not in post_times:
-                print(f"  ⚠️ BUT RÉINJECTÉ {t}s (perdu dans post_process)")
-                events.append(e)
-
-        events.sort(key=lambda x: x.get("time", 0))
 
     except Exception as e:
         print(f"  Post processing ignoré : {e}")
@@ -426,17 +429,6 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 1b : Validation Gemini...")
     try:
-        # protéger les buts physiques forts
-        protected_goals = []
-
-        for e in events:
-            if (
-                e.get("type") == "goal"
-                and e.get("detected_from") == "goal_posthoc_v8"
-                and e.get("confidence", 0) >= 0.7
-            ):
-                e["_protected"] = True
-
         from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers
 
         events = validate_events_with_gemini(
@@ -444,7 +436,7 @@ def run_pipeline(
             video_path    = video_path,
             fps           = fps,
             sport         = sport,
-            MIN_CONF_GOAL = 0.85 if not is_summary else 0.75,   # FIX : était 0.70 → trop permissif (ex: 0.65 accepté)
+            MIN_CONF_GOAL = 0.85 if not is_summary else 0.75,
             MIN_CONF_SHOT = 0.70,
             frame_w       = _frame_w,
             frame_h       = _frame_h,
@@ -460,7 +452,7 @@ def run_pipeline(
             if len(events) < n_before:
                 print(f"  FP zones : {n_before - len(events)} shots filtrés")
 
-        # ── Lecture maillots prioritaire sur 3 frames ──
+        # Lecture maillots prioritaire
         seen_pids    = set()
         prio_players = []
 
@@ -524,6 +516,7 @@ def run_pipeline(
     # 1b-ter. VALIDATION STRUCTURELLE
     # ─────────────────────────────────────────
     try:
+        from analysis.event_validator import filter_events
         events, val_stats = filter_events(
             events  = events,
             sport   = sport,
@@ -535,20 +528,18 @@ def run_pipeline(
         print(f"  filter_events ignoré : {e}")
 
     # ─────────────────────────────────────────
-    # 1c. SMART FILTERING
+    # 1c. SMART FILTERING (tirs)
     # ─────────────────────────────────────────
     try:
-        
         validated = []
         for i, e in enumerate(events):
-            prev = events[i-1] if i > 0 else None
+            prev = events[i - 1] if i > 0 else None
             if e.get("type") == "shot":
-                if not e.get("detected_from") and not e.get("synthetic") and not detect_real_shot(e, prev):
+                if not e.get("detected_from") and not e.get("synthetic") and not detect_real_shots(e, prev):
                     continue
             validated.append(e)
         events = validated
-
-        print(f"  SMART {len(events)} events | Possession: (calculée après stats)")
+        print(f"  SMART {len(events)} events")
     except Exception as e:
         print(f"  Smart filtering ignoré : {e}")
 
@@ -577,6 +568,7 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # 1e. CONTEXT ENGINE
     # ─────────────────────────────────────────
+    ctx_stats = {}
     try:
         ctx    = ContextEngine(fps=fps, frame_w=_frame_w, frame_h=_frame_h)
         events = ctx.process_events(events, frames_data)
@@ -586,14 +578,13 @@ def run_pipeline(
               f"avg_seq={ctx_stats['avg_sequence_length']}")
     except Exception as e:
         print(f"  Context engine ignoré : {e}")
-        ctx_stats = {}
 
     # ─────────────────────────────────────────
     # 2. ENRICH xG
     # ─────────────────────────────────────────
     print("Step 2 : xG avancé...")
-    frame_w    = _frame_w
-    frame_h    = _frame_h
+    frame_w     = _frame_w
+    frame_h     = _frame_h
     n_advanced  = 0
     n_geometric = 0
 
@@ -629,7 +620,7 @@ def run_pipeline(
             )
             n_geometric += 1
 
-        e["xg"] = round(min(float(xg), 0.99), 3)
+        e["xg"] = round(min(float(xg), 0.60), 3)   # clamp xG max à 0.60
 
     n_shots = n_advanced + n_geometric
     if n_shots > 0:
@@ -648,6 +639,7 @@ def run_pipeline(
     stats = compute_stats(events, jersey_map=jersey_map)
     print(f"  OK {len(stats)} joueurs")
 
+    possession = {}
     try:
         possession = compute_possession_from_stats(events, stats)
         print(f"  Possession corrigée : {possession}")
@@ -658,6 +650,7 @@ def run_pipeline(
     # 4. TACTICAL
     # ─────────────────────────────────────────
     print("Step 4 : Tactical...")
+    teams = {}; formation = "?"; pressing = False; phases = []; tactical = {}
     try:
         events, teams = assign_teams(events)
         formation     = detect_formation(events)
@@ -687,13 +680,12 @@ def run_pipeline(
         print(f"  OK formation={formation} | style={tactical.get('style','?')}")
     except Exception as e:
         print(f"  Tactical error : {e}")
-        teams = {}; formation = "?"; pressing = False
-        phases = []; tactical = {}
 
     # ─────────────────────────────────────────
     # 5. IA LEARNING
     # ─────────────────────────────────────────
     print("Step 5 : IA Learning...")
+    key_moments = []
     try:
         events      = cluster_actions(events)
         events      = learn_action_importance(events)
@@ -701,12 +693,12 @@ def run_pipeline(
         print(f"  OK {len(key_moments)} key moments")
     except Exception as e:
         print(f"  Learning error : {e}")
-        key_moments = []
 
     # ─────────────────────────────────────────
     # 6. ADVANCED ANALYTICS
     # ─────────────────────────────────────────
     print("Step 6 : Advanced analytics...")
+    pass_network = {}; offsides = []; dominance = {}
     try:
         from analytics.advanced import compute_xa as compute_xa_list
         events       = compute_xa_list(events)
@@ -721,15 +713,12 @@ def run_pipeline(
         print(f"  OK pass_network={len(pass_network)} | offsides={len(offsides)}")
     except Exception as e:
         print(f"  Advanced error : {e}")
-        pass_network = {}; offsides = []; dominance = {}
 
     # ─────────────────────────────────────────
     # 7. HEATMAPS
     # ─────────────────────────────────────────
     print("Step 7 : Heatmaps...")
-    heatmaps      = {}
-    heatmap_path  = None
-    heatmap_paths = {}
+    heatmaps = {}; heatmap_path = None; heatmap_paths = {}
     try:
         heatmaps = generate_all_heatmaps(
             events     = events,
@@ -748,9 +737,7 @@ def run_pipeline(
     # 8. HIGHLIGHTS
     # ─────────────────────────────────────────
     print("Step 8 : Highlights...")
-    highlights = []
-    reel_path  = None
-
+    highlights = []; reel_path = None
     try:
         highlights = create_highlights(
             video_path = video_path,
@@ -798,13 +785,7 @@ def run_pipeline(
     # 10. RANKINGS + RATINGS + COMMENTARY
     # ─────────────────────────────────────────
     print("Step 10 : Ratings + Commentary...")
-    ratings    = {}
-    mvp        = None
-    mvp_label  = None
-    commentary = []
-    story      = ""
-    possession = {}
-    
+    ratings = {}; mvp = None; mvp_label = None; commentary = []; story = ""
     try:
         for e in events:
             if not e.get("time"):
@@ -814,13 +795,9 @@ def run_pipeline(
         events = tag_key_passes(events)
 
         ranked_highlights = rank_highlights(events)
-        ratings           = compute_player_ratings(
-            events,
-            jersey_map = jersey_map,
-            fps        = fps,
-        )
-        mvp       = get_mvp(ratings)
-        mvp_label = resolve_mvp_label(mvp, stats, jersey_map)
+        ratings           = compute_player_ratings(events, jersey_map=jersey_map, fps=fps)
+        mvp               = get_mvp(ratings)
+        mvp_label         = resolve_mvp_label(mvp, stats, jersey_map)
 
         commentary = generate_commentary(
             ranked_highlights[:10],
@@ -859,8 +836,8 @@ def run_pipeline(
                 jersey_map = jersey_map,
                 highlights = highlights,
                 goals_real = goals_real,
-                frame_w    = _frame_w,   # FIX : résolution réelle (960px possible)
-                frame_h    = _frame_h,   # sans ça les features xG sont calculées en 1920 → faux
+                frame_w    = _frame_w,
+                frame_h    = _frame_h,
             )
             print(f"  Learning : {learner.stats()}")
         except Exception as e:
@@ -963,7 +940,7 @@ def run_pipeline(
         json.dump(result, f, indent=2, ensure_ascii=False)
 
     # ─────────────────────────────────────────
-    # RÉSUMÉ FINAL
+    # RÉSUMÉ FINAL + DEBUG BUTS
     # ─────────────────────────────────────────
     print(f"\nPIPELINE DONE")
     print(f"  {summary['goals']} buts | {summary['shots']} tirs | "
@@ -974,10 +951,7 @@ def run_pipeline(
     if is_summary:
         print(f"  ℹ️  Mode résumé détecté — paramètres adaptés")
 
-    # ─────────────────────────────────────────
-    # DEBUG BUTS (toujours affiché)
-    # ─────────────────────────────────────────
-    goal_events = [e for e in events if e.get("type") in ("goal", "score")]
+    goal_events       = [e for e in events if e.get("type") in ("goal", "score")]
     shot_events_final = [e for e in events if e.get("type") == "shot"]
     print(f"\n{'='*50}")
     print(f"DEBUG — Analyse buts + joueurs")
@@ -990,7 +964,7 @@ def run_pipeline(
         mm = int(t // 60)
         ss = int(t % 60)
         print(f"\n  ── But à {mm:02d}:{ss:02d} ──")
-        pid = g.get("player")
+        pid   = g.get("player")
         label = get_player_label(str(pid), jersey_map) if pid else "?"
         print(f"     Buteur    : {label} (ID={pid})")
         print(f"     Source    : {g.get('source', g.get('detected_from', '?'))}")
