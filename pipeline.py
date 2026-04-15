@@ -396,6 +396,8 @@ def run_pipeline(
             frame_w=_frame_w,
             frame_h=_frame_h
         )
+        events = deduplicate_goals(events, window=2.0)
+        
         print("  DEBUG buts après post_process:")
         for e in events:
             if e.get("type") in ("goal", "score"):
