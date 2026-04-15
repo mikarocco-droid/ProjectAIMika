@@ -18,6 +18,21 @@ except ImportError:
 
 
 # ─────────────────────────────────────────
+# SEUILS DYNAMIQUES (depuis gemini_validation.py)
+# ─────────────────────────────────────────
+MIN_CONF_BASE = 0.80
+
+def get_dynamic_threshold(event):
+    """
+    Seuil de confiance Gemini adapté à la confiance de l'event.
+    Event très confiant (posthoc score élevé) → seuil plus souple.
+    Event peu confiant → seuil plus strict.
+    """
+    conf = event.get("confidence", 0.5)
+    return max(0.75, 0.95 - conf)
+
+
+# ─────────────────────────────────────────
 # INIT CLIENT
 # ─────────────────────────────────────────
 _client = None
@@ -339,7 +354,9 @@ def validate_events_with_gemini(
               f"type={gemini_type} conf={confiance:.2f} "
               f"desc={result.get('description', '')}")
 
-        threshold = MIN_CONF_GOAL if event.get("type") == "goal" else MIN_CONF_SHOT
+        # Seuil dynamique : adapté à la confiance de l'event
+        # Un but détecté par goal_posthoc (conf élevée) → seuil plus souple
+        threshold = get_dynamic_threshold(event) if event.get("type") == "goal"                     else MIN_CONF_SHOT
 
         if confiance >= threshold:
             if gemini_type in ["goal", "shot"]:
