@@ -1,7 +1,3 @@
-
-<!-- ─────────────────────────────────── -->
-<!-- register.html                       -->
-<!-- ─────────────────────────────────── -->
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -10,11 +6,18 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-<nav><div class="nav-inner"><a href="/" class="logo">⚽ ScoutIA</a></div></nav>
+<nav>
+  <div class="nav-inner">
+    <a href="/" class="logo">⚡ ScoutIA</a>
+  </div>
+</nav>
+
 <div class="auth-page">
   <div class="auth-card">
     <h2>Créer un compte</h2>
-    <p style="color:#666;font-size:.9rem;margin-bottom:1.25rem">2 analyses gratuites — sans carte bancaire</p>
+    <p style="color:var(--gray);font-size:.88rem;margin-bottom:1.5rem">
+      2 analyses gratuites — sans carte bancaire
+    </p>
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% for cat, msg in messages %}
         <div class="flash {{ cat }}">{{ msg }}</div>
@@ -23,15 +26,19 @@
     <form method="POST">
       <div class="form-group">
         <label>Email</label>
-        <input type="email" name="email" required autofocus>
+        <input type="email" name="email" required autofocus placeholder="vous@exemple.fr">
       </div>
       <div class="form-group">
         <label>Mot de passe</label>
-        <input type="password" name="password" required minlength="8">
+        <input type="password" name="password" required minlength="8" placeholder="8 caractères minimum">
       </div>
-      <button type="submit" class="btn-primary" style="width:100%">Créer mon compte</button>
+      <button type="submit" class="btn-primary" style="width:100%;margin-top:0.5rem">
+        Créer mon compte →
+      </button>
     </form>
-    <p class="auth-link">Déjà un compte ? <a href="/login">Se connecter</a></p>
+    <p class="auth-link">
+      Déjà un compte ? <a href="/login">Se connecter</a>
+    </p>
   </div>
 </div>
 </body>

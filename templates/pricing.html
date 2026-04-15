@@ -8,20 +8,20 @@
 <body>
 <nav>
   <div class="nav-inner">
-    <a href="/" class="logo">⚽ ScoutIA</a>
+    <a href="/" class="logo">⚡ ScoutIA</a>
     <div class="nav-links">
       {% if current_user.is_authenticated %}
-        <a href="/dashboard" class="btn-nav">Mon Dashboard</a>
+        <a href="/dashboard" class="btn-nav">Dashboard →</a>
       {% else %}
         <a href="/login">Connexion</a>
-        <a href="/register" class="btn-nav">Essai gratuit</a>
+        <a href="/register" class="btn-nav">Essai gratuit →</a>
       {% endif %}
     </div>
   </div>
 </nav>
 
 <div class="pricing-page">
-  <h1>Tarifs simples et transparents</h1>
+  <h1>Tarifs simples</h1>
   <p class="pricing-subtitle">Commencez gratuitement, upgradez quand vous êtes prêt.</p>
 
   <div class="plans-grid">
@@ -34,19 +34,19 @@
         <div class="plan-desc">Pour découvrir</div>
       </div>
       <ul class="plan-features">
-        <li>✅ 2 vidéos</li>
-        <li>✅ Highlights automatiques</li>
-        <li>✅ Rapport scout</li>
-        <li>❌ Support</li>
+        <li>2 vidéos</li>
+        <li>Highlights automatiques</li>
+        <li>Rapport scout PDF</li>
+        <li style="opacity:.4">Support</li>
       </ul>
       {% if current_user.is_authenticated %}
         {% if current_user.plan == "free" %}
           <div class="plan-current">Plan actuel</div>
         {% else %}
-          <a href="/dashboard" class="btn-secondary" style="width:100%;text-align:center">Dashboard</a>
+          <a href="/dashboard" class="btn-secondary">Dashboard</a>
         {% endif %}
       {% else %}
-        <a href="/register" class="btn-secondary" style="width:100%;text-align:center">Commencer</a>
+        <a href="/register" class="btn-secondary">Commencer</a>
       {% endif %}
     </div>
 
@@ -58,34 +58,34 @@
         <div class="plan-desc">Sans engagement</div>
       </div>
       <ul class="plan-features">
-        <li>✅ 1 vidéo analysée</li>
-        <li>✅ Highlights automatiques</li>
-        <li>✅ Rapport scout</li>
-        <li>✅ Paiement unique</li>
+        <li>1 vidéo analysée</li>
+        <li>Highlights automatiques</li>
+        <li>Rapport scout PDF</li>
+        <li>Paiement unique</li>
       </ul>
       {% if current_user.is_authenticated %}
         <form action="/create-checkout" method="POST">
           <input type="hidden" name="plan" value="unique">
-          <button type="submit" class="btn-secondary" style="width:100%">Acheter 1 vidéo</button>
+          <button type="submit" class="btn-secondary">Acheter 1 vidéo</button>
         </form>
       {% else %}
-        <a href="/register" class="btn-secondary" style="width:100%;text-align:center">Commencer</a>
+        <a href="/register" class="btn-secondary">Commencer</a>
       {% endif %}
     </div>
 
     <!-- STARTER -->
     <div class="plan-card featured">
-      <div class="plan-badge-top">⭐ Populaire</div>
+      <div class="plan-badge-top">Populaire</div>
       <div class="plan-header">
         <div class="plan-name">Starter</div>
         <div class="plan-price">9€<span>/mois</span></div>
         <div class="plan-desc">0,45€ par vidéo</div>
       </div>
       <ul class="plan-features">
-        <li>✅ 20 vidéos / mois</li>
-        <li>✅ Highlights automatiques</li>
-        <li>✅ Rapport scout</li>
-        <li>✅ Support email</li>
+        <li>20 vidéos / mois</li>
+        <li>Highlights automatiques</li>
+        <li>Rapport scout PDF</li>
+        <li>Support email</li>
       </ul>
       {% if current_user.is_authenticated %}
         {% if current_user.plan == "starter" %}
@@ -93,11 +93,11 @@
         {% else %}
           <form action="/create-checkout" method="POST">
             <input type="hidden" name="plan" value="starter">
-            <button type="submit" class="btn-primary" style="width:100%">Choisir Starter</button>
+            <button type="submit" class="btn-primary">Choisir Starter</button>
           </form>
         {% endif %}
       {% else %}
-        <a href="/register" class="btn-primary" style="width:100%;text-align:center">Commencer</a>
+        <a href="/register" class="btn-primary">Commencer</a>
       {% endif %}
     </div>
 
@@ -109,10 +109,10 @@
         <div class="plan-desc">0,29€ par vidéo</div>
       </div>
       <ul class="plan-features">
-        <li>✅ 100 vidéos / mois</li>
-        <li>✅ Highlights automatiques</li>
-        <li>✅ Rapport scout</li>
-        <li>✅ Support prioritaire</li>
+        <li>100 vidéos / mois</li>
+        <li>Highlights automatiques</li>
+        <li>Rapport scout PDF</li>
+        <li>Support prioritaire</li>
       </ul>
       {% if current_user.is_authenticated %}
         {% if current_user.plan == "pro" %}
@@ -120,11 +120,11 @@
         {% else %}
           <form action="/create-checkout" method="POST">
             <input type="hidden" name="plan" value="pro">
-            <button type="submit" class="btn-primary" style="width:100%">Choisir Pro</button>
+            <button type="submit" class="btn-primary">Choisir Pro</button>
           </form>
         {% endif %}
       {% else %}
-        <a href="/register" class="btn-primary" style="width:100%;text-align:center">Commencer</a>
+        <a href="/register" class="btn-primary">Commencer</a>
       {% endif %}
     </div>
 
@@ -144,11 +144,15 @@
       <div class="faq-q">Puis-je annuler à tout moment ?</div>
       <div class="faq-a">Oui, sans engagement. Vous revenez au plan gratuit.</div>
     </div>
+    <div class="faq-item">
+      <div class="faq-q">Quels sports sont supportés ?</div>
+      <div class="faq-a">Football, mini-foot, basketball, handball, tennis, padel et plus.</div>
+    </div>
   </div>
 </div>
 
 <footer>
-  <p>© 2025 ScoutIA — Propulsé par Claude AI</p>
+  <p>© 2025 ScoutIA — Propulsé par Claude AI &amp; Gemini Vision</p>
 </footer>
 </body>
 </html>

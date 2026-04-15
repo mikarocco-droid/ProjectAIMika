@@ -2,329 +2,239 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>Resultats — ScoutIA</title>
+<title>Résultats — ScoutIA</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-<style>
-    .results-page       { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
-    .result-section     { background: #fff; border-radius: 14px; padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
-    .result-section h2  { font-size: 1.1rem; font-weight: 700; color: #1a1a2e; margin-bottom: 1rem; }
-    .kpi-grid           { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1rem; }
-    .kpi-card           { background: #f8f9ff; border-radius: 10px; padding: 1rem; text-align: center; border-top: 3px solid #2563eb; }
-    .kpi-value          { font-size: 1.8rem; font-weight: 700; color: #2563eb; }
-    .kpi-label          { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: .5px; margin-top: .2rem; }
-    .highlights-grid    { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
-    .highlight-card     { background: #f8f9ff; border-radius: 10px; padding: 1rem; border-left: 4px solid #2563eb; }
-    .highlight-header   { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap; }
-    .highlight-type     { display: inline-block; padding: .2rem .6rem; border-radius: 20px; font-size: .75rem; font-weight: 600; background: #dbeafe; color: #1d4ed8; text-transform: uppercase; }
-    .highlight-type.goal, .highlight-type.score { background: #d1fae5; color: #065f46; }
-    .highlight-type.shot        { background: #dbeafe; color: #1d4ed8; }
-    .highlight-type.interception{ background: #fee2e2; color: #991b1b; }
-    .highlight-type.dribble     { background: #fef3c7; color: #92400e; }
-    .highlight-time     { font-size: .8rem; color: #666; }
-    .highlight-score    { font-size: .75rem; color: #888; margin-left: auto; }
-    .highlight-video    { width: 100%; border-radius: 8px; margin-top: .5rem; max-height: 180px; background: #000; }
-    .stats-table        { width: 100%; border-collapse: collapse; }
-    .stats-table th     { background: #2563eb; color: #fff; padding: .6rem 1rem; text-align: left; font-size: .82rem; }
-    .stats-table td     { padding: .6rem 1rem; border-bottom: 1px solid #f0f0f0; font-size: .88rem; }
-    .stats-table tr:last-child td { border-bottom: none; }
-    .stats-table tr:hover td { background: #f8f9ff; }
-    .heatmap-grid       { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
-    .heatmap-card       { border-radius: 10px; overflow: hidden; }
-    .heatmap-card img   { width: 100%; border-radius: 10px; }
-    .heatmap-label      { font-size: .8rem; color: #666; text-align: center; margin-top: .4rem; }
-    .reel-video         { width: 100%; border-radius: 10px; max-height: 400px; background: #000; margin-bottom: 1rem; }
-    .btn-row            { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
-    .btn-primary        { background: #2563eb; color: #fff; padding: .7rem 1.4rem; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: .9rem; display: inline-block; }
-    .btn-primary:hover  { background: #1d4ed8; }
-    .btn-secondary      { background: #f3f4f6; color: #1a1a2e; padding: .7rem 1.4rem; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: .9rem; display: inline-block; }
-    .btn-secondary:hover{ background: #e5e7eb; }
-    .btn-disabled       { background: #e5e7eb; color: #999; padding: .7rem 1.4rem; border-radius: 10px; font-weight: 600; font-size: .9rem; display: inline-block; cursor: not-allowed; }
-    .ai-text            { background: #f8f9ff; border-left: 4px solid #2563eb; padding: 1rem; border-radius: 8px; font-style: italic; color: #444; line-height: 1.6; }
-    .jersey-badge       { display: inline-block; background: #1a1a2e; color: #fff; border-radius: 6px; padding: .15rem .5rem; font-size: .8rem; font-weight: 700; margin-right: .3rem; }
-    .empty-state        { color: #aaa; font-size: .9rem; font-style: italic; }
-    .tactical-grid      { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
-    .tactical-card      { background: #f8f9ff; border-radius: 10px; padding: 1rem; text-align: center; }
-    .tactical-value     { font-size: 1.4rem; font-weight: 700; color: #2563eb; }
-    .tactical-label     { font-size: .75rem; color: #888; margin-top: .2rem; }
-</style>
 </head>
 <body>
 <nav>
-    <div class="nav-inner">
-        <a href="/" class="logo">⚽ ScoutIA</a>
-        <div class="nav-links">
-            <a href="/dashboard">← Dashboard</a>
-        </div>
+  <div class="nav-inner">
+    <a href="/" class="logo">⚡ ScoutIA</a>
+    <div class="nav-links">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/logout">Déconnexion</a>
     </div>
+  </div>
 </nav>
 
 <div class="results-page">
 
-    <h1 style="font-size:1.4rem;font-weight:700;color:#1a1a2e;margin-bottom:1.5rem">
-        Resultats — {{ analysis.filename }}
-        <span style="font-size:.9rem;color:#888;font-weight:400;margin-left:.5rem">
-            {{ analysis.sport }} • {{ analysis.created_at.strftime('%d/%m/%Y %H:%M') }}
-        </span>
-    </h1>
-
-    <!-- ─── KPI RÉSUMÉ ─── -->
-    {% if result.summary %}
-    <div class="result-section">
-        <h2>Résumé du match</h2>
-        <div class="kpi-grid">
-            <div class="kpi-card">
-                <div class="kpi-value" style="color:#065f46">{{ result.summary.goals }}</div>
-                <div class="kpi-label">Buts</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-value">{{ result.summary.shots }}</div>
-                <div class="kpi-label">Tirs</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-value" style="color:#92400e">{{ result.summary.total_xg }}</div>
-                <div class="kpi-label">xG Total</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-value">{{ result.summary.passes }}</div>
-                <div class="kpi-label">Passes</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-value" style="color:#991b1b">{{ result.summary.interceptions }}</div>
-                <div class="kpi-label">Interceptions</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-value">{{ result.summary.dribbles }}</div>
-                <div class="kpi-label">Dribbles</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-value">{{ result.summary.players }}</div>
-                <div class="kpi-label">Joueurs</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-value" style="font-size:1.2rem">{{ result.summary.duration }}</div>
-                <div class="kpi-label">Durée</div>
-            </div>
-        </div>
+  <div class="results-header">
+    <div>
+      <div class="results-title">{{ analysis.filename }}</div>
+      <div class="results-meta">
+        {{ analysis.sport }} · {{ analysis.created_at.strftime('%d/%m/%Y %H:%M') }}
+      </div>
     </div>
-    {% endif %}
-
-    <!-- ─── TACTIQUE ─── -->
-    {% if result.formation or result.tactical %}
-    <div class="result-section">
-        <h2>Analyse tactique</h2>
-        <div class="tactical-grid">
-            {% if result.formation %}
-            <div class="tactical-card">
-                <div class="tactical-value">{{ result.formation }}</div>
-                <div class="tactical-label">Formation</div>
-            </div>
-            {% endif %}
-            {% if result.tactical and result.tactical.style %}
-            <div class="tactical-card">
-                <div class="tactical-value">{{ result.tactical.style }}</div>
-                <div class="tactical-label">Style de jeu</div>
-            </div>
-            {% endif %}
-            {% if result.pressing is defined %}
-            <div class="tactical-card">
-                <div class="tactical-value">{{ "Oui" if result.pressing else "Non" }}</div>
-                <div class="tactical-label">Pressing</div>
-            </div>
-            {% endif %}
-            {% if result.mvp %}
-            <div class="tactical-card">
-                <div class="tactical-value">P{{ result.mvp }}</div>
-                <div class="tactical-label">MVP</div>
-            </div>
-            {% endif %}
-        </div>
+    <div class="results-actions">
+      {% if result.pdf %}
+        <a href="/download/{{ analysis.id }}/pdf" class="btn-primary">Télécharger PDF</a>
+      {% endif %}
+      {% if result.reel %}
+        <a href="/download/{{ analysis.id }}/reel" class="btn-secondary">Télécharger Reel</a>
+      {% endif %}
     </div>
-    {% endif %}
+  </div>
 
-    <!-- ─── RÉSUMÉ IA ─── -->
-    {% if result.ai_summary %}
-    <div class="result-section">
-        <h2>Analyse IA</h2>
-        <div class="ai-text">{{ result.ai_summary }}</div>
+  <!-- KPIs -->
+  <div class="kpi-row">
+    <div class="kpi-card">
+      <div class="kpi-value">{{ result.summary.goals }}</div>
+      <div class="kpi-label">Buts</div>
     </div>
-    {% endif %}
-
-    <!-- ─── STORY ─── -->
-    {% if result.story %}
-    <div class="result-section">
-        <h2>Récit du match</h2>
-        <div class="ai-text">{{ result.story }}</div>
+    <div class="kpi-card">
+      <div class="kpi-value">{{ result.summary.shots }}</div>
+      <div class="kpi-label">Tirs</div>
     </div>
-    {% endif %}
-
-    <!-- ─── HEATMAPS ─── -->
-    <!-- FIX — clés alignées avec generate_all_heatmaps() -->
-    {% if result.heatmaps %}
-    <div class="result-section">
-        <h2>Cartes de chaleur</h2>
-        <div class="heatmap-grid">
-            {% if result.heatmaps.global %}
-            <div class="heatmap-card">
-                <img src="/files/{{ analysis.id }}/heatmaps/global.png" alt="Activite globale">
-                <div class="heatmap-label">Activite globale</div>
-            </div>
-            {% endif %}
-            {% if result.heatmaps.shots %}
-            <div class="heatmap-card">
-                <img src="/files/{{ analysis.id }}/heatmaps/shots.png" alt="Zones de tir">
-                <div class="heatmap-label">Zones de tir</div>
-            </div>
-            {% endif %}
-            {% if result.heatmaps.goals %}
-            <div class="heatmap-card">
-                <img src="/files/{{ analysis.id }}/heatmaps/goals.png" alt="Zones de but">
-                <div class="heatmap-label">Zones de but</div>
-            </div>
-            {% endif %}
-            {% if result.heatmaps.team_A %}
-            <div class="heatmap-card">
-                <img src="/files/{{ analysis.id }}/heatmaps/team_A.png" alt="Equipe A">
-                <div class="heatmap-label">Equipe A</div>
-            </div>
-            {% endif %}
-            {% if result.heatmaps.team_B %}
-            <div class="heatmap-card">
-                <img src="/files/{{ analysis.id }}/heatmaps/team_B.png" alt="Equipe B">
-                <div class="heatmap-label">Equipe B</div>
-            </div>
-            {% endif %}
-        </div>
+    <div class="kpi-card">
+      <div class="kpi-value">{{ result.summary.total_xg | round(2) }}</div>
+      <div class="kpi-label">xG total</div>
     </div>
-    {% endif %}
-
-    <!-- ─── HIGHLIGHTS ─── -->
-    {% if result.highlights %}
-    <div class="result-section">
-        <h2>Moments clés ({{ result.highlights|length }})</h2>
-        <div class="highlights-grid">
-            {% for h in result.highlights %}
-            <div class="highlight-card">
-                <div class="highlight-header">
-                    <span class="highlight-type {{ h.main_type }}">
-                        {{ h.main_type|upper if h.main_type else "ACTION" }}
-                    </span>
-                    <span class="highlight-time">
-                        {{ "%.1f"|format(h.time_start) }}s → {{ "%.1f"|format(h.time_end) }}s
-                    </span>
-                    <span class="highlight-score">Score : {{ h.score }}</span>
-                </div>
-                <video controls preload="none" class="highlight-video">
-                    <source src="/files/{{ analysis.id }}/highlights/highlight_{{ loop.index }}_{{ h.main_type }}.mp4"
-                            type="video/mp4">
-                    Votre navigateur ne supporte pas la video.
-                </video>
-            </div>
-            {% endfor %}
-        </div>
+    <div class="kpi-card">
+      <div class="kpi-value">{{ result.summary.passes }}</div>
+      <div class="kpi-label">Passes</div>
     </div>
-    {% endif %}
+    <div class="kpi-card">
+      <div class="kpi-value">{{ result.summary.players }}</div>
+      <div class="kpi-label">Joueurs</div>
+    </div>
+  </div>
 
-    <!-- ─── HIGHLIGHT REEL ─── -->
-    <div class="result-section">
-        <h2>Highlight Reel complet</h2>
-        {% if result.reel %}
-        <video controls class="reel-video">
-            <source src="/files/{{ analysis.id }}/reel.mp4" type="video/mp4">
-            Votre navigateur ne supporte pas la video.
+  <!-- Reel vidéo -->
+  {% if result.reel %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">🎬</span>
+      <span class="result-section-title">Highlight Reel</span>
+    </div>
+    <div class="result-section-body" style="padding:0">
+      <div class="video-container">
+        <video controls preload="metadata">
+          <source src="/stream/{{ analysis.id }}/reel" type="video/mp4">
         </video>
-        <div class="btn-row">
-            <a href="/files/{{ analysis.id }}/reel.mp4" download class="btn-secondary">
-                Telecharger le reel
-            </a>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Possession -->
+  {% if result.possession %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">🎽</span>
+      <span class="result-section-title">Possession</span>
+    </div>
+    <div class="result-section-body">
+      {% for team, pct in result.possession.items() | sort %}
+      <div class="possession-row">
+        <div class="poss-label">Équipe {{ team }}</div>
+        <div class="poss-bar-outer">
+          <div class="poss-bar-inner" style="width:{{ pct }}%"></div>
         </div>
-        {% else %}
-            <p class="empty-state">Reel non disponible.</p>
+        <div class="poss-pct">{{ pct }}%</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Highlights -->
+  {% if result.highlights %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">⚡</span>
+      <span class="result-section-title">Highlights ({{ result.highlights | length }})</span>
+    </div>
+    <div class="result-section-body">
+      <div class="highlights-grid">
+        {% for h in result.highlights %}
+        {% set mins_s = (h.time_start / 60) | int %}
+        {% set secs_s = (h.time_start % 60) | int %}
+        {% set htype = h.main_type | default('shot') %}
+        <div class="highlight-item">
+          <span class="hl-num">{{ loop.index }}</span>
+          <span class="hl-badge {{ 'goal' if htype in ['goal','score'] else 'shot' if htype == 'shot' else 'other' }}">
+            {{ htype }}
+          </span>
+          <span class="hl-time">{{ "%02d:%02d" | format(mins_s, secs_s) }}</span>
+          <span class="hl-player">
+            {% if h.player %}
+              {% if result.jersey_map and h.player|string in result.jersey_map %}
+                #{{ result.jersey_map[h.player|string] }}
+              {% else %}
+                #{{ h.player }}
+              {% endif %}
+            {% else %}?{% endif %}
+          </span>
+          {% if h.xg and h.xg > 0 %}
+            <span class="hl-xg">xG {{ h.xg | round(2) }}</span>
+          {% endif %}
+          <span class="hl-score">{{ h.score | default(0) | round(1) }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Joueurs -->
+  {% if result.stats %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">👥</span>
+      <span class="result-section-title">Joueurs</span>
+    </div>
+    <div class="result-section-body" style="padding:0;overflow-x:auto">
+      <table class="players-table">
+        <thead>
+          <tr>
+            <th>Joueur</th>
+            <th>Touches</th>
+            <th>Passes</th>
+            <th>Tirs</th>
+            <th>Buts</th>
+            <th>xG</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pid, s in result.stats.items() | sort(attribute='1.touches', reverse=True) %}
+          {% if s.touches >= 5 %}
+          <tr>
+            <td class="player-name-cell">
+              {% if s.label %}{{ s.label }}
+              {% elif result.jersey_map and pid in result.jersey_map %}#{{ result.jersey_map[pid] }}
+              {% else %}#{{ pid }}{% endif %}
+            </td>
+            <td>{{ s.touches }}</td>
+            <td>{{ s.passes }}</td>
+            <td>{{ s.tirs }}</td>
+            <td>{% if s.buts > 0 %}<span style="color:var(--red);font-weight:700">{{ s.buts }}</span>{% else %}—{% endif %}</td>
+            <td>{% if s.xg_total > 0 %}<span style="color:var(--yellow)">{{ s.xg_total | round(2) }}</span>{% else %}—{% endif %}</td>
+            <td>
+              {% if result.player_ratings and pid in result.player_ratings %}
+                <span style="color:var(--cyan);font-family:var(--font-mono)">{{ result.player_ratings[pid].rating | round(1) }}</span>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Formation & Tactique -->
+  {% if result.formation or result.tactical %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">🧠</span>
+      <span class="result-section-title">Tactique</span>
+    </div>
+    <div class="result-section-body">
+      {% if result.formation %}
+      <p style="font-family:var(--font-mono);font-size:1.1rem;color:var(--cyan);margin-bottom:0.75rem">
+        Formation : {{ result.formation }}
+        {% if result.tactical and result.tactical.style %}
+          · {{ result.tactical.style }}
         {% endif %}
+      </p>
+      {% endif %}
+      {% if result.ai_summary %}
+        <p class="story-text">{{ result.ai_summary }}</p>
+      {% elif result.match_story %}
+        <p class="story-text">{{ result.match_story }}</p>
+      {% endif %}
     </div>
+  </div>
+  {% endif %}
 
-    <!-- ─── MONTAGE ─── -->
-    {% if result.montage and can_montage %}
-    <div class="result-section">
-        <h2>Montage final</h2>
-        <video controls class="reel-video">
-            <source src="/files/{{ analysis.id }}/montage.mp4" type="video/mp4">
-        </video>
-        <div class="btn-row">
-            <a href="/files/{{ analysis.id }}/montage.mp4" download class="btn-secondary">
-                Telecharger le montage
-            </a>
+  <!-- Heatmaps -->
+  {% if result.heatmaps %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">🔥</span>
+      <span class="result-section-title">Heatmaps</span>
+    </div>
+    <div class="result-section-body">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem">
+        {% for name, path in result.heatmaps.items() %}
+        {% if path %}
+        <div>
+          <p style="font-family:var(--font-mono);font-size:0.75rem;color:var(--cyan);text-transform:uppercase;margin-bottom:0.5rem">{{ name }}</p>
+          <img src="/heatmap/{{ analysis.id }}/{{ name }}" style="width:100%;border-radius:var(--radius);border:1px solid var(--border)">
         </div>
+        {% endif %}
+        {% endfor %}
+      </div>
     </div>
-    {% endif %}
-
-    <!-- ─── STATS JOUEURS ─── -->
-    {% if result.stats %}
-    <div class="result-section">
-        <h2>Statistiques joueurs</h2>
-        <table class="stats-table">
-            <thead>
-                <tr>
-                    <th>Joueur</th>
-                    <th>Maillot</th>
-                    <th>Touches</th>
-                    <th>Passes</th>
-                    <th>Tirs</th>
-                    <th>Buts</th>
-                    <th>Interceptions</th>
-                    <th>Dribbles</th>
-                    <th>xG</th>
-                </tr>
-            </thead>
-            <tbody>
-            {% for player_id, s in result.stats.items() %}
-                <tr>
-                    <td>Joueur {{ player_id }}</td>
-                    <td>
-                        {% set jersey = result.jersey_map.get(player_id) or result.jersey_map.get(player_id|string) if result.jersey_map else None %}
-                        {% if jersey %}
-                            <span class="jersey-badge">#{{ jersey }}</span>
-                        {% else %}
-                            —
-                        {% endif %}
-                    </td>
-                    <td>{{ s.touches       or 0 }}</td>
-                    <td>{{ s.passes        or 0 }}</td>
-                    <td>{{ s.tirs          or 0 }}</td>
-                    <td>{{ s.buts          or 0 }}</td>
-                    <td>{{ s.interceptions or 0 }}</td>
-                    <td>{{ s.dribbles      or 0 }}</td>
-                    <td>{{ "%.2f"|format(s.xg_total) if s.xg_total else "0.00" }}</td>
-                </tr>
-            {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% endif %}
-
-    <!-- ─── TÉLÉCHARGEMENTS ─── -->
-    <div class="result-section">
-        <h2>Téléchargements</h2>
-        <div class="btn-row">
-            {% if result.pdf and can_pdf %}
-                <a href="/files/{{ analysis.id }}/rapport.pdf" download class="btn-primary">
-                    Télécharger le rapport PDF
-                </a>
-            {% elif not can_pdf %}
-                <span class="btn-disabled" title="Disponible sur plan Starter et supérieur">
-                    PDF — Plan Starter requis
-                </span>
-            {% endif %}
-            {% if result.reel %}
-                <a href="/files/{{ analysis.id }}/reel.mp4" download class="btn-secondary">
-                    Télécharger le reel
-                </a>
-            {% endif %}
-            <a href="/files/{{ analysis.id }}/analysis.json" download class="btn-secondary">
-                Télécharger le JSON
-            </a>
-        </div>
-    </div>
+  </div>
+  {% endif %}
 
 </div>
+
+<footer>
+  <p>© 2025 ScoutIA — Propulsé par Claude AI &amp; Gemini Vision</p>
+</footer>
 </body>
 </html>
