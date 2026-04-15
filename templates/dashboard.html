@@ -36,7 +36,13 @@
         <div class="upload-filename" id="file-name"></div>
       </div>
 
-      <div class="sport-wrapper">
+      
+      <div class="sport-wrapper" style="margin-top:0">
+        <label>Nom de ton équipe <span style="color:var(--gray-dim);font-weight:400">(optionnel)</span></label>
+        <input type="text" name="team_name" placeholder="Ex: FC Montrouge U19" maxlength="60">
+      </div>
+
+<div class="sport-wrapper">
         <label>Sport</label>
         <select name="sport" id="sport-select">
           <optgroup label="Sports collectifs">
@@ -188,6 +194,22 @@
   {% endif %}
 
 </div>
+
+
+  <!-- CTA Referral discret -->
+  <div style="margin-top:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.25rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <div>
+      <p style="font-size:0.85rem;font-weight:600;color:var(--white);margin-bottom:0.2rem">
+        🎁 Invite ton équipe
+      </p>
+      <p style="font-size:0.8rem;color:var(--gray)">
+        Invite 3 coéquipiers → reçois 1 analyse gratuite
+      </p>
+    </div>
+    <a href="/pricing" class="btn-small" style="white-space:nowrap">
+      Découvrir le mode Club →
+    </a>
+  </div>
 
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

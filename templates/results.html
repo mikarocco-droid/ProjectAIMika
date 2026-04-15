@@ -231,10 +231,76 @@
   </div>
   {% endif %}
 
+
+  <!-- ═══════════════════════════════════════════
+       CTA CONVERSION — Mode Club
+  ═══════════════════════════════════════════ -->
+  <div class="result-section" style="border-color:rgba(0,200,230,0.4);background:linear-gradient(135deg,rgba(0,200,230,0.06),rgba(180,100,255,0.06))">
+    <div class="result-section-header" style="background:rgba(0,200,230,0.08)">
+      <span class="result-section-icon">🔥</span>
+      <span class="result-section-title" style="color:var(--cyan)">Ton match est prêt !</span>
+    </div>
+    <div class="result-section-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;align-items:center;flex-wrap:wrap">
+
+        <!-- Partage -->
+        <div>
+          <p style="font-family:var(--font-head);font-size:1.1rem;font-weight:700;color:var(--white);margin-bottom:0.5rem">
+            🚀 Partage tes highlights
+          </p>
+          <p style="font-size:0.88rem;color:var(--gray);margin-bottom:1rem;line-height:1.6">
+            Envoie ce rapport à ton coach, ton équipe ou tes parents.<br>
+            Plus vous êtes à utiliser ScoutIA, plus l'analyse devient puissante.
+          </p>
+          <button onclick="shareMatch()" class="btn-secondary" style="gap:0.5rem">
+            📤 Partager ce match
+          </button>
+        </div>
+
+        <!-- CTA Club -->
+        <div style="background:var(--surface);border:1px solid rgba(0,200,230,0.3);border-radius:14px;padding:1.25rem">
+          <p style="font-family:var(--font-head);font-size:0.95rem;font-weight:700;color:var(--white);margin-bottom:0.75rem">
+            👥 Tu joues en équipe ?
+          </p>
+          <ul style="list-style:none;font-size:0.85rem;color:var(--gray);line-height:1.9;margin-bottom:1rem">
+            <li>⚽ Highlights pour toute l'équipe</li>
+            <li>📊 Stats joueurs automatiques</li>
+            <li>📄 PDF prêt pour coach / recruteurs</li>
+            <li>🏆 Suivi complet de la saison</li>
+          </ul>
+          <a href="/pricing" class="btn-primary" style="width:100%;justify-content:center;background:var(--cyan);color:var(--bg)">
+            Activer le mode Club — 99€/mois →
+          </a>
+          <p style="font-size:0.72rem;color:var(--gray-dim);text-align:center;margin-top:0.5rem">
+            🎁 Invite 3 coéquipiers → 1 analyse offerte
+          </p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script>
+  function shareMatch() {
+    const url = window.location.href;
+    if (navigator.share) {
+      navigator.share({ title: "Mon match analysé — ScoutIA", url });
+    } else {
+      navigator.clipboard.writeText(url).then(() => {
+        const btn = document.querySelector('[onclick="shareMatch()"]');
+        const orig = btn.textContent;
+        btn.textContent = "✓ Lien copié !";
+        btn.style.color = "var(--green)";
+        setTimeout(() => { btn.textContent = orig; btn.style.color = ""; }, 2000);
+      });
+    }
+  }
+  </script>
+
 </div>
 
 <footer>
-  <p>© 2025 ScoutIA — Propulsé par Claude AI &amp; Gemini Vision</p>
+  <p>© 2026 ScoutIA — Propulsé par Claude AI &amp; Gemini Vision</p>
 </footer>
 </body>
 </html>
