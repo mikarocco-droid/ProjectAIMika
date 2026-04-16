@@ -695,6 +695,84 @@ def files(analysis_id, filename):
 
 
 # ─────────────────────────────────────────
+# TÉLÉCHARGEMENTS — reel, pdf, stream, heatmap
+# ─────────────────────────────────────────
+@app.route("/download/<int:id>/reel")
+@login_required
+def download_reel(id):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        return "Forbidden", 403
+    result   = json.loads(a.result_json) if a.result_json else {}
+    reel_path = result.get("reel")
+    if reel_path and reel_path.startswith("http"):
+        return redirect(reel_path)
+    if reel_path and os.path.exists(reel_path):
+        dl_name = f"scoutia_highlights_{a.filename.rsplit('.', 1)[0]}.mp4"
+        return send_from_directory(os.path.dirname(reel_path),
+                                   os.path.basename(reel_path),
+                                   as_attachment=True,
+                                   download_name=dl_name)
+    flash("Reel non disponible")
+    return redirect(url_for("results", id=id))
+
+
+@app.route("/download/<int:id>/pdf")
+@login_required
+def download_pdf(id):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        return "Forbidden", 403
+    result   = json.loads(a.result_json) if a.result_json else {}
+    pdf_path = result.get("pdf")
+    if pdf_path and pdf_path.startswith("http"):
+        return redirect(pdf_path)
+    if pdf_path and os.path.exists(pdf_path):
+        dl_name = f"scoutia_rapport_{a.filename.rsplit('.', 1)[0]}.pdf"
+        return send_from_directory(os.path.dirname(pdf_path),
+                                   os.path.basename(pdf_path),
+                                   as_attachment=True,
+                                   download_name=dl_name)
+    flash("PDF non disponible")
+    return redirect(url_for("results", id=id))
+
+
+@app.route("/stream/<int:id>/reel")
+@login_required
+def stream_reel(id):
+    """Lecture inline du reel dans le navigateur."""
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        return "Forbidden", 403
+    result    = json.loads(a.result_json) if a.result_json else {}
+    reel_path = result.get("reel")
+    if reel_path and reel_path.startswith("http"):
+        return redirect(reel_path)
+    if reel_path and os.path.exists(reel_path):
+        return send_from_directory(os.path.dirname(reel_path),
+                                   os.path.basename(reel_path))
+    return "Reel non disponible", 404
+
+
+@app.route("/heatmap/<int:id>/<name>")
+@login_required
+def heatmap(id, name):
+    """Servir une heatmap depuis les outputs."""
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        return "Forbidden", 403
+    result   = json.loads(a.result_json) if a.result_json else {}
+    heatmaps = result.get("heatmaps", {})
+    path     = heatmaps.get(name)
+    if path and path.startswith("http"):
+        return redirect(path)
+    if path and os.path.exists(path):
+        return send_from_directory(os.path.dirname(path),
+                                   os.path.basename(path))
+    return "Heatmap non disponible", 404
+
+
+# ─────────────────────────────────────────
 # STRIPE — CHECKOUT
 # ─────────────────────────────────────────
 @app.route("/create-checkout", methods=["POST"])
