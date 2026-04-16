@@ -18,6 +18,21 @@ except ImportError:
 
 
 # ─────────────────────────────────────────
+# SEUILS DYNAMIQUES (depuis gemini_validation.py)
+# ─────────────────────────────────────────
+MIN_CONF_BASE = 0.80
+
+def get_dynamic_threshold(event):
+    """
+    Seuil de confiance Gemini adapté à la confiance de l'event.
+    Event très confiant (posthoc score élevé) → seuil plus souple.
+    Event peu confiant → seuil plus strict.
+    """
+    conf = event.get("confidence", 0.5)
+    return max(0.75, 0.95 - conf)
+
+
+# ─────────────────────────────────────────
 # INIT CLIENT
 # ─────────────────────────────────────────
 _client = None
@@ -114,12 +129,16 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
     cap    = cv2.VideoCapture(video_path)
     frames = []
 
-    before_offsets = [-int(fps * (n_before - i)) for i in range(n_before)]
-    after_offsets  = [int(fps * (i + 1) * 0.5)  for i in range(n_after)]
-    offsets        = before_offsets + [0] + after_offsets
+    # V9.6 — 5 frames espacées finement autour de l'événement
+    # [-15, -5, 0, +5, +15] frames ≈ [-0.6s, -0.2s, 0, +0.2s, +0.6s]
+    offsets = sorted(set([-15, -5, 0, 5, 15]))
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     for offset in offsets:
-        target = max(0, frame_id + offset)
+        target = frame_id + offset
+        if target < 0 or target >= total_frames:
+            continue
         cap.set(cv2.CAP_PROP_POS_FRAMES, target)
         ret, frame = cap.read()
         if ret:
@@ -335,7 +354,9 @@ def validate_events_with_gemini(
               f"type={gemini_type} conf={confiance:.2f} "
               f"desc={result.get('description', '')}")
 
-        threshold = MIN_CONF_GOAL if event.get("type") == "goal" else MIN_CONF_SHOT
+        # Seuil dynamique : adapté à la confiance de l'event
+        # Un but détecté par goal_posthoc (conf élevée) → seuil plus souple
+        threshold = get_dynamic_threshold(event) if event.get("type") == "goal"                     else MIN_CONF_SHOT
 
         if confiance >= threshold:
             if gemini_type in ["goal", "shot"]:
