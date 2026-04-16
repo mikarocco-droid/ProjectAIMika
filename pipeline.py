@@ -427,12 +427,36 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # 1b. VALIDATION GEMINI
     # ─────────────────────────────────────────
+
+    # ── Mode éco — détection phases creuses ──────────────────────────────────
+    # Si aucun tir/but détecté depuis > 15s → on considère la phase creuse
+    # Réduit les appels Gemini sur les events sans intérêt
+    def _has_danger_near(t, window=15.0):
+        """Retourne True si un tir/but existe dans les [t-window, t+window]."""
+        for e in events:
+            if e.get("type") in ("shot", "goal", "score"):
+                if abs(e.get("time", 0) - t) <= window:
+                    return True
+        return False
+
+    # Marquer les events "en phase creuse" pour filtrage Gemini
+    for e in events:
+        e["_eco"] = not _has_danger_near(e.get("time", 0))
+
+    n_eco = sum(1 for e in events if e.get("_eco"))
+    print(f"  Mode éco : {n_eco}/{len(events)} events en phase creuse (skip Gemini)")
+    # ─────────────────────────────────────────────────────────────────────────
+
     print("Step 1b : Validation Gemini...")
     try:
         from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers
 
-        events = validate_events_with_gemini(
-            events        = events,
+        # Filtrer les events éco AVANT Gemini — réduit ~30% des appels
+        events_for_gemini = [e for e in events if not e.get("_eco")]
+        events_eco        = [e for e in events if e.get("_eco")]
+
+        events_validated = validate_events_with_gemini(
+            events        = events_for_gemini,
             video_path    = video_path,
             fps           = fps,
             sport         = sport,
@@ -441,6 +465,15 @@ def run_pipeline(
             frame_w       = _frame_w,
             frame_h       = _frame_h,
         )
+
+        # Réassembler dans l'ordre chronologique
+        events = sorted(
+            events_validated + events_eco,
+            key=lambda x: x.get("time", 0)
+        )
+        # Nettoyer le flag interne
+        for e in events:
+            e.pop("_eco", None)
 
         if learner:
             n_before = len(events)
@@ -662,20 +695,7 @@ def run_pipeline(
             frame_h        = _frame_h
         )
 
-        try:
-            from ai.gemini_analyzer import analyze_tactics
-            tactical_gemini = analyze_tactics(
-                video_path = video_path,
-                sport      = sport,
-                fps        = fps,
-                events     = events
-            )
-            if tactical_gemini.get("gemini_analysed"):
-                tactical.update({k: v for k, v in tactical_gemini.items()
-                                 if k != "gemini_analysed"})
-                formation = tactical_gemini.get("formation", formation)
-        except Exception as eg:
-            print(f"  Gemini tactical ignoré : {eg}")
+        # analyze_tactics Gemini supprimé V9.6 — économie ~1 appel/run
 
         print(f"  OK formation={formation} | style={tactical.get('style','?')}")
     except Exception as e:

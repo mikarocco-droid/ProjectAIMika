@@ -307,6 +307,17 @@ def process_video(
     current_batch = []
     events_state  = None
 
+    # ── Mode éco dynamique ────────────────────────────────────────────────────
+    # Adapte le skip selon l'activité détectée dans la fenêtre récente.
+    # last_danger_frame = dernière frame où un tir/but/dribble a été détecté.
+    # Si aucune action depuis ECO_WINDOW frames → skip éco (plus agressif).
+    ECO_WINDOW  = int(fps * 15)         # 15 secondes sans action = phase creuse
+    ECO_SKIP    = min(skip_every * 2, 8) # skip doublé en phase creuse
+    # Liste mutable pour modification depuis flush_batch (nested function)
+    # [0] = last_danger_frame, [1] = _eco_active
+    _eco_state  = [0, False]
+    # ─────────────────────────────────────────────────────────────────────────
+
     def flush_batch(batch, analyzed_so_far):
         nonlocal events_state
         if not batch:
@@ -332,15 +343,26 @@ def process_video(
             else:
                 fd.pop("_frame_orig", None)
             frames_data.append(fd)
+            # Mettre à jour last_danger_frame si action détectée
+            for ev in fd.get("events", []):
+                if ev.get("type") in ("shot", "goal", "score", "dribble", "fast_break"):
+                    _eco_state[0] = fd["frame"]  # last_danger_frame
+                    _eco_state[1] = False         # _eco_active
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        if frame_id % skip_every == (skip_every - 1):
+        # ── Skip dynamique mode éco ───────────────────────────────────────────
+        # Active le skip éco si aucune action depuis ECO_WINDOW frames
+        _eco_state[1] = (frame_id - _eco_state[0]) > ECO_WINDOW
+        _current_skip = ECO_SKIP if _eco_state[1] else skip_every
+
+        if frame_id % _current_skip == (_current_skip - 1):
             frame_id += 1
             continue
+        # ─────────────────────────────────────────────────────────────────────
 
         frame_small = cv2.resize(
             frame, (PROCESS_W, PROCESS_H),
@@ -368,8 +390,11 @@ def process_video(
     if writer:
         writer.release()
 
+    _eco_frames = frame_id - analyzed
+    _eco_pct    = int(_eco_frames / max(frame_id, 1) * 100)
     print(f"\n  {frame_id} frames lues | {analyzed} analysées"
           f" | batches de {b_size}")
+    print(f"  Mode éco : {_eco_pct}% des frames skippées dynamiquement")
 
     jersey_map = ocr.get_jersey_map()
     ocr.reset()
