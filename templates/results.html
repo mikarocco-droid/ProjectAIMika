@@ -23,15 +23,20 @@
       <div class="results-title">{{ analysis.filename }}</div>
       <div class="results-meta">
         {{ analysis.sport }} · {{ analysis.created_at.strftime('%d/%m/%Y %H:%M') }}
+        {% if result.summary.duration %} · {{ result.summary.duration }}{% endif %}
+        {% if result.summary.goals is defined %}
+          · <span style="color:var(--red);font-weight:700">{{ result.summary.goals }} but{{ 's' if result.summary.goals > 1 else '' }}</span>
+        {% endif %}
       </div>
     </div>
     <div class="results-actions">
       {% if result.pdf %}
-        <a href="/download/{{ analysis.id }}/pdf" class="btn-primary">Télécharger PDF</a>
+        <a href="/download/{{ analysis.id }}/pdf" class="btn-primary">⬇ PDF</a>
       {% endif %}
       {% if result.reel %}
-        <a href="/download/{{ analysis.id }}/reel" class="btn-secondary">Télécharger Reel</a>
+        <a href="/download/{{ analysis.id }}/reel" class="btn-secondary">⬇ Reel</a>
       {% endif %}
+      <a href="/dashboard" class="btn-secondary">← Dashboard</a>
     </div>
   </div>
 
@@ -58,6 +63,28 @@
       <div class="kpi-label">Joueurs</div>
     </div>
   </div>
+
+  <!-- MVP -->
+  {% if result.mvp %}
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.5rem;margin-bottom:1.5rem;display:flex;align-items:center;gap:1rem">
+    <div style="background:var(--yellow);border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0">🏆</div>
+    <div>
+      <div style="font-size:0.72rem;color:var(--gray);text-transform:uppercase;letter-spacing:0.5px;font-family:var(--font-mono)">MVP du match</div>
+      <div style="font-family:var(--font-head);font-size:1.2rem;font-weight:700;color:var(--yellow)">
+        {% if result.jersey_map and result.mvp|string in result.jersey_map %}
+          #{{ result.jersey_map[result.mvp|string] }}
+        {% else %}
+          #{{ result.mvp }}
+        {% endif %}
+      </div>
+    </div>
+    {% if result.match_story %}
+    <div style="flex:1;font-size:0.85rem;color:var(--gray);font-style:italic;border-left:2px solid var(--border);padding-left:1rem;line-height:1.6">
+      {{ result.match_story[:200] }}{% if result.match_story|length > 200 %}...{% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
 
   <!-- Reel vidéo -->
   {% if result.reel %}
@@ -153,6 +180,7 @@
             <th>Tirs</th>
             <th>Buts</th>
             <th>xG</th>
+            <th>xA</th>
             <th>Note</th>
           </tr>
         </thead>
@@ -166,10 +194,11 @@
               {% else %}#{{ pid }}{% endif %}
             </td>
             <td>{{ s.touches }}</td>
-            <td>{{ s.passes }}</td>
-            <td>{{ s.tirs }}</td>
+            <td>{{ s.passes if s.passes > 0 else '—' }}</td>
+            <td>{{ s.tirs if s.tirs > 0 else '—' }}</td>
             <td>{% if s.buts > 0 %}<span style="color:var(--red);font-weight:700">{{ s.buts }}</span>{% else %}—{% endif %}</td>
             <td>{% if s.xg_total > 0 %}<span style="color:var(--yellow)">{{ s.xg_total | round(2) }}</span>{% else %}—{% endif %}</td>
+            <td>{% if s.xa_total is defined and s.xa_total > 0 %}<span style="color:var(--purple)">{{ s.xa_total | round(2) }}</span>{% else %}—{% endif %}</td>
             <td>
               {% if result.player_ratings and pid in result.player_ratings %}
                 <span style="color:var(--cyan);font-family:var(--font-mono)">{{ result.player_ratings[pid].rating | round(1) }}</span>
@@ -217,12 +246,14 @@
       <span class="result-section-title">Heatmaps</span>
     </div>
     <div class="result-section-body">
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem">
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:1.25rem">
         {% for name, path in result.heatmaps.items() %}
         {% if path %}
-        <div>
-          <p style="font-family:var(--font-mono);font-size:0.75rem;color:var(--cyan);text-transform:uppercase;margin-bottom:0.5rem">{{ name }}</p>
-          <img src="/heatmap/{{ analysis.id }}/{{ name }}" style="width:100%;border-radius:var(--radius);border:1px solid var(--border)">
+        <div style="background:var(--bg2);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border)">
+          <div style="padding:0.6rem 0.75rem;background:var(--surface2);border-bottom:1px solid var(--border)">
+            <span style="font-family:var(--font-mono);font-size:0.72rem;color:var(--cyan);text-transform:uppercase;letter-spacing:0.5px">{{ name }}</span>
+          </div>
+          <img src="/heatmap/{{ analysis.id }}/{{ name }}" style="width:100%;display:block">
         </div>
         {% endif %}
         {% endfor %}
