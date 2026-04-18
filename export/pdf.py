@@ -71,7 +71,7 @@ def deduplicate_stats(stats, jersey_map):
         if label not in merged:
             merged[label] = {
                 "touches":          s.get("touches",          0),
-                "passes":           s.get("passes",           0),
+                "passes":           s.get("passes", s.get("passes_total", s.get("n_passes", 0))),
                 "key_passes":       s.get("key_passes",        0),
                 "tirs":             s.get("tirs",              0),
                 "buts":             s.get("buts",              0),
@@ -108,6 +108,18 @@ def fix_highlight_times(highlights):
         h = dict(h)
         h["time_start"] = t_start
         h["time_end"]   = t_end
+
+        # Corriger main_type basé sur l'event source (pas le titre Gemini)
+        # Un highlight ne devient "goal" que si l'event est réellement un but
+        src_type = (h.get("main_type") or h.get("type") or "shot").lower()
+        if src_type in ("goal", "score", "but"):
+            h["main_type"] = "goal"
+        elif src_type in ("shot", "tir", "shot_on_target",
+                          "shot_missed", "big_chance"):
+            h["main_type"] = "shot"
+        else:
+            h["main_type"] = "shot"  # défaut conservateur
+
         fixed.append(h)
     return fixed
 
