@@ -353,7 +353,8 @@ def run_pipeline(
             goal_cooldown = learner.get_thresholds().get("goal_cooldown", 30.0) \
                             if learner else 30.0
             # Clamp : le learner peut stocker 150s (ancien défaut) → on plafonne à 60s
-            goal_cooldown = min(goal_cooldown, 60.0)
+            # V9.7 — plafond réduit 60s → 45s (évite d'éliminer vrais buts dans clusters posthoc)
+            goal_cooldown = min(goal_cooldown, 45.0)
             print(f"  Match complet ({video_duration:.0f}s) — "
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={GOAL_POSITION_THRESHOLD*100:.0f}%")
