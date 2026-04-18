@@ -220,7 +220,8 @@ def validate_event(video_path, event, fps=25, sport="football"):
     # goal_posthoc détecte 5-15s AVANT le vrai but visuel
     # → on teste plusieurs offsets en secondes et on vote
     if "posthoc" in str(source):
-        offsets_s = [5, 8, 10, 12]   # 4 moments autour du but probable
+        offsets_s = [5, 8, 10, 12, 14, 16]  # V9.7 — fenêtre élargie à +16s
+        # Couvre les buts détectés jusqu'à 14s avant le moment réel
     else:
         offsets_s = [0, 2, 4]        # events.py plus précis, fenêtre réduite
 
@@ -283,8 +284,9 @@ def validate_event(video_path, event, fps=25, sport="football"):
 
         # ── Décision finale par vote pondéré ─────────────────────
         score = 0
-        if goal_votes >= 1:  score += 2
-        if shot_votes >= 1:  score += 1
+        if goal_votes >= 2:   score += 3   # confirmation forte
+        elif goal_votes == 1: score += 1   # signal faible
+        if shot_votes >= 1:   score += 1
         if tracker_conf > 0.9: score += 1
 
         print(f"  [VOTE] goal={goal_votes} shot={shot_votes} "
@@ -481,20 +483,29 @@ def validate_events_with_gemini(
         else:
             # 🟡 Zone grise (type=none, vote insuffisant)
             # → décision basée sur signaux physiques
-            posthoc_score    = event.get("score", 0)
+            posthoc_score    = event.get("score", event.get("danger", 0))
             high_conf_phys   = event.get("high_conf_physical", False)
             tracker_conf_val = event.get("confidence", 0)
 
-            if high_conf_phys or posthoc_score >= 8.0:
-                # Signal physique fort → garder malgré incertitude Gemini
-                print(f"    → GARDÉ (zone grise, physique fort : "
+            print(f"    [DECISION] type={gemini_type} "
+                  f"phys={high_conf_phys} "
+                  f"score={posthoc_score:.1f} "
+                  f"tracker={tracker_conf_val:.2f}")
+
+            if high_conf_phys or posthoc_score >= 8.5:
+                # Signal physique fort → garder
+                print(f"    → GARDÉ (physique fort : "
                       f"high_conf={high_conf_phys} score={posthoc_score:.1f})")
+            elif posthoc_score >= 7.5 and tracker_conf_val > 0.85:
+                # Signal physique borderline mais tracker confiant → garder
+                print(f"    → GARDÉ (borderline : "
+                      f"score={posthoc_score:.1f} tracker={tracker_conf_val:.2f})")
             else:
-                # Signal physique faible + Gemini incertain → supprimer
+                # Signal faible → supprimer
                 event["_remove"] = True
                 removed += 1
-                print(f"    → SUPPRIMÉ (zone grise, physique faible : "
-                      f"score={posthoc_score:.1f} tracker_conf={tracker_conf_val:.2f})")
+                print(f"    → SUPPRIMÉ (physique faible : "
+                      f"score={posthoc_score:.1f} tracker={tracker_conf_val:.2f})")
 
         event["gemini_validated"] = True
         event["gemini_type"]      = gemini_type
