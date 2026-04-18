@@ -152,6 +152,19 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
 
 
 # ─────────────────────────────────────────
+# HELPER JSON SAFE
+# ─────────────────────────────────────────
+def _safe_json_load(text):
+    """Parse JSON Gemini — nettoie les backticks et retourne None si invalide."""
+    try:
+        text = text.strip()
+        text = re.sub(r"```json|```", "", text).strip()
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────
 # VALIDER UN EVENT — V9.7 MULTI-FRAME
 # ─────────────────────────────────────────
 def _call_gemini_at_offset(client, video_path, frame_id, fps, event_type, danger, sport):
