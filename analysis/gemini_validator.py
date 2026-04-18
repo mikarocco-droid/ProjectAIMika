@@ -305,12 +305,10 @@ def validate_event(video_path, event, fps=25, sport="football"):
                 best_result["confiance"] = min(best_result["confiance"], 0.70)
                 return best_result
 
-        # Aucun signal suffisant
-        if best_result is None:
-            return {"type": "none", "confiance": 0.5,
-                    "equipe": None, "description": "aucune frame pertinente"}
-        return {"type": "none", "confiance": 0.95,
-                "equipe": None, "description": best_result.get("description", "")}
+        # Aucun signal suffisant — confiance basse pour indiquer l'incertitude
+        desc = best_result.get("description", "") if best_result else "aucune frame pertinente"
+        return {"type": "none", "confiance": 0.3,
+                "equipe": None, "description": desc}
 
     except Exception as e:
         print(f"  Gemini validate error : {e}")
@@ -459,20 +457,20 @@ def validate_events_with_gemini(
         threshold = get_dynamic_threshold(event) if event.get("type") == "goal"                     else MIN_CONF_SHOT
 
         if gemini_type == "goal":
-            # Gemini confirme un but → garder + mettre à jour équipe
+            # 🟢 Gemini confirme → gardé
             if result.get("equipe") is not None:
                 event["team"] = result["equipe"]
             print(f"    → BUT CONFIRMÉ (conf={confiance:.2f})")
 
         elif gemini_type == "shot":
-            # Gemini voit un tir → corriger le type
+            # Gemini voit un tir → corriger
             event["type"] = "shot"
             corrected += 1
             print(f"    → CORRIGÉ en tir (conf={confiance:.2f})")
 
         elif gemini_type in ["goalkeeper_hold", "goalkeeper_throw",
                               "defensive_clearance", "corner", "touche"]:
-            # Signal clair que ce n'est pas un but → supprimer
+            # 🔴 Signal clair non-but → supprimer si confiant
             if confiance >= 0.85:
                 event["_remove"] = True
                 removed += 1
@@ -481,9 +479,22 @@ def validate_events_with_gemini(
                 print(f"    → GARDÉ malgré {gemini_type} (conf={confiance:.2f} < 0.85)")
 
         else:
-            # type=none → vote insuffisant → garder le but par défaut
-            # (mieux vaut un faux positif qu'un faux négatif)
-            print(f"    → GARDÉ (vote insuffisant, type={gemini_type})")
+            # 🟡 Zone grise (type=none, vote insuffisant)
+            # → décision basée sur signaux physiques
+            posthoc_score    = event.get("score", 0)
+            high_conf_phys   = event.get("high_conf_physical", False)
+            tracker_conf_val = event.get("confidence", 0)
+
+            if high_conf_phys or posthoc_score >= 8.0:
+                # Signal physique fort → garder malgré incertitude Gemini
+                print(f"    → GARDÉ (zone grise, physique fort : "
+                      f"high_conf={high_conf_phys} score={posthoc_score:.1f})")
+            else:
+                # Signal physique faible + Gemini incertain → supprimer
+                event["_remove"] = True
+                removed += 1
+                print(f"    → SUPPRIMÉ (zone grise, physique faible : "
+                      f"score={posthoc_score:.1f} tracker_conf={tracker_conf_val:.2f})")
 
         event["gemini_validated"] = True
         event["gemini_type"]      = gemini_type
