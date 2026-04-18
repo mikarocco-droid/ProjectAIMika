@@ -455,6 +455,18 @@ def run_pipeline(
         events_for_gemini = [e for e in events if not e.get("_eco")]
         events_eco        = [e for e in events if e.get("_eco")]
 
+        # Log PRE-GEMINI — état de tous les buts avant validation
+        goals_pre = [e for e in events_for_gemini if e.get("type") == "goal"]
+        print(f"  [PRE-GEMINI PIPELINE] {len(goals_pre)} but(s) candidats :")
+        for e in goals_pre:
+            t   = e.get("time", 0)
+            src = e.get("detected_from", e.get("source", "?"))
+            print(f"    t={int(t//60):02d}:{int(t%60):02d} "
+                  f"source={src} "
+                  f"conf={e.get('confidence',0):.2f} "
+                  f"xg={e.get('xg',0):.3f} "
+                  f"frame={e.get('frame',0)}")
+
         events_validated = validate_events_with_gemini(
             events        = events_for_gemini,
             video_path    = video_path,
