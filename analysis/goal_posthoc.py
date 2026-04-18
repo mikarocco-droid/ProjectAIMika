@@ -244,7 +244,9 @@ def detect_fast_goals_from_ball(
         if recent_shot:
             score += 0.5
 
-        if score < 5.0:
+        # V9.7 — seuil relevé pour réduire les faux positifs
+        # score < 7.0 → bruit (stuck faible sans rebound)
+        if score < 7.0:
             i += 1
             continue
 

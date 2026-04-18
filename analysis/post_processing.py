@@ -152,17 +152,28 @@ def filter_goals(events, window, frame_w, position_threshold):
     if not goals:
         return events
 
+    # V9.7 — regroupement en 2 passes :
+    # Passe 1 : fenêtre serrée (5s) pour regrouper les doublons immédiats
+    # Passe 2 : cooldown large (window) pour écarter les buts légitimes distincts
+    DEDUP_WINDOW = 5.0
+
     groups  = []
     current = [goals[0]]
     for g in goals[1:]:
-        if abs(g["time"] - current[-1]["time"]) < window:
+        if abs(g["time"] - current[-1]["time"]) < DEDUP_WINDOW:
             current.append(g)
         else:
             groups.append(current)
             current = [g]
     groups.append(current)
 
-    kept = []
+    # Log des groupes pour debug
+    print(f"  filter_goals groupes ({len(groups)}) : "
+          + " | ".join(f"[{','.join(f'{g["time"]:.1f}s' for g in grp)}]"
+                       for grp in groups[:10]))
+
+    # Sélection du meilleur dans chaque groupe de doublons
+    candidates_per_group = []
     for group in groups:
         in_zone = [
             g for g in group
@@ -180,7 +191,17 @@ def filter_goals(events, window, frame_w, position_threshold):
                 g.get("score", 0),
             )
 
-        kept.append(max(candidates, key=_sort_key))
+        candidates_per_group.append(max(candidates, key=_sort_key))
+
+    # Passe 2 — appliquer le cooldown large entre buts distincts
+    kept = []
+    for g in sorted(candidates_per_group, key=lambda x: x.get("time", 0)):
+        if not kept or abs(g["time"] - kept[-1]["time"]) >= window:
+            kept.append(g)
+        else:
+            # Garder le meilleur des deux
+            if (g.get("confidence", 0), g.get("score", 0)) >                (kept[-1].get("confidence", 0), kept[-1].get("score", 0)):
+                kept[-1] = g
 
     return sorted(others + kept, key=lambda x: x.get("time", 0))
 
