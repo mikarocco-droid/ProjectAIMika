@@ -152,90 +152,165 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
 
 
 # ─────────────────────────────────────────
-# VALIDER UN EVENT
+# VALIDER UN EVENT — V9.7 MULTI-FRAME
 # ─────────────────────────────────────────
+def _call_gemini_at_offset(client, video_path, frame_id, fps, event_type, danger, sport):
+    """Appel Gemini sur un offset donné. Retourne le résultat parsé ou None."""
+    frames_data = extract_frames_around(video_path, frame_id, fps, n_before=2, n_after=2)
+    if not frames_data:
+        return None
+
+    parts = [text_to_part(
+        f"Tu es un expert analyste de {sport}. "
+        f"Voici {len(frames_data)} frames dans l'ordre chronologique autour d'un evenement suspect "
+        f"(type detecte : {event_type}, danger score : {danger:.1f}/10).\n\n"
+        f"CRITERES pour valider un BUT :\n"
+        f"- Le ballon franchit ou a franchi la ligne de but\n"
+        f"- Le ballon est dans le filet ou vient d'y entrer\n"
+        f"- Un joueur celebre ou reagit\n"
+        f"- ATTENTION : si le gardien recupere le ballon DANS son but c'est un but\n"
+        f"- ATTENTION : but contre son camp = aussi un but\n\n"
+        f"CRITERES pour valider un TIR :\n"
+        f"- Le ballon est frappe intentionnellement vers le but\n"
+        f"- La trajectoire est dirigee vers les cages\n\n"
+        f"CE QUI N'EST PAS un but ni un tir :\n"
+        f"- Gardien qui tient le ballon DEVANT sa ligne (pas dedans)\n"
+        f"- Relance du gardien depuis sa surface\n"
+        f"- Degagement defensif loin du but\n"
+        f"- Tir qui passe clairement a cote ou tres au-dessus\n\n"
+        f"Reponds UNIQUEMENT en JSON valide sans markdown :\n"
+        f'{{"type": "goal|shot|corner|touche|goalkeeper_hold|goalkeeper_throw|defensive_clearance|none", '
+        f'"confiance": 0.95, '
+        f'"equipe": 0, '
+        f'"description": "description courte"}}\n\n'
+        f"EN CAS DE DOUTE sur un but reponds 'goal' avec confiance 0.65.\n"
+        f"Un faux negatif (but rate) est pire qu'un faux positif (faux but)."
+    )]
+
+    for _, frame in frames_data:
+        parts.append(frame_to_part(frame))
+
+    response = _call_gemini(client, parts)
+    if response is None:
+        return None
+
+    result = _safe_json_load(response.text)
+    if result is None:
+        return None
+
+    return {
+        "type":        result.get("type", "none"),
+        "confiance":   float(result.get("confiance", 0.5)),
+        "equipe":      result.get("equipe"),
+        "description": result.get("description", "")
+    }
+
+
 def validate_event(video_path, event, fps=25, sport="football"):
     if not GEMINI_AVAILABLE:
         return None
 
-    frame_id   = event.get("frame", 0)
+    frame_orig = event.get("frame", 0)
     danger     = event.get("danger", 0)
     event_type = event.get("type", "?")
     source     = event.get("detected_from", event.get("source", "events"))
+    tracker_conf = event.get("confidence", 0.5)
 
-    # V9.7 — Décalage dynamique selon la source
-    # goal_posthoc détecte ~0.8-1.5s AVANT le vrai but visuel
-    # → on avance le centre pour que Gemini voie le bon moment
+    # V9.7 — Offsets multi-frame selon la source
+    # goal_posthoc détecte 5-15s AVANT le vrai but visuel
+    # → on teste plusieurs offsets en secondes et on vote
     if "posthoc" in str(source):
-        delay = int(1.0 * fps)   # +1s pour posthoc
+        offsets_s = [5, 8, 10, 12]   # 4 moments autour du but probable
     else:
-        delay = int(0.3 * fps)   # +0.3s pour events.py (léger décalage)
-    frame_id = frame_id + delay
+        offsets_s = [0, 2, 4]        # events.py plus précis, fenêtre réduite
+
     print(f"  [PRE-GEMINI] t={event.get('time',0):.2f}s "
-          f"source={source} "
-          f"frame_orig={event.get('frame',0)} "
-          f"frame_gemini={frame_id} "
-          f"delay={delay}f (+{delay/fps:.1f}s)")
-
-    frames_data = extract_frames_around(video_path, frame_id, fps, n_before=2, n_after=2)
-
-    if not frames_data:
-        return None
+          f"source={source} frame={frame_orig} "
+          f"offsets={offsets_s}s tracker_conf={tracker_conf:.2f}")
 
     try:
         client = get_client()
+        total_frames = None  # lazy init
 
-        parts = [text_to_part(
-            f"Tu es un expert analyste de {sport}. "
-            f"Voici {len(frames_data)} frames chronologiques autour d'un événement suspect "
-            f"(type détecté : {event_type}, danger score : {danger:.1f}/10).\n\n"
-            f"CRITÈRES pour valider un BUT :\n"
-            f"- Le ballon franchit ou a franchi la ligne de but\n"
-            f"- Le ballon est dans le filet ou vient d'y entrer\n"
-            f"- Un joueur célèbre ou réagit\n"
-            f"- ATTENTION : si le gardien récupère le ballon DANS son but → c'est un but\n"
-            f"- ATTENTION : but contre son camp = aussi un but\n\n"
-            f"CRITÈRES pour valider un TIR :\n"
-            f"- Le ballon est frappé intentionnellement vers le but\n"
-            f"- La trajectoire est dirigée vers les cages\n\n"
-            f"CE QUI N'EST PAS un but ni un tir :\n"
-            f"- Gardien qui tient le ballon DEVANT sa ligne (pas dedans)\n"
-            f"- Relance du gardien depuis sa surface\n"
-            f"- Dégagement défensif loin du but\n"
-            f"- Tir qui passe clairement à côté ou très au-dessus\n\n"
-            f"Réponds UNIQUEMENT en JSON valide sans markdown :\n"
-            f'{{"type": "goal|shot|corner|touche|goalkeeper_hold|goalkeeper_throw|defensive_clearance|none", '
-            f'"confiance": 0.95, '
-            f'"equipe": 0, '
-            f'"description": "description courte"}}\n\n'
-            f"EN CAS DE DOUTE sur un but → réponds 'goal' avec confiance 0.65.\n"
-            f"Un faux négatif (but raté) est pire qu'un faux positif (faux but)."
-        )]
+        goal_votes = 0
+        shot_votes = 0
+        best_result = None
+        best_conf   = 0.0
 
-        for offset, frame in frames_data:
-            label = (
-                f"Frame AVANT ({offset // fps:.1f}s)" if offset < 0
-                else "Frame ÉVÉNEMENT"                if offset == 0
-                else f"Frame APRÈS (+{offset // fps:.1f}s)"
+        for off_s in offsets_s:
+            if _quota_exhausted:
+                break
+
+            frame_id = frame_orig + int(off_s * fps)
+
+            # Lazy init total_frames
+            if total_frames is None:
+                cap = cv2.VideoCapture(video_path)
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                cap.release()
+
+            if frame_id >= total_frames:
+                continue
+
+            result = _call_gemini_at_offset(
+                client, video_path, frame_id, fps, event_type, danger, sport
             )
-            parts.append(text_to_part(f"{label} :"))
-            parts.append(frame_to_part(frame))
+            time.sleep(0.5)
 
-        response = _call_gemini(client, parts)
+            if result is None:
+                continue
 
-        if response is None:
-            return None
+            rtype = result["type"]
+            rconf = result["confiance"]
 
-        text   = response.text.strip()
-        text   = re.sub(r"```json|```", "", text).strip()
-        result = json.loads(text)
+            print(f"    [OFFSET +{off_s}s] type={rtype} conf={rconf:.2f} "
+                  f"desc={result.get('description','')[:50]}")
 
-        return {
-            "type":        result.get("type", "none"),
-            "confiance":   float(result.get("confiance", 0.5)),
-            "equipe":      result.get("equipe"),
-            "description": result.get("description", "")
-        }
+            if rtype == "goal":
+                goal_votes += 1
+                if rconf > best_conf:
+                    best_conf   = rconf
+                    best_result = result
+                # Early stop — 2 confirmations = suffisant
+                if goal_votes >= 2:
+                    print(f"    [EARLY STOP] {goal_votes} votes goal → validation confirmée")
+                    break
+
+            elif rtype == "shot":
+                shot_votes += 1
+                if best_result is None:
+                    best_result = result
+
+        # ── Décision finale par vote pondéré ─────────────────────
+        score = 0
+        if goal_votes >= 1:  score += 2
+        if shot_votes >= 1:  score += 1
+        if tracker_conf > 0.9: score += 1
+
+        print(f"  [VOTE] goal={goal_votes} shot={shot_votes} "
+              f"tracker_conf={tracker_conf:.2f} → score={score}")
+
+        if score >= 3:
+            # But confirmé — retourner le meilleur résultat goal
+            if best_result and best_result["type"] == "goal":
+                return best_result
+            # Si score=3 via shot+tracker mais pas de goal direct
+            # → retourner shot avec boost
+            if best_result:
+                return best_result
+
+        elif score == 2 and goal_votes >= 1:
+            # 1 vote goal sans contexte fort → garder avec conf réduite
+            if best_result:
+                best_result["confiance"] = min(best_result["confiance"], 0.70)
+                return best_result
+
+        # Aucun signal suffisant
+        if best_result is None:
+            return {"type": "none", "confiance": 0.5,
+                    "equipe": None, "description": "aucune frame pertinente"}
+        return {"type": "none", "confiance": 0.95,
+                "equipe": None, "description": best_result.get("description", "")}
 
     except Exception as e:
         print(f"  Gemini validate error : {e}")
