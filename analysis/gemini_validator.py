@@ -438,13 +438,10 @@ def validate_events_with_gemini(
         result = validate_event(video_path, event, fps, sport)
 
         if result is None:
-            # Pas de réponse Gemini → garder le but
             print(f"  Gemini no response : goal t={event.get('time',0):.0f}s gardé")
             event["gemini_validated"] = False
             event["gemini_conf"]      = 0.0
             continue
-
-        time.sleep(2)
 
         validated  += 1
         gemini_type = result["type"]
@@ -461,32 +458,32 @@ def validate_events_with_gemini(
         # Un but détecté par goal_posthoc (conf élevée) → seuil plus souple
         threshold = get_dynamic_threshold(event) if event.get("type") == "goal"                     else MIN_CONF_SHOT
 
-        if confiance >= threshold:
-            if gemini_type in ["goal", "shot"]:
-                if event["type"] != gemini_type:
-                    event["type"] = gemini_type
-                    corrected += 1
-                if result.get("equipe") is not None:
-                    event["team"] = result["equipe"]
-            elif gemini_type in [
-                "goalkeeper_hold", "goalkeeper_throw",
-                "defensive_clearance",
-                "corner", "touche", "none"
-            ]:
+        if gemini_type == "goal":
+            # Gemini confirme un but → garder + mettre à jour équipe
+            if result.get("equipe") is not None:
+                event["team"] = result["equipe"]
+            print(f"    → BUT CONFIRMÉ (conf={confiance:.2f})")
+
+        elif gemini_type == "shot":
+            # Gemini voit un tir → corriger le type
+            event["type"] = "shot"
+            corrected += 1
+            print(f"    → CORRIGÉ en tir (conf={confiance:.2f})")
+
+        elif gemini_type in ["goalkeeper_hold", "goalkeeper_throw",
+                              "defensive_clearance", "corner", "touche"]:
+            # Signal clair que ce n'est pas un but → supprimer
+            if confiance >= 0.85:
                 event["_remove"] = True
                 removed += 1
-        else:
-            # Confiance insuffisante
-            # Pour un but : garder sauf si Gemini très sûr que c est faux
-            if event.get("type") == "goal":
-                if gemini_type in ["goalkeeper_hold", "goalkeeper_throw",
-                                   "defensive_clearance"] and confiance >= 0.85:
-                    event["_remove"] = True
-                    removed += 1
-                # sinon garder le but
+                print(f"    → SUPPRIMÉ ({gemini_type} conf={confiance:.2f})")
             else:
-                event["_remove"] = True
-                removed += 1
+                print(f"    → GARDÉ malgré {gemini_type} (conf={confiance:.2f} < 0.85)")
+
+        else:
+            # type=none → vote insuffisant → garder le but par défaut
+            # (mieux vaut un faux positif qu'un faux négatif)
+            print(f"    → GARDÉ (vote insuffisant, type={gemini_type})")
 
         event["gemini_validated"] = True
         event["gemini_type"]      = gemini_type
