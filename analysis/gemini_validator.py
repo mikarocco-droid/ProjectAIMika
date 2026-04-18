@@ -129,48 +129,26 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
     cap    = cv2.VideoCapture(video_path)
     frames = []
 
-    if not cap.isOpened():
-        return frames
+    # V9.6 — 5 frames espacées finement autour de l'événement
+    # [-15, -5, 0, +5, +15] frames ≈ [-0.6s, -0.2s, 0, +0.2s, +0.6s]
+    offsets = sorted(set([-15, -5, 0, 5, 15]))
 
-    # V9.6+ — frames adaptatives selon le niveau de danger
-    # Danger élevé → 5 frames (contexte complet)
-    # Danger faible → 3 frames (économie tokens)
-    danger = event.get("danger", 5) if isinstance(event, dict) else 5
-    OFFSETS = [-15, -5, 0, 5, 15] if danger >= 3 else [-5, 0, 5]
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    for offset in OFFSETS:
+    for offset in offsets:
         target = frame_id + offset
         if target < 0 or target >= total_frames:
             continue
         cap.set(cv2.CAP_PROP_POS_FRAMES, target)
         ret, frame = cap.read()
-        if not ret or frame is None:
-            continue
-        h, w = frame.shape[:2]
-        if w > 960:
-            scale = 960 / w
-            frame = cv2.resize(frame, (960, int(h * scale)))
-        frames.append((offset, frame))
+        if ret:
+            h, w = frame.shape[:2]
+            if w > 960:
+                frame = cv2.resize(frame, (960, int(h * 960 / w)))
+            frames.append((offset, frame))
 
     cap.release()
-    frames.sort(key=lambda x: x[0])
     return frames
-
-
-# ─────────────────────────────────────────
-# JSON PARSER ROBUSTE
-# ─────────────────────────────────────────
-def _safe_json_load(text):
-    """Parse JSON Gemini robuste — gère texte avant/après + JSON partiel."""
-    text = re.sub(r"```json|```", "", text).strip()
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return None
-    try:
-        return json.loads(match.group())
-    except Exception:
-        return None
 
 
 # ─────────────────────────────────────────
@@ -180,9 +158,25 @@ def validate_event(video_path, event, fps=25, sport="football"):
     if not GEMINI_AVAILABLE:
         return None
 
-    frame_id    = event.get("frame", 0)
-    danger      = event.get("danger", 0)
-    event_type  = event.get("type", "?")
+    frame_id   = event.get("frame", 0)
+    danger     = event.get("danger", 0)
+    event_type = event.get("type", "?")
+    source     = event.get("detected_from", event.get("source", "events"))
+
+    # V9.7 — Décalage dynamique selon la source
+    # goal_posthoc détecte ~0.8-1.5s AVANT le vrai but visuel
+    # → on avance le centre pour que Gemini voie le bon moment
+    if "posthoc" in str(source):
+        delay = int(1.0 * fps)   # +1s pour posthoc
+    else:
+        delay = int(0.3 * fps)   # +0.3s pour events.py (léger décalage)
+    frame_id = frame_id + delay
+    print(f"  [PRE-GEMINI] t={event.get('time',0):.2f}s "
+          f"source={source} "
+          f"frame_orig={event.get('frame',0)} "
+          f"frame_gemini={frame_id} "
+          f"delay={delay}f (+{delay/fps:.1f}s)")
+
     frames_data = extract_frames_around(video_path, frame_id, fps, n_before=2, n_after=2)
 
     if not frames_data:
@@ -193,7 +187,7 @@ def validate_event(video_path, event, fps=25, sport="football"):
 
         parts = [text_to_part(
             f"Tu es un expert analyste de {sport}. "
-            f"Voici {len(frames_data)} frames dans l'ordre chronologique autour d'un evenement suspect "
+            f"Voici {len(frames_data)} frames chronologiques autour d'un événement suspect "
             f"(type détecté : {event_type}, danger score : {danger:.1f}/10).\n\n"
             f"CRITÈRES pour valider un BUT :\n"
             f"- Le ballon franchit ou a franchi la ligne de but\n"
@@ -218,8 +212,13 @@ def validate_event(video_path, event, fps=25, sport="football"):
             f"Un faux négatif (but raté) est pire qu'un faux positif (faux but)."
         )]
 
-        # Frames en ordre chronologique — sans label par frame (reduit tokens)
-        for _, frame in frames_data:
+        for offset, frame in frames_data:
+            label = (
+                f"Frame AVANT ({offset // fps:.1f}s)" if offset < 0
+                else "Frame ÉVÉNEMENT"                if offset == 0
+                else f"Frame APRÈS (+{offset // fps:.1f}s)"
+            )
+            parts.append(text_to_part(f"{label} :"))
             parts.append(frame_to_part(frame))
 
         response = _call_gemini(client, parts)
@@ -227,10 +226,9 @@ def validate_event(video_path, event, fps=25, sport="football"):
         if response is None:
             return None
 
-        result = _safe_json_load(response.text)
-        if result is None:
-            print(f"  Gemini JSON invalide : {response.text[:80]}")
-            return None
+        text   = response.text.strip()
+        text   = re.sub(r"```json|```", "", text).strip()
+        result = json.loads(text)
 
         return {
             "type":        result.get("type", "none"),
@@ -295,9 +293,9 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
         if response is None:
             return {}
 
-        result = _safe_json_load(response.text)
-        if result is None:
-            return {}
+        text   = response.text.strip()
+        text   = re.sub(r"```json|```", "", text).strip()
+        result = json.loads(text)
 
         jersey_map = {}
         for item in result.get("jerseys", []):
@@ -334,24 +332,26 @@ def validate_events_with_gemini(
 
     candidates = [
         e for e in events
-        if e.get("type") == "goal"
+        if e.get("type") in ["goal"]
         and e.get("frame", 0) > 0
     ]
 
     if not candidates:
         return events
 
-    # Marquer les buts high confidence pour tracking futur
-    # Permettra de décider data-driven si skip partiel possible après 100+ matchs
-    for e in candidates:
-        e["high_conf_physical"] = e.get("confidence", 0) >= 0.90
-
-    n_high = sum(1 for e in candidates if e.get("high_conf_physical"))
-    print(f"  Validation Gemini : {len(candidates)} candidats "
-          f"({n_high} high_conf >= 0.90)...")
+    print(f"  Validation Gemini : {len(candidates)} candidats...")
     validated = corrected = removed = 0
 
     for event in candidates:
+        t_pre = event.get("time", 0)
+        src   = event.get("detected_from", event.get("source", "?"))
+        conf  = event.get("confidence", 0)
+        xg    = event.get("xg", 0)
+        print(f"  [CANDIDAT] t={int(t_pre//60):02d}:{int(t_pre%60):02d} "
+              f"source={src} "
+              f"tracker_conf={conf:.2f} "
+              f"xg={xg:.3f} "
+              f"frame={event.get('frame',0)}")
         if _quota_exhausted:
             print("  Quota épuisé — tous les buts restants non validés sont rejetés")
             for e in candidates:
@@ -369,19 +369,18 @@ def validate_events_with_gemini(
             event["gemini_conf"]      = 0.0
             continue
 
-        time.sleep(0.5)  # V9.6.1 — reduit de 2s a 0.5s
+        time.sleep(2)
 
         validated  += 1
         gemini_type = result["type"]
         confiance   = result["confiance"]
         t_sec = event.get("time", 0)
-        # Log concordance posthoc vs Gemini (futur data-driven skip)
-        high_conf = event.get("high_conf_physical", False)
-        concordance = gemini_type == "goal" if event.get("type") == "goal" else False
-        print(f"  Gemini but {int(t_sec//60):02d}:{int(t_sec%60):02d} → "
-              f"type={gemini_type} conf={confiance:.2f} "
-              f"high_conf={high_conf} concordance={concordance} "
-              f"desc={result.get('description', '')}")
+        tracker_conf = event.get("confidence", 0)
+        print(f"  [POST-GEMINI] t={int(t_sec//60):02d}:{int(t_sec%60):02d} "
+              f"gemini={gemini_type} conf={confiance:.2f} "
+              f"tracker_conf={tracker_conf:.2f} "
+              f"threshold={get_dynamic_threshold(event):.2f} "
+              f"desc={result.get('description', '')[:60]}")
 
         # Seuil dynamique : adapté à la confiance de l'event
         # Un but détecté par goal_posthoc (conf élevée) → seuil plus souple
