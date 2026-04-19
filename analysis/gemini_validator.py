@@ -18,6 +18,14 @@ except ImportError:
 
 
 # ─────────────────────────────────────────
+# MODE DEBUG — valeur centralisée dans config.py
+# ─────────────────────────────────────────
+try:
+    from config import DEBUG
+except ImportError:
+    DEBUG = False
+
+# ─────────────────────────────────────────
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
 # ─────────────────────────────────────────
 MIN_CONF_BASE = 0.80
@@ -152,19 +160,6 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
 
 
 # ─────────────────────────────────────────
-# HELPER JSON SAFE
-# ─────────────────────────────────────────
-def _safe_json_load(text):
-    """Parse JSON Gemini — nettoie les backticks et retourne None si invalide."""
-    try:
-        text = text.strip()
-        text = re.sub(r"```json|```", "", text).strip()
-        return json.loads(text)
-    except Exception:
-        return None
-
-
-# ─────────────────────────────────────────
 # VALIDER UN EVENT — V9.7 MULTI-FRAME
 # ─────────────────────────────────────────
 def _call_gemini_at_offset(client, video_path, frame_id, fps, event_type, danger, sport):
@@ -238,9 +233,10 @@ def validate_event(video_path, event, fps=25, sport="football"):
     else:
         offsets_s = [0, 2, 4]        # events.py plus précis, fenêtre réduite
 
-    print(f"  [PRE-GEMINI] t={event.get('time',0):.2f}s "
-          f"source={source} frame={frame_orig} "
-          f"offsets={offsets_s}s tracker_conf={tracker_conf:.2f}")
+    if DEBUG:
+        print(f"  [PRE-GEMINI] t={event.get('time',0):.2f}s "
+              f"source={source} frame={frame_orig} "
+              f"offsets={offsets_s}s tracker_conf={tracker_conf:.2f}")
 
     try:
         client = get_client()
@@ -277,8 +273,9 @@ def validate_event(video_path, event, fps=25, sport="football"):
             rtype = result["type"]
             rconf = result["confiance"]
 
-            print(f"    [OFFSET +{off_s}s] type={rtype} conf={rconf:.2f} "
-                  f"desc={result.get('description','')[:50]}")
+            if DEBUG:
+                print(f"    [OFFSET +{off_s}s] type={rtype} conf={rconf:.2f} "
+                      f"desc={result.get('description','')[:50]}")
 
             if rtype == "goal":
                 goal_votes += 1
@@ -287,7 +284,8 @@ def validate_event(video_path, event, fps=25, sport="football"):
                     best_result = result
                 # Early stop — 2 confirmations = suffisant
                 if goal_votes >= 2:
-                    print(f"    [EARLY STOP] {goal_votes} votes goal → validation confirmée")
+                    if DEBUG:
+                        print(f"    [EARLY STOP] {goal_votes} votes goal → validation confirmée")
                     break
 
             elif rtype == "shot":
@@ -302,8 +300,9 @@ def validate_event(video_path, event, fps=25, sport="football"):
         if shot_votes >= 1:   score += 1
         if tracker_conf > 0.9: score += 1
 
-        print(f"  [VOTE] goal={goal_votes} shot={shot_votes} "
-              f"tracker_conf={tracker_conf:.2f} → score={score}")
+        if DEBUG:
+            print(f"  [VOTE] goal={goal_votes} shot={shot_votes} "
+                  f"tracker_conf={tracker_conf:.2f} → score={score}")
 
         if score >= 3:
             # But confirmé — retourner le meilleur résultat goal
@@ -435,11 +434,12 @@ def validate_events_with_gemini(
         src   = event.get("detected_from", event.get("source", "?"))
         conf  = event.get("confidence", 0)
         xg    = event.get("xg", 0)
-        print(f"  [CANDIDAT] t={int(t_pre//60):02d}:{int(t_pre%60):02d} "
-              f"source={src} "
-              f"tracker_conf={conf:.2f} "
-              f"xg={xg:.3f} "
-              f"frame={event.get('frame',0)}")
+        if DEBUG:
+            print(f"  [CANDIDAT] t={int(t_pre//60):02d}:{int(t_pre%60):02d} "
+                  f"source={src} "
+                  f"tracker_conf={conf:.2f} "
+                  f"xg={xg:.3f} "
+                  f"frame={event.get('frame',0)}")
         if _quota_exhausted:
             print("  Quota épuisé — tous les buts restants non validés sont rejetés")
             for e in candidates:
@@ -461,11 +461,12 @@ def validate_events_with_gemini(
         confiance   = result["confiance"]
         t_sec = event.get("time", 0)
         tracker_conf = event.get("confidence", 0)
-        print(f"  [POST-GEMINI] t={int(t_sec//60):02d}:{int(t_sec%60):02d} "
-              f"gemini={gemini_type} conf={confiance:.2f} "
-              f"tracker_conf={tracker_conf:.2f} "
-              f"threshold={get_dynamic_threshold(event):.2f} "
-              f"desc={result.get('description', '')[:60]}")
+        if DEBUG:
+            print(f"  [POST-GEMINI] t={int(t_sec//60):02d}:{int(t_sec%60):02d} "
+                  f"gemini={gemini_type} conf={confiance:.2f} "
+                  f"tracker_conf={tracker_conf:.2f} "
+                  f"threshold={get_dynamic_threshold(event):.2f} "
+                  f"desc={result.get('description', '')[:60]}")
 
         # Seuil dynamique : adapté à la confiance de l'event
         # Un but détecté par goal_posthoc (conf élevée) → seuil plus souple
@@ -475,13 +476,15 @@ def validate_events_with_gemini(
             # 🟢 Gemini confirme → gardé
             if result.get("equipe") is not None:
                 event["team"] = result["equipe"]
-            print(f"    → BUT CONFIRMÉ (conf={confiance:.2f})")
+            if DEBUG:
+                print(f"    → BUT CONFIRMÉ (conf={confiance:.2f})")
 
         elif gemini_type == "shot":
             # Gemini voit un tir → corriger
             event["type"] = "shot"
             corrected += 1
-            print(f"    → CORRIGÉ en tir (conf={confiance:.2f})")
+            if DEBUG:
+                print(f"    → CORRIGÉ en tir (conf={confiance:.2f})")
 
         elif gemini_type in ["goalkeeper_hold", "goalkeeper_throw",
                               "defensive_clearance", "corner", "touche"]:
@@ -489,9 +492,11 @@ def validate_events_with_gemini(
             if confiance >= 0.85:
                 event["_remove"] = True
                 removed += 1
-                print(f"    → SUPPRIMÉ ({gemini_type} conf={confiance:.2f})")
+                if DEBUG:
+                    print(f"    → SUPPRIMÉ ({gemini_type} conf={confiance:.2f})")
             else:
-                print(f"    → GARDÉ malgré {gemini_type} (conf={confiance:.2f} < 0.85)")
+                if DEBUG:
+                    print(f"    → GARDÉ malgré {gemini_type} (conf={confiance:.2f} < 0.85)")
 
         else:
             # 🟡 Zone grise (type=none, vote insuffisant)
@@ -500,25 +505,26 @@ def validate_events_with_gemini(
             high_conf_phys   = event.get("high_conf_physical", False)
             tracker_conf_val = event.get("confidence", 0)
 
-            print(f"    [DECISION] type={gemini_type} "
-                  f"phys={high_conf_phys} "
-                  f"score={posthoc_score:.1f} "
-                  f"tracker={tracker_conf_val:.2f}")
+            if DEBUG:
+                print(f"    [DECISION] type={gemini_type} "
+                      f"phys={high_conf_phys} "
+                      f"score={posthoc_score:.1f} "
+                      f"tracker={tracker_conf_val:.2f}")
 
             if high_conf_phys or posthoc_score >= 8.5:
-                # Signal physique fort → garder
-                print(f"    → GARDÉ (physique fort : "
-                      f"high_conf={high_conf_phys} score={posthoc_score:.1f})")
+                if DEBUG:
+                    print(f"    → GARDÉ (physique fort : "
+                          f"high_conf={high_conf_phys} score={posthoc_score:.1f})")
             elif posthoc_score >= 7.5 and tracker_conf_val > 0.85:
-                # Signal physique borderline mais tracker confiant → garder
-                print(f"    → GARDÉ (borderline : "
-                      f"score={posthoc_score:.1f} tracker={tracker_conf_val:.2f})")
+                if DEBUG:
+                    print(f"    → GARDÉ (borderline : "
+                          f"score={posthoc_score:.1f} tracker={tracker_conf_val:.2f})")
             else:
-                # Signal faible → supprimer
                 event["_remove"] = True
                 removed += 1
-                print(f"    → SUPPRIMÉ (physique faible : "
-                      f"score={posthoc_score:.1f} tracker={tracker_conf_val:.2f})")
+                if DEBUG:
+                    print(f"    → SUPPRIMÉ (physique faible : "
+                          f"score={posthoc_score:.1f} tracker={tracker_conf_val:.2f})")
 
         event["gemini_validated"] = True
         event["gemini_type"]      = gemini_type
