@@ -213,7 +213,9 @@ def score_all_highlights(
         if result["type_reel"] in [
             "goalkeeper_action", "defensive_clearance",
             "touche", "corner", "none"
-        ] and result["score"] < 4:
+        ] and result["score"] < 6:
+            # V9.7 — seuil relevé 4 → 6 : dégagements et actions défensives
+            # éliminés même s'ils sont "spectaculaires" selon Gemini
             filtered += 1
             continue
 
