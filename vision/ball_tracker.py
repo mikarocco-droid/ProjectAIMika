@@ -359,13 +359,16 @@ class BallTracker:
         return self.ball_buffer.direction_stability(n)
 
     def _dynamic_shot_threshold(self, frame_w):
-        """Seuil vitesse calibré à la résolution (~1925px/s sur 1920)."""
-        return frame_w * 1.0
+        # V9.7 — relevé 1.0 → 1.5 : élimine les passes longues interpolées
+        # Un vrai tir sur 1920px = 2880+ px/s, une passe = 800-1500 px/s
+        return frame_w * 1.5
 
     def is_shot_candidate(self, frame_w, frame_h,
                           speed_threshold_px_per_sec=None,
-                          alignment_threshold=0.70,
-                          stability_threshold=0.60):
+                          alignment_threshold=0.75,
+                          stability_threshold=0.75):
+        # V9.7 — seuils resserrés : stability 0.75, alignment 0.75
+        # Évite les passes rapides, centres, et trajectoires Kalman lissées
         """
         Combine vitesse px/s + alignement vers but + stabilité direction.
         Évite les faux tirs sur rebonds et passes rapides.
@@ -373,14 +376,52 @@ class BallTracker:
         if speed_threshold_px_per_sec is None:
             speed_threshold_px_per_sec = self._dynamic_shot_threshold(frame_w)
 
+        # Rejeter si position interpolée (Kalman/vélocité)
+        if self.lost_frames > 0:
+            return False
+
+        # Filtre zone offensive — tirs partent des 25% proches des buts
+        # (pas du milieu de terrain)
+        last = self.ball_buffer.last_pos()
+        if last is not None:
+            bx = last[0]
+            if not (bx < frame_w * 0.25 or bx > frame_w * 0.75):
+                return False
+
         spd       = self.get_speed_per_second()
         toward, _ = self.ball_buffer.toward_goal(frame_w, frame_h,
                                                   threshold=alignment_threshold)
         stability = self.ball_buffer.direction_stability(3)
 
-        return (spd > speed_threshold_px_per_sec
-                and toward
-                and stability > stability_threshold)
+        # Filtre accélération — ratio robuste (indépendant résolution)
+        # tir = accélération brutale, passe = vitesse constante
+        pts = self.ball_buffer.get()
+        accel_ok = True  # défaut permissif si pas assez de points
+        if len(pts) >= 4:
+            def seg_speed(p1, p2):
+                dt = max(p2[2] - p1[2], 1e-4)
+                return math.hypot(p2[0]-p1[0], p2[1]-p1[1]) / dt
+            spd_recent = seg_speed(pts[-2], pts[-1])
+            spd_before = seg_speed(pts[-4], pts[-3])
+            accel_ratio = spd_recent / (spd_before + 1e-6)
+            accel_ok = accel_ratio >= 1.4  # vitesse 40% plus haute = accélération réelle
+
+        result = (spd > speed_threshold_px_per_sec
+                  and toward
+                  and stability > stability_threshold
+                  and accel_ok)
+
+        # Log DEBUG — activé via config.DEBUG
+        try:
+            from config import DEBUG
+        except ImportError:
+            DEBUG = False
+        if DEBUG and last is not None:
+            ratio_str = f"{spd_recent/(spd_before+1e-6):.2f}" if len(pts) >= 4 else "n/a"
+            print(f"  [SHOT] spd={spd:.0f} stab={stability:.2f} "
+                  f"accel={ratio_str} x={last[0]/frame_w:.2f} → {'✅' if result else '❌'}")
+
+        return result
 
     # ─────────────────────────────────────────
     # SHOT CANDIDATE — gestion lien tir → but
