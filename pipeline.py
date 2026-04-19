@@ -208,6 +208,14 @@ def deduplicate_goals(events, window=3.0):
 
 
 # ─────────────────────────────────────────
+# MODE DEBUG — valeur centralisée dans config.py
+# ─────────────────────────────────────────
+try:
+    from config import DEBUG
+except ImportError:
+    DEBUG = False
+
+# ─────────────────────────────────────────
 # PIPELINE PRINCIPAL
 # ─────────────────────────────────────────
 def run_pipeline(
@@ -458,15 +466,18 @@ def run_pipeline(
 
         # Log PRE-GEMINI — état de tous les buts avant validation
         goals_pre = [e for e in events_for_gemini if e.get("type") == "goal"]
-        print(f"  [PRE-GEMINI PIPELINE] {len(goals_pre)} but(s) candidats :")
-        for e in goals_pre:
-            t   = e.get("time", 0)
-            src = e.get("detected_from", e.get("source", "?"))
-            print(f"    t={int(t//60):02d}:{int(t%60):02d} "
-                  f"source={src} "
-                  f"conf={e.get('confidence',0):.2f} "
-                  f"xg={e.get('xg',0):.3f} "
-                  f"frame={e.get('frame',0)}")
+        print(f"  [PRE-GEMINI PIPELINE] {len(goals_pre)} but(s) candidats")
+        if DEBUG:
+            for e in goals_pre:
+                t    = e.get("time", 0)
+                src  = e.get("detected_from", e.get("source", "?"))
+                offs = "[+5,+8,+10,+12,+14,+16]s" if "posthoc" in str(src) else "[0,+2,+4]s"
+                print(f"    t={int(t//60):02d}:{int(t%60):02d} "
+                      f"source={src} "
+                      f"conf={e.get('confidence',0):.2f} "
+                      f"xg={e.get('xg',0):.3f} "
+                      f"frame={e.get('frame',0)} "
+                      f"offsets={offs}")
 
         events_validated = validate_events_with_gemini(
             events        = events_for_gemini,
@@ -478,6 +489,18 @@ def run_pipeline(
             frame_w       = _frame_w,
             frame_h       = _frame_h,
         )
+
+        # Log POST-GEMINI — résultat après validation
+        goals_post = [e for e in events_validated if e.get("type") == "goal"]
+        print(f"  [POST-GEMINI PIPELINE] {len(goals_post)} but(s) conservés")
+        if DEBUG:
+            for e in goals_post:
+                t = e.get("time", 0)
+                print(f"    t={int(t//60):02d}:{int(t%60):02d} "
+                      f"gemini_type={e.get('gemini_type','?')} "
+                      f"gemini_conf={e.get('gemini_conf',0):.2f} "
+                      f"tracker_conf={e.get('confidence',0):.2f} "
+                      f"validated={e.get('gemini_validated',False)}")
 
         # Réassembler dans l'ordre chronologique
         events = sorted(

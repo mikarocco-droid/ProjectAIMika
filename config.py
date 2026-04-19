@@ -41,7 +41,6 @@ R2_ENDPOINT_URL = (
 
 # ─────────────────────────────────────────
 # RÉTENTION DES FICHIERS (en jours)
-# 0 = suppression immédiate après analyse
 # ─────────────────────────────────────────
 FILE_RETENTION_DAYS = {
     "free":    int(os.getenv("RETENTION_FREE",    7)),
@@ -69,6 +68,7 @@ FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", 720))
 YOLO_MODEL      = os.getenv("YOLO_MODEL",      "yolov8n.pt")
 YOLO_CONFIDENCE = float(os.getenv("YOLO_CONFIDENCE", 0.4))
 BALL_METHOD     = os.getenv("BALL_METHOD",     "hybrid")
+
 # Défauts conservateurs (test local / Kaggle T4)
 # En prod RunPod RTX 4090 → YOLO_BATCH_SIZE=8  FRAME_SKIP_EVERY=4
 YOLO_BATCH_SIZE  = int(os.getenv("YOLO_BATCH_SIZE",  4))
@@ -104,7 +104,7 @@ HIGHLIGHT_AFTER_SEC     = int(os.getenv("HIGHLIGHT_AFTER_SEC",      4))
 # ─────────────────────────────────────────
 # MONTAGE
 # ─────────────────────────────────────────
-MONTAGE_RESOLUTION  = os.getenv("MONTAGE_RESOLUTION", "1280x720")
+MONTAGE_RESOLUTION = os.getenv("MONTAGE_RESOLUTION", "1280x720")
 
 # ─────────────────────────────────────────
 # IA — CLAUDE
@@ -167,6 +167,14 @@ PDF_LOGO_PATH     = os.getenv("PDF_LOGO_PATH",     "static/logo.png")
 PDF_PRIMARY_COLOR = os.getenv("PDF_PRIMARY_COLOR", "#1a73e8")
 
 # ─────────────────────────────────────────
+# MODE DEBUG
+# True  = logs détaillés (Kaggle / dev local)
+# False = logs minimaux (prod Hetzner)
+# Peut être surchargé via .env : DEBUG=true
+# ─────────────────────────────────────────
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
+# ─────────────────────────────────────────
 # VALIDATION AU DÉMARRAGE
 # ─────────────────────────────────────────
 def validate():
@@ -183,6 +191,7 @@ def validate():
         print("✅  Cloudflare R2 activé — stockage cloud")
     else:
         print("ℹ️   R2 non configuré — stockage local (mode test)")
+    print(f"ℹ️   YOLO batch={YOLO_BATCH_SIZE}  frame_skip={FRAME_SKIP_EVERY}")
     for w in warnings:
         print(w)
     return len(warnings) == 0
