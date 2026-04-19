@@ -220,7 +220,15 @@ def score_all_highlights(
             continue
 
         h["score"]         = result["score"]
-        h["main_type"]     = result["type_reel"]
+        # V9.7 — ne jamais promouvoir un shot en goal via le scorer
+        # Gemini scorer peut dire "goal" sur un tir dangereux → faux positif PDF
+        # Seul l'event source fait foi : si c'était un shot, ça reste un shot
+        original_type = h.get("main_type", "shot")
+        scored_type   = result["type_reel"]
+        if original_type == "shot" and scored_type == "goal":
+            h["main_type"] = "shot"   # on garde le type original
+        else:
+            h["main_type"] = scored_type
         h["spectaculaire"] = result["spectaculaire"]
         h["important"]     = result["important"]
         h["description"]   = result["description"]
