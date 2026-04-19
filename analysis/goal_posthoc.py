@@ -229,8 +229,10 @@ def detect_fast_goals_from_ball(
             i += 1
             continue
 
-        # Calculer goal_time ici pour les gardes-fous
+        # Calculer goal_time + recent_motion ici (nécessaires pour les gardes-fous)
         goal_time = i / fps
+        recent_window = speeds[max(0, i - 15):i]
+        recent_motion = (sum(recent_window) / len(recent_window)) if recent_window else 0
 
         # ── V9.6 — Garde-fou 1 : tir récent obligatoire (HARD FILTER) ──
         # Sans tir récent → pas un but, ballon mort ou phase morte
@@ -282,8 +284,6 @@ def detect_fast_goals_from_ball(
                 continue
 
         # ── Garde-fou 4 : pas de ballon mort ──────────────────────────
-        recent_window = speeds[max(0, i - 15):i]
-        recent_motion = (sum(recent_window) / len(recent_window)) if recent_window else 0
         if recent_motion < MIN_RECENT_MOTION:
             i += 1
             continue
