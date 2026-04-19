@@ -195,13 +195,8 @@ def compute_on_target(
             frame_w, frame_h, threshold=0.50
         )
         if toward:
-            stability  = ball_tracker.get_direction_stability(3)
-            ball_speed_local = ball_tracker.get_speed_per_second()                 if hasattr(ball_tracker, "get_speed_per_second") else ball_speed
-            speed_hi = ball_speed_local > frame_w * 0.40  # tir rapide
-            # V9.7 — logique combinée :
-            # tir rapide + stabilité correcte → cadré
-            # tir lent → exige stabilité élevée (élimine dégagements)
-            if stability > 0.70 or (stability > 0.60 and speed_hi):
+            stability = ball_tracker.get_direction_stability(3)
+            if stability > 0.55:
                 return True
 
     # Critère 3 — proximité des poteaux
@@ -239,7 +234,8 @@ def compute_xg(x, y, frame_w=1280, frame_h=720, learner=None):
 def init_state(learner=None):
     thr = learner.get_thresholds() if learner else {}
     fps            = 25
-    shot_cd_frames = int(thr.get("shot_cooldown",   3.0) * fps)
+    # V9.7 — shot_cooldown relevé 3s → 8s pour réduire les clusters de tirs
+    shot_cd_frames = int(thr.get("shot_cooldown",   8.0) * fps)
     goal_cd_frames = int(thr.get("goal_cooldown", 150.0) * fps)
     ball_speed_min = thr.get("ball_speed_min",    0.02)
     player_near    = thr.get("player_near_goal",  0.15)

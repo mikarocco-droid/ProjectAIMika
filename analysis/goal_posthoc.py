@@ -167,7 +167,8 @@ def detect_fast_goals_from_ball(
     print(f"[goal_posthoc_v9.6] speed_base={speed_base:.2f}")
 
     # ── V9.6 — Seuils gardes-fous ────────────────────────────────────
-    SHOT_LOOKBACK_SEC  = 15.0  # fenêtre élargie : le tir peut précéder le but de ~15s
+    SHOT_LOOKBACK_STRICT = 6.0   # tir direct → accepté sans condition
+    SHOT_LOOKBACK_LOOSE  = 20.0  # tir ancien → accepté uniquement si signal physique fort
     MIN_SHOT_SPEED     = 2.0   # vitesse min du tir (px/frame)
     MIN_PEAK_SPEED     = 5.0   # pic de vitesse requis avant l'impact
     MIN_DIRECTIONALITY = 0.55  # ratio dx/norme → orientation vers but
@@ -233,19 +234,35 @@ def detect_fast_goals_from_ball(
 
         # ── V9.6 — Garde-fou 1 : tir récent obligatoire (HARD FILTER) ──
         # Sans tir récent → pas un but, ballon mort ou phase morte
-        recent_shot = None
-        for s in reversed(shots):
-            t_s = s.get("time", 0)
-            if goal_time - t_s <= SHOT_LOOKBACK_SEC:
-                if s.get("xg", 0) > 0.05:  # tir avec xG minimal
-                    recent_shot = s
-                    break
-            elif goal_time - t_s > SHOT_LOOKBACK_SEC:
-                break
+        # ── V9.6 — Hard filter hybride : tir strict ou loose+signal fort ──
+        recent_shot_strict = False
+        recent_shot_loose  = False
 
-        if not recent_shot:
-            i += 1
-            continue  # ❌ pas de tir récent → faux positif garanti
+        for s in reversed(shots):
+            dt = goal_time - s.get("time", 0)
+            if dt < 0:
+                continue
+            if dt <= SHOT_LOOKBACK_STRICT:
+                recent_shot_strict = True
+                break
+            if dt <= SHOT_LOOKBACK_LOOSE:
+                recent_shot_loose = True
+            else:
+                break  # trié par temps → inutile de chercher plus loin
+
+        recent_motion_ok = recent_motion >= MIN_RECENT_MOTION * 2.0
+
+        if not recent_shot_strict:
+            # Fallback strict (AND) : tir ancien + rebond + vitesse requis simultanément
+            # OR était trop permissif → faux positifs sur centres/dégagements rapides
+            valid_loose = (
+                recent_shot_loose
+                and rebound          # rebond filet obligatoire
+                and recent_motion_ok # vitesse cohérente obligatoire
+            )
+            if not valid_loose:
+                i += 1
+                continue  # ❌ signal insuffisant
 
         # ── Garde-fou 2 : pic de vitesse avant impact ─────────────────
         peak_before = max(speeds[max(0, i - 20):i + 1]) if i > 0 else 0
@@ -286,8 +303,8 @@ def detect_fast_goals_from_ball(
         if rebound:
             score += 1.5  # 🔥 signal très fort
 
-        if recent_shot:
-            score += 0.5
+        if recent_shot_strict:
+            score += 0.5  # boost si tir très récent
 
         # V9.7 — seuil relevé pour réduire les faux positifs
         # score < 7.0 → bruit (stuck faible sans rebound)
@@ -310,7 +327,7 @@ def detect_fast_goals_from_ball(
             "confidence": confidence,
             "score": round(score, 2),
             "detected_from": "goal_posthoc_v9.6",
-            "shot_linked": recent_shot is not None,
+            "shot_linked": recent_shot_strict or recent_shot_loose,
         })
 
         print(f"⚽ GOAL {goal_time:.2f}s | score={score:.2f} | stuck={stuck} | rebound={rebound}")
