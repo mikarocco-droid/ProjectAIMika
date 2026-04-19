@@ -228,6 +228,9 @@ def detect_fast_goals_from_ball(
             i += 1
             continue
 
+        # Calculer goal_time ici pour les gardes-fous
+        goal_time = i / fps
+
         # ── V9.6 — Garde-fou 1 : tir récent obligatoire (HARD FILTER) ──
         # Sans tir récent → pas un but, ballon mort ou phase morte
         recent_shot = None
@@ -282,8 +285,6 @@ def detect_fast_goals_from_ball(
 
         if rebound:
             score += 1.5  # 🔥 signal très fort
-
-        goal_time = i / fps
 
         if recent_shot:
             score += 0.5
