@@ -195,9 +195,13 @@ def compute_on_target(
             frame_w, frame_h, threshold=0.50
         )
         if toward:
-            stability = ball_tracker.get_direction_stability(3)
-            # V9.7 — relevé 0.55 → 0.70 pour éviter les dégagements
-            if stability > 0.70:
+            stability  = ball_tracker.get_direction_stability(3)
+            ball_speed_local = ball_tracker.get_speed_per_second()                 if hasattr(ball_tracker, "get_speed_per_second") else ball_speed
+            speed_hi = ball_speed_local > frame_w * 0.40  # tir rapide
+            # V9.7 — logique combinée :
+            # tir rapide + stabilité correcte → cadré
+            # tir lent → exige stabilité élevée (élimine dégagements)
+            if stability > 0.70 or (stability > 0.60 and speed_hi):
                 return True
 
     # Critère 3 — proximité des poteaux
