@@ -164,7 +164,15 @@ def detect_fast_goals_from_ball(
     speed_base = sorted(speeds)[int(len(speeds) * 0.5)]
     SPEED_THRESHOLD = speed_base * 2.0
 
-    print(f"[goal_posthoc_v9.5] speed_base={speed_base:.2f}")
+    print(f"[goal_posthoc_v9.6] speed_base={speed_base:.2f}")
+
+    # ── V9.6 — Seuils gardes-fous ────────────────────────────────────
+    SHOT_LOOKBACK_SEC  = 15.0  # fenêtre élargie : le tir peut précéder le but de ~15s
+    MIN_SHOT_SPEED     = 2.0   # vitesse min du tir (px/frame)
+    MIN_PEAK_SPEED     = 5.0   # pic de vitesse requis avant l'impact
+    MIN_DIRECTIONALITY = 0.55  # ratio dx/norme → orientation vers but
+    MIN_RECENT_MOTION  = 1.0   # vitesse moyenne min → pas de ballon mort
+    # ─────────────────────────────────────────────────────────────────
 
     shots = sorted([e for e in events if e.get("type") == "shot"],
                    key=lambda e: e.get("time", 0))
@@ -220,6 +228,48 @@ def detect_fast_goals_from_ball(
             i += 1
             continue
 
+        # ── V9.6 — Garde-fou 1 : tir récent obligatoire (HARD FILTER) ──
+        # Sans tir récent → pas un but, ballon mort ou phase morte
+        recent_shot = None
+        for s in reversed(shots):
+            t_s = s.get("time", 0)
+            if goal_time - t_s <= SHOT_LOOKBACK_SEC:
+                if s.get("xg", 0) > 0.05:  # tir avec xG minimal
+                    recent_shot = s
+                    break
+            elif goal_time - t_s > SHOT_LOOKBACK_SEC:
+                break
+
+        if not recent_shot:
+            i += 1
+            continue  # ❌ pas de tir récent → faux positif garanti
+
+        # ── Garde-fou 2 : pic de vitesse avant impact ─────────────────
+        peak_before = max(speeds[max(0, i - 20):i + 1]) if i > 0 else 0
+        if peak_before < MIN_PEAK_SPEED:
+            i += 1
+            continue
+
+        # ── Garde-fou 3 : direction vers le but ───────────────────────
+        c_10 = _get_ball_center(frames_data[i - 10].get("ball")) if i >= 10 else None
+        if c_10 and c:
+            dx = c[0] - c_10[0]
+            dy = c[1] - c_10[1]
+            norm = math.hypot(dx, dy) + 1e-6
+            directionality = abs(dx) / norm
+            if directionality < MIN_DIRECTIONALITY:
+                i += 1
+                continue
+
+        # ── Garde-fou 4 : pas de ballon mort ──────────────────────────
+        recent_window = speeds[max(0, i - 15):i]
+        recent_motion = (sum(recent_window) / len(recent_window)) if recent_window else 0
+        if recent_motion < MIN_RECENT_MOTION:
+            i += 1
+            continue
+
+        # ─────────────────────────────────────────────────────────────
+
         score = 3.0 + 1.5
 
         if stuck >= 6:
@@ -234,12 +284,6 @@ def detect_fast_goals_from_ball(
             score += 1.5  # 🔥 signal très fort
 
         goal_time = i / fps
-
-        recent_shot = None
-        for s in reversed(shots):
-            if goal_time - s.get("time", 0) <= shot_window:
-                recent_shot = s
-                break
 
         if recent_shot:
             score += 0.5
@@ -264,7 +308,7 @@ def detect_fast_goals_from_ball(
             "y": y,
             "confidence": confidence,
             "score": round(score, 2),
-            "detected_from": "goal_posthoc_v9.5",
+            "detected_from": "goal_posthoc_v9.6",
             "shot_linked": recent_shot is not None,
         })
 
