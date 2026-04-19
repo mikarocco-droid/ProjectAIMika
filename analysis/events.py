@@ -196,7 +196,8 @@ def compute_on_target(
         )
         if toward:
             stability = ball_tracker.get_direction_stability(3)
-            if stability > 0.55:
+            # V9.7 — relevé 0.55 → 0.70 pour éviter les dégagements
+            if stability > 0.70:
                 return True
 
     # Critère 3 — proximité des poteaux
