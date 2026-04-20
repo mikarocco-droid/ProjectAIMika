@@ -784,6 +784,7 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 7 : Heatmaps...")
     heatmaps = {}; heatmap_path = None; heatmap_paths = {}
+    highlights = []  # initialisé ici, rempli en Step 8, utilisé en Step 7b
     # Note : heatmaps tirs générées après Step 8 (highlights filtrés)
     # → voir Step 7b ci-dessous
 
@@ -826,7 +827,7 @@ def run_pipeline(
         print(f"  Heatmaps error : {e}")
 
     print("Step 8 : Highlights...")
-    highlights = []; reel_path = None
+    reel_path = None
     try:
         highlights = create_highlights(
             video_path = video_path,
