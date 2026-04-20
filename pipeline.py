@@ -209,11 +209,14 @@ def deduplicate_goals(events, window=3.0):
 
 # ─────────────────────────────────────────
 # MODE DEBUG — valeur centralisée dans config.py
+# Rechargé depuis os.environ pour fonctionner sur Kaggle
 # ─────────────────────────────────────────
+import os as _os_debug
 try:
-    from config import DEBUG
+    from config import DEBUG as _DEBUG_CONFIG
+    DEBUG = _os_debug.getenv("DEBUG", str(_DEBUG_CONFIG)).lower() == "true"
 except ImportError:
-    DEBUG = False
+    DEBUG = _os_debug.getenv("DEBUG", "false").lower() == "true"
 
 # ─────────────────────────────────────────
 # PIPELINE PRINCIPAL
@@ -471,7 +474,13 @@ def run_pipeline(
             for e in goals_pre:
                 t    = e.get("time", 0)
                 src  = e.get("detected_from", e.get("source", "?"))
-                offs = "[+5,+8,+10,+12,+14,+16]s" if "posthoc" in str(src) else "[0,+2,+4]s"
+                # Offsets réels depuis gemini_validator (pas hardcodés)
+                try:
+                    import ai.gemini_validator as _gv
+                    _offsets = _gv.OFFSETS_POSTHOC if "posthoc" in str(src) else _gv.OFFSETS_EVENTS
+                    offs = str(_offsets) + "s"
+                except Exception:
+                    offs = "[-18,-14,-10,-7,-4,-2]s" if "posthoc" in str(src) else "[0,+2,+4]s"
                 print(f"    t={int(t//60):02d}:{int(t%60):02d} "
                       f"source={src} "
                       f"conf={e.get('confidence',0):.2f} "
@@ -875,6 +884,18 @@ def run_pipeline(
     summary["possession"]    = possession
     summary["is_summary"]    = is_summary
     summary["context_stats"] = ctx_stats
+
+    # V9.7 — mettre à jour shots/xG avec les tirs qui ont passé tous les filtres
+    # (highlights = tirs validés par Gemini scorer après filtrage)
+    n_highlight_shots = sum(1 for h in highlights if h.get("main_type") == "shot")
+    n_highlight_goals = sum(1 for h in highlights if h.get("main_type") in ("goal", "score"))
+    xg_highlight = sum(float(h.get("xg", 0) or 0) for h in highlights
+                       if h.get("main_type") == "shot")
+    summary["shots"]    = n_highlight_shots
+    summary["total_xg"] = round(xg_highlight, 2)
+    if n_highlight_goals > summary["goals"]:
+        summary["goals"] = n_highlight_goals
+
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
           f"xG={summary['total_xg']} | joueurs={summary['players']}")
     print(f"  Possession : {possession}")
