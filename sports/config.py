@@ -173,38 +173,34 @@ SPORT_CONFIG = {
 
 
 # ─────────────────────────────────────────
-# OFFSETS CONTEXTE xG (V9.7)
+# MULTIPLICATEURS CONTEXTE xG
 # ─────────────────────────────────────────
-# V9.7 — remplacé multiplicateurs × par offsets additifs
-# Multiplier une probabilité est mathématiquement faux
-# (0.30 × 1.30 = 0.39 ne veut rien dire statistiquement)
-# À la place : on ajoute un offset au SCORE avant sigmoid
-# Valeurs calibrées pour rester dans [0.03, 0.35]
 
+# Phase de jeu → impact sur la dangerosité
+# Contre-attaque = défense désorganisée → xG plus élevé
 PHASE_OFFSETS = {
-    "set_play":       0.0,    # jeu placé, défense en place
-    "open_play":      0.0,    # jeu ouvert normal
-    "transition":     0.15,   # transition rapide
-    "counter_attack": 0.30,   # contre-attaque → défense désorganisée
-    "counter":        0.30,   # alias
-    "fast_break":     0.20,   # montée rapide
-    "press":         -0.15,   # tir sous pressing défensif
+    "set_play":       1.0,   # jeu placé, défense en place
+    "open_play":      1.0,   # jeu ouvert normal
+    "transition":     1.15,  # transition rapide
+    "counter_attack": 1.30,  # contre-attaque → défense désorganisée
+    "counter":        1.30,  # alias
+    "fast_break":     1.25,  # montée rapide
+    "press":          0.90,  # tir sous pressing défensif
 }
 
+# Action précédant le tir → impact sur la qualité
+# Dribble = espace créé → xG plus élevé
+# Centre = angle fermé → xG plus faible
 ACTION_BEFORE_OFFSETS = {
-    "dribble":          0.15,  # dribble réussi → espace créé
-    "progressive_run":  0.10,  # course progressive → bonne position
-    "pass":             0.0,   # passe normale
-    "key_pass":         0.05,  # passe clé
-    "cross":           -0.25,  # centre → angle souvent fermé
-    "long_pass":       -0.15,  # long ball → contrôle difficile
-    "interception":     0.10,  # récupération → transition rapide
-    "none":             0.0,
+    "dribble":          1.15,  # dribble réussi → espace créé
+    "progressive_run":  1.10,  # course progressive → bonne position
+    "pass":             1.00,  # passe normale
+    "key_pass":         1.05,  # passe clé
+    "cross":            0.80,  # centre → angle souvent fermé
+    "long_pass":        0.90,  # long ball → contrôle difficile
+    "interception":     1.10,  # récupération → transition rapide
+    "none":             1.00,
 }
-
-# Compatibilité arrière — anciens noms toujours accessibles
-PHASE_MULTIPLIERS      = {k: 1.0 for k in PHASE_OFFSETS}
-ACTION_BEFORE_MULTIPLIERS = {k: 1.0 for k in ACTION_BEFORE_OFFSETS}
 
 
 # ─────────────────────────────────────────
@@ -304,34 +300,38 @@ def compute_xg_sport(
 
     # ── Score de base calibré ─────────────
     # -2.8 → distribution réaliste (majorité des tirs < 0.10)
-    # V9.7 — biais recalibré -2.8 → -5.0 pour xG réaliste (0.05-0.25)
+    # V9.7 — biais recalibré pour xG réaliste (0.05-0.25)
     score = -5.0 + (3.5 * distance_effect) + (1.2 * angle_effect)
 
-    # ── Offsets contextuels (V9.7) ────────
-    # Ajoutés au score AVANT sigmoid → mathématiquement correct
-    phase_key    = str(phase).lower().replace("-", "_").replace(" ", "_")
-    phase_off    = PHASE_OFFSETS.get(phase_key, 0.0)
+    # ── Multiplicateur phase de jeu ───────
+    phase_key  = str(phase).lower().replace("-", "_").replace(" ", "_")
+    phase_mult = PHASE_OFFSETS.get(phase_key, 1.0)
 
+    # ── Multiplicateur action avant tir ───
     action_key   = str(action_before).lower().replace("-", "_")
-    action_off   = ACTION_BEFORE_OFFSETS.get(action_key, 0.0)
+    action_mult  = ACTION_BEFORE_OFFSETS.get(action_key, 1.0)
 
     # ── Pression défensive ────────────────
-    # Offset négatif si défenseur collé (max -0.5)
-    pressure_off = -0.5 * max(0.0, min(1.0, float(pressure)))
+    # -50% pour défenseur collé
+    pressure_mult = 1.0 - (0.5 * max(0.0, min(1.0, float(pressure))))
 
     # ── Longueur de séquence ──────────────
+    # Séquence longue (>8 passes) = défense replacée → légère pénalité
+    # Séquence courte (<3) = transition rapide → léger bonus
     seq = max(1, int(sequence_length))
     if seq <= 2:
-        seq_off = 0.05    # transition rapide
+        seq_mult = 1.05   # transition rapide
     elif seq <= 5:
-        seq_off = 0.0     # séquence normale
+        seq_mult = 1.0    # séquence normale
     elif seq <= 10:
-        seq_off = -0.05   # séquence longue
+        seq_mult = 0.95   # séquence longue
     else:
-        seq_off = -0.10   # très longue séquence → défense replacée
+        seq_mult = 0.90   # très longue séquence → défense replacée
 
-    # ── Application des offsets au score ──
-    score = score + phase_off + action_off + pressure_off + seq_off
+    # ── Application des multiplicateurs ───
+    # On les applique sur le score (avant sigmoïde) pour éviter
+    # la saturation à 0.99 sur les très bons tirs
+    score = score * phase_mult * action_mult * pressure_mult * seq_mult
 
     # ── Sigmoïde → xG ─────────────────────
     xg = 1.0 / (1.0 + math.exp(-score))
