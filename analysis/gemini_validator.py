@@ -20,9 +20,6 @@ except ImportError:
 # ─────────────────────────────────────────
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
 # ─────────────────────────────────────────
-# ─────────────────────────────────────────
-# OFFSETS GEMINI — source unique de vérité
-# ─────────────────────────────────────────
 OFFSETS_POSTHOC = [-25, -20, -16, -12, -8, -5, -2, +3, +6, +10, +15, +20, +25]
 OFFSETS_EVENTS  = [0, 2, 4]
 
@@ -155,19 +152,6 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
 
     cap.release()
     return frames
-
-
-# ─────────────────────────────────────────
-# HELPER — parse JSON Gemini
-# ─────────────────────────────────────────
-def _safe_json_load(text):
-    if not text:
-        return None
-    try:
-        clean = re.sub(r"```json|```", "", text).strip()
-        return json.loads(clean)
-    except Exception:
-        return None
 
 
 # ─────────────────────────────────────────
