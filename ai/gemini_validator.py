@@ -202,7 +202,8 @@ def _call_gemini_at_offset(client, video_path, frame_id, fps, event_type, danger
         f'"equipe": 0, '
         f'"description": "description courte"}}\n\n'
         f"EN CAS DE DOUTE sur un but reponds 'goal' avec confiance 0.65.\n"
-        f"Un faux negatif (but rate) est pire qu'un faux positif (faux but)."
+        f"IMPORTANT : Ne reponds 'shot' QUE si tu vois CLAIREMENT un tir vers le but.\n"
+        f"Si ce n'est pas evident → reponds 'none'. Un faux tir est pire qu'un tir manque."
     )]
 
     for _, frame in frames_data:
@@ -227,14 +228,6 @@ def _call_gemini_at_offset(client, video_path, frame_id, fps, event_type, danger
 def validate_event(video_path, event, fps=25, sport="football"):
     if not GEMINI_AVAILABLE:
         return None
-
-    # Bypass Gemini : signal physique très fort → but direct
-    _src = event.get("detected_from", event.get("source", ""))
-    _score = event.get("score", 0)
-    _rebound = event.get("rebound", False) or event.get("shot_linked", False)
-    if "posthoc" in str(_src) and _score >= 8.5 and _rebound:
-        print(f"  [FORCE GOAL] rebound_sig score={_score:.1f} → but confirmé physiquement")
-        return {"type": "goal", "confiance": 0.90, "equipe": None, "description": "rebound_sig bypass"}
 
     frame_orig = event.get("frame", 0)
     danger     = event.get("danger", 0)
@@ -327,8 +320,8 @@ def validate_event(video_path, event, fps=25, sport="football"):
                 return best_result
 
         elif score == 2 and goal_votes >= 1:
-            # 1 vote goal sans contexte fort → garder avec conf réduite
-            if best_result:
+            # 1 vote goal avec contexte tracker → garder avec conf réduite
+            if best_result and best_result.get("type") == "goal":
                 best_result["confiance"] = min(best_result["confiance"], 0.70)
                 return best_result
 
@@ -517,20 +510,22 @@ def validate_events_with_gemini(
                   f"score={posthoc_score:.1f} "
                   f"tracker={tracker_conf_val:.2f}")
 
-            if high_conf_phys or posthoc_score >= 8.5:
-                # Signal physique fort → garder
-                print(f"    → GARDÉ (physique fort : "
-                      f"high_conf={high_conf_phys} score={posthoc_score:.1f})")
-            elif posthoc_score >= 7.5 and tracker_conf_val > 0.85:
-                # Signal physique borderline mais tracker confiant → garder
-                print(f"    → GARDÉ (borderline : "
-                      f"score={posthoc_score:.1f} tracker={tracker_conf_val:.2f})")
+            # Zone grise : exiger tir récent + score élevé
+            has_recent_shot = event.get("shot_linked", False)
+            has_rebound     = event.get("rebound", False)
+            if high_conf_phys and has_recent_shot:
+                print(f"    → GARDÉ (high_conf + shot_linked)")
+            elif posthoc_score >= 8.5 and has_recent_shot and has_rebound:
+                # Score fort + rebond filet + tir récent = signal suffisant
+                print(f"    → GARDÉ (score={posthoc_score:.1f} + rebound + shot_linked)")
+            elif posthoc_score >= 9.5 and has_recent_shot:
+                # Score extrême sans rebond → accepté quand même
+                print(f"    → GARDÉ (score extrême {posthoc_score:.1f} + shot_linked)")
             else:
-                # Signal faible → supprimer
                 event["_remove"] = True
                 removed += 1
-                print(f"    → SUPPRIMÉ (physique faible : "
-                      f"score={posthoc_score:.1f} tracker={tracker_conf_val:.2f})")
+                print(f"    → SUPPRIMÉ (Gemini=none, score={posthoc_score:.1f}, "
+                      f"rebound={has_rebound}, shot_linked={has_recent_shot})")
 
         event["gemini_validated"] = True
         event["gemini_type"]      = gemini_type
@@ -538,4 +533,30 @@ def validate_events_with_gemini(
 
     events = [e for e in events if not e.get("_remove", False)]
     print(f"  Gemini : {validated} validés | {corrected} corrigés | {removed} supprimés")
+
+    # ── Post-processing xG : lier chaque but au tir le plus proche ──
+    shots = [e for e in events if e.get("type") == "shot"]
+    for e in events:
+        if e.get("type") != "goal":
+            continue
+        if float(e.get("xg", 0) or 0) > 0:
+            continue  # xG déjà renseigné
+        # Chercher le tir le plus proche dans une fenêtre de 6s
+        t_goal = e.get("time", 0)
+        best_shot = None
+        best_dt   = 999
+        for s in shots:
+            dt = abs(s.get("time", 0) - t_goal)
+            if dt < best_dt and dt <= 6.0:
+                best_dt   = dt
+                best_shot = s
+        if best_shot:
+            e["xg"] = best_shot.get("xg", 0.10)
+            print(f"  [XG LINK] but {int(t_goal//60):02d}:{int(t_goal%60):02d} "
+                  f"← tir {int(best_shot.get('time',0)//60):02d}:{int(best_shot.get('time',0)%60):02d} "
+                  f"xG={e['xg']:.3f}")
+        else:
+            e["xg"] = 0.10  # fallback minimal réaliste
+            print(f"  [XG FALLBACK] but {int(t_goal//60):02d}:{int(t_goal%60):02d} → xG=0.10")
+
     return events
