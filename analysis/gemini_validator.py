@@ -492,22 +492,23 @@ def validate_events_with_gemini(
             posthoc_score    = event.get("score", event.get("danger", 0))
             high_conf_phys   = event.get("high_conf_physical", False)
             tracker_conf_val = event.get("confidence", 0)
+            # rebound=True dans goal_posthoc = décélération brutale + inversion direction
+            # signal physique très fort même si Gemini ne voit pas le ballon
+            src_posthoc  = "posthoc" in str(event.get("detected_from", ""))
+            rebound_sig  = src_posthoc and event.get("shot_linked", False) and posthoc_score >= 8.0
 
             print(f"    [DECISION] type={gemini_type} "
-                  f"phys={high_conf_phys} "
-                  f"score={posthoc_score:.1f} "
+                  f"score={posthoc_score:.1f} rebound_sig={rebound_sig} "
+                  f"shot_linked={event.get('shot_linked')} "
                   f"tracker={tracker_conf_val:.2f}")
 
-            if high_conf_phys or posthoc_score >= 8.5:
-                # Signal physique fort → garder
+            if high_conf_phys or posthoc_score >= 8.5 or rebound_sig:
                 print(f"    → GARDÉ (physique fort : "
-                      f"high_conf={high_conf_phys} score={posthoc_score:.1f})")
+                      f"score={posthoc_score:.1f} rebound_sig={rebound_sig})")
             elif posthoc_score >= 7.5 and tracker_conf_val > 0.85:
-                # Signal physique borderline mais tracker confiant → garder
                 print(f"    → GARDÉ (borderline : "
                       f"score={posthoc_score:.1f} tracker={tracker_conf_val:.2f})")
             else:
-                # Signal faible → supprimer
                 event["_remove"] = True
                 removed += 1
                 print(f"    → SUPPRIMÉ (physique faible : "
