@@ -18,6 +18,12 @@ except ImportError:
 
 
 # ─────────────────────────────────────────
+# OFFSETS GEMINI — source unique de vérité
+# ─────────────────────────────────────────
+OFFSETS_POSTHOC = [-25, -20, -16, -12, -8, -5, -2, +3, +6, +10, +15, +20, +25]
+OFFSETS_EVENTS  = [0, 2, 4]
+
+# ─────────────────────────────────────────
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
 # ─────────────────────────────────────────
 MIN_CONF_BASE = 0.80
@@ -220,10 +226,9 @@ def validate_event(video_path, event, fps=25, sport="football"):
     # goal_posthoc détecte 5-15s AVANT le vrai but visuel
     # → on teste plusieurs offsets en secondes et on vote
     if "posthoc" in str(source):
-        offsets_s = [5, 8, 10, 12, 14, 16]  # V9.7 — fenêtre élargie à +16s
-        # Couvre les buts détectés jusqu'à 14s avant le moment réel
+        offsets_s = OFFSETS_POSTHOC
     else:
-        offsets_s = [0, 2, 4]        # events.py plus précis, fenêtre réduite
+        offsets_s = OFFSETS_EVENTS
 
     print(f"  [PRE-GEMINI] t={event.get('time',0):.2f}s "
           f"source={source} frame={frame_orig} "
@@ -250,7 +255,7 @@ def validate_event(video_path, event, fps=25, sport="football"):
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 cap.release()
 
-            if frame_id >= total_frames:
+            if frame_id < 0 or frame_id >= total_frames:
                 continue
 
             result = _call_gemini_at_offset(
@@ -353,16 +358,10 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
             return {}
 
         parts = [text_to_part(
-            f"Voici {len(crops)} crops de joueurs de football. "
-            f"Pour chaque image, lis PRECISEMENT le numero sur le maillot.\n\n"
-            f"REGLES CRITIQUES :\n"
-            f"- Compte bien tous les chiffres : '11' n'est PAS '1'\n"
-            f"- Deux traits verticaux cote a cote = 11, pas 1\n"
-            f"- En cas de doute entre 1 et 11 : prefere 11 (le #1 est le gardien, rare en jeu)\n"
-            f"- Numeros courants au football : 1 a 30\n"
-            f"- Si illisible → null\n\n"
+            f"Voici {len(crops)} crops de joueurs. "
+            f"Pour chaque image, lis le numéro sur le maillot.\n"
             f"JSON sans markdown :\n"
-            f'{{"jerseys": [{{"index": 0, "numero": 11}}, {{"index": 1, "numero": 3}}]}}\n'
+            f'{{"jerseys": [{{"index": 0, "numero": 9}}, {{"index": 1, "numero": null}}]}}\n'
             f"- numero : entier 1-99 si lisible, null sinon"
         )]
 
@@ -492,23 +491,24 @@ def validate_events_with_gemini(
             posthoc_score    = event.get("score", event.get("danger", 0))
             high_conf_phys   = event.get("high_conf_physical", False)
             tracker_conf_val = event.get("confidence", 0)
-            # rebound=True dans goal_posthoc = décélération brutale + inversion direction
-            # signal physique très fort même si Gemini ne voit pas le ballon
-            src_posthoc  = "posthoc" in str(event.get("detected_from", ""))
-            rebound_sig  = src_posthoc and event.get("shot_linked", False) and posthoc_score >= 8.0
 
             print(f"    [DECISION] type={gemini_type} "
-                  f"score={posthoc_score:.1f} rebound_sig={rebound_sig} "
-                  f"shot_linked={event.get('shot_linked')} "
+                  f"phys={high_conf_phys} "
+                  f"score={posthoc_score:.1f} "
                   f"tracker={tracker_conf_val:.2f}")
 
+            src_posthoc = "posthoc" in str(event.get("detected_from", ""))
+            rebound_sig = src_posthoc and event.get("shot_linked", False) and posthoc_score >= 8.0
             if high_conf_phys or posthoc_score >= 8.5 or rebound_sig:
+                # Signal physique fort → garder
                 print(f"    → GARDÉ (physique fort : "
-                      f"score={posthoc_score:.1f} rebound_sig={rebound_sig})")
+                      f"high_conf={high_conf_phys} score={posthoc_score:.1f})")
             elif posthoc_score >= 7.5 and tracker_conf_val > 0.85:
+                # Signal physique borderline mais tracker confiant → garder
                 print(f"    → GARDÉ (borderline : "
                       f"score={posthoc_score:.1f} tracker={tracker_conf_val:.2f})")
             else:
+                # Signal faible → supprimer
                 event["_remove"] = True
                 removed += 1
                 print(f"    → SUPPRIMÉ (physique faible : "
