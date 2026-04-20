@@ -784,9 +784,35 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 7 : Heatmaps...")
     heatmaps = {}; heatmap_path = None; heatmap_paths = {}
+    # Note : heatmaps tirs générées après Step 8 (highlights filtrés)
+    # → voir Step 7b ci-dessous
+
+    # ─────────────────────────────────────────
+    # 8. HIGHLIGHTS
+    # ─────────────────────────────────────────
+    # ─────────────────────────────────────────
+    # STEP 7b : Heatmaps avec events filtrés
+    # ─────────────────────────────────────────
+    print("Step 7b : Heatmaps (events filtrés)...")
     try:
+        # Filtrer les tirs : garder uniquement ceux qui matchent les highlights
+        # Les autres events (possession, passes, goals) restent tous
+        highlight_shot_times = set()
+        for h in highlights:
+            if h.get("main_type") == "shot":
+                t = h.get("time_start", 0)
+                # fenêtre ±5s pour matcher avec l'event original
+                highlight_shot_times.add(round(t))
+
+        events_for_heatmap = [
+            e for e in events
+            if e.get("type") != "shot"                          # garder non-tirs
+            or any(abs(e.get("time", 0) - ht) <= 8
+                   for ht in highlight_shot_times)              # garder tirs filtrés
+        ]
+
         heatmaps = generate_all_heatmaps(
-            events     = events,
+            events     = events_for_heatmap,
             output_dir = os.path.join(output_dir, "heatmaps"),
             width      = config.FRAME_WIDTH,
             height     = config.FRAME_HEIGHT,
@@ -794,13 +820,11 @@ def run_pipeline(
         )
         heatmap_path  = heatmaps.get("global")
         heatmap_paths = heatmaps
-        print(f"  OK {len(heatmaps)} heatmaps")
+        print(f"  OK {len(heatmaps)} heatmaps "
+              f"({len(highlight_shot_times)} tirs filtrés / {sum(1 for e in events if e.get('type')=='shot')} bruts)")
     except Exception as e:
         print(f"  Heatmaps error : {e}")
 
-    # ─────────────────────────────────────────
-    # 8. HIGHLIGHTS
-    # ─────────────────────────────────────────
     print("Step 8 : Highlights...")
     highlights = []; reel_path = None
     try:
