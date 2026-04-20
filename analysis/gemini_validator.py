@@ -19,11 +19,14 @@ except ImportError:
 
 # ─────────────────────────────────────────
 # MODE DEBUG — valeur centralisée dans config.py
+# Rechargé depuis os.environ pour fonctionner sur Kaggle
 # ─────────────────────────────────────────
+import os as _os_debug
 try:
-    from config import DEBUG
+    from config import DEBUG as _DEBUG_CONFIG
+    DEBUG = _os_debug.getenv("DEBUG", str(_DEBUG_CONFIG)).lower() == "true"
 except ImportError:
-    DEBUG = False
+    DEBUG = _os_debug.getenv("DEBUG", "false").lower() == "true"
 
 # ─────────────────────────────────────────
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
@@ -225,11 +228,11 @@ def validate_event(video_path, event, fps=25, sport="football"):
     tracker_conf = event.get("confidence", 0.5)
 
     # V9.7 — Offsets multi-frame selon la source
-    # goal_posthoc détecte 5-15s AVANT le vrai but visuel
-    # → on teste plusieurs offsets en secondes et on vote
+    # goal_posthoc = ballon IMMOBILE dans les filets → timestamp APRÈS le but
+    # → offsets NÉGATIFS pour remonter au moment de l'action
+    # delta typique : 10-20s entre moment posthoc et vrai but visuel
     if "posthoc" in str(source):
-        offsets_s = [5, 8, 10, 12, 14, 16]  # V9.7 — fenêtre élargie à +16s
-        # Couvre les buts détectés jusqu'à 14s avant le moment réel
+        offsets_s = [-18, -14, -10, -7, -4, -2]  # V9.7 — remonte avant le timestamp
     else:
         offsets_s = [0, 2, 4]        # events.py plus précis, fenêtre réduite
 
@@ -259,7 +262,7 @@ def validate_event(video_path, event, fps=25, sport="football"):
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 cap.release()
 
-            if frame_id >= total_frames:
+            if frame_id < 0 or frame_id >= total_frames:
                 continue
 
             result = _call_gemini_at_offset(
@@ -274,7 +277,7 @@ def validate_event(video_path, event, fps=25, sport="football"):
             rconf = result["confiance"]
 
             if DEBUG:
-                print(f"    [OFFSET +{off_s}s] type={rtype} conf={rconf:.2f} "
+                print(f"    [OFFSET {off_s:+d}s] type={rtype} conf={rconf:.2f} "
                       f"desc={result.get('description','')[:50]}")
 
             if rtype == "goal":
