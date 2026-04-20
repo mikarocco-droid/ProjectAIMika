@@ -896,6 +896,30 @@ def run_pipeline(
     if n_highlight_goals > summary["goals"]:
         summary["goals"] = n_highlight_goals
 
+    # V9.7 — recalculer stats joueurs (tirs + xG) depuis highlights filtrés
+    # Les stats brutes de compute_stats incluent tous les faux tirs
+    highlight_times = {round(h.get("time_start", 0)): h for h in highlights}
+    for pid in stats:
+        stats[pid]["tirs"]     = 0
+        stats[pid]["xg_total"] = 0.0
+    for h in highlights:
+        if h.get("main_type") != "shot":
+            continue
+        pid = str(h.get("player", ""))
+        if pid and pid in stats:
+            stats[pid]["tirs"]     += 1
+            stats[pid]["xg_total"] += float(h.get("xg", 0) or 0)
+        elif pid:
+            # joueur pas encore dans stats (edge case) → ignorer
+            pass
+    # Recalculer aussi les buts depuis highlights
+    for h in highlights:
+        if h.get("main_type") not in ("goal", "score"):
+            continue
+        pid = str(h.get("player", ""))
+        if pid and pid in stats:
+            stats[pid]["buts"] = stats[pid].get("buts", 0) + 1
+
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
           f"xG={summary['total_xg']} | joueurs={summary['players']}")
     print(f"  Possession : {possession}")
