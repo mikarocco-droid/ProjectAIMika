@@ -328,6 +328,7 @@ def detect_fast_goals_from_ball(
             "score": round(score, 2),
             "detected_from": "goal_posthoc_v9.6",
             "shot_linked": recent_shot_strict or recent_shot_loose,
+            "rebound": rebound,
         })
 
         print(f"⚽ GOAL {goal_time:.2f}s | score={score:.2f} | stuck={stuck} | rebound={rebound}")
