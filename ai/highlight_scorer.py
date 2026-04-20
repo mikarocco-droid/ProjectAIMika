@@ -213,16 +213,12 @@ def score_all_highlights(
         if result["type_reel"] in [
             "goalkeeper_action", "defensive_clearance",
             "touche", "corner", "none"
-        ] and result["score"] < 6:
-            # V9.7 — seuil relevé 4 → 6 : dégagements et actions défensives
-            # éliminés même s'ils sont "spectaculaires" selon Gemini
+        ] and result["score"] < 4:
             filtered += 1
             continue
 
         h["score"]         = result["score"]
         # V9.7 — ne jamais promouvoir un shot en goal via le scorer
-        # Gemini scorer peut dire "goal" sur un tir dangereux → faux positif PDF
-        # Seul l'event source fait foi : si c'était un shot, ça reste un shot
         original_type = h.get("main_type", "shot")
         scored_type   = result["type_reel"]
         if original_type == "shot" and scored_type == "goal":
