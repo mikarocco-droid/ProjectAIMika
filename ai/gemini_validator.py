@@ -510,22 +510,25 @@ def validate_events_with_gemini(
                   f"score={posthoc_score:.1f} "
                   f"tracker={tracker_conf_val:.2f}")
 
-            # Zone grise : exiger tir récent + score élevé
+            # Zone grise : score + signal physique + Gemini a vu un tir
             has_recent_shot = event.get("shot_linked", False)
             has_rebound     = event.get("rebound", False)
+            gemini_saw_shot = shot_votes >= 1  # Gemini a vu au moins un tir
+
             if high_conf_phys and has_recent_shot:
                 print(f"    → GARDÉ (high_conf + shot_linked)")
-            elif posthoc_score >= 8.5 and has_recent_shot and has_rebound:
-                # Score fort + rebond filet + tir récent = signal suffisant
+            elif posthoc_score >= 8.0 and has_rebound and has_recent_shot and gemini_saw_shot:
+                # Score fort + rebond + tir récent + Gemini a vu un tir
+                print(f"    → GARDÉ (score={posthoc_score:.1f} + rebound + shot_linked + gemini_shot)")
+            elif posthoc_score >= 8.5 and has_rebound and has_recent_shot:
+                # Score très fort + rebond + tir récent (même sans confirmation Gemini)
                 print(f"    → GARDÉ (score={posthoc_score:.1f} + rebound + shot_linked)")
-            elif posthoc_score >= 9.5 and has_recent_shot:
-                # Score extrême sans rebond → accepté quand même
-                print(f"    → GARDÉ (score extrême {posthoc_score:.1f} + shot_linked)")
             else:
                 event["_remove"] = True
                 removed += 1
                 print(f"    → SUPPRIMÉ (Gemini=none, score={posthoc_score:.1f}, "
-                      f"rebound={has_rebound}, shot_linked={has_recent_shot})")
+                      f"rebound={has_rebound}, shot_linked={has_recent_shot}, "
+                      f"gemini_shot={gemini_saw_shot})")
 
         event["gemini_validated"] = True
         event["gemini_type"]      = gemini_type
