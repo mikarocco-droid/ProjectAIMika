@@ -304,7 +304,8 @@ def compute_xg_sport(
 
     # ── Score de base calibré ─────────────
     # -2.8 → distribution réaliste (majorité des tirs < 0.10)
-    score = -2.8 + (3.5 * distance_effect) + (1.2 * angle_effect)
+    # V9.7 — biais recalibré -2.8 → -5.0 pour xG réaliste (0.05-0.25)
+    score = -5.0 + (3.5 * distance_effect) + (1.2 * angle_effect)
 
     # ── Offsets contextuels (V9.7) ────────
     # Ajoutés au score AVANT sigmoid → mathématiquement correct
