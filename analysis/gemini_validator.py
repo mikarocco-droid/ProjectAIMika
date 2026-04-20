@@ -18,14 +18,14 @@ except ImportError:
 
 
 # ─────────────────────────────────────────
+# SEUILS DYNAMIQUES (depuis gemini_validation.py)
+# ─────────────────────────────────────────
+# ─────────────────────────────────────────
 # OFFSETS GEMINI — source unique de vérité
 # ─────────────────────────────────────────
 OFFSETS_POSTHOC = [-25, -20, -16, -12, -8, -5, -2, +3, +6, +10, +15, +20, +25]
 OFFSETS_EVENTS  = [0, 2, 4]
 
-# ─────────────────────────────────────────
-# SEUILS DYNAMIQUES (depuis gemini_validation.py)
-# ─────────────────────────────────────────
 MIN_CONF_BASE = 0.80
 
 def get_dynamic_threshold(event):
@@ -155,6 +155,19 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
 
     cap.release()
     return frames
+
+
+# ─────────────────────────────────────────
+# HELPER — parse JSON Gemini
+# ─────────────────────────────────────────
+def _safe_json_load(text):
+    if not text:
+        return None
+    try:
+        clean = re.sub(r"```json|```", "", text).strip()
+        return json.loads(clean)
+    except Exception:
+        return None
 
 
 # ─────────────────────────────────────────
@@ -500,9 +513,8 @@ def validate_events_with_gemini(
             src_posthoc = "posthoc" in str(event.get("detected_from", ""))
             rebound_sig = src_posthoc and event.get("shot_linked", False) and posthoc_score >= 8.0
             if high_conf_phys or posthoc_score >= 8.5 or rebound_sig:
-                # Signal physique fort → garder
                 print(f"    → GARDÉ (physique fort : "
-                      f"high_conf={high_conf_phys} score={posthoc_score:.1f})")
+                      f"score={posthoc_score:.1f} rebound_sig={rebound_sig})")
             elif posthoc_score >= 7.5 and tracker_conf_val > 0.85:
                 # Signal physique borderline mais tracker confiant → garder
                 print(f"    → GARDÉ (borderline : "
