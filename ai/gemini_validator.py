@@ -18,6 +18,10 @@ except ImportError:
 
 
 # ─────────────────────────────────────────
+# CACHE FRAMES PyAV — LRU, évite redécodages
+# ─────────────────────────────────────────
+
+# ─────────────────────────────────────────
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
 # ─────────────────────────────────────────
 OFFSETS_POSTHOC = [-20, -12, -5, +10, +22]
@@ -34,6 +38,14 @@ def get_dynamic_threshold(event):
     conf = event.get("confidence", 0.5)
     return max(0.75, 0.95 - conf)
 
+
+# ─────────────────────────────────────────
+# CACHE FENÊTRES PyAV — évite redécodage des zones temporelles proches
+# ─────────────────────────────────────────
+
+# ─────────────────────────────────────────
+# CACHE FRAMES PyAV — LRU, max 50 fenêtres
+# ─────────────────────────────────────────
 
 # ─────────────────────────────────────────
 # INIT CLIENT
@@ -192,8 +204,10 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
     frames = []
 
     try:
-        container = _av.open(video_path)
-        stream    = container.streams.video[0]
+        container = _get_av_container(video_path)
+        if container is None:
+            return extract_frames_around_opencv(video_path, frame_id, fps, n_before, n_after)
+        stream = container.streams.video[0]
 
         for offset in offsets:
             t = target_time + (offset / fps)
@@ -233,7 +247,7 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
                 img = cv2.resize(img, (960, int(h * 960 / w)))
             frames.append((offset, img))
 
-        container.close()
+        # container reste ouvert (cache global)
 
     except Exception as e:
         print(f"[PyAV] erreur : {e} → fallback OpenCV")
@@ -245,14 +259,60 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
     return frames
 
 # ─────────────────────────────────────────
+# CACHE GLOBAL — fenêtres PyAV (LRU, max 50 entrées)
+# ─────────────────────────────────────────
+_AV_CONTAINERS = {}
+
+def _get_av_container(video_path):
+    """Cache du container PyAV — évite de réouvrir le fichier à chaque appel."""
+    if video_path not in _AV_CONTAINERS:
+        try:
+            import av as _av
+            _AV_CONTAINERS[video_path] = _av.open(video_path)
+        except Exception:
+            return None
+    return _AV_CONTAINERS[video_path]
+
+
+from collections import OrderedDict as _OD
+
+_FRAME_CACHE     = _OD()
+_FRAME_CACHE_MAX = 50
+
+def _cache_key(video_path, center_time, window_sec, bucket=0.25):
+    """Bucketise le temps pour mutualiser les fenêtres proches."""
+    start_b = round((center_time - window_sec) / bucket) * bucket
+    end_b   = round((center_time + window_sec) / bucket) * bucket
+    return (video_path, start_b, end_b)
+
+def _cache_get(key):
+    if key in _FRAME_CACHE:
+        _FRAME_CACHE.move_to_end(key)
+        return _FRAME_CACHE[key]
+    return None
+
+def _cache_put(key, value):
+    _FRAME_CACHE[key] = value
+    _FRAME_CACHE.move_to_end(key)
+    if len(_FRAME_CACHE) > _FRAME_CACHE_MAX:
+        _FRAME_CACHE.popitem(last=False)
+
+
+# ─────────────────────────────────────────
 # BATCH DECODE PyAV — 1 seek → fenêtre complète
 # ─────────────────────────────────────────
 def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
     """
     Décode toutes les frames dans une fenêtre temporelle.
-    1 seul seek → toutes les frames réutilisables.
+    Cache LRU intégré — évite redécodage des zones proches.
     Retourne : [(time, frame), ...]
     """
+    # Cache hit
+    key = _cache_key(video_path, center_time, window_sec)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+
     try:
         import av as _av
     except ImportError:
@@ -263,10 +323,11 @@ def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
     frames  = []
 
     try:
-        container = _av.open(video_path)
-        stream    = container.streams.video[0]
-
-        seek_ts = int(start_t / float(stream.time_base))
+        container = _get_av_container(video_path)
+        if container is None:
+            return frames
+        stream = container.streams.video[0]
+        seek_ts   = int(start_t / float(stream.time_base))
         container.seek(seek_ts, backward=True, stream=stream)
 
         for pkt_frame in container.decode(stream):
@@ -283,13 +344,13 @@ def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
                 img = cv2.resize(img, (960, int(h * 960 / w)))
             frames.append((t, img))
 
-        container.close()
+        # container reste ouvert (cache global)
     except Exception as e:
         print(f"[PyAV batch] erreur : {e}")
+        return []
 
+    _cache_put(key, frames)
     return frames
-
-
 def pick_closest_frame(frames_window, target_time):
     """Retourne la frame la plus proche du timestamp cible."""
     if not frames_window:
@@ -444,8 +505,9 @@ def validate_event(video_path, event, fps=25, sport="football"):
 
             elif rtype == "shot":
                 shot_votes += 1
-                if best_result is None:
-                    best_result = result
+                if rconf > best_conf or best_shot_offset is None:
+                    best_conf        = rconf
+                    best_result      = result
                     best_shot_offset = off_s
 
         # ── Refine : zoom autour du meilleur offset si shot vu mais pas goal ──
@@ -481,53 +543,58 @@ def validate_event(video_path, event, fps=25, sport="football"):
                             best_result = r2
                     continue
 
+                # Collecter les frames refine et envoyer en 1 appel Gemini
+                refine_frames = []
                 for roff in refine_offsets_s:
-                    if _quota_exhausted:
-                        break
                     target_time = base_time + roff
                     frame = pick_closest_frame(frames_window, target_time)
-                    if frame is None:
-                        continue
+                    if frame is not None:
+                        refine_frames.append((roff, frame))
 
-                    # Appel Gemini direct sur la frame (pas de re-seek)
-                    _prompt = (
-                        f"Tu es un expert analyste de {sport}. "
-                        "Analyse cette frame autour d'un evenement suspect.\n\n"
-                        "CRITERES BUT : ballon dans le filet, gardien recupere dans son but, "
-                        "joueur celebre, but contre son camp.\n"
-                        "CRITERES TIR : frappe intentionnelle vers le but.\n"
-                        "PAS un but/tir : gardien devant sa ligne, degagement, tir a cote.\n\n"
-                        'JSON sans markdown : {"type":"goal|shot|none","confiance":0.95,"description":"courte"}\n'
-                        "En cas de doute sur un but reponds goal avec confiance 0.65."
-                    )
-                    parts = [text_to_part(_prompt), frame_to_part(frame)]
+                if not refine_frames or _quota_exhausted:
+                    continue
 
-                    response = _call_gemini(client, parts)
-                    time.sleep(0.3)
-                    if response is None:
-                        continue
+                # 1 seul appel Gemini pour toutes les frames refine
+                _prompt = (
+                    f"Tu es un expert analyste de {sport}. "
+                    f"Voici {len(refine_frames)} frames consecutives autour d'un evenement suspect.\n\n"
+                    "CRITERES BUT : ballon dans le filet, gardien recupere dans son but, "
+                    "joueur celebre, but contre son camp.\n"
+                    "CRITERES TIR : frappe intentionnelle vers le but.\n"
+                    "PAS un but/tir : gardien devant sa ligne, degagement, tir a cote.\n\n"
+                    'JSON sans markdown : {"type":"goal|shot|none","confiance":0.95,"description":"courte"}\n'
+                    "En cas de doute sur un but reponds goal avec confiance 0.65."
+                )
+                parts = [text_to_part(_prompt)]
+                for _, frm in refine_frames:
+                    parts.append(frame_to_part(frm))
 
-                    r2 = _safe_json_load(response.text)
-                    if r2 is None:
-                        continue
+                response = _call_gemini(client, parts)
+                time.sleep(0.3)
+                if response is None:
+                    continue
 
-                    rtype = r2.get("type", "none")
-                    rconf = float(r2.get("confiance", 0.5))
-                    print(f"    [REFINE BATCH off={off_s:+.0f}s r={roff:+.1f}s] "
-                          f"type={rtype} conf={rconf:.2f} "
-                          f"desc={r2.get('description','')[:40]}")
+                r2 = _safe_json_load(response.text)
+                if r2 is None:
+                    continue
 
-                    if rtype == "goal":
-                        goal_votes += 1
-                        if rconf > best_conf:
-                            best_conf   = rconf
-                            best_result = {"type": "goal", "confiance": rconf,
-                                          "equipe": r2.get("equipe"),
-                                          "description": r2.get("description", ""),
-                                          "_shot_votes": shot_votes,
-                                          "_goal_votes": goal_votes}
-                        print(f"    [REFINE HIT] goal détecté → validation")
-                        break
+                rtype = r2.get("type", "none")
+                rconf = float(r2.get("confiance", 0.5))
+                print(f"    [REFINE BATCH off={off_s:+.0f}s {len(refine_frames)}frames] "
+                      f"type={rtype} conf={rconf:.2f} "
+                      f"desc={r2.get('description','')[:40]}")
+
+                if rtype == "goal":
+                    goal_votes += 1
+                    if rconf > best_conf:
+                        best_conf   = rconf
+                        best_result = {
+                            "type":        "goal",
+                            "confiance":   rconf,
+                            "equipe":      r2.get("equipe"),
+                            "description": r2.get("description", ""),
+                        }
+                    print(f"    [REFINE HIT] goal détecté → validation")
 
                 if goal_votes >= 1:
                     break
