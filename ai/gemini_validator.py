@@ -126,6 +126,34 @@ def text_to_part(text):
 
 
 # ─────────────────────────────────────────
+# SEEK PRÉCIS — compense les keyframes OpenCV
+# ─────────────────────────────────────────
+def safe_seek_frame(cap, target_frame, max_jump=30):
+    """
+    Seek précis vers une frame en avançant depuis le keyframe précédent.
+    cap.set(CAP_PROP_POS_FRAMES) est approximatif sur MP4 — cette fonction
+    compense en lisant frame par frame depuis max_jump frames avant la cible.
+    """
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    target_frame = max(0, min(target_frame, total_frames - 1))
+
+    start_frame = max(0, target_frame - max_jump)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    current    = start_frame
+    last_frame = None
+
+    while current <= target_frame:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        last_frame = frame
+        current   += 1
+
+    return last_frame
+
+
+# ─────────────────────────────────────────
 # EXTRAIRE FRAMES AUTOUR D'UN EVENT
 # ─────────────────────────────────────────
 def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
@@ -142,11 +170,8 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
         target = frame_id + offset
         if target < 0 or target >= total_frames:
             continue
-        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, target - 1))
-        cap.read()  # flush keyframe
-        cap.set(cv2.CAP_PROP_POS_FRAMES, target)
-        ret, frame = cap.read()
-        if ret:
+        frame = safe_seek_frame(cap, target, max_jump=30)
+        if frame is not None:
             h, w = frame.shape[:2]
             if w > 960:
                 frame = cv2.resize(frame, (960, int(h * 960 / w)))
@@ -255,6 +280,7 @@ def validate_event(video_path, event, fps=25, sport="football"):
         shot_votes = 0
         best_result = None
         best_conf   = 0.0
+        best_shot_offset = None
 
         for off_s in offsets_s:
             if _quota_exhausted:
@@ -299,25 +325,15 @@ def validate_event(video_path, event, fps=25, sport="football"):
                 shot_votes += 1
                 if best_result is None:
                     best_result = result
+                    best_shot_offset = off_s
 
         # ── Refine : zoom autour du meilleur offset si shot vu mais pas goal ──
         if goal_votes == 0 and shot_votes >= 1 and best_result is not None:
-            best_shot_frame = frame_orig + int(
-                [o for o in offsets_s
-                 if frame_orig + int(o * fps) >= 0
-                 and frame_orig + int(o * fps) < (total_frames or 999999)][0] * fps
-            )
-            # Trouver le frame de l'offset qui a donné le meilleur shot
-            best_shot_offset_frame = frame_orig
-            for off_s in offsets_s:
-                fid = frame_orig + int(off_s * fps)
-                if 0 <= fid < (total_frames or 999999):
-                    best_shot_offset_frame = fid
-                    break
-
-            print(f"    [REFINE] zoom fin autour des offsets (shot vu, goal manqué)")
+            # Zoomer uniquement autour de l'offset qui a vu le shot
+            base_offsets = [best_shot_offset] if best_shot_offset is not None else offsets_s
+            print(f"    [REFINE] zoom fin autour de offset={best_shot_offset}s")
             refine_offsets_s = [-1.0, -0.5, 0.0, 0.5, 1.0]
-            for off_s in offsets_s:
+            for off_s in base_offsets:
                 if _quota_exhausted:
                     break
                 base_frame = frame_orig + int(off_s * fps)
