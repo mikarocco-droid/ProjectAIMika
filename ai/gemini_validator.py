@@ -300,6 +300,53 @@ def validate_event(video_path, event, fps=25, sport="football"):
                 if best_result is None:
                     best_result = result
 
+        # ── Refine : zoom autour du meilleur offset si shot vu mais pas goal ──
+        if goal_votes == 0 and shot_votes >= 1 and best_result is not None:
+            best_shot_frame = frame_orig + int(
+                [o for o in offsets_s
+                 if frame_orig + int(o * fps) >= 0
+                 and frame_orig + int(o * fps) < (total_frames or 999999)][0] * fps
+            )
+            # Trouver le frame de l'offset qui a donné le meilleur shot
+            best_shot_offset_frame = frame_orig
+            for off_s in offsets_s:
+                fid = frame_orig + int(off_s * fps)
+                if 0 <= fid < (total_frames or 999999):
+                    best_shot_offset_frame = fid
+                    break
+
+            print(f"    [REFINE] zoom fin autour des offsets (shot vu, goal manqué)")
+            refine_offsets_s = [-1.0, -0.5, 0.0, 0.5, 1.0]
+            for off_s in offsets_s:
+                if _quota_exhausted:
+                    break
+                base_frame = frame_orig + int(off_s * fps)
+                if base_frame < 0 or base_frame >= (total_frames or 999999):
+                    continue
+                for roff in refine_offsets_s:
+                    if _quota_exhausted:
+                        break
+                    frame_id = base_frame + int(roff * fps)
+                    if frame_id < 0 or frame_id >= (total_frames or 999999):
+                        continue
+                    r2 = _call_gemini_at_offset(
+                        client, video_path, frame_id, fps, event_type, danger, sport
+                    )
+                    time.sleep(0.3)
+                    if r2 is None:
+                        continue
+                    print(f"    [REFINE off={off_s:+.0f}s r={roff:+.1f}s] "
+                          f"type={r2['type']} conf={r2['confiance']:.2f}")
+                    if r2["type"] == "goal":
+                        goal_votes += 1
+                        if r2["confiance"] > best_conf:
+                            best_conf   = r2["confiance"]
+                            best_result = r2
+                        print(f"    [REFINE HIT] goal détecté → validation")
+                        break
+                if goal_votes >= 1:
+                    break
+
         # ── Décision finale par vote pondéré ─────────────────────
         score = 0
         if goal_votes >= 2:   score += 3   # confirmation forte
@@ -311,24 +358,27 @@ def validate_event(video_path, event, fps=25, sport="football"):
               f"tracker_conf={tracker_conf:.2f} → score={score}")
 
         if score >= 3:
-            # But confirmé — retourner le meilleur résultat goal
             if best_result and best_result["type"] == "goal":
+                best_result["_shot_votes"] = shot_votes
+                best_result["_goal_votes"] = goal_votes
                 return best_result
-            # Si score=3 via shot+tracker mais pas de goal direct
-            # → retourner shot avec boost
             if best_result:
+                best_result["_shot_votes"] = shot_votes
+                best_result["_goal_votes"] = goal_votes
                 return best_result
 
         elif score == 2 and goal_votes >= 1:
-            # 1 vote goal avec contexte tracker → garder avec conf réduite
             if best_result and best_result.get("type") == "goal":
                 best_result["confiance"] = min(best_result["confiance"], 0.70)
+                best_result["_shot_votes"] = shot_votes
+                best_result["_goal_votes"] = goal_votes
                 return best_result
 
         # Aucun signal suffisant — confiance basse pour indiquer l'incertitude
         desc = best_result.get("description", "") if best_result else "aucune frame pertinente"
         return {"type": "none", "confiance": 0.3,
-                "equipe": None, "description": desc}
+                "equipe": None, "description": desc,
+                "_shot_votes": shot_votes, "_goal_votes": goal_votes}
 
     except Exception as e:
         print(f"  Gemini validate error : {e}")
@@ -432,6 +482,22 @@ def validate_events_with_gemini(
     if not candidates:
         return events
 
+    # Pré-lier chaque but au tir le plus proche (avant Gemini)
+    # → xG disponible même si Gemini crashe
+    shots_all = [e for e in events if e.get("type") == "shot"]
+    for cand in candidates:
+        if float(cand.get("xg", 0) or 0) > 0:
+            continue
+        t_c = cand.get("time", 0)
+        best_s, best_dt = None, 999
+        for s in shots_all:
+            dt = abs(s.get("time", 0) - t_c)
+            if dt < best_dt and dt <= 8.0:
+                best_dt, best_s = dt, s
+        if best_s:
+            cand["xg"]           = best_s.get("xg", 0.10)
+            cand["linked_shot"]  = best_s.get("time", 0)
+
     print(f"  Validation Gemini : {len(candidates)} candidats...")
     validated = corrected = removed = 0
 
@@ -510,25 +576,21 @@ def validate_events_with_gemini(
                   f"score={posthoc_score:.1f} "
                   f"tracker={tracker_conf_val:.2f}")
 
-            # Zone grise : score + signal physique + Gemini a vu un tir
+            # Zone grise — après refine, on exige goal_votes >= 1
+            # Si Gemini n'a pas vu de but même avec le zoom fin → supprimé
             has_recent_shot = event.get("shot_linked", False)
             has_rebound     = event.get("rebound", False)
-            gemini_saw_shot = shot_votes >= 1  # Gemini a vu au moins un tir
+            gemini_saw_goal = result.get("_goal_votes", 0) >= 1
 
-            if high_conf_phys and has_recent_shot:
-                print(f"    → GARDÉ (high_conf + shot_linked)")
-            elif posthoc_score >= 8.0 and has_rebound and has_recent_shot and gemini_saw_shot:
-                # Score fort + rebond + tir récent + Gemini a vu un tir
-                print(f"    → GARDÉ (score={posthoc_score:.1f} + rebound + shot_linked + gemini_shot)")
-            elif posthoc_score >= 8.5 and has_rebound and has_recent_shot:
-                # Score très fort + rebond + tir récent (même sans confirmation Gemini)
-                print(f"    → GARDÉ (score={posthoc_score:.1f} + rebound + shot_linked)")
+            if gemini_saw_goal and has_recent_shot:
+                print(f"    → GARDÉ (gemini_goal + shot_linked)")
+            elif high_conf_phys and gemini_saw_goal:
+                print(f"    → GARDÉ (high_conf + gemini_goal)")
             else:
                 event["_remove"] = True
                 removed += 1
-                print(f"    → SUPPRIMÉ (Gemini=none, score={posthoc_score:.1f}, "
-                      f"rebound={has_rebound}, shot_linked={has_recent_shot}, "
-                      f"gemini_shot={gemini_saw_shot})")
+                print(f"    → SUPPRIMÉ (Gemini n'a pas vu de but, "
+                      f"score={posthoc_score:.1f}, rebound={has_rebound})")
 
         event["gemini_validated"] = True
         event["gemini_type"]      = gemini_type
@@ -536,30 +598,5 @@ def validate_events_with_gemini(
 
     events = [e for e in events if not e.get("_remove", False)]
     print(f"  Gemini : {validated} validés | {corrected} corrigés | {removed} supprimés")
-
-    # ── Post-processing xG : lier chaque but au tir le plus proche ──
-    shots = [e for e in events if e.get("type") == "shot"]
-    for e in events:
-        if e.get("type") != "goal":
-            continue
-        if float(e.get("xg", 0) or 0) > 0:
-            continue  # xG déjà renseigné
-        # Chercher le tir le plus proche dans une fenêtre de 6s
-        t_goal = e.get("time", 0)
-        best_shot = None
-        best_dt   = 999
-        for s in shots:
-            dt = abs(s.get("time", 0) - t_goal)
-            if dt < best_dt and dt <= 6.0:
-                best_dt   = dt
-                best_shot = s
-        if best_shot:
-            e["xg"] = best_shot.get("xg", 0.10)
-            print(f"  [XG LINK] but {int(t_goal//60):02d}:{int(t_goal%60):02d} "
-                  f"← tir {int(best_shot.get('time',0)//60):02d}:{int(best_shot.get('time',0)%60):02d} "
-                  f"xG={e['xg']:.3f}")
-        else:
-            e["xg"] = 0.10  # fallback minimal réaliste
-            print(f"  [XG FALLBACK] but {int(t_goal//60):02d}:{int(t_goal%60):02d} → xG=0.10")
 
     return events
