@@ -216,7 +216,9 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
 
             try:
                 seek_ts = int(t / float(stream.time_base))
-                container.seek(seek_ts, backward=True, stream=stream)
+                with _AV_LOCK:
+                    container.seek(seek_ts, backward=True, stream=stream)
+                    container.flush_buffers()
             except Exception:
                 continue
 
@@ -261,17 +263,30 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
 # ─────────────────────────────────────────
 # CACHE GLOBAL — fenêtres PyAV (LRU, max 50 entrées)
 # ─────────────────────────────────────────
+import threading as _threading
 _AV_CONTAINERS = {}
+_AV_LOCK        = _threading.Lock()
 
 def _get_av_container(video_path):
-    """Cache du container PyAV — évite de réouvrir le fichier à chaque appel."""
-    if video_path not in _AV_CONTAINERS:
-        try:
-            import av as _av
-            _AV_CONTAINERS[video_path] = _av.open(video_path)
-        except Exception:
-            return None
-    return _AV_CONTAINERS[video_path]
+    """Cache thread-safe du container PyAV."""
+    with _AV_LOCK:
+        if video_path not in _AV_CONTAINERS:
+            try:
+                import av as _av
+                _AV_CONTAINERS[video_path] = _av.open(video_path)
+            except Exception:
+                return None
+        return _AV_CONTAINERS[video_path]
+
+def close_all_av_containers():
+    """Libère tous les containers PyAV — appeler en fin de pipeline."""
+    with _AV_LOCK:
+        for c in _AV_CONTAINERS.values():
+            try:
+                c.close()
+            except Exception:
+                pass
+        _AV_CONTAINERS.clear()
 
 
 from collections import OrderedDict as _OD
@@ -328,7 +343,9 @@ def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
             return frames
         stream = container.streams.video[0]
         seek_ts   = int(start_t / float(stream.time_base))
-        container.seek(seek_ts, backward=True, stream=stream)
+        with _AV_LOCK:
+            container.seek(seek_ts, backward=True, stream=stream)
+            container.flush_buffers()
 
         for pkt_frame in container.decode(stream):
             if pkt_frame.pts is None:
@@ -505,7 +522,7 @@ def validate_event(video_path, event, fps=25, sport="football"):
 
             elif rtype == "shot":
                 shot_votes += 1
-                if rconf > best_conf or best_shot_offset is None:
+                if best_shot_offset is None or rconf > best_conf:
                     best_conf        = rconf
                     best_result      = result
                     best_shot_offset = off_s
@@ -566,7 +583,8 @@ def validate_event(video_path, event, fps=25, sport="football"):
                     "En cas de doute sur un but reponds goal avec confiance 0.65."
                 )
                 parts = [text_to_part(_prompt)]
-                for _, frm in refine_frames:
+                for i, (roff_val, frm) in enumerate(refine_frames):
+                    parts.append(text_to_part(f"Frame {i+1} (ordre chronologique, t+{roff_val:+.1f}s)"))
                     parts.append(frame_to_part(frm))
 
                 response = _call_gemini(client, parts)
@@ -850,5 +868,8 @@ def validate_events_with_gemini(
 
     events = [e for e in events if not e.get("_remove", False)]
     print(f"  Gemini : {validated} validés | {corrected} corrigés | {removed} supprimés")
+
+    # Libérer les containers PyAV en fin de validation
+    close_all_av_containers()
 
     return events
