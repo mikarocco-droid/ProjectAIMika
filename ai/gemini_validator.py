@@ -154,18 +154,14 @@ def safe_seek_frame(cap, target_frame, max_jump=30):
 
 
 # ─────────────────────────────────────────
-# EXTRAIRE FRAMES AUTOUR D'UN EVENT
+# EXTRAIRE FRAMES AUTOUR D'UN EVENT — PyAV (frame-accurate) + fallback OpenCV
 # ─────────────────────────────────────────
-def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
+def extract_frames_around_opencv(video_path, frame_id, fps=25, n_before=2, n_after=2):
+    """Fallback OpenCV avec safe_seek."""
     cap    = cv2.VideoCapture(video_path)
     frames = []
-
-    # V9.6 — 5 frames espacées finement autour de l'événement
-    # [-15, -5, 0, +5, +15] frames ≈ [-0.6s, -0.2s, 0, +0.2s, +0.6s]
     offsets = sorted(set([-15, -5, 0, 5, 15]))
-
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
     for offset in offsets:
         target = frame_id + offset
         if target < 0 or target >= total_frames:
@@ -176,9 +172,134 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
             if w > 960:
                 frame = cv2.resize(frame, (960, int(h * 960 / w)))
             frames.append((offset, frame))
-
     cap.release()
     return frames
+
+
+def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
+    """
+    Version PyAV — frame-accurate.
+    Même signature que l'ancienne version OpenCV.
+    Retourne : [(offset, frame), ...]
+    """
+    try:
+        import av as _av
+    except ImportError:
+        return extract_frames_around_opencv(video_path, frame_id, fps, n_before, n_after)
+
+    offsets = sorted(set([-15, -5, 0, 5, 15]))
+    target_time = frame_id / fps
+    frames = []
+
+    try:
+        container = _av.open(video_path)
+        stream    = container.streams.video[0]
+
+        for offset in offsets:
+            t = target_time + (offset / fps)
+            if t < 0:
+                continue
+
+            try:
+                seek_ts = int(t / float(stream.time_base))
+                container.seek(seek_ts, backward=True, stream=stream)
+            except Exception:
+                continue
+
+            best_frame = None
+            best_dt    = float("inf")
+
+            for pkt_frame in container.decode(stream):
+                if pkt_frame.pts is None:
+                    continue
+                frame_time = float(pkt_frame.pts * pkt_frame.time_base)
+                dt = abs(frame_time - t)
+                if dt < best_dt:
+                    best_dt    = dt
+                    best_frame = pkt_frame
+                # on a dépassé et le frame s'éloigne → stop
+                if frame_time > t + 0.5:
+                    break
+                # précision sub-frame → stop
+                if best_dt < (1.0 / (fps + 1)):
+                    break
+
+            if best_frame is None:
+                continue
+
+            img = best_frame.to_ndarray(format="bgr24")
+            h, w = img.shape[:2]
+            if w > 960:
+                img = cv2.resize(img, (960, int(h * 960 / w)))
+            frames.append((offset, img))
+
+        container.close()
+
+    except Exception as e:
+        print(f"[PyAV] erreur : {e} → fallback OpenCV")
+        return extract_frames_around_opencv(video_path, frame_id, fps, n_before, n_after)
+
+    if not frames:
+        return extract_frames_around_opencv(video_path, frame_id, fps, n_before, n_after)
+
+    return frames
+
+# ─────────────────────────────────────────
+# BATCH DECODE PyAV — 1 seek → fenêtre complète
+# ─────────────────────────────────────────
+def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
+    """
+    Décode toutes les frames dans une fenêtre temporelle.
+    1 seul seek → toutes les frames réutilisables.
+    Retourne : [(time, frame), ...]
+    """
+    try:
+        import av as _av
+    except ImportError:
+        return []
+
+    start_t = max(0.0, center_time - window_sec)
+    end_t   = center_time + window_sec
+    frames  = []
+
+    try:
+        container = _av.open(video_path)
+        stream    = container.streams.video[0]
+
+        seek_ts = int(start_t / float(stream.time_base))
+        container.seek(seek_ts, backward=True, stream=stream)
+
+        for pkt_frame in container.decode(stream):
+            if pkt_frame.pts is None:
+                continue
+            t = float(pkt_frame.pts * pkt_frame.time_base)
+            if t < start_t:
+                continue
+            if t > end_t:
+                break
+            img = pkt_frame.to_ndarray(format="bgr24")
+            h, w = img.shape[:2]
+            if w > 960:
+                img = cv2.resize(img, (960, int(h * 960 / w)))
+            frames.append((t, img))
+
+        container.close()
+    except Exception as e:
+        print(f"[PyAV batch] erreur : {e}")
+
+    return frames
+
+
+def pick_closest_frame(frames_window, target_time):
+    """Retourne la frame la plus proche du timestamp cible."""
+    if not frames_window:
+        return None
+    best, best_dt = None, float("inf")
+    for t, img in frames_window:
+        dt = abs(t - target_time)
+        if dt < best_dt:
+            best_dt, best = dt, img
+    return best
 
 
 # ─────────────────────────────────────────
@@ -329,37 +450,85 @@ def validate_event(video_path, event, fps=25, sport="football"):
 
         # ── Refine : zoom autour du meilleur offset si shot vu mais pas goal ──
         if goal_votes == 0 and shot_votes >= 1 and best_result is not None:
-            # Zoomer uniquement autour de l'offset qui a vu le shot
-            base_offsets = [best_shot_offset] if best_shot_offset is not None else offsets_s
-            print(f"    [REFINE] zoom fin autour de offset={best_shot_offset}s")
+            # ── REFINE BATCH — 1 seek → fenêtre complète → piocher les frames ──
+            # Zoomer uniquement sur l'offset qui a vu le shot
+            base_offsets = [best_shot_offset] if best_shot_offset is not None else offsets_s[:2]
+            print(f"    [REFINE BATCH] fenêtre autour de offset={best_shot_offset}s")
             refine_offsets_s = [-1.0, -0.5, 0.0, 0.5, 1.0]
+
             for off_s in base_offsets:
                 if _quota_exhausted:
                     break
-                base_frame = frame_orig + int(off_s * fps)
-                if base_frame < 0 or base_frame >= (total_frames or 999999):
+                base_time = (frame_orig / fps) + off_s
+
+                # 1 seul seek → toutes les frames de la fenêtre ±1.5s
+                frames_window = extract_frames_window_pyav(
+                    video_path,
+                    center_time = base_time,
+                    window_sec  = 1.5,
+                    fps         = fps,
+                )
+
+                if not frames_window:
+                    # fallback : appel direct sur frame unique
+                    fid = frame_orig + int(off_s * fps)
+                    if 0 <= fid < (total_frames or 999999):
+                        r2 = _call_gemini_at_offset(
+                            client, video_path, fid, fps, event_type, danger, sport
+                        )
+                        if r2 and r2["type"] == "goal":
+                            goal_votes += 1
+                            best_result = r2
                     continue
+
                 for roff in refine_offsets_s:
                     if _quota_exhausted:
                         break
-                    frame_id = base_frame + int(roff * fps)
-                    if frame_id < 0 or frame_id >= (total_frames or 999999):
+                    target_time = base_time + roff
+                    frame = pick_closest_frame(frames_window, target_time)
+                    if frame is None:
                         continue
-                    r2 = _call_gemini_at_offset(
-                        client, video_path, frame_id, fps, event_type, danger, sport
+
+                    # Appel Gemini direct sur la frame (pas de re-seek)
+                    _prompt = (
+                        f"Tu es un expert analyste de {sport}. "
+                        "Analyse cette frame autour d'un evenement suspect.\n\n"
+                        "CRITERES BUT : ballon dans le filet, gardien recupere dans son but, "
+                        "joueur celebre, but contre son camp.\n"
+                        "CRITERES TIR : frappe intentionnelle vers le but.\n"
+                        "PAS un but/tir : gardien devant sa ligne, degagement, tir a cote.\n\n"
+                        'JSON sans markdown : {"type":"goal|shot|none","confiance":0.95,"description":"courte"}\n'
+                        "En cas de doute sur un but reponds goal avec confiance 0.65."
                     )
+                    parts = [text_to_part(_prompt), frame_to_part(frame)]
+
+                    response = _call_gemini(client, parts)
                     time.sleep(0.3)
+                    if response is None:
+                        continue
+
+                    r2 = _safe_json_load(response.text)
                     if r2 is None:
                         continue
-                    print(f"    [REFINE off={off_s:+.0f}s r={roff:+.1f}s] "
-                          f"type={r2['type']} conf={r2['confiance']:.2f}")
-                    if r2["type"] == "goal":
+
+                    rtype = r2.get("type", "none")
+                    rconf = float(r2.get("confiance", 0.5))
+                    print(f"    [REFINE BATCH off={off_s:+.0f}s r={roff:+.1f}s] "
+                          f"type={rtype} conf={rconf:.2f} "
+                          f"desc={r2.get('description','')[:40]}")
+
+                    if rtype == "goal":
                         goal_votes += 1
-                        if r2["confiance"] > best_conf:
-                            best_conf   = r2["confiance"]
-                            best_result = r2
+                        if rconf > best_conf:
+                            best_conf   = rconf
+                            best_result = {"type": "goal", "confiance": rconf,
+                                          "equipe": r2.get("equipe"),
+                                          "description": r2.get("description", ""),
+                                          "_shot_votes": shot_votes,
+                                          "_goal_votes": goal_votes}
                         print(f"    [REFINE HIT] goal détecté → validation")
                         break
+
                 if goal_votes >= 1:
                     break
 
