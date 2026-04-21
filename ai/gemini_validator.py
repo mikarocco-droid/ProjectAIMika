@@ -447,47 +447,85 @@ def _call_gemini_at_offset(client, video_path, frame_id, fps, event_type, danger
         "equipe":      result.get("equipe"),
         "description": result.get("description", "")
     }
+    
+def compute_signal_score(rtype, conf, off_s, source):
+    # poids temporel (plus proche = plus fiable)
+    time_weight = 1.0 / (1.0 + abs(off_s) / 5.0)
 
+    # posthoc = plus bruité
+    if "posthoc" in str(source):
+        time_weight *= 0.7
+
+    # poids par type
+    if rtype == "goal":
+        type_weight = 1.0
+    elif rtype == "shot":
+        type_weight = 0.6
+    else:
+        type_weight = -0.3
+
+    return conf * time_weight * type_weight
 
 def validate_event(video_path, event, fps=25, sport="football"):
     if not GEMINI_AVAILABLE:
         return None
 
-    frame_orig = event.get("frame", 0)
-    danger     = event.get("danger", 0)
-    event_type = event.get("type", "?")
-    source     = event.get("detected_from", event.get("source", "events"))
+    frame_orig   = event.get("frame", 0)
+    danger       = event.get("danger", 0)
+    event_type   = event.get("type", "?")
+    source       = event.get("detected_from", event.get("source", "events"))
     tracker_conf = event.get("confidence", 0.5)
 
-    # V9.7 — Offsets multi-frame selon la source
-    # goal_posthoc détecte 5-15s AVANT le vrai but visuel
-    # → on teste plusieurs offsets en secondes et on vote
-    if "posthoc" in str(source):
-        offsets_s = OFFSETS_POSTHOC
-    else:
-        offsets_s = OFFSETS_EVENTS
+    offsets_s = OFFSETS_POSTHOC if "posthoc" in str(source) else OFFSETS_EVENTS
 
     print(f"  [PRE-GEMINI] t={event.get('time',0):.2f}s "
-          f"source={source} frame={frame_orig} "
-          f"offsets={offsets_s}s tracker_conf={tracker_conf:.2f}")
+          f"source={source} frame={frame_orig} offsets={offsets_s}")
+
+    def compute_signal(rtype, conf, off_s):
+        time_weight = 1.0 / (1.0 + abs(off_s) / 5.0)
+        if "posthoc" in str(source):
+            time_weight *= 0.7
+
+        type_weight = {
+            "goal": 1.0,
+            "shot": 0.6,
+            "none": -0.4
+        }.get(rtype, -0.3)
+
+        return conf * time_weight * type_weight
+
+    def is_better(new, current):
+        if current is None:
+            return True
+        priority = {"goal": 3, "shot": 2, "none": 1}
+        if priority.get(new["type"], 0) > priority.get(current["type"], 0):
+            return True
+        return new["confiance"] > current["confiance"]
 
     try:
         client = get_client()
-        total_frames = None  # lazy init
+
+        total_frames = None
 
         goal_votes = 0
         shot_votes = 0
+
+        goal_score = 0.0
+        shot_score = 0.0
+        neg_score  = 0.0
+
         best_result = None
-        best_conf   = 0.0
         best_shot_offset = None
 
+        # ─────────────────────────────
+        # PASS 1 — multi offsets
+        # ─────────────────────────────
         for off_s in offsets_s:
             if _quota_exhausted:
                 break
 
             frame_id = frame_orig + int(off_s * fps)
 
-            # Lazy init total_frames
             if total_frames is None:
                 cap = cv2.VideoCapture(video_path)
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -499,161 +537,133 @@ def validate_event(video_path, event, fps=25, sport="football"):
             result = _call_gemini_at_offset(
                 client, video_path, frame_id, fps, event_type, danger, sport
             )
-            time.sleep(0.5)
+            time.sleep(0.4)
 
-            if result is None:
+            if not result:
                 continue
 
             rtype = result["type"]
             rconf = result["confiance"]
 
-            print(f"    [OFFSET +{off_s}s] type={rtype} conf={rconf:.2f} "
-                  f"desc={result.get('description','')[:50]}")
+            print(f"    [OFFSET {off_s:+}s] {rtype} conf={rconf:.2f}")
+
+            signal = compute_signal(rtype, rconf, off_s)
 
             if rtype == "goal":
                 goal_votes += 1
-                if rconf > best_conf:
-                    best_conf   = rconf
-                    best_result = result
-                # Early stop — 2 confirmations = suffisant
-                if goal_votes >= 2:
-                    print(f"    [EARLY STOP] {goal_votes} votes goal → validation confirmée")
-                    break
+                goal_score += signal
 
             elif rtype == "shot":
                 shot_votes += 1
-                if best_shot_offset is None or rconf > best_conf:
-                    best_conf        = rconf
-                    best_result      = result
+                shot_score += signal
+                if best_shot_offset is None or rconf > best_result.get("confiance", 0):
                     best_shot_offset = off_s
 
-        # ── Refine : zoom autour du meilleur offset si shot vu mais pas goal ──
-        if goal_votes == 0 and shot_votes >= 1 and best_result is not None:
-            # ── REFINE BATCH — 1 seek → fenêtre complète → piocher les frames ──
-            # Zoomer uniquement sur l'offset qui a vu le shot
-            base_offsets = [best_shot_offset] if best_shot_offset is not None else offsets_s[:2]
-            print(f"    [REFINE BATCH] fenêtre autour de offset={best_shot_offset}s")
-            refine_offsets_s = [-1.0, -0.5, 0.0, 0.5, 1.0]
+            else:
+                neg_score += abs(signal)
 
-            for off_s in base_offsets:
-                if _quota_exhausted:
-                    break
-                base_time = (frame_orig / fps) + off_s
+            if is_better(result, best_result):
+                best_result = result
 
-                # 1 seul seek → toutes les frames de la fenêtre ±1.5s
-                frames_window = extract_frames_window_pyav(
-                    video_path,
-                    center_time = base_time,
-                    window_sec  = 1.5,
-                    fps         = fps,
-                )
+            # Early stop intelligent
+            if goal_score > 1.2:
+                print("    [EARLY STOP] strong goal signal")
+                break
 
-                if not frames_window:
-                    # fallback : appel direct sur frame unique
-                    fid = frame_orig + int(off_s * fps)
-                    if 0 <= fid < (total_frames or 999999):
-                        r2 = _call_gemini_at_offset(
-                            client, video_path, fid, fps, event_type, danger, sport
-                        )
-                        if r2 and r2["type"] == "goal":
-                            goal_votes += 1
-                            best_result = r2
-                    continue
+            if neg_score > 1.5:
+                print("    [EARLY STOP] strong negative signal")
+                break
 
-                # Collecter les frames refine et envoyer en 1 appel Gemini
-                refine_frames = []
-                for roff in refine_offsets_s:
-                    target_time = base_time + roff
-                    frame = pick_closest_frame(frames_window, target_time)
-                    if frame is not None:
-                        refine_frames.append((roff, frame))
+        # ─────────────────────────────
+        # PASS 2 — refine autour du shot
+        # ─────────────────────────────
+        if goal_score < 1.2 and shot_score > 0.4 and best_shot_offset is not None:
+            print(f"    [REFINE] autour de {best_shot_offset}s")
 
-                if not refine_frames or _quota_exhausted:
-                    continue
+            base_time = (frame_orig / fps) + best_shot_offset
 
-                # 1 seul appel Gemini pour toutes les frames refine
-                _prompt = (
-                    f"Tu es un expert analyste de {sport}. "
-                    f"Voici {len(refine_frames)} frames consecutives autour d'un evenement suspect.\n\n"
-                    "CRITERES BUT : ballon dans le filet, gardien recupere dans son but, "
-                    "joueur celebre, but contre son camp.\n"
-                    "CRITERES TIR : frappe intentionnelle vers le but.\n"
-                    "PAS un but/tir : gardien devant sa ligne, degagement, tir a cote.\n\n"
-                    'JSON sans markdown : {"type":"goal|shot|none","confiance":0.95,"description":"courte"}\n'
-                    "En cas de doute sur un but reponds goal avec confiance 0.65."
-                )
-                parts = [text_to_part(_prompt)]
-                for i, (roff_val, frm) in enumerate(refine_frames):
-                    parts.append(text_to_part(f"Frame {i+1} (ordre chronologique, t+{roff_val:+.1f}s)"))
-                    parts.append(frame_to_part(frm))
+            frames_window = extract_frames_window_pyav(
+                video_path,
+                center_time=base_time,
+                window_sec=1.5,
+                fps=fps,
+            )
+
+            refine_offsets = [-1.0, -0.5, 0.0, 0.5, 1.0]
+
+            refine_frames = []
+            for roff in refine_offsets:
+                frame = pick_closest_frame(frames_window, base_time + roff)
+                if frame is not None:
+                    refine_frames.append(frame)
+
+            if refine_frames:
+                parts = [text_to_part(
+                    f"Analyse ces frames pour détecter un BUT ou un TIR ({sport}). "
+                    f"JSON: {{\"type\":\"goal|shot|none\",\"confiance\":0.9}}"
+                )]
+
+                for f in refine_frames:
+                    parts.append(frame_to_part(f))
 
                 response = _call_gemini(client, parts)
                 time.sleep(0.3)
-                if response is None:
-                    continue
 
-                r2 = _safe_json_load(response.text)
-                if r2 is None:
-                    continue
+                if response:
+                    r2 = _safe_json_load(response.text)
+                    if r2:
+                        rtype = r2.get("type", "none")
+                        rconf = float(r2.get("confiance", 0.5))
 
-                rtype = r2.get("type", "none")
-                rconf = float(r2.get("confiance", 0.5))
-                print(f"    [REFINE BATCH off={off_s:+.0f}s {len(refine_frames)}frames] "
-                      f"type={rtype} conf={rconf:.2f} "
-                      f"desc={r2.get('description','')[:40]}")
+                        print(f"    [REFINE RESULT] {rtype} {rconf:.2f}")
 
-                if rtype == "goal":
-                    goal_votes += 1
-                    if rconf > best_conf:
-                        best_conf   = rconf
-                        best_result = {
-                            "type":        "goal",
-                            "confiance":   rconf,
-                            "equipe":      r2.get("equipe"),
-                            "description": r2.get("description", ""),
-                        }
-                    print(f"    [REFINE HIT] goal détecté → validation")
+                        if rtype == "goal":
+                            goal_votes += 1
+                            goal_score += rconf
 
-                if goal_votes >= 1:
-                    break
+                            best_result = {
+                                "type": "goal",
+                                "confiance": rconf,
+                                "description": r2.get("description", "")
+                            }
 
-        # ── Décision finale par vote pondéré ─────────────────────
-        score = 0
-        if goal_votes >= 2:   score += 3   # confirmation forte
-        elif goal_votes == 1: score += 1   # signal faible
-        if shot_votes >= 1:   score += 1
-        if tracker_conf > 0.9: score += 1
+        # ─────────────────────────────
+        # FINAL DECISION
+        # ─────────────────────────────
+        final_score = goal_score - neg_score
 
-        print(f"  [VOTE] goal={goal_votes} shot={shot_votes} "
-              f"tracker_conf={tracker_conf:.2f} → score={score}")
+        print(f"  [FINAL] goal={goal_score:.2f} neg={neg_score:.2f} total={final_score:.2f}")
 
-        if score >= 3:
-            if best_result and best_result["type"] == "goal":
-                best_result["_shot_votes"] = shot_votes
-                best_result["_goal_votes"] = goal_votes
-                return best_result
-            if best_result:
-                best_result["_shot_votes"] = shot_votes
-                best_result["_goal_votes"] = goal_votes
-                return best_result
+        if final_score > 1.5:
+            final_type = "goal"
+            final_conf = max(best_result.get("confiance", 0.7), 0.7)
 
-        elif score == 2 and goal_votes >= 1:
-            if best_result and best_result.get("type") == "goal":
-                best_result["confiance"] = min(best_result["confiance"], 0.70)
-                best_result["_shot_votes"] = shot_votes
-                best_result["_goal_votes"] = goal_votes
-                return best_result
+        elif final_score > 0.8 and goal_score > shot_score:
+            final_type = "goal"
+            final_conf = min(best_result.get("confiance", 0.7), 0.7)
 
-        # Aucun signal suffisant — confiance basse pour indiquer l'incertitude
-        desc = best_result.get("description", "") if best_result else "aucune frame pertinente"
-        return {"type": "none", "confiance": 0.3,
-                "equipe": None, "description": desc,
-                "_shot_votes": shot_votes, "_goal_votes": goal_votes}
+        elif shot_score > 0.6:
+            final_type = "shot"
+            final_conf = min(best_result.get("confiance", 0.7), 0.7)
+
+        else:
+            final_type = "none"
+            final_conf = 0.3
+
+        return {
+            "type": final_type,
+            "confiance": final_conf,
+            "description": best_result.get("description", "") if best_result else "",
+            "_goal_votes": goal_votes,
+            "_shot_votes": shot_votes,
+            "_goal_score": round(goal_score, 3),
+            "_shot_score": round(shot_score, 3),
+            "_neg_score": round(neg_score, 3),
+        }
 
     except Exception as e:
         print(f"  Gemini validate error : {e}")
         return None
-
 
 # ─────────────────────────────────────────
 # LIRE NUMÉROS DE MAILLOT
