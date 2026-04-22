@@ -25,7 +25,7 @@ except ImportError:
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
 # ─────────────────────────────────────────
 OFFSETS_POSTHOC = [-20, -12, -5, +10, +22]
-OFFSETS_EVENTS  = [0, 2, 4]
+OFFSETS_EVENTS  = [-1, 0, 2]
 
 _METRICS = {
     "decode_time": 0.0,
@@ -90,7 +90,7 @@ def _call_gemini(client, parts, max_retries=2):
                     contents = parts
                 )
             finally :
-            _METRICS["gemini_time"] += time.time() - t0
+                _METRICS["gemini_time"] += time.time() - t0
             
             _gemini_unavailable = False
             return response
@@ -360,7 +360,6 @@ def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
     frames  = []
     t0 = time.time()
 
-    t0 = time.time()
     try:
         container = _get_av_container(video_path)
         if container is None:
@@ -471,7 +470,9 @@ def _call_gemini_at_offset(client, video_path, frame_id, fps, event_type, danger
         f'"confiance": 0.95, '
         f'"equipe": 0, '
         f'"description": "description courte"}}\n\n'
-        f"EN CAS DE DOUTE sur un but reponds 'goal' avec confiance 0.65.\n"
+        f'"En cas de doute raisonnable sur un but :'
+        f'"- si le ballon semble avoir franchi la ligne → goal avec confiance 0.75'
+        f'"- sinon → none\n'
         f"IMPORTANT : Ne reponds 'shot' QUE si tu vois CLAIREMENT un tir vers le but.\n"
         f"Si ce n'est pas evident → reponds 'none'. Un faux tir est pire qu'un tir manque."
     )]
@@ -865,7 +866,9 @@ def validate_events_with_gemini(
 
         validated  += 1
         gemini_type = result["type"]
-        confiance   = result["confiance"]
+        confiance = result["confiance"]
+        goal_votes = result.get("_goal_votes", 0)
+        shot_votes = result.get("_shot_votes", 0)
         t_sec = event.get("time", 0)
         tracker_conf = event.get("confidence", 0)
         print(f"  [POST-GEMINI] t={int(t_sec//60):02d}:{int(t_sec%60):02d} "
@@ -878,13 +881,13 @@ def validate_events_with_gemini(
         # Un but détecté par goal_posthoc (conf élevée) → seuil plus souple
         threshold = get_dynamic_threshold(event) if event.get("type") == "goal"                     else MIN_CONF_SHOT
 
-        if gemini_type == "goal":
+        if gemini_type == "goal" or goal_votes >= 2:
             # 🟢 Gemini confirme → gardé
             if result.get("equipe") is not None:
                 event["team"] = result["equipe"]
             print(f"    → BUT CONFIRMÉ (conf={confiance:.2f})")
 
-        elif gemini_type == "shot":
+        elif gemini_type == "shot" and goal_votes == 0:
             # Gemini voit un tir → corriger
             event["type"] = "shot"
             corrected += 1
