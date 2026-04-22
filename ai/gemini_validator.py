@@ -691,7 +691,12 @@ def validate_event(video_path, event, fps=25, sport="football"):
         final_score = goal_score - neg_score
 
         print(f"  [FINAL SCORE] goal={goal_score:.2f} neg={neg_score:.2f} total={final_score:.2f}")
-
+        print(
+            f"[DEBUG FINAL] goal_votes={goal_votes} "
+            f"shot_votes={shot_votes} "
+            f"goal_score={goal_score:.2f} "
+            f"neg_score={neg_score:.2f}"
+        )
         if final_score > 1.5:
             return {
                 "type": "goal",
