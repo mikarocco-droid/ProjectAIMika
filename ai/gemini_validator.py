@@ -27,6 +27,13 @@ except ImportError:
 OFFSETS_POSTHOC = [-20, -12, -5, +10, +22]
 OFFSETS_EVENTS  = [0, 2, 4]
 
+_METRICS = {
+    "decode_time": 0.0,
+    "gemini_time": 0.0,
+    "cache_hits": 0,
+    "cache_misses": 0,
+}
+
 MIN_CONF_BASE = 0.80
 
 def get_dynamic_threshold(event):
@@ -76,10 +83,15 @@ def _call_gemini(client, parts, max_retries=2):
 
     for attempt in range(max_retries):
         try:
-            response = client.models.generate_content(
-                model    = "gemini-2.5-flash",
-                contents = parts
-            )
+            t0 = time.time()
+            try :
+                response = client.models.generate_content(
+                    model    = "gemini-2.5-flash",
+                    contents = parts
+                )
+            finally :
+            _METRICS["gemini_time"] += time.time() - t0
+            
             _gemini_unavailable = False
             return response
 
@@ -267,6 +279,13 @@ import threading as _threading
 _AV_CONTAINERS = {}
 _AV_LOCK        = _threading.Lock()
 
+def print_metrics():
+    total = _METRICS["cache_hits"] + _METRICS["cache_misses"]
+    hit_rate = (_METRICS["cache_hits"] / total) if total else 0
+    print(f"[METRICS] decode={_METRICS['decode_time']:.2f}s "
+          f"gemini={_METRICS['gemini_time']:.2f}s "
+          f"cache_hit={hit_rate:.2%}")
+
 def _get_av_container(video_path):
     """Cache thread-safe du container PyAV."""
     with _AV_LOCK:
@@ -302,8 +321,11 @@ def _cache_key(video_path, center_time, window_sec, bucket=0.25):
 
 def _cache_get(key):
     if key in _FRAME_CACHE:
+        _METRICS["cache_hits"] += 1
         _FRAME_CACHE.move_to_end(key)
         return _FRAME_CACHE[key]
+
+    _METRICS["cache_misses"] += 1
     return None
 
 def _cache_put(key, value):
@@ -336,13 +358,17 @@ def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
     start_t = max(0.0, center_time - window_sec)
     end_t   = center_time + window_sec
     frames  = []
+    t0 = time.time()
 
+    t0 = time.time()
     try:
         container = _get_av_container(video_path)
         if container is None:
             return frames
+
         stream = container.streams.video[0]
-        seek_ts   = int(start_t / float(stream.time_base))
+        seek_ts = int(start_t / float(stream.time_base))
+
         with _AV_LOCK:
             container.seek(seek_ts, backward=True, stream=stream)
             container.flush_buffers()
@@ -355,16 +381,19 @@ def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
                 continue
             if t > end_t:
                 break
+
             img = pkt_frame.to_ndarray(format="bgr24")
             h, w = img.shape[:2]
             if w > 960:
                 img = cv2.resize(img, (960, int(h * 960 / w)))
             frames.append((t, img))
 
-        # container reste ouvert (cache global)
     except Exception as e:
         print(f"[PyAV batch] erreur : {e}")
         return []
+
+    finally:
+        _METRICS["decode_time"] += time.time() - t0
 
     _cache_put(key, frames)
     return frames
@@ -392,6 +421,22 @@ def _safe_json_load(text):
     except Exception:
         return None
 
+def select_best_frames(frames_data, max_frames=3):
+    scored = []
+    prev = None
+
+    for off, frame in frames_data:
+        if prev is None:
+            score = 1.0
+        else:
+            diff = cv2.absdiff(prev, frame)
+            score = np.mean(diff)
+
+        scored.append((score, off, frame))
+        prev = frame
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [(off, f) for _, off, f in scored[:max_frames]]
 
 # ─────────────────────────────────────────
 # VALIDER UN EVENT — V9.7 MULTI-FRAME
@@ -399,6 +444,7 @@ def _safe_json_load(text):
 def _call_gemini_at_offset(client, video_path, frame_id, fps, event_type, danger, sport):
     """Appel Gemini sur un offset donné. Retourne le résultat parsé ou None."""
     frames_data = extract_frames_around(video_path, frame_id, fps, n_before=2, n_after=2)
+    frames_data = select_best_frames(frames_data, max_frames=3)
     if not frames_data:
         return None
 
@@ -476,50 +522,43 @@ def validate_event(video_path, event, fps=25, sport="football"):
     source       = event.get("detected_from", event.get("source", "events"))
     tracker_conf = event.get("confidence", 0.5)
 
+    # 🔥 SKIP GEMINI (safe)
+    if (
+        tracker_conf > 0.97
+        and event.get("high_conf_physical")
+        and event.get("near_goal", False)
+    ):
+        return {
+            "type": "goal",
+            "confiance": tracker_conf,
+            "_goal_votes": 1,
+            "_shot_votes": 0,
+            "description": "high confidence tracker skip"
+        }
+
+    # Offsets triés (plus proches d'abord)
     offsets_s = OFFSETS_POSTHOC if "posthoc" in str(source) else OFFSETS_EVENTS
+    offsets_s = sorted(offsets_s, key=lambda x: abs(x))
 
     print(f"  [PRE-GEMINI] t={event.get('time',0):.2f}s "
-          f"source={source} frame={frame_orig} offsets={offsets_s}")
-
-    def compute_signal(rtype, conf, off_s):
-        time_weight = 1.0 / (1.0 + abs(off_s) / 5.0)
-        if "posthoc" in str(source):
-            time_weight *= 0.7
-
-        type_weight = {
-            "goal": 1.0,
-            "shot": 0.6,
-            "none": -0.4
-        }.get(rtype, -0.3)
-
-        return conf * time_weight * type_weight
-
-    def is_better(new, current):
-        if current is None:
-            return True
-        priority = {"goal": 3, "shot": 2, "none": 1}
-        if priority.get(new["type"], 0) > priority.get(current["type"], 0):
-            return True
-        return new["confiance"] > current["confiance"]
+          f"source={source} offsets={offsets_s} conf={tracker_conf:.2f}")
 
     try:
         client = get_client()
 
         total_frames = None
 
-        goal_votes = 0
-        shot_votes = 0
-
         goal_score = 0.0
         shot_score = 0.0
         neg_score  = 0.0
 
-        best_result = None
-        best_shot_offset = None
+        goal_votes = 0
+        shot_votes = 0
 
-        # ─────────────────────────────
-        # PASS 1 — multi offsets
-        # ─────────────────────────────
+        best_result = None
+        best_conf   = 0.0
+        best_offset = None
+
         for off_s in offsets_s:
             if _quota_exhausted:
                 break
@@ -537,50 +576,60 @@ def validate_event(video_path, event, fps=25, sport="football"):
             result = _call_gemini_at_offset(
                 client, video_path, frame_id, fps, event_type, danger, sport
             )
-            time.sleep(0.4)
 
-            if not result:
+            time.sleep(0.25)
+
+            if result is None:
                 continue
 
             rtype = result["type"]
             rconf = result["confiance"]
 
-            print(f"    [OFFSET {off_s:+}s] {rtype} conf={rconf:.2f}")
+            signal = compute_signal_score(rtype, rconf, 0, source)
 
-            signal = compute_signal(rtype, rconf, off_s)
+            print(f"    [OFFSET {off_s:+}s] {rtype} conf={rconf:.2f} signal={signal:.3f}")
 
             if rtype == "goal":
                 goal_votes += 1
                 goal_score += signal
 
+                if rconf > best_conf:
+                    best_conf   = rconf
+                    best_result = result
+                    best_offset = off_s
+
             elif rtype == "shot":
                 shot_votes += 1
                 shot_score += signal
-                if best_shot_offset is None or rconf > best_result.get("confiance", 0):
-                    best_shot_offset = off_s
+
+                if best_offset is None or rconf > best_conf:
+                    best_offset = off_s
 
             else:
                 neg_score += abs(signal)
 
-            if is_better(result, best_result):
-                best_result = result
-
-            # Early stop intelligent
+            # 🔥 EARLY STOP INTELLIGENT (score-based only)
             if goal_score > 1.2:
-                print("    [EARLY STOP] strong goal signal")
+                print("    [EARLY STOP] goal score suffisant")
                 break
 
             if neg_score > 1.5:
-                print("    [EARLY STOP] strong negative signal")
+                print("    [EARLY STOP] signal negatif fort")
                 break
 
         # ─────────────────────────────
-        # PASS 2 — refine autour du shot
+        # 🔥 REFINE (déclenché intelligemment)
         # ─────────────────────────────
-        if goal_score < 1.2 and shot_score > 0.4 and best_shot_offset is not None:
-            print(f"    [REFINE] autour de {best_shot_offset}s")
+        need_refine = (
+            goal_score < 1.2
+            and shot_score > 0.5
+            and best_offset is not None
+        )
 
-            base_time = (frame_orig / fps) + best_shot_offset
+        if need_refine and not _quota_exhausted:
+            print(f"    [REFINE] autour offset={best_offset}s")
+
+            base_time = (frame_orig / fps) + best_offset
 
             frames_window = extract_frames_window_pyav(
                 video_path,
@@ -589,76 +638,83 @@ def validate_event(video_path, event, fps=25, sport="football"):
                 fps=fps,
             )
 
-            refine_offsets = [-1.0, -0.5, 0.0, 0.5, 1.0]
+            if frames_window:
+                refine_offsets = [-1.0, -0.5, 0.0, 0.5, 1.0]
 
-            refine_frames = []
-            for roff in refine_offsets:
-                frame = pick_closest_frame(frames_window, base_time + roff)
-                if frame is not None:
-                    refine_frames.append(frame)
+                refine_frames = []
+                for roff in refine_offsets:
+                    frame = pick_closest_frame(frames_window, base_time + roff)
+                    if frame is not None:
+                        refine_frames.append((roff, frame))
 
-            if refine_frames:
-                parts = [text_to_part(
-                    f"Analyse ces frames pour détecter un BUT ou un TIR ({sport}). "
-                    f"JSON: {{\"type\":\"goal|shot|none\",\"confiance\":0.9}}"
-                )]
+                if refine_frames:
+                    parts = [text_to_part(
+                        f"Analyse {len(refine_frames)} frames autour d'un evenement. "
+                        "But = ballon dans filet ou franchit ligne. "
+                        "Shot = tir vers but. Sinon none.\n"
+                        '{"type":"goal|shot|none","confiance":0.9,"description":"court"}'
+                    )]
 
-                for f in refine_frames:
-                    parts.append(frame_to_part(f))
+                    for i, (roff, frm) in enumerate(refine_frames):
+                        parts.append(text_to_part(f"Frame {i} t+{roff:+.1f}s"))
+                        parts.append(frame_to_part(frm))
 
-                response = _call_gemini(client, parts)
-                time.sleep(0.3)
+                    response = _call_gemini(client, parts)
+                    time.sleep(0.25)
 
-                if response:
-                    r2 = _safe_json_load(response.text)
-                    if r2:
-                        rtype = r2.get("type", "none")
-                        rconf = float(r2.get("confiance", 0.5))
+                    if response:
+                        r2 = _safe_json_load(response.text)
+                        if r2:
+                            rtype = r2.get("type", "none")
+                            rconf = float(r2.get("confiance", 0.5))
 
-                        print(f"    [REFINE RESULT] {rtype} {rconf:.2f}")
+                            signal = compute_signal_score(rtype, rconf, 0, source)
 
-                        if rtype == "goal":
-                            goal_votes += 1
-                            goal_score += rconf
+                            print(f"    [REFINE RESULT] {rtype} conf={rconf:.2f}")
 
-                            best_result = {
-                                "type": "goal",
-                                "confiance": rconf,
-                                "description": r2.get("description", "")
-                            }
+                            if rtype == "goal":
+                                goal_votes += 1
+                                goal_score += signal
+
+                                if rconf > best_conf:
+                                    best_conf = rconf
+                                    best_result = {
+                                        "type": "goal",
+                                        "confiance": rconf,
+                                        "description": r2.get("description", "")
+                                    }
 
         # ─────────────────────────────
-        # FINAL DECISION
+        # 🎯 DECISION FINALE
         # ─────────────────────────────
         final_score = goal_score - neg_score
 
-        print(f"  [FINAL] goal={goal_score:.2f} neg={neg_score:.2f} total={final_score:.2f}")
+        print(f"  [FINAL SCORE] goal={goal_score:.2f} neg={neg_score:.2f} total={final_score:.2f}")
 
         if final_score > 1.5:
-            final_type = "goal"
-            final_conf = max(best_result.get("confiance", 0.7), 0.7)
+            return {
+                "type": "goal",
+                "confiance": best_conf if best_conf > 0 else 0.7,
+                "description": best_result.get("description", "") if best_result else "",
+                "_goal_votes": 1 if goal_score > 0.8 else 0,
+                "_shot_votes": shot_votes,
+            }
 
-        elif final_score > 0.8 and goal_score > shot_score:
-            final_type = "goal"
-            final_conf = min(best_result.get("confiance", 0.7), 0.7)
-
-        elif shot_score > 0.6:
-            final_type = "shot"
-            final_conf = min(best_result.get("confiance", 0.7), 0.7)
-
-        else:
-            final_type = "none"
-            final_conf = 0.3
+        if final_score > 0.8 and goal_score > shot_score:
+            return {
+                "type": "goal",
+                "confiance": min(best_conf, 0.7),
+                "description": best_result.get("description", "") if best_result else "",
+                "_goal_votes": 1 if goal_score > 0.8 else 0,
+                "_shot_votes": shot_votes,
+            }
 
         return {
-            "type": final_type,
-            "confiance": final_conf,
+            "type": "none",
+            "confiance": 0.3,
             "description": best_result.get("description", "") if best_result else "",
-            "_goal_votes": goal_votes,
+            "_goal_votes": 1 if goal_score > 0.8 else 0,
             "_shot_votes": shot_votes,
-            "_goal_score": round(goal_score, 3),
-            "_shot_score": round(shot_score, 3),
-            "_neg_score": round(neg_score, 3),
         }
 
     except Exception as e:
