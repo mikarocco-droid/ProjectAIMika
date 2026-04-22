@@ -682,7 +682,7 @@ def validate_event(video_path, event, fps=25, sport="football"):
                             rtype = r2.get("type", "none")
                             rconf = float(r2.get("confiance", 0.5))
 
-                            signal = compute_signal_score(rtype, rconf, roff, source)
+                            signal = compute_signal_score(rtype, rconf, 0, source)
 
                             print(f"    [REFINE RESULT] {rtype} conf={rconf:.2f}")
 
