@@ -508,8 +508,19 @@ def compute_signal_score(rtype, conf, off_s, source):
         type_weight = 1.0
     elif rtype == "shot":
         type_weight = 0.6
+
+    elif rtype in [
+        "goalkeeper_hold",
+        "goalkeeper_throw",
+        "defensive_clearance",
+        "corner",
+        "touche"
+    ]:
+        type_weight = -0.4
+
     else:
-        type_weight = -0.3
+        # none = neutre
+        type_weight = 0.0
 
     return conf * time_weight * type_weight
 
@@ -586,7 +597,7 @@ def validate_event(video_path, event, fps=25, sport="football"):
             rtype = result["type"]
             rconf = result["confiance"]
 
-            signal = compute_signal_score(rtype, rconf, 0, source)
+            signal = compute_signal_score(rtype, rconf, off_s, source)
 
             print(f"    [OFFSET {off_s:+}s] {rtype} conf={rconf:.2f} signal={signal:.3f}")
 
@@ -614,15 +625,17 @@ def validate_event(video_path, event, fps=25, sport="football"):
                 print("    [EARLY STOP] goal score suffisant")
                 break
 
-            if neg_score > 1.5:
-                print("    [EARLY STOP] signal negatif fort")
+            if abs(off_s) <= 5:
+                checked_core = True
+
+            if checked_core and neg_score > 1.5:
                 break
 
         # ─────────────────────────────
         # 🔥 REFINE (déclenché intelligemment)
         # ─────────────────────────────
         need_refine = (
-            goal_score < 1.2
+            goal_votes == 0
             and shot_score > 0.5
             and best_offset is not None
         )
@@ -669,7 +682,7 @@ def validate_event(video_path, event, fps=25, sport="football"):
                             rtype = r2.get("type", "none")
                             rconf = float(r2.get("confiance", 0.5))
 
-                            signal = compute_signal_score(rtype, rconf, 0, source)
+                            signal = compute_signal_score(rtype, rconf, roff, source)
 
                             print(f"    [REFINE RESULT] {rtype} conf={rconf:.2f}")
 
@@ -700,11 +713,11 @@ def validate_event(video_path, event, fps=25, sport="football"):
                 "type": "goal",
                 "confiance": best_conf if best_conf > 0 else 0.7,
                 "description": best_result.get("description", "") if best_result else "",
-                "_goal_votes": 1 if goal_score > 0.8 else 0,
+                "_goal_votes": goal_votes,
                 "_shot_votes": shot_votes,
             }
 
-        if final_score > 0.8 and goal_score > shot_score:
+        if goal_votes >= 1 and goal_score >= 0.5:
             return {
                 "type": "goal",
                 "confiance": min(best_conf, 0.7),
@@ -884,7 +897,7 @@ def validate_events_with_gemini(
         # Un but détecté par goal_posthoc (conf élevée) → seuil plus souple
         threshold = get_dynamic_threshold(event) if event.get("type") == "goal"                     else MIN_CONF_SHOT
 
-        if gemini_type == "goal" or goal_votes >= 2:
+        if goal_votes >= 1 and confiance >= threshold:
             # 🟢 Gemini confirme → gardé
             if result.get("equipe") is not None:
                 event["team"] = result["equipe"]
@@ -924,15 +937,16 @@ def validate_events_with_gemini(
             has_rebound     = event.get("rebound", False)
             gemini_saw_goal = result.get("_goal_votes", 0) >= 1
 
-            if gemini_saw_goal and has_recent_shot:
-                print(f"    → GARDÉ (gemini_goal + shot_linked)")
-            elif high_conf_phys and gemini_saw_goal:
-                print(f"    → GARDÉ (high_conf + gemini_goal)")
+            if gemini_saw_goal:
+                print("    → GARDÉ (Gemini a vu au moins 1 goal)")
+                
+            elif high_conf_phys and tracker_conf_val > 0.95:
+                print("    → GARDÉ (signal physique très fort)")
+                
             else:
                 event["_remove"] = True
                 removed += 1
-                print(f"    → SUPPRIMÉ (Gemini n'a pas vu de but, "
-                      f"score={posthoc_score:.1f}, rebound={has_rebound})")
+                print("    → SUPPRIMÉ")
 
         event["gemini_validated"] = True
         event["gemini_type"]      = gemini_type
