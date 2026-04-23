@@ -34,7 +34,6 @@ _METRICS = {
     "cache_misses": 0,
 }
 
-MIN_CONF_BASE = 0.80
 
 def get_dynamic_threshold(event):
     """
@@ -180,7 +179,7 @@ def safe_seek_frame(cap, target_frame, max_jump=30):
 # ─────────────────────────────────────────
 # EXTRAIRE FRAMES AUTOUR D'UN EVENT — PyAV (frame-accurate) + fallback OpenCV
 # ─────────────────────────────────────────
-def extract_frames_around_opencv(video_path, frame_id, fps=25, n_before=2, n_after=2):
+def extract_frames_around_opencv(video_path, frame_id, fps=25):
     """Fallback OpenCV avec safe_seek."""
     cap    = cv2.VideoCapture(video_path)
     frames = []
@@ -200,7 +199,7 @@ def extract_frames_around_opencv(video_path, frame_id, fps=25, n_before=2, n_aft
     return frames
 
 
-def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
+def extract_frames_around(video_path, frame_id, fps=25):
     """
     Version PyAV — frame-accurate.
     Même signature que l'ancienne version OpenCV.
@@ -231,27 +230,29 @@ def extract_frames_around(video_path, frame_id, fps=25, n_before=2, n_after=2):
                 with _AV_LOCK:
                     container.seek(seek_ts, backward=True, stream=stream)
                     container.flush_buffers()
+                    
+                decoded_frames = list(container.decode(stream))
+
+                best_frame = None
+                best_dt = float("inf")
+
+                for pkt_frame in decoded_frames:
+                    if pkt_frame.pts is None:
+                        continue
+                    frame_time = float(pkt_frame.pts * pkt_frame.time_base)
+                    dt = abs(frame_time - t)
+                    if dt < best_dt:
+                        best_dt    = dt
+                        best_frame = pkt_frame
+                    # on a dépassé et le frame s'éloigne → stop
+                    if frame_time > t + 0.5:
+                        break
+                    # précision sub-frame → stop
+                    if best_dt < (1.0 / (fps + 1)):
+                        break
             except Exception:
                 continue
-
-            best_frame = None
-            best_dt    = float("inf")
-
-            for pkt_frame in container.decode(stream):
-                if pkt_frame.pts is None:
-                    continue
-                frame_time = float(pkt_frame.pts * pkt_frame.time_base)
-                dt = abs(frame_time - t)
-                if dt < best_dt:
-                    best_dt    = dt
-                    best_frame = pkt_frame
-                # on a dépassé et le frame s'éloigne → stop
-                if frame_time > t + 0.5:
-                    break
-                # précision sub-frame → stop
-                if best_dt < (1.0 / (fps + 1)):
-                    break
-
+            
             if best_frame is None:
                 continue
 
@@ -301,12 +302,13 @@ def close_all_av_containers():
     """Libère tous les containers PyAV — appeler en fin de pipeline."""
     with _AV_LOCK:
         for c in _AV_CONTAINERS.values():
-            try:
-                c.close()
-            except Exception:
-                pass
-        _AV_CONTAINERS.clear()
+            if c is not None:
+                try:
+                    c.close()
+                except Exception:
+                    pass
 
+        _AV_CONTAINERS.clear()
 
 from collections import OrderedDict as _OD
 
@@ -331,7 +333,8 @@ def _cache_get(key):
 def _cache_put(key, value):
     _FRAME_CACHE[key] = value
     _FRAME_CACHE.move_to_end(key)
-    if len(_FRAME_CACHE) > _FRAME_CACHE_MAX:
+
+    while len(_FRAME_CACHE) > _FRAME_CACHE_MAX:
         _FRAME_CACHE.popitem(last=False)
 
 
@@ -339,25 +342,17 @@ def _cache_put(key, value):
 # BATCH DECODE PyAV — 1 seek → fenêtre complète
 # ─────────────────────────────────────────
 def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
-    """
-    Décode toutes les frames dans une fenêtre temporelle.
-    Cache LRU intégré — évite redécodage des zones proches.
-    Retourne : [(time, frame), ...]
-    """
-    # Cache hit
     key = _cache_key(video_path, center_time, window_sec)
     cached = _cache_get(key)
     if cached is not None:
         return cached
 
-    try:
-        import av as _av
-    except ImportError:
+    if _get_av_container(video_path) is None:
         return []
 
     start_t = max(0.0, center_time - window_sec)
-    end_t   = center_time + window_sec
-    frames  = []
+    end_t = center_time + window_sec
+    frames = []
     t0 = time.time()
 
     try:
@@ -371,20 +366,27 @@ def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
         with _AV_LOCK:
             container.seek(seek_ts, backward=True, stream=stream)
             container.flush_buffers()
+            
+        decoded_frames = list(container.decode(stream))
 
-        for pkt_frame in container.decode(stream):
+        for pkt_frame in decoded_frames:
             if pkt_frame.pts is None:
                 continue
+
             t = float(pkt_frame.pts * pkt_frame.time_base)
+
             if t < start_t:
                 continue
+
             if t > end_t:
                 break
 
             img = pkt_frame.to_ndarray(format="bgr24")
+
             h, w = img.shape[:2]
             if w > 960:
                 img = cv2.resize(img, (960, int(h * 960 / w)))
+
             frames.append((t, img))
 
     except Exception as e:
@@ -396,6 +398,8 @@ def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
 
     _cache_put(key, frames)
     return frames
+    
+    
 def pick_closest_frame(frames_window, target_time):
     """Retourne la frame la plus proche du timestamp cible."""
     if not frames_window:
@@ -414,9 +418,16 @@ def pick_closest_frame(frames_window, target_time):
 def _safe_json_load(text):
     if not text:
         return None
+
     try:
-        clean = re.sub(r'```json|```', '', text).strip()
+        clean = re.sub(r"```json|```", "", text).strip()
+
+        match = re.search(r"\{.*\}", clean, re.DOTALL)
+        if match:
+            clean = match.group(0)
+
         return json.loads(clean)
+
     except Exception:
         return None
 
@@ -437,12 +448,45 @@ def select_best_frames(frames_data, max_frames=3):
     scored.sort(reverse=True, key=lambda x: x[0])
     return [(off, f) for _, off, f in scored[:max_frames]]
 
+def extract_response_text(response):
+    if hasattr(response, "text") and response.text:
+        return response.text
+
+    try:
+        return "".join(
+            part.text
+            for cand in response.candidates
+            for part in cand.content.parts
+            if hasattr(part, "text")
+        )
+    except Exception:
+        return None
+
 # ─────────────────────────────────────────
 # VALIDER UN EVENT — V9.7 MULTI-FRAME
 # ─────────────────────────────────────────
 def _call_gemini_at_offset(client, video_path, frame_id, fps, event_type, danger, sport):
     """Appel Gemini sur un offset donné. Retourne le résultat parsé ou None."""
-    frames_data = extract_frames_around(video_path, frame_id, fps, n_before=2, n_after=2)
+    center_time = frame_id / fps
+
+    frames_window = extract_frames_window_pyav(
+        video_path=video_path,
+        center_time=center_time,
+        window_sec=1.0,
+        fps=fps
+    )
+
+    targets = [-0.6, -0.2, 0.0, 0.2, 0.6]
+
+    frames_data = []
+    for off in targets:
+        frame = pick_closest_frame(
+            frames_window,
+            center_time + off
+        )
+        if frame is not None:
+            frames_data.append((off, frame))
+            
     frames_data = select_best_frames(frames_data, max_frames=3)
     if not frames_data:
         return None
@@ -470,9 +514,9 @@ def _call_gemini_at_offset(client, video_path, frame_id, fps, event_type, danger
         f'"confiance": 0.95, '
         f'"equipe": 0, '
         f'"description": "description courte"}}\n\n'
-        f'"En cas de doute raisonnable sur un but :'
-        f'"- si le ballon semble avoir franchi la ligne → goal avec confiance 0.75'
-        f'"- sinon → none\n'
+        f"En cas de doute raisonnable sur un but :\n"
+        f"- si le ballon semble avoir franchi la ligne → goal avec confiance 0.75\n"
+        f"- sinon → none\n"
         f"IMPORTANT : Ne reponds 'shot' QUE si tu vois CLAIREMENT un tir vers le but.\n"
         f"Si ce n'est pas evident → reponds 'none'. Un faux tir est pire qu'un tir manque."
     )]
@@ -484,7 +528,8 @@ def _call_gemini_at_offset(client, video_path, frame_id, fps, event_type, danger
     if response is None:
         return None
 
-    result = _safe_json_load(response.text)
+    text = extract_response_text(response)
+    result = _safe_json_load(text)
     if result is None:
         return None
 
@@ -524,7 +569,7 @@ def compute_signal_score(rtype, conf, off_s, source):
 
     return conf * time_weight * type_weight
 
-def validate_event(video_path, event, fps=25, sport="football"):
+def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
     if not GEMINI_AVAILABLE:
         return None
 
@@ -533,6 +578,11 @@ def validate_event(video_path, event, fps=25, sport="football"):
     event_type   = event.get("type", "?")
     source       = event.get("detected_from", event.get("source", "events"))
     tracker_conf = event.get("confidence", 0.5)
+    near_goal = event.get("near_goal", False)
+    ball_end_x = event.get("ball_end_x")
+
+    if frame_w is None:
+        frame_w = event.get("frame_w", 1920)
 
     # 🔥 SKIP GEMINI (safe)
     if (
@@ -558,8 +608,6 @@ def validate_event(video_path, event, fps=25, sport="football"):
     try:
         client = get_client()
 
-        total_frames = None
-
         goal_score = 0.0
         shot_score = 0.0
         neg_score  = 0.0
@@ -570,17 +618,16 @@ def validate_event(video_path, event, fps=25, sport="football"):
         best_result = None
         best_conf   = 0.0
         best_offset = None
-
+        checked_core = False
+        best_shot_conf = 0.0
+        
+        total_frames = get_video_frame_count(video_path)
+        
         for off_s in offsets_s:
             if _quota_exhausted:
                 break
 
             frame_id = frame_orig + int(off_s * fps)
-
-            if total_frames is None:
-                cap = cv2.VideoCapture(video_path)
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                cap.release()
 
             if frame_id < 0 or frame_id >= total_frames:
                 continue
@@ -589,7 +636,8 @@ def validate_event(video_path, event, fps=25, sport="football"):
                 client, video_path, frame_id, fps, event_type, danger, sport
             )
 
-            time.sleep(0.25)
+            if off_s != offsets_s[-1]:
+                time.sleep(0.1)
 
             if result is None:
                 continue
@@ -612,9 +660,30 @@ def validate_event(video_path, event, fps=25, sport="football"):
 
             elif rtype == "shot":
                 shot_votes += 1
-                shot_score += signal
 
-                if best_offset is None or rconf > best_conf:
+                shot_signal = signal
+
+                # tir loin du but → probablement dégagement / relance
+                if not near_goal:
+                    shot_signal *= 0.4
+
+                # ballon finit au milieu du terrain → souvent faux tir
+                if ball_end_x is not None:
+                    x_pct = ball_end_x / frame_w
+
+                    if 0.2 < x_pct < 0.8:
+                        shot_signal *= 0.5
+
+                shot_score += shot_signal
+
+                print(
+                    f"      shot_adjusted={shot_signal:.3f} "
+                    f"(near_goal={near_goal}, ball_end_x={ball_end_x})"
+                )
+
+                
+                if rconf > best_shot_conf:
+                    best_shot_conf = rconf
                     best_offset = off_s
 
             else:
@@ -625,8 +694,12 @@ def validate_event(video_path, event, fps=25, sport="football"):
                 print("    [EARLY STOP] goal score suffisant")
                 break
 
-            if abs(off_s) <= 5:
-                checked_core = True
+            if "posthoc" in str(source):
+                if off_s >= 0:
+                    checked_core = True
+            else:
+                if off_s == 0:
+                    checked_core = True
 
             if checked_core and neg_score > 1.5:
                 break
@@ -635,10 +708,13 @@ def validate_event(video_path, event, fps=25, sport="football"):
         # 🔥 REFINE (déclenché intelligemment)
         # ─────────────────────────────
         need_refine = (
-            goal_votes == 0
-            and shot_score > 0.5
-            and best_offset is not None
+        goal_votes == 0
+        and (
+            shot_score > 0.8
+            or (shot_score > 0.55 and near_goal)
         )
+        and best_offset is not None
+)
 
         if need_refine and not _quota_exhausted:
             print(f"    [REFINE] autour offset={best_offset}s")
@@ -674,10 +750,10 @@ def validate_event(video_path, event, fps=25, sport="football"):
                         parts.append(frame_to_part(frm))
 
                     response = _call_gemini(client, parts)
-                    time.sleep(0.25)
-
+                    
                     if response:
-                        r2 = _safe_json_load(response.text)
+                        text = extract_response_text(response)
+                        r2 = _safe_json_load(text)
                         if r2:
                             rtype = r2.get("type", "none")
                             rconf = float(r2.get("confiance", 0.5))
@@ -789,7 +865,10 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
         if response is None:
             return {}
 
-        text   = response.text.strip()
+        text = extract_response_text(response)
+        if not text:
+            return {}
+
         text   = re.sub(r"```json|```", "", text).strip()
         result = json.loads(text)
 
@@ -805,7 +884,28 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
     except Exception as e:
         print(f"  Gemini jersey error : {e}")
         return {}
+# ------------------------------------------
+# RECUPERER RESOLUTION VIDEO
+# ------------------------------------------
+def get_video_dimensions(video_path):
+    cap = cv2.VideoCapture(video_path)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
 
+    if w <= 0:
+        w = 1920
+    if h <= 0:
+        h = 1080
+
+    return w, h
+
+def get_video_frame_count(video_path):
+    cap = cv2.VideoCapture(video_path)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+
+    return max(total, 1)
 
 # ─────────────────────────────────────────
 # VALIDATION COMPLÈTE
@@ -816,10 +916,10 @@ def validate_events_with_gemini(
     fps        = 25,
     sport      = "football",
     MIN_CONF_GOAL = 0.80,
-    MIN_CONF_SHOT = 0.70,
-    frame_w    = 1920,
-    frame_h    = 1080,
+    MIN_CONF_SHOT = 0.70, 
 ):
+    video_w, video_h = get_video_dimensions(video_path)
+    
     global _gemini_unavailable
 
     if not GEMINI_AVAILABLE:
@@ -872,12 +972,14 @@ def validate_events_with_gemini(
                     removed += 1
             break
 
-        result = validate_event(video_path, event, fps, sport)
+        result = validate_event(video_path, event, fps, sport,frame_w=video_w)
 
         if result is None:
-            print(f"  Gemini no response : goal t={event.get('time',0):.0f}s gardé")
-            event["gemini_validated"] = False
-            event["gemini_conf"]      = 0.0
+            if event.get("confidence", 0) > 0.95:
+                print("Gemini indisponible → conservé car tracker très confiant")
+            else:
+                event["_remove"] = True
+                removed += 1
             continue
 
         validated  += 1
