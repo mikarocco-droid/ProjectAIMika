@@ -288,9 +288,15 @@ _AV_LOCK        = _threading.Lock()
 def print_metrics():
     total = _METRICS["cache_hits"] + _METRICS["cache_misses"]
     hit_rate = (_METRICS["cache_hits"] / total) if total else 0
-    print(f"[METRICS] decode={_METRICS['decode_time']:.2f}s "
-          f"gemini={_METRICS['gemini_time']:.2f}s "
-          f"cache_hit={hit_rate:.2%}")
+    
+    print(
+        f"[METRICS] "
+        f"decode={_METRICS['decode_time']:.2f}s | "
+        f"gemini={_METRICS['gemini_time']:.2f}s | "
+        f"cache_hit={hit_rate:.2%} | "
+        f"cache_hits={_METRICS['cache_hits']} | "
+        f"cache_misses={_METRICS['cache_misses']}"
+    )
 
 def _get_av_container(video_path):
     """Cache thread-safe du container PyAV."""
