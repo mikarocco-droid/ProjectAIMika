@@ -1,26 +1,75 @@
-# docker-compose.yml
+# docker-compose.yml — ScoutIA Production + Celery
+# Usage : docker-compose up -d
+# Mise à jour : git pull && docker-compose up -d --build
 
 services:
 
-  # ── Application principale ──────────────
+  # ── Redis — broker Celery + cache ───────
+  redis:
+    image: redis:7-alpine
+    container_name: scoutia-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"   # accessible uniquement en local
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Application Flask + Gunicorn ────────
   app:
     build: .
-    container_name: scoutia
-    ports:
-      - "5000:5000"
+    container_name: scoutia-app
+    expose:
+      - "5000"
     volumes:
-      - ./uploads:/app/uploads       # vidéos uploadées
-      - ./outputs:/app/outputs       # résultats analyses
-      - ./models:/app/models         # modèles YOLO
-      - ./instance:/app/instance     # base de données SQLite
-      - ./.env:/app/.env             # variables d'environnement
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+      - ./models:/app/models
+      - ./instance:/app/instance
+      - ./.env:/app/.env
     env_file:
       - .env/param.env
     environment:
       - PYTHONIOENCODING=utf-8
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-    # ── GPU NVIDIA (décommenter sur serveur GPU) ──
+  # ── Celery Worker — traitement pipeline ─
+  worker:
+    build: .
+    container_name: scoutia-worker
+    command: celery -A tasks worker --loglevel=info --concurrency=1 -Q pipeline
+    volumes:
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+      - ./models:/app/models
+      - ./instance:/app/instance
+      - ./.env:/app/.env
+    env_file:
+      - .env/param.env
+    environment:
+      - PYTHONIOENCODING=utf-8
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # GPU — décommenter sur RunPod/serveur GPU
     # deploy:
     #   resources:
     #     reservations:
@@ -29,13 +78,62 @@ services:
     #           count: 1
     #           capabilities: [gpu]
 
-  # ── Redis (pour Celery — optionnel) ────
-  # redis:
-  #   image: redis:7-alpine
-  #   container_name: scoutia-redis
-  #   restart: unless-stopped
+  # ── Celery Worker GPU (RunPod) ───────────
+  # worker-gpu:
+  #   build: .
+  #   container_name: scoutia-worker-gpu
+  #   command: celery -A tasks worker --loglevel=info --concurrency=1 -Q pipeline,gpu
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   volumes:
+  #     - ./uploads:/app/uploads
+  #     - ./outputs:/app/outputs
+  #     - ./models:/app/models
+  #   env_file:
+  #     - .env/param.env
+  #   environment:
+  #     - CELERY_BROKER_URL=redis://redis:6379/0
+  #     - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+  # ── Flower — monitoring Celery ──────────
+  flower:
+    build: .
+    container_name: scoutia-flower
+    command: celery -A tasks flower --port=5555 --basic_auth=admin:scoutia2024
+    ports:
+      - "127.0.0.1:5555:5555"   # accessible via SSH tunnel
+    env_file:
+      - .env/param.env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - redis
+      - worker
+    restart: unless-stopped
+
+  # ── Nginx reverse proxy ─────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: scoutia-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./static:/app/static:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - app
+    restart: unless-stopped
 
 volumes:
+  redis_data:
   uploads:
   outputs:
   models:
