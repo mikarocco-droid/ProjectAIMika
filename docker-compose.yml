@@ -38,6 +38,7 @@ services:
       - PYTHONIOENCODING=utf-8
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - MODE=app
     depends_on:
       redis:
         condition: service_healthy
@@ -52,7 +53,8 @@ services:
   worker:
     build: .
     container_name: scoutia-worker
-    command: celery -A tasks worker --loglevel=info --concurrency=1 -Q pipeline
+    environment:
+      - MODE=worker
     volumes:
       - ./uploads:/app/uploads
       - ./outputs:/app/outputs
@@ -104,7 +106,8 @@ services:
   flower:
     build: .
     container_name: scoutia-flower
-    command: celery -A tasks flower --port=5555 --basic_auth=admin:scoutia2024
+    environment:
+      - MODE=flower
     ports:
       - "127.0.0.1:5555:5555"   # accessible via SSH tunnel
     env_file:

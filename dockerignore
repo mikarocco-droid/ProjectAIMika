@@ -1,0 +1,20 @@
+# .dockerignore — ScoutIA
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.git/
+.gitignore
+uploads/
+outputs/
+instance/
+*.db
+*.sqlite3
+*.pt
+models/
+.env/
+node_modules/
+app-old.py
+scout.py
