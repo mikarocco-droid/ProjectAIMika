@@ -22,7 +22,12 @@ services:
 
   # ── Application Flask + Gunicorn ────────
   app:
-    build: .
+    build:
+      context: .
+      args:
+        # CPU/dev : python:3.11-slim (défaut)
+        # GPU prod : pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+        BASE_IMAGE: python:3.11-slim
     container_name: scoutia-app
     expose:
       - "5000"
@@ -51,7 +56,10 @@ services:
 
   # ── Celery Worker — traitement pipeline ─
   worker:
-    build: .
+    build:
+      context: .
+      args:
+        BASE_IMAGE: python:3.11-slim
     container_name: scoutia-worker
     volumes:
       - ./uploads:/app/uploads
@@ -103,7 +111,10 @@ services:
 
   # ── Flower — monitoring Celery ──────────
   flower:
-    build: .
+    build:
+      context: .
+      args:
+        BASE_IMAGE: python:3.11-slim
     container_name: scoutia-flower
     ports:
       - "127.0.0.1:5555:5555"   # accessible via SSH tunnel
