@@ -223,14 +223,15 @@ except ImportError:
 # ─────────────────────────────────────────
 def run_pipeline(
     video_path,
-    sport          = "football",
-    output_dir     = "outputs",
-    analysis_id    = None,
-    save_annotated = False,
-    plan           = "free",
-    mode           = "match",
-    player_id      = None,
-    goals_real     = None,
+    sport             = "football",
+    output_dir        = "outputs",
+    analysis_id       = None,
+    save_annotated    = False,
+    plan              = "free",
+    mode              = "match",
+    player_id         = None,
+    goals_real        = None,
+    use_coarse_scan   = False,   # V2 : scan léger avant deep analysis
 ):
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
@@ -289,6 +290,27 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # 1. TRACKING + EVENTS
     # ─────────────────────────────────────────
+    # ─────────────────────────────────────────
+    # STEP 0b — COARSE SCAN (optionnel)
+    # ─────────────────────────────────────────
+    candidate_segments = None
+    coarse_stats       = {}
+
+    if use_coarse_scan and mode == "match":
+        try:
+            from coarse_scan import run_coarse_scan
+            candidate_segments, coarse_stats = run_coarse_scan(
+                video_path = video_path,
+                sport      = sport,
+            )
+            if candidate_segments:
+                coverage = coarse_stats.get("coverage_pct", 100)
+                print(f"  Coarse scan : {len(candidate_segments)} segments "
+                      f"({coverage:.1f}% du match)")
+        except Exception as e:
+            print(f"  Coarse scan ignoré : {e}")
+            candidate_segments = None
+
     print("Step 1 : Tracking + Events...")
 
     annotated_path = os.path.join(output_dir, "annotated.mp4") \
@@ -301,8 +323,19 @@ def run_pipeline(
         save_annotated    = save_annotated,
         annotated_path    = annotated_path,
         shot_zones        = shot_zones,
-        return_frames     = True
+        return_frames     = True,
     )
+
+    # Filtrer les frames aux segments chauds si coarse scan actif
+    if candidate_segments and frames_data:
+        from coarse_scan import filter_frames_to_segments
+        _fps_local = fps or 25.0
+        frames_data_full = frames_data
+        frames_data = filter_frames_to_segments(
+            frames_data, candidate_segments, _fps_local
+        )
+        print(f"  Coarse filter : {len(frames_data_full)} → "
+              f"{len(frames_data)} frames ({len(candidate_segments)} segments)")
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
     for e in events:
@@ -1025,6 +1058,7 @@ def run_pipeline(
     # ─────────────────────────────────────────
     result = {
         "summary":       summary,
+        "coarse_stats":  coarse_stats,
         "events":        events,
         "stats":         stats,
         "highlights":    highlights,

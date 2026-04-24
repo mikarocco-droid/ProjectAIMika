@@ -172,7 +172,8 @@ def process_batch(
 
         tracked = tracker.update(players, frame_orig)
         tracked = assign_teams_by_color(frame_orig, tracked, color_detector)
-        tracked = ocr.read_all(frame_orig, tracked, frame_id=analyzed)
+        if ocr is not None:
+            tracked = ocr.read_all(frame_orig, tracked, frame_id=analyzed)
 
         if ball_tracker is not None:
             yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
@@ -232,6 +233,11 @@ def process_video(
     return_frames     = False,
     frame_skip_every  = None,
     batch_size        = None,
+    # Mode léger pour coarse scan
+    lightweight       = False,
+    disable_ocr       = False,
+    disable_reid      = False,
+    imgsz             = None,
 ):
     if progress_callback is None:
         progress_callback = default_progress
@@ -239,10 +245,15 @@ def process_video(
     skip_every = frame_skip_every if frame_skip_every is not None else FRAME_SKIP_EVERY
     b_size     = batch_size       if batch_size       is not None else YOLO_BATCH_SIZE
 
-    detector       = Detector(sport=sport)
+    # Mode lightweight : désactive les modules lourds
+    if lightweight:
+        disable_ocr  = True
+        disable_reid = True
+
+    detector       = Detector(sport=sport, imgsz=imgsz) if imgsz else Detector(sport=sport)
     tracker        = Tracker()
-    ocr            = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
-    color_detector = TeamColorDetector(sample_frames=60)
+    ocr            = None if (disable_ocr or lightweight) else OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
+    color_detector = TeamColorDetector(sample_frames=60 if not lightweight else 20)
 
     ball_tracker = None
     try:
@@ -307,17 +318,6 @@ def process_video(
     current_batch = []
     events_state  = None
 
-    # ── Mode éco dynamique ────────────────────────────────────────────────────
-    # Adapte le skip selon l'activité détectée dans la fenêtre récente.
-    # last_danger_frame = dernière frame où un tir/but/dribble a été détecté.
-    # Si aucune action depuis ECO_WINDOW frames → skip éco (plus agressif).
-    ECO_WINDOW  = int(fps * 15)         # 15 secondes sans action = phase creuse
-    ECO_SKIP    = min(skip_every * 2, 8) # skip doublé en phase creuse
-    # Liste mutable pour modification depuis flush_batch (nested function)
-    # [0] = last_danger_frame, [1] = _eco_active
-    _eco_state  = [0, False]
-    # ─────────────────────────────────────────────────────────────────────────
-
     def flush_batch(batch, analyzed_so_far):
         nonlocal events_state
         if not batch:
@@ -343,26 +343,15 @@ def process_video(
             else:
                 fd.pop("_frame_orig", None)
             frames_data.append(fd)
-            # Mettre à jour last_danger_frame si action détectée
-            for ev in fd.get("events", []):
-                if ev.get("type") in ("shot", "goal", "score", "dribble", "fast_break"):
-                    _eco_state[0] = fd["frame"]  # last_danger_frame
-                    _eco_state[1] = False         # _eco_active
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        # ── Skip dynamique mode éco ───────────────────────────────────────────
-        # Active le skip éco si aucune action depuis ECO_WINDOW frames
-        _eco_state[1] = (frame_id - _eco_state[0]) > ECO_WINDOW
-        _current_skip = ECO_SKIP if _eco_state[1] else skip_every
-
-        if frame_id % _current_skip == (_current_skip - 1):
+        if frame_id % skip_every == (skip_every - 1):
             frame_id += 1
             continue
-        # ─────────────────────────────────────────────────────────────────────
 
         frame_small = cv2.resize(
             frame, (PROCESS_W, PROCESS_H),
@@ -390,14 +379,12 @@ def process_video(
     if writer:
         writer.release()
 
-    _eco_frames = frame_id - analyzed
-    _eco_pct    = int(_eco_frames / max(frame_id, 1) * 100)
     print(f"\n  {frame_id} frames lues | {analyzed} analysées"
           f" | batches de {b_size}")
-    print(f"  Mode éco : {_eco_pct}% des frames skippées dynamiquement")
 
-    jersey_map = ocr.get_jersey_map()
-    ocr.reset()
+    jersey_map = ocr.get_jersey_map() if ocr is not None else {}
+    if ocr is not None:
+        ocr.reset()
 
     events = process_match(frames_data, sport, shot_zones=shot_zones)
 
