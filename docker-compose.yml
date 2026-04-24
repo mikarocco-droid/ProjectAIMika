@@ -53,8 +53,6 @@ services:
   worker:
     build: .
     container_name: scoutia-worker
-    environment:
-      - MODE=worker
     volumes:
       - ./uploads:/app/uploads
       - ./outputs:/app/outputs
@@ -64,6 +62,7 @@ services:
     env_file:
       - .env/param.env
     environment:
+      - MODE=worker
       - PYTHONIOENCODING=utf-8
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -106,13 +105,12 @@ services:
   flower:
     build: .
     container_name: scoutia-flower
-    environment:
-      - MODE=flower
     ports:
       - "127.0.0.1:5555:5555"   # accessible via SSH tunnel
     env_file:
       - .env/param.env
     environment:
+      - MODE=flower
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
     depends_on:
