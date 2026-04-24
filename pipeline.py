@@ -316,26 +316,63 @@ def run_pipeline(
     annotated_path = os.path.join(output_dir, "annotated.mp4") \
         if save_annotated else None
 
-    events, jersey_map, fps, total_frames, frames_data = process_video(
-        video_path        = video_path,
-        sport             = sport,
-        progress_callback = progress,
-        save_annotated    = save_annotated,
-        annotated_path    = annotated_path,
-        shot_zones        = shot_zones,
-        return_frames     = True,
-    )
+    if candidate_segments:
+        # ── VRAI 2-PASS : extraction clips + analyse fine ────────────────
+        print("Step 1 : Deep analysis sur segments chauds...")
+        try:
+            from segment_extractor import extract_segments, analyze_segments, cleanup_segments
 
-    # Filtrer les frames aux segments chauds si coarse scan actif
-    if candidate_segments and frames_data:
-        from coarse_scan import filter_frames_to_segments
-        _fps_local = fps or 25.0
-        frames_data_full = frames_data
-        frames_data = filter_frames_to_segments(
-            frames_data, candidate_segments, _fps_local
+            _seg_dir    = os.path.join(output_dir, "segments_tmp")
+            _deep_skip  = coarse_stats.get("deep_frame_skip", 2)
+            _deep_batch = coarse_stats.get("deep_batch_size", 8)
+            _deep_imgsz = coarse_stats.get("deep_imgsz", 960)
+
+            print(f"  Deep pass : imgsz={_deep_imgsz} | "
+                  f"frame_skip={_deep_skip} | "
+                  f"{len(candidate_segments)} segments")
+
+            # 1. Extraire les clips via ffmpeg
+            segment_clips = extract_segments(
+                video_path  = video_path,
+                segments    = candidate_segments,
+                output_dir  = _seg_dir,
+            )
+
+            # 2. Analyser uniquement les clips
+            events, _jersey, fps, total_frames, frames_data = analyze_segments(
+                segment_clips = segment_clips,
+                sport         = sport,
+                shot_zones    = shot_zones,
+                frame_skip    = _deep_skip,
+                batch_size    = _deep_batch,
+                imgsz         = _deep_imgsz,
+            )
+
+            # jersey_map depuis le coarse (déjà disponible)
+            jersey_map = _jersey if _jersey else {}
+
+            # 3. Cleanup clips temporaires
+            cleanup_segments(segment_clips)
+
+            coarse_stats["deep_frames_analyzed"] = len(frames_data)
+            coarse_stats["deep_events_found"]    = len(events)
+
+        except Exception as _e:
+            print(f"  ⚠️  Segment extractor échoué ({_e}) — fallback full pass")
+            candidate_segments = None  # fallback ci-dessous
+
+    if not candidate_segments:
+        # ── FALLBACK : process_video() complet ───────────────────────────
+        print("Step 1 : Tracking + Events (full pass)...")
+        events, jersey_map, fps, total_frames, frames_data = process_video(
+            video_path        = video_path,
+            sport             = sport,
+            progress_callback = progress,
+            save_annotated    = save_annotated,
+            annotated_path    = annotated_path,
+            shot_zones        = shot_zones,
+            return_frames     = True,
         )
-        print(f"  Coarse filter : {len(frames_data_full)} → "
-              f"{len(frames_data)} frames ({len(candidate_segments)} segments)")
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
     for e in events:

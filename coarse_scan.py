@@ -10,14 +10,22 @@ Output : [(start_sec, end_sec), ...]
 
 import cv2
 import math
+import subprocess
+import struct
 
 
 # ─────────────────────────────────────────
 # PARAMÈTRES
 # ─────────────────────────────────────────
+# Pass 1 — coarse scan : rapide, léger
 COARSE_IMGSZ       = 640    # résolution réduite
 COARSE_FRAME_SKIP  = 5      # 1 frame sur 5 → ~20% des frames
 COARSE_BATCH_SIZE  = 8
+
+# Pass 2 — deep analysis : précis, uniquement sur segments chauds
+DEEP_IMGSZ         = 960    # résolution complète
+DEEP_FRAME_SKIP    = 2      # 1 frame sur 2 → analyse fine
+DEEP_BATCH_SIZE    = 8
 
 BALL_SPEED_HOT     = 8.0    # px/frame → mouvement rapide
 BALL_NEAR_GOAL_PCT = 0.20   # % de la largeur frame → proche du but
@@ -54,6 +62,126 @@ def merge_segments(segments, gap=SEGMENT_MERGE_GAP, min_len=SEGMENT_MIN_LEN):
         else:
             merged.append((s, e))
     return [(s, e) for s, e in merged if e - s >= min_len]
+
+
+# ─────────────────────────────────────────
+# DÉTECTEURS SUPPLÉMENTAIRES
+# ─────────────────────────────────────────
+def detect_audio_spikes(video_path, fps=25.0, threshold_db=0.7, window_s=1.0):
+    """
+    Détecte les pics audio (réactions foule = souvent buts/occasions).
+    Utilise ffmpeg pour extraire l'amplitude RMS.
+    Retourne : [timestamp_s, ...] des pics
+    """
+    spikes = []
+    try:
+        # Extraire amplitudes RMS via ffmpeg
+        cmd = [
+            "ffmpeg", "-i", video_path,
+            "-af", f"asetnsamples={int(fps*window_s)},astats=metadata=1:reset=1",
+            "-f", "null", "-"
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        current_t = 0.0
+        rms_values = []
+
+        for line in result.stderr.splitlines():
+            if 'pts_time' in line:
+                try:
+                    current_t = float(line.split('pts_time:')[1].split()[0])
+                except Exception:
+                    pass
+            if 'RMS level dB' in line:
+                try:
+                    db = float(line.split('RMS level dB:')[1].strip())
+                    rms_values.append((current_t, db))
+                except Exception:
+                    pass
+
+        if rms_values:
+            # Normaliser et trouver les pics
+            max_db  = max(v for _, v in rms_values if v > -100)
+            min_db  = min(v for _, v in rms_values if v > -100)
+            range_db = max_db - min_db if max_db != min_db else 1
+
+            for t, db in rms_values:
+                if db > -100:
+                    norm = (db - min_db) / range_db
+                    if norm > threshold_db:
+                        spikes.append(t)
+
+    except Exception as e:
+        pass  # audio non disponible → silencieux
+
+    return spikes
+
+
+def detect_replay_segments(video_path, fps=25.0, sample_every=30):
+    """
+    Détecte les segments replay/ralenti en cherchant les répétitions visuelles.
+    Heuristique simple : frames très similaires consécutives = ralenti.
+    Retourne : [(start_s, end_s), ...] à EXCLURE
+    """
+    replays = []
+    try:
+        cap = cv2.VideoCapture(video_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        prev_frame = None
+        slow_start = None
+
+        for i in range(0, total, sample_every):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            t = i / fps
+            small = cv2.resize(frame, (64, 36))
+            gray  = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+
+            if prev_frame is not None:
+                diff = cv2.absdiff(gray, prev_frame).mean()
+                # Diff très faible = ralenti ou freeze
+                if diff < 1.5:
+                    if slow_start is None:
+                        slow_start = t
+                else:
+                    if slow_start is not None and t - slow_start > 2.0:
+                        replays.append((slow_start, t))
+                    slow_start = None
+
+            prev_frame = gray
+
+        cap.release()
+        if slow_start is not None:
+            cap2 = cv2.VideoCapture(video_path)
+            end_t = int(cap2.get(cv2.CAP_PROP_FRAME_COUNT)) / fps
+            cap2.release()
+            if end_t - slow_start > 2.0:
+                replays.append((slow_start, end_t))
+
+    except Exception:
+        pass
+
+    return replays
+
+
+def filter_out_replays(segments, replay_segs, overlap_threshold=0.5):
+    """Supprime les segments qui chevauchent trop avec des replays."""
+    if not replay_segs:
+        return segments
+    result = []
+    for s, e in segments:
+        dur = e - s
+        overlap = sum(
+            min(e, re) - max(s, rs)
+            for rs, re in replay_segs
+            if min(e, re) > max(s, rs)
+        )
+        if dur > 0 and overlap / dur < overlap_threshold:
+            result.append((s, e))
+    return result
 
 
 def run_coarse_scan(video_path, sport="football", fps_override=None):
@@ -151,6 +279,15 @@ def run_coarse_scan(video_path, sport="football", fps_override=None):
 
         prev_ball = c
 
+    # ── Source 4 : pics audio (réactions foule) ──────────────────────
+    audio_spikes = detect_audio_spikes(video_path, fps=fps)
+    if audio_spikes:
+        print(f"  [COARSE] {len(audio_spikes)} pics audio détectés")
+    for t in audio_spikes:
+        if 0 <= t <= duration:
+            for dt in [-1, 0, 1, 2, 3]:
+                hot_times.add(round(t + dt, 1))
+
     # ── Construire segments ───────────────────────────────────────────
     if not hot_times:
         print("  [COARSE] Aucun segment chaud détecté → analyse complète")
@@ -180,6 +317,13 @@ def run_coarse_scan(video_path, sport="football", fps_override=None):
 
     segments = merge_segments(raw_segs)
 
+    # ── Exclure les segments replay/ralenti ──────────────────────────
+    replay_segs = detect_replay_segments(video_path, fps=fps)
+    if replay_segs:
+        before = len(segments)
+        segments = filter_out_replays(segments, replay_segs)
+        print(f"  [COARSE] Replays filtrés : {before} → {len(segments)} segments")
+
     hot_seconds = sum(e - s for s, e in segments)
     coverage    = hot_seconds / duration * 100
 
@@ -196,6 +340,10 @@ def run_coarse_scan(video_path, sport="football", fps_override=None):
         "fps":           fps,
         "total_frames":  total_frames,
         "coarse_events": len(events),
+        # Paramètres recommandés pour le pass 2
+        "deep_imgsz":      DEEP_IMGSZ,
+        "deep_frame_skip": DEEP_FRAME_SKIP,
+        "deep_batch_size": DEEP_BATCH_SIZE,
     }
 
     return segments, stats
