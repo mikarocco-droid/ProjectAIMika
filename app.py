@@ -315,6 +315,8 @@ class Analysis(db.Model):
     r2_video_key       = db.Column(db.String(500), nullable=True)
     r2_output_prefix   = db.Column(db.String(500), nullable=True)
     created_at         = db.Column(db.DateTime,    default=datetime.utcnow)
+    # Celery — tracking tâche asynchrone
+    celery_task_id     = db.Column(db.String(200), nullable=True)
 
 
 @login_manager.user_loader
@@ -560,7 +562,6 @@ def upload():
     db.session.commit()
 
     if CELERY_AVAILABLE:
-        # Lancer via Celery (asynchrone, robuste, monitorable)
         celery_run_analysis.apply_async(
             kwargs = {
                 "video_path":      path,
@@ -571,10 +572,9 @@ def upload():
                 "analysis_id":     analysis.id,
                 "use_coarse_scan": True,
             },
-            task_id  = f"analysis_{analysis.id}",
-            queue    = "pipeline",
+            task_id = f"analysis_{analysis.id}",
+            queue   = "pipeline",
         )
-        # Stocker le task_id pour tracking
         analysis.celery_task_id = f"analysis_{analysis.id}"
         db.session.commit()
     else:
@@ -673,7 +673,7 @@ def status(id):
     if not a or a.user_id != current_user.id:
         return jsonify({"error": "forbidden"}), 403
 
-    # Si Celery disponible, enrichir avec la progression temps réel
+    # Progression temps réel depuis Celery
     celery_info = {}
     if CELERY_AVAILABLE and getattr(a, "celery_task_id", None):
         try:
@@ -739,240 +739,6 @@ def files(analysis_id, filename):
 
     return send_from_directory(directory, filename)
 
-
-# ─────────────────────────────────────────
-# STRIPE — CHECKOUT
-# ─────────────────────────────────────────
-@app.route("/create-checkout", methods=["POST"])
-@app.route("/checkout/<plan>",  methods=["GET"])
-@login_required
-def checkout(plan=None):
-    if request.method == "POST":
-        plan = request.form.get("plan")
-
-    if plan not in ["starter", "pro", "unique"]:
-        flash("Plan invalide")
-        return redirect(url_for("pricing"))
-
-    url = create_checkout_session(
-        user_email  = current_user.email,
-        plan        = plan,
-        success_url = request.host_url + "payment/success",
-        cancel_url  = request.host_url + "pricing"
-    )
-
-    if not url:
-        flash("Erreur lors de la creation du paiement")
-        return redirect(url_for("pricing"))
-
-    return redirect(url)
-
-
-# ─────────────────────────────────────────
-# STRIPE — SUCCES PAIEMENT
-# ─────────────────────────────────────────
-@app.route("/payment/success")
-@login_required
-def payment_success():
-    session_id = request.args.get("session_id")
-
-    if not session_id:
-        flash("Session de paiement introuvable")
-        return redirect(url_for("dashboard"))
-
-    data = verify_checkout_session(session_id)
-
-    if not data:
-        flash("Paiement non confirme — contactez le support")
-        return redirect(url_for("dashboard"))
-
-    current_user.plan            = data["plan"]
-    current_user.stripe_customer = data["customer_id"]
-    current_user.stripe_sub      = data["subscription_id"]
-    db.session.commit()
-
-    flash(f"Bienvenue sur le plan {data['plan'].capitalize()} !")
-    return redirect(url_for("dashboard"))
-
-
-# ─────────────────────────────────────────
-# STRIPE — PORTAIL CLIENT
-# ─────────────────────────────────────────
-@app.route("/billing")
-@login_required
-def billing():
-    if not current_user.stripe_customer:
-        flash("Aucun abonnement actif")
-        return redirect(url_for("pricing"))
-
-    url = create_portal_session(
-        stripe_customer_id = current_user.stripe_customer,
-        return_url         = request.host_url + "dashboard"
-    )
-
-    if not url:
-        flash("Erreur portail Stripe")
-        return redirect(url_for("dashboard"))
-
-    return redirect(url)
-
-
-# ─────────────────────────────────────────
-# STRIPE — WEBHOOK
-# ─────────────────────────────────────────
-@app.route("/webhook/stripe", methods=["POST"])
-def stripe_webhook():
-    payload    = request.get_data()
-    sig_header = request.headers.get("Stripe-Signature", "")
-
-    data = handle_webhook(payload, sig_header)
-
-    if not data:
-        return jsonify({"error": "invalid"}), 400
-
-    event_type = data["event_type"]
-
-    if event_type in ["payment_success", "renewal_success"]:
-        user = User.query.filter_by(stripe_customer=data["customer_id"]).first()
-        if user:
-            user.plan       = data.get("plan", user.plan)
-            user.stripe_sub = data.get("subscription_id", user.stripe_sub)
-            db.session.commit()
-
-    elif event_type == "subscription_canceled":
-        user = User.query.filter_by(stripe_customer=data["customer_id"]).first()
-        if user:
-            user.plan       = "free"
-            user.stripe_sub = None
-            db.session.commit()
-
-    return jsonify({"ok": True}), 200
-
-
-# ─────────────────────────────────────────
-# ADMIN — DÉCORATEUR
-# ─────────────────────────────────────────
-def admin_required(f):
-    from functools import wraps
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if not current_user.is_authenticated or not current_user.is_admin:
-            return redirect(url_for("index"))
-        return f(*args, **kwargs)
-    return decorated
-
-
-# ─────────────────────────────────────────
-# ADMIN — ROUTES
-# ─────────────────────────────────────────
-@app.route("/admin")
-@login_required
-@admin_required
-def admin():
-    users    = User.query.order_by(User.id.desc()).all()
-    analyses = Analysis.query.order_by(Analysis.created_at.desc()).all()
-
-    stats = {
-        "total_users":    User.query.count(),
-        "total_analyses": Analysis.query.count(),
-        "done":           Analysis.query.filter_by(status="done").count(),
-        "processing":     Analysis.query.filter_by(status="processing").count(),
-        "errors":         Analysis.query.filter_by(status="error").count(),
-        "plan_free":      User.query.filter_by(plan="free").count(),
-        "plan_starter":   User.query.filter_by(plan="starter").count(),
-        "plan_pro":       User.query.filter_by(plan="pro").count(),
-        "plan_unique":    User.query.filter_by(plan="unique").count(),
-    }
-
-    return render_template("admin.html", users=users, analyses=analyses, stats=stats)
-
-
-@app.route("/admin/user/<int:id>/plan", methods=["POST"])
-@login_required
-@admin_required
-def admin_change_plan(id):
-    user     = db.session.get(User, id)
-    new_plan = request.form.get("plan")
-
-    if not user:
-        flash("Utilisateur introuvable")
-        return redirect(url_for("admin"))
-
-    if new_plan not in config.PLANS:
-        flash("Plan invalide")
-        return redirect(url_for("admin"))
-
-    user.plan = new_plan
-    db.session.commit()
-    flash(f"Plan de {user.email} mis a jour -> {new_plan}")
-    return redirect(url_for("admin"))
-
-
-@app.route("/admin/user/<int:id>/delete", methods=["POST"])
-@login_required
-@admin_required
-def admin_delete_user(id):
-    user = db.session.get(User, id)
-
-    if not user:
-        flash("Utilisateur introuvable")
-        return redirect(url_for("admin"))
-
-    if user.id == current_user.id:
-        flash("Impossible de supprimer votre propre compte")
-        return redirect(url_for("admin"))
-
-    Analysis.query.filter_by(user_id=user.id).delete()
-    db.session.delete(user)
-    db.session.commit()
-    flash(f"Utilisateur {user.email} supprime")
-    return redirect(url_for("admin"))
-
-
-@app.route("/admin/analysis/<int:id>/delete", methods=["POST"])
-@login_required
-@admin_required
-def admin_delete_analysis(id):
-    a = db.session.get(Analysis, id)
-
-    if not a:
-        flash("Analyse introuvable")
-        return redirect(url_for("admin"))
-
-    db.session.delete(a)
-    db.session.commit()
-    flash(f"Analyse {id} supprimee")
-    return redirect(url_for("admin"))
-
-
-# ─────────────────────────────────────────
-# ERREURS
-# ─────────────────────────────────────────
-@app.errorhandler(404)
-def not_found(e):
-    return render_template("index.html"), 404
-
-
-@app.errorhandler(413)
-def too_large(e):
-    flash("Fichier trop volumineux (max 10 GB)")
-    return redirect(url_for("dashboard"))
-
-
-# ─────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────
-if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
-
-    # Lance le nettoyage automatique en background
-    start_cleanup_scheduler()
-
-    app.run(
-        debug = config.DEBUG,
-        port  = int(os.getenv("PORT", 5000))
-    )
 
 # ─────────────────────────────────────────
 # TÉLÉCHARGEMENTS — reel, pdf, stream, heatmap
