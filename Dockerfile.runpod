@@ -1,0 +1,69 @@
+# Dockerfile.runpod — ScoutIA Worker GPU (RunPod RTX 4090)
+# Pour web app CPU : voir Dockerfile
+# ═══════════════════════════════════════════════════════
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Dépendances système + Python 3.11
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    git \
+    ffmpeg \
+    tesseract-ocr \
+    tesseract-ocr-fra \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    wget \
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 3.11 par défaut
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python python3.11 1 \
+    && python3 -m pip install --upgrade pip
+
+# PyTorch CUDA + dépendances GPU
+RUN pip install \
+    torch torchvision --index-url https://download.pytorch.org/whl/cu121 \
+    && pip install \
+    ultralytics \
+    opencv-python-headless \
+    anthropic \
+    fpdf2 \
+    python-dotenv \
+    scikit-learn \
+    joblib \
+    numpy \
+    google-genai \
+    av \
+    pytesseract \
+    boto3 \
+    deep-sort-realtime \
+    boxmot \
+    runpod \
+    celery[redis] \
+    redis \
+    flask \
+    flask-sqlalchemy \
+    werkzeug \
+    psutil
+
+# Pré-télécharger YOLO11m
+RUN python3 -c "from ultralytics import YOLO; YOLO('yolo11m.pt')" || true
+
+COPY runpod_worker.py /app/runpod_worker.py
+
+CMD ["python3", "/app/runpod_worker.py"]
