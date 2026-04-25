@@ -20,12 +20,12 @@ import struct
 # Pass 1 — coarse scan : rapide, léger
 COARSE_IMGSZ       = 640    # résolution réduite
 COARSE_FRAME_SKIP  = 5      # 1 frame sur 5 → ~20% des frames
-COARSE_BATCH_SIZE  = 8
+COARSE_BATCH_SIZE  = 3      # batch=3 → imgsz=720 (proche 640 cible)
 
 # Pass 2 — deep analysis : précis, uniquement sur segments chauds
 DEEP_IMGSZ         = 960    # résolution complète
 DEEP_FRAME_SKIP    = 2      # 1 frame sur 2 → analyse fine
-DEEP_BATCH_SIZE    = 8
+DEEP_BATCH_SIZE    = 4      # batch=4 → imgsz=960
 
 BALL_SPEED_HOT     = 12.0   # px/frame → mouvement rapide (durci)
 BALL_NEAR_GOAL_PCT = 0.15   # % de la largeur frame → proche du but (durci)
@@ -208,10 +208,8 @@ def run_coarse_scan(video_path, sport="football", fps_override=None):
             annotated_path    = None,
             shot_zones        = None,
             return_frames     = True,
-            batch_size        = COARSE_BATCH_SIZE,
+            batch_size        = COARSE_BATCH_SIZE,   # batch=3 → imgsz=720
             frame_skip_every  = COARSE_FRAME_SKIP,
-            imgsz             = COARSE_IMGSZ,
-            # Mode léger — désactive les modules lourds
             disable_reid      = True,
             disable_ocr       = True,
             lightweight       = True,
