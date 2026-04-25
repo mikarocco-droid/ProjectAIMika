@@ -115,7 +115,7 @@ def _analyze_single_segment(args):
             return_frames    = True,
             frame_skip_every = frame_skip,
             batch_size       = batch_size,
-            imgsz            = imgsz,
+            # imgsz via batch_size × 240 (batch=4 → imgsz=960)
         )
         fps = fps or 25.0
         events     = remap_events(events, seg_start, fps)

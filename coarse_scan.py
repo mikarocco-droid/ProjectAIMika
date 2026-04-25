@@ -27,12 +27,12 @@ DEEP_IMGSZ         = 960    # résolution complète
 DEEP_FRAME_SKIP    = 2      # 1 frame sur 2 → analyse fine
 DEEP_BATCH_SIZE    = 4      # batch=4 → imgsz=960
 
-BALL_SPEED_HOT     = 12.0   # px/frame → mouvement rapide (durci)
-BALL_NEAR_GOAL_PCT = 0.15   # % de la largeur frame → proche du but (durci)
-DENSITY_HOT        = 6      # nb joueurs dans la zone but → pression (durci)
+BALL_SPEED_HOT     = 15.0   # px/frame → mouvement rapide (durci pour imgsz=480)
+BALL_NEAR_GOAL_PCT = 0.12   # % de la largeur frame → proche du but (durci pour imgsz=480)
+DENSITY_HOT        = 8      # nb joueurs dans la zone but → pression (durci pour imgsz=480)
 
-SEGMENT_MARGIN_S   = 1.5    # secondes ajoutées avant/après un event (durci)
-SEGMENT_MERGE_GAP  = 3.0    # fusion si deux segments à < 3s d'écart (durci)
+SEGMENT_MARGIN_S   = 1.0    # secondes ajoutées avant/après un event (durci pour imgsz=480)
+SEGMENT_MERGE_GAP  = 2.0    # fusion si deux segments à < 2s d'écart (durci pour imgsz=480)
 SEGMENT_MIN_LEN    = 4.0    # durée minimale d'un segment
 
 
