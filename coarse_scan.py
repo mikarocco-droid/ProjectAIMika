@@ -20,7 +20,7 @@ import struct
 # Pass 1 — coarse scan : rapide, léger
 COARSE_IMGSZ       = 640    # résolution réduite
 COARSE_FRAME_SKIP  = 5      # 1 frame sur 5 → ~20% des frames
-COARSE_BATCH_SIZE  = 3      # batch=3 → imgsz=720 (proche 640 cible)
+COARSE_BATCH_SIZE  = 2      # batch=2 → imgsz=480 (léger, multiple de 32 ✅)
 
 # Pass 2 — deep analysis : précis, uniquement sur segments chauds
 DEEP_IMGSZ         = 960    # résolution complète
