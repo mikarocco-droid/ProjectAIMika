@@ -70,9 +70,10 @@ YOLO_CONFIDENCE = float(os.getenv("YOLO_CONFIDENCE", 0.4))
 BALL_METHOD     = os.getenv("BALL_METHOD",     "hybrid")
 
 # Défauts conservateurs (test local / Kaggle T4)
-# En prod RunPod RTX 4090 → YOLO_BATCH_SIZE=8  FRAME_SKIP_EVERY=4
+# En prod RunPod RTX 4090 → YOLO_BATCH_SIZE=4  FRAME_SKIP_EVERY=4  YOLO_IMGSZ=960
 YOLO_BATCH_SIZE  = int(os.getenv("YOLO_BATCH_SIZE",  4))
-FRAME_SKIP_EVERY = int(os.getenv("FRAME_SKIP_EVERY", 3))
+FRAME_SKIP_EVERY = int(os.getenv("FRAME_SKIP_EVERY", 4))
+YOLO_IMGSZ       = int(os.getenv("YOLO_IMGSZ",       960))  # indépendant du batch
 
 # ─────────────────────────────────────────
 # TRACKING

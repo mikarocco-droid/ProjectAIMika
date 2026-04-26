@@ -10,7 +10,7 @@ from analysis.events import process_match, detect_events
 from rendering.overlay import Overlay, TeamColorDetector
 import config
 
-from config import FRAME_SKIP_EVERY, YOLO_BATCH_SIZE
+from config import FRAME_SKIP_EVERY, YOLO_BATCH_SIZE, YOLO_IMGSZ
 
 PROCESS_W = 960
 PROCESS_H = 540
@@ -112,7 +112,6 @@ def process_batch(
     if not batch_frames:
         return [], events_state
 
-    # Utilise b_size effectif pour imgsz (impacte la qualité de détection YOLO)
     effective_batch = b_size if b_size is not None else YOLO_BATCH_SIZE
 
     small_frames  = [bf[2] for bf in batch_frames]
@@ -120,7 +119,7 @@ def process_batch(
         small_frames,
         conf    = config.YOLO_CONFIDENCE,
         verbose = False,
-        imgsz   = effective_batch * 240
+        imgsz   = YOLO_IMGSZ   # indépendant du batch_size
     )
 
     batch_data = []
@@ -172,8 +171,7 @@ def process_batch(
 
         tracked = tracker.update(players, frame_orig)
         tracked = assign_teams_by_color(frame_orig, tracked, color_detector)
-        if ocr is not None:
-            tracked = ocr.read_all(frame_orig, tracked, frame_id=analyzed)
+        tracked = ocr.read_all(frame_orig, tracked, frame_id=analyzed)
 
         if ball_tracker is not None:
             yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
@@ -233,11 +231,6 @@ def process_video(
     return_frames     = False,
     frame_skip_every  = None,
     batch_size        = None,
-    # Mode léger pour coarse scan
-    lightweight       = False,
-    disable_ocr       = False,
-    disable_reid      = False,
-    imgsz             = None,
 ):
     if progress_callback is None:
         progress_callback = default_progress
@@ -245,15 +238,10 @@ def process_video(
     skip_every = frame_skip_every if frame_skip_every is not None else FRAME_SKIP_EVERY
     b_size     = batch_size       if batch_size       is not None else YOLO_BATCH_SIZE
 
-    # Mode lightweight : désactive les modules lourds
-    if lightweight:
-        disable_ocr  = True
-        disable_reid = True
-
-    detector       = Detector(sport=sport, imgsz=imgsz) if imgsz else Detector(sport=sport)
+    detector       = Detector(sport=sport)
     tracker        = Tracker()
-    ocr            = None if (disable_ocr or lightweight) else OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
-    color_detector = TeamColorDetector(sample_frames=60 if not lightweight else 20)
+    ocr            = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
+    color_detector = TeamColorDetector(sample_frames=60)
 
     ball_tracker = None
     try:
@@ -283,7 +271,7 @@ def process_video(
     print(f"  Sport : {sport}")
     print(f"  Frame skip  : 2/{skip_every} → ~{analyzed_count} frames analysées "
           f"({analyzed_count * 100 // total_frames}%)")
-    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={b_size * 240}")
+    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={YOLO_IMGSZ}")
 
     if shot_zones:
         hi = shot_zones.get("threshold_hi", 0.85)
@@ -382,9 +370,8 @@ def process_video(
     print(f"\n  {frame_id} frames lues | {analyzed} analysées"
           f" | batches de {b_size}")
 
-    jersey_map = ocr.get_jersey_map() if ocr is not None else {}
-    if ocr is not None:
-        ocr.reset()
+    jersey_map = ocr.get_jersey_map()
+    ocr.reset()
 
     events = process_match(frames_data, sport, shot_zones=shot_zones)
 
