@@ -151,7 +151,7 @@ def detect_fast_goals_from_ball(
 
     frame_w, frame_h = _resolve_resolution(frames_data, frame_w, frame_h)
 
-    GOAL_PCT = 0.05
+    GOAL_PCT = 0.06   # zone but standard
     GOAL_X_LEFT = frame_w * GOAL_PCT
     GOAL_X_RIGHT = frame_w * (1 - GOAL_PCT)
 
@@ -162,7 +162,7 @@ def detect_fast_goals_from_ball(
 
     speeds = _compute_speeds(frames_data)
     speed_base = sorted(speeds)[int(len(speeds) * 0.5)]
-    SPEED_THRESHOLD = speed_base * 2.0
+    SPEED_THRESHOLD = speed_base * 2.0   # seuil standard
 
     print(f"[goal_posthoc_v9.6] speed_base={speed_base:.2f}")
 
@@ -170,7 +170,7 @@ def detect_fast_goals_from_ball(
     SHOT_LOOKBACK_STRICT = 6.0   # tir direct → accepté sans condition
     SHOT_LOOKBACK_LOOSE  = 20.0  # tir ancien → accepté uniquement si signal physique fort
     MIN_SHOT_SPEED     = 2.0   # vitesse min du tir (px/frame)
-    MIN_PEAK_SPEED     = 5.0   # pic de vitesse requis avant l'impact
+    MIN_PEAK_SPEED     = 4.5   # pic de vitesse requis avant impact
     MIN_DIRECTIONALITY = 0.55  # ratio dx/norme → orientation vers but
     MIN_RECENT_MOTION  = 1.0   # vitesse moyenne min → pas de ballon mort
     # ─────────────────────────────────────────────────────────────────
@@ -229,8 +229,10 @@ def detect_fast_goals_from_ball(
             i += 1
             continue
 
-        # Calculer goal_time + recent_motion ici (nécessaires pour les gardes-fous)
-        goal_time = i / fps
+        # Calculer goal_time via frame_id absolu (pas l'index dans la liste filtrée)
+        # i = index dans frames_data ≠ frame_id réel → décalage avec frame_skip > 1
+        _frame_id_abs = frames_data[i].get("frame", i)
+        goal_time = _frame_id_abs / fps
         recent_window = speeds[max(0, i - 15):i]
         recent_motion = (sum(recent_window) / len(recent_window)) if recent_window else 0
 
@@ -321,7 +323,7 @@ def detect_fast_goals_from_ball(
         goals.append({
             "type": "goal",
             "time": round(goal_time, 2),
-            "frame": i,
+            "frame": _frame_id_abs,
             "x": x,
             "y": y,
             "confidence": confidence,
