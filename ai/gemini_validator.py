@@ -24,7 +24,7 @@ except ImportError:
 # ─────────────────────────────────────────
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
 # ─────────────────────────────────────────
-OFFSETS_POSTHOC = [-20, -12, -5, +10, +22]
+OFFSETS_POSTHOC = [-20, -12, -5, +5, +10, +22]
 OFFSETS_EVENTS  = [-1, 0, 2]
 
 _METRICS = {
