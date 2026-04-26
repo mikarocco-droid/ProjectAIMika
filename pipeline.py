@@ -558,6 +558,28 @@ def run_pipeline(
                       f"frame={e.get('frame',0)} "
                       f"offsets={offs}")
 
+        # ── DEBUG clips candidats buts ──────────────────────────────
+        if DEBUG:
+            import subprocess as _sp
+            _goals_pre = [e for e in events_for_gemini if e.get("type") == "goal"]
+            if _goals_pre:
+                _debug_dir = os.path.join(output_dir, "debug_goals")
+                os.makedirs(_debug_dir, exist_ok=True)
+                for _e in _goals_pre:
+                    _t   = _e.get("time", 0)
+                    _t0  = max(0, _t - 10)
+                    _out = os.path.join(_debug_dir,
+                        f"candidate_{int(_t//60):02d}m{int(_t%60):02d}s.mp4")
+                    _sp.run([
+                        "ffmpeg", "-y", "-ss", str(_t0),
+                        "-i", video_path, "-t", "25",
+                        "-c:v", "libx264", "-crf", "28",
+                        "-c:a", "aac", "-loglevel", "error", _out
+                    ], capture_output=True)
+                    if os.path.exists(_out):
+                        print(f"  [DEBUG CLIP] {os.path.basename(_out)}")
+        # ────────────────────────────────────────────────────────────
+
         events_validated = validate_events_with_gemini(
             events        = events_for_gemini,
             video_path    = video_path,
