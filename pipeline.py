@@ -919,12 +919,17 @@ def run_pipeline(
     print("Step 8 : Highlights...")
     reel_path = None
     try:
+        # Limite dynamique : ~1 highlight/min, min 10, max 30
+        _duration_min = total_frames / fps / 60 if fps > 0 else 15
+        _max_hl = max(10, min(int(_duration_min * 1.2), 30))
+        print(f"  Highlights max : {_max_hl} (durée={_duration_min:.0f} min)")
+
         highlights = create_highlights(
             video_path = video_path,
             events     = events,
             output_dir = os.path.join(output_dir, "highlights"),
             fps        = fps,
-            max_clips  = config.HIGHLIGHT_MAX,
+            max_clips  = _max_hl,
             mode       = mode,
             player_id  = player_id,
             sport      = sport
@@ -937,7 +942,7 @@ def run_pipeline(
                 highlights     = highlights,
                 video_path     = video_path,
                 sport          = sport,
-                max_highlights = config.HIGHLIGHT_MAX,
+                max_highlights = _max_hl,
                 frame_w        = frame_w,
             )
             highlights = normalize_highlights(highlights, mode=mode)

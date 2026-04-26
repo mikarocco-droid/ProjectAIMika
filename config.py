@@ -96,7 +96,7 @@ SHOT_ZONES = {
 # ─────────────────────────────────────────
 # HIGHLIGHTS
 # ─────────────────────────────────────────
-HIGHLIGHT_MAX           = int(os.getenv("HIGHLIGHT_MAX",           15))
+HIGHLIGHT_MAX           = int(os.getenv("HIGHLIGHT_MAX",           25))  # 25 pour match 90min
 HIGHLIGHT_MIN_SCORE     = int(os.getenv("HIGHLIGHT_MIN_SCORE",      4))
 HIGHLIGHT_WINDOW_FRAMES = int(os.getenv("HIGHLIGHT_WINDOW_FRAMES", 90))
 HIGHLIGHT_BEFORE_SEC    = int(os.getenv("HIGHLIGHT_BEFORE_SEC",     5))
