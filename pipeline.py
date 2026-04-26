@@ -565,8 +565,6 @@ def run_pipeline(
             sport         = sport,
             MIN_CONF_GOAL = 0.85 if not is_summary else 0.75,
             MIN_CONF_SHOT = 0.70,
-            frame_w       = _frame_w,
-            frame_h       = _frame_h,
         )
 
         # Log POST-GEMINI — résultat après validation
