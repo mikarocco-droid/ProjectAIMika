@@ -376,7 +376,10 @@ def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
 
         with _AV_LOCK:
             container.seek(seek_ts, backward=True, stream=stream)
-            container.flush_buffers()
+            try:
+                container.flush_buffers()
+            except AttributeError:
+                pass  # flush_buffers absent dans certaines versions PyAV
 
             for pkt_frame in container.decode(stream):
                 if pkt_frame.pts is None:
