@@ -248,7 +248,15 @@ def detect_fast_goals_from_ball(
 
     GOAL_PCT = 0.06   # zone but standard (fallback)
 
-    # Utiliser les zones détectées automatiquement si disponibles
+    # Initialiser les zones avec les valeurs par défaut
+    GOAL_X_LEFT       = frame_w * GOAL_PCT
+    GOAL_X_RIGHT      = frame_w * (1 - GOAL_PCT)
+    _DISAPPEAR_L_MIN  = 0
+    _DISAPPEAR_L_MAX  = frame_w * 0.20
+    _DISAPPEAR_R_MIN  = frame_w * 0.80
+    _DISAPPEAR_R_MAX  = frame_w
+
+    # Surcharger avec les zones détectées automatiquement si disponibles
     if goal_box and goal_box.get("method") == "vision":
         try:
             from vision.detect_goal_box import goal_box_to_posthoc_params
