@@ -150,109 +150,26 @@ def detect_fast_goals_from_ball(
     if not frames_data:
         return goals
 
-    # ── Initialisation des zones (défaut, overridé plus bas si goal_box disponible)
+    # ── Initialisation de TOUTES les variables — doivent précéder toute utilisation
     GOAL_PCT          = 0.06
     GOAL_X_LEFT       = frame_w * GOAL_PCT
     GOAL_X_RIGHT      = frame_w * (1 - GOAL_PCT)
+    GOAL_Y_TOP        = frame_h * 0.20
+    GOAL_Y_BOTTOM     = frame_h * 0.80
+    LINE_MARGIN       = frame_w * 0.002
+    MIN_PEAK_SPEED    = 8.0
+    SHOT_LOOKBACK_LOOSE = 20.0
     _DISAPPEAR_L_MIN  = 0
     _DISAPPEAR_L_MAX  = frame_w * 0.20
     _DISAPPEAR_R_MIN  = frame_w * 0.80
     _DISAPPEAR_R_MAX  = frame_w
+    STOP_NEAR_GOAL_X_MIN  = frame_w * 0.45
+    STOP_NEAR_GOAL_X_MAX  = frame_w * 0.92
+    STOP_SPEED_MAX        = 5.0
+    DISAPPEAR_WINDOW      = 8
+    REAPPEAR_X_JUMP_MIN   = frame_w * 0.20
 
-    # ── Détection complémentaire : ballon s'arrête near goal puis disparaît ──
-    # Couvre le cas où le but est visible (caméra de face) mais le tracker
-    # perd le ballon dans le filet avant qu'il ne franchisse la ligne x
-    # Zones de disparition : utiliser les zones dynamiques si disponibles
-    # Sinon fallback sur zones fixes couvrant les 2 côtés
-    STOP_NEAR_GOAL_X_MIN  = frame_w * 0.45   # au moins 45% du terrain
-    STOP_NEAR_GOAL_X_MAX  = frame_w * 0.92   # pas forcément bord écran
-    STOP_SPEED_MAX        = 5.0              # ballon quasi-arrêté
-    DISAPPEAR_WINDOW      = 8               # frames pour constater la disparition
-    REAPPEAR_X_JUMP_MIN   = frame_w * 0.20  # saut aberrant = tracker perdu
 
-    speeds = _compute_speeds(frames_data)  # déjà calculé mais recalcul propre
-
-    for i in range(10, len(frames_data) - DISAPPEAR_WINDOW):
-        c = _get_ball_center(frames_data[i].get("ball"))
-        if not c:
-            continue
-
-        x, y = c
-
-        # 1. Ballon dans zone de tir
-        # Utiliser zones dynamiques (goal_box) si disponibles
-        near_right = _DISAPPEAR_R_MIN < x < _DISAPPEAR_R_MAX
-        near_left  = _DISAPPEAR_L_MIN < x < _DISAPPEAR_L_MAX
-        # Fallback : zones fixes si goal_box absent
-        if not (near_right or near_left):
-            near_right = STOP_NEAR_GOAL_X_MIN < x < STOP_NEAR_GOAL_X_MAX
-            near_left  = (frame_w - STOP_NEAR_GOAL_X_MAX) < x < (frame_w - STOP_NEAR_GOAL_X_MIN)
-        if not (near_right or near_left):
-            continue
-
-        # 2. Ballon dans la hauteur de but
-        if not (GOAL_Y_TOP < y < GOAL_Y_BOTTOM):
-            continue
-
-        # 3. Ballon quasi-arrêté
-        if speeds[i] > STOP_SPEED_MAX:
-            continue
-
-        # 4. Pic de vitesse récent (tir avant l'arrêt)
-        peak_before = max(speeds[max(0, i-15):i+1]) if i > 0 else 0
-        if peak_before < MIN_PEAK_SPEED:
-            continue
-
-        # 5. Disparition + saut aberrant dans les frames suivantes
-        disappeared = False
-        for j in range(i+1, min(i+DISAPPEAR_WINDOW, len(frames_data))):
-            cj = _get_ball_center(frames_data[j].get("ball"))
-            if cj is None:
-                disappeared = True
-                break
-            xj = cj[0]
-            if abs(xj - x) > REAPPEAR_X_JUMP_MIN:
-                disappeared = True
-                break
-
-        if not disappeared:
-            continue
-
-        # 6. Tir récent obligatoire
-        _frame_id_abs = frames_data[i].get("frame", i)
-        goal_time = _frame_id_abs / fps
-
-        recent_shot = any(
-            0 < goal_time - s.get("time", 0) <= SHOT_LOOKBACK_LOOSE
-            for s in shots
-        )
-        if not recent_shot:
-            continue
-
-        # 7. Pas doublon
-        if any(abs(goal_time - t) < 10 for t in existing):
-            continue
-
-        score = 6.5  # score de base légèrement plus bas que cross_line
-        confidence = round(min(0.6 + score * 0.07, 0.90), 2)
-
-        goals.append({
-            "type":          "goal",
-            "time":          round(goal_time, 2),
-            "frame":         _frame_id_abs,
-            "x":             x,
-            "y":             y,
-            "confidence":    confidence,
-            "score":         round(score, 2),
-            "detected_from": "goal_posthoc_disappear",
-            "shot_linked":   True,
-            "rebound":       False,
-        })
-
-        print(f"⚽ GOAL_DISAPPEAR {goal_time:.2f}s | score={score:.2f} | x={x:.0f} near={'right' if near_right else 'left'}")
-        existing.append(goal_time)
-
-    return goals
 
     frame_w, frame_h = _resolve_resolution(frames_data, frame_w, frame_h)
 
@@ -493,11 +410,6 @@ def detect_fast_goals_from_ball(
     # perd le ballon dans le filet avant qu'il ne franchisse la ligne x
     # Zones de disparition : utiliser les zones dynamiques si disponibles
     # Sinon fallback sur zones fixes couvrant les 2 côtés
-    STOP_NEAR_GOAL_X_MIN  = frame_w * 0.45   # au moins 45% du terrain
-    STOP_NEAR_GOAL_X_MAX  = frame_w * 0.92   # pas forcément bord écran
-    STOP_SPEED_MAX        = 5.0              # ballon quasi-arrêté
-    DISAPPEAR_WINDOW      = 8               # frames pour constater la disparition
-    REAPPEAR_X_JUMP_MIN   = frame_w * 0.20  # saut aberrant = tracker perdu
 
     speeds = _compute_speeds(frames_data)  # déjà calculé mais recalcul propre
 
@@ -580,5 +492,94 @@ def detect_fast_goals_from_ball(
 
         print(f"⚽ GOAL_DISAPPEAR {goal_time:.2f}s | score={score:.2f} | x={x:.0f} near={'right' if near_right else 'left'}")
         existing.append(goal_time)
+
+    # ── Détection complémentaire : ballon s'arrête near goal puis disparaît ──
+    # Couvre le cas où le but est visible (caméra de face) mais le tracker
+    # perd le ballon dans le filet avant qu'il ne franchisse la ligne x
+    # Zones de disparition : utiliser les zones dynamiques si disponibles
+    # Sinon fallback sur zones fixes couvrant les 2 côtés
+
+    speeds = _compute_speeds(frames_data)  # déjà calculé mais recalcul propre
+
+    for i in range(10, len(frames_data) - DISAPPEAR_WINDOW):
+        c = _get_ball_center(frames_data[i].get("ball"))
+        if not c:
+            continue
+
+        x, y = c
+
+        # 1. Ballon dans zone de tir
+        # Utiliser zones dynamiques (goal_box) si disponibles
+        near_right = _DISAPPEAR_R_MIN < x < _DISAPPEAR_R_MAX
+        near_left  = _DISAPPEAR_L_MIN < x < _DISAPPEAR_L_MAX
+        # Fallback : zones fixes si goal_box absent
+        if not (near_right or near_left):
+            near_right = STOP_NEAR_GOAL_X_MIN < x < STOP_NEAR_GOAL_X_MAX
+            near_left  = (frame_w - STOP_NEAR_GOAL_X_MAX) < x < (frame_w - STOP_NEAR_GOAL_X_MIN)
+        if not (near_right or near_left):
+            continue
+
+        # 2. Ballon dans la hauteur de but
+        if not (GOAL_Y_TOP < y < GOAL_Y_BOTTOM):
+            continue
+
+        # 3. Ballon quasi-arrêté
+        if speeds[i] > STOP_SPEED_MAX:
+            continue
+
+        # 4. Pic de vitesse récent (tir avant l'arrêt)
+        peak_before = max(speeds[max(0, i-15):i+1]) if i > 0 else 0
+        if peak_before < MIN_PEAK_SPEED:
+            continue
+
+        # 5. Disparition + saut aberrant dans les frames suivantes
+        disappeared = False
+        for j in range(i+1, min(i+DISAPPEAR_WINDOW, len(frames_data))):
+            cj = _get_ball_center(frames_data[j].get("ball"))
+            if cj is None:
+                disappeared = True
+                break
+            xj = cj[0]
+            if abs(xj - x) > REAPPEAR_X_JUMP_MIN:
+                disappeared = True
+                break
+
+        if not disappeared:
+            continue
+
+        # 6. Tir récent obligatoire
+        _frame_id_abs = frames_data[i].get("frame", i)
+        goal_time = _frame_id_abs / fps
+
+        recent_shot = any(
+            0 < goal_time - s.get("time", 0) <= SHOT_LOOKBACK_LOOSE
+            for s in shots
+        )
+        if not recent_shot:
+            continue
+
+        # 7. Pas doublon
+        if any(abs(goal_time - t) < 10 for t in existing):
+            continue
+
+        score = 6.5  # score de base légèrement plus bas que cross_line
+        confidence = round(min(0.6 + score * 0.07, 0.90), 2)
+
+        goals.append({
+            "type":          "goal",
+            "time":          round(goal_time, 2),
+            "frame":         _frame_id_abs,
+            "x":             x,
+            "y":             y,
+            "confidence":    confidence,
+            "score":         round(score, 2),
+            "detected_from": "goal_posthoc_disappear",
+            "shot_linked":   True,
+            "rebound":       False,
+        })
+
+        print(f"⚽ GOAL_DISAPPEAR {goal_time:.2f}s | score={score:.2f} | x={x:.0f} near={'right' if near_right else 'left'}")
+        existing.append(goal_time)
+
 
     return goals
