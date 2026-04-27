@@ -291,7 +291,7 @@ def run_pipeline(
     _goal_box = None
     try:
         from vision.detect_goal_box import detect_goal_box
-        _goal_box = detect_goal_box(video_path, n_frames=60, fps=fps)
+        _goal_box = detect_goal_box(video_path, n_frames=60, fps=25)  # fps fixe — video pas encore analysée
         if _goal_box and _goal_box.get("method") == "vision":
             print(f"  [GOAL_BOX] Poteaux détectés via vision")
         else:
