@@ -218,21 +218,23 @@ def goal_box_to_posthoc_params(goal_box, margin_pct=0.08):
     if goal_box.get("left"):
         lbox = goal_box["left"]
         params["GOAL_X_LEFT"] = lbox["x_max"] + margin
-        params["DISAPPEAR_X_LEFT_MIN"]  = max(0, lbox["x_center"] - int(frame_w * 0.15))
-        params["DISAPPEAR_X_LEFT_MAX"]  = min(frame_w, lbox["x_center"] + int(frame_w * 0.15))
+        # Zone disappear : centrée sur le poteau, marge réduite à 8%
+        params["DISAPPEAR_X_LEFT_MIN"]  = max(0, lbox["x_center"] - int(frame_w * 0.08))
+        params["DISAPPEAR_X_LEFT_MAX"]  = min(frame_w, lbox["x_center"] + int(frame_w * 0.08))
     else:
         params["GOAL_X_LEFT"] = int(frame_w * 0.06)
         params["DISAPPEAR_X_LEFT_MIN"]  = 0
-        params["DISAPPEAR_X_LEFT_MAX"]  = int(frame_w * 0.20)
+        params["DISAPPEAR_X_LEFT_MAX"]  = int(frame_w * 0.12)
 
     if goal_box.get("right"):
         rbox = goal_box["right"]
         params["GOAL_X_RIGHT"] = rbox["x_min"] - margin
-        params["DISAPPEAR_X_RIGHT_MIN"] = max(0, rbox["x_center"] - int(frame_w * 0.15))
-        params["DISAPPEAR_X_RIGHT_MAX"] = min(frame_w, rbox["x_center"] + int(frame_w * 0.15))
+        # Zone disappear : centrée sur le poteau, marge réduite à 8%
+        params["DISAPPEAR_X_RIGHT_MIN"] = max(0, rbox["x_center"] - int(frame_w * 0.08))
+        params["DISAPPEAR_X_RIGHT_MAX"] = min(frame_w, rbox["x_center"] + int(frame_w * 0.08))
     else:
         params["GOAL_X_RIGHT"] = int(frame_w * 0.94)
-        params["DISAPPEAR_X_RIGHT_MIN"] = int(frame_w * 0.80)
+        params["DISAPPEAR_X_RIGHT_MIN"] = int(frame_w * 0.86)
         params["DISAPPEAR_X_RIGHT_MAX"] = frame_w
 
     return params
