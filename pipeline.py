@@ -287,6 +287,18 @@ def run_pipeline(
     except Exception as e:
         print(f"  Calibration ignoree : {e}")
 
+    # Détection automatique des buts (poteaux blancs)
+    _goal_box = None
+    try:
+        from vision.detect_goal_box import detect_goal_box
+        _goal_box = detect_goal_box(video_path, n_frames=60, fps=fps)
+        if _goal_box and _goal_box.get("method") == "vision":
+            print(f"  [GOAL_BOX] Poteaux détectés via vision")
+        else:
+            print(f"  [GOAL_BOX] Fallback zones fixes")
+    except Exception as _e:
+        print(f"  [GOAL_BOX] Non disponible : {_e}")
+
     # ─────────────────────────────────────────
     # 1. TRACKING + EVENTS
     # ─────────────────────────────────────────
@@ -469,6 +481,7 @@ def run_pipeline(
                 fps         = fps,
                 frame_w     = _frame_w,
                 frame_h     = _frame_h,
+                goal_box    = _goal_box,
             )
             if fast_goals:
                 events.extend(fast_goals)
