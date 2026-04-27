@@ -614,8 +614,12 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
     offsets_s = OFFSETS_POSTHOC if "posthoc" in str(source) else OFFSETS_EVENTS
     offsets_s = sorted(offsets_s, key=lambda x: abs(x))
 
-    print(f"  [PRE-GEMINI] t={event.get('time',0):.2f}s "
+    _t_event = event.get('time', 0)
+    print(f"  [PRE-GEMINI] t={_t_event:.2f}s "
           f"source={source} offsets={offsets_s} conf={tracker_conf:.2f}")
+    # Log zone cible pour debug 02:14 et 09:44
+    if 100 <= _t_event <= 160 or 570 <= _t_event <= 600:
+        print(f"  [DEBUG ZONE] Candidat dans zone cible — analyse détaillée activée")
 
     try:
         client = get_client()
@@ -641,6 +645,12 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
                 break
 
             frame_id = frame_orig + int(off_s * fps)
+            t_analyzed = frame_id / fps
+
+            # Log détaillé pour zones cibles (02:14 et 09:44)
+            t_event = frame_orig / fps
+            if 100 <= t_event <= 160 or 570 <= t_event <= 600:
+                print(f"    [GEMINI FRAME] event_t={t_event:.1f}s off={off_s:+d}s → frame={frame_id} t={t_analyzed:.1f}s")
 
             if frame_id < 0 or frame_id >= total_frames:
                 continue
