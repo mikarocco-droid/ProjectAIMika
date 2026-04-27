@@ -149,6 +149,16 @@ def detect_fast_goals_from_ball(
     goals = []
     if not frames_data:
         return goals
+
+    # ── Initialisation des zones (défaut, overridé plus bas si goal_box disponible)
+    GOAL_PCT          = 0.06
+    GOAL_X_LEFT       = frame_w * GOAL_PCT
+    GOAL_X_RIGHT      = frame_w * (1 - GOAL_PCT)
+    _DISAPPEAR_L_MIN  = 0
+    _DISAPPEAR_L_MAX  = frame_w * 0.20
+    _DISAPPEAR_R_MIN  = frame_w * 0.80
+    _DISAPPEAR_R_MAX  = frame_w
+
     # ── Détection complémentaire : ballon s'arrête near goal puis disparaît ──
     # Couvre le cas où le but est visible (caméra de face) mais le tracker
     # perd le ballon dans le filet avant qu'il ne franchisse la ligne x
@@ -245,16 +255,6 @@ def detect_fast_goals_from_ball(
     return goals
 
     frame_w, frame_h = _resolve_resolution(frames_data, frame_w, frame_h)
-
-    GOAL_PCT = 0.06   # zone but standard (fallback)
-
-    # Initialiser les zones avec les valeurs par défaut
-    GOAL_X_LEFT       = frame_w * GOAL_PCT
-    GOAL_X_RIGHT      = frame_w * (1 - GOAL_PCT)
-    _DISAPPEAR_L_MIN  = 0
-    _DISAPPEAR_L_MAX  = frame_w * 0.20
-    _DISAPPEAR_R_MIN  = frame_w * 0.80
-    _DISAPPEAR_R_MAX  = frame_w
 
     # Surcharger avec les zones détectées automatiquement si disponibles
     if goal_box and goal_box.get("method") == "vision":
