@@ -180,11 +180,31 @@ def detect_fast_goals_from_ball(
 
     existing = [e.get("time", 0) for e in events if e.get("type") == "goal"]
 
+    # ── LOG DEBUG zone temporelle cible ────────────────────────
+    DEBUG_ZONES = [(100, 160), (570, 600)]  # autour des 2 vrais buts
+    _debug_logged = set()
+
     i = 5
 
     while i < len(frames_data) - 10:
 
         c = _get_ball_center(frames_data[i].get("ball"))
+
+        # Log détaillé dans les zones cibles
+        _frame_id_debug = frames_data[i].get("frame", i)
+        _t_debug = _frame_id_debug / fps
+        for _t0, _t1 in DEBUG_ZONES:
+            if _t0 <= _t_debug <= _t1 and int(_t_debug * 2) not in _debug_logged:
+                _debug_logged.add(int(_t_debug * 2))
+                _bx = round(c[0], 1) if c else None
+                _by = round(c[1], 1) if c else None
+                _in_y = (GOAL_Y_TOP < c[1] < GOAL_Y_BOTTOM) if c else False
+                _in_xl = (c[0] <= GOAL_X_LEFT) if c else False
+                _in_xr = (c[0] >= GOAL_X_RIGHT) if c else False
+                _spd = round(speeds[i], 2) if i < len(speeds) else 0
+                print(f"  [BALLTRACK] t={_t_debug:.1f}s ball=({_bx},{_by}) "
+                      f"in_y={_in_y} in_xl={_in_xl} in_xr={_in_xr} speed={_spd}")
+
         if not c:
             i += 1
             continue
