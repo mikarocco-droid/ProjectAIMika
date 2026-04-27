@@ -114,10 +114,10 @@ def merge_close_events(events, window=8, fps=25, mode="match"):
 def cut_clip(video_path, start, end, output_path):
     subprocess.run([
         "ffmpeg", "-y",
-        "-ss", str(max(0, start - 0.5)),
-        "-to", str(end),
         "-i", video_path,
-        "-ss", "0.5",
+        "-ss", str(max(0, start)),
+        "-t", str(max(0, end - start)),
+        "-r", "25",
         "-c:v", "libx264", "-preset", "fast", "-crf", "22",
         "-c:a", "aac",
         "-avoid_negative_ts", "make_zero",
@@ -296,6 +296,7 @@ def create_highlight_reel(highlights, output_path="outputs/reel.mp4"):
         "ffmpeg", "-y",
         "-f", "concat", "-safe", "0",
         "-i", list_file,
+        "-r", "25",
         "-c:v", "libx264", "-preset", "fast", "-crf", "22",
         "-c:a", "aac",
         "-movflags", "+faststart",
