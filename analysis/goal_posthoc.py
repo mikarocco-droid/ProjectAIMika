@@ -173,33 +173,30 @@ def detect_fast_goals_from_ball(
 
     frame_w, frame_h = _resolve_resolution(frames_data, frame_w, frame_h)
 
-    # Surcharger avec les zones détectées automatiquement si disponibles
+    # GOAL_X_LEFT/RIGHT : valeurs fixes stables — ne pas surcharger depuis goal_box
+    # goal_box utilisé UNIQUEMENT pour les zones disappear (plus précises)
+    GOAL_X_LEFT  = frame_w * GOAL_PCT
+    GOAL_X_RIGHT = frame_w * (1 - GOAL_PCT)
+
     if goal_box and goal_box.get("method") == "vision":
         try:
             from vision.detect_goal_box import goal_box_to_posthoc_params
             _p = goal_box_to_posthoc_params(goal_box)
-            GOAL_X_LEFT  = _p["GOAL_X_LEFT"]
-            GOAL_X_RIGHT = _p["GOAL_X_RIGHT"]
-            # Zones pour goal_posthoc_disappear
             _DISAPPEAR_L_MIN = _p.get("DISAPPEAR_X_LEFT_MIN",  0)
-            _DISAPPEAR_L_MAX = _p.get("DISAPPEAR_X_LEFT_MAX",  frame_w * 0.20)
-            _DISAPPEAR_R_MIN = _p.get("DISAPPEAR_X_RIGHT_MIN", frame_w * 0.80)
+            _DISAPPEAR_L_MAX = _p.get("DISAPPEAR_X_LEFT_MAX",  frame_w * 0.12)
+            _DISAPPEAR_R_MIN = _p.get("DISAPPEAR_X_RIGHT_MIN", frame_w * 0.88)
             _DISAPPEAR_R_MAX = _p.get("DISAPPEAR_X_RIGHT_MAX", frame_w)
-            print(f"  [GOAL_BOX] Zones dynamiques : GOAL_X_LEFT={GOAL_X_LEFT:.0f} GOAL_X_RIGHT={GOAL_X_RIGHT:.0f}")
+            print(f"  [GOAL_BOX] Zones disappear : L<{_DISAPPEAR_L_MAX:.0f} R>{_DISAPPEAR_R_MIN:.0f}")
         except Exception as _e:
-            print(f"  [GOAL_BOX] Erreur import : {_e} → fallback")
-            GOAL_X_LEFT  = frame_w * GOAL_PCT
-            GOAL_X_RIGHT = frame_w * (1 - GOAL_PCT)
+            print(f"  [GOAL_BOX] fallback zones fixes : {_e}")
             _DISAPPEAR_L_MIN = 0
-            _DISAPPEAR_L_MAX = frame_w * 0.20
-            _DISAPPEAR_R_MIN = frame_w * 0.80
+            _DISAPPEAR_L_MAX = frame_w * 0.12
+            _DISAPPEAR_R_MIN = frame_w * 0.88
             _DISAPPEAR_R_MAX = frame_w
     else:
-        GOAL_X_LEFT  = frame_w * GOAL_PCT
-        GOAL_X_RIGHT = frame_w * (1 - GOAL_PCT)
         _DISAPPEAR_L_MIN = 0
-        _DISAPPEAR_L_MAX = frame_w * 0.20
-        _DISAPPEAR_R_MIN = frame_w * 0.80
+        _DISAPPEAR_L_MAX = frame_w * 0.12
+        _DISAPPEAR_R_MIN = frame_w * 0.88
         _DISAPPEAR_R_MAX = frame_w
 
     GOAL_Y_TOP = frame_h * 0.2
@@ -444,6 +441,27 @@ def detect_fast_goals_from_ball(
         if peak_before < MIN_PEAK_SPEED:
             continue
 
+        # 4b. Contrainte directionnelle : ballon doit se déplacer vers le but
+        # Calculer la vélocité moyenne sur les 3 frames précédentes
+        vx_sum = 0
+        vx_count = 0
+        for k in range(max(0, i-3), i):
+            ck = _get_ball_center(frames_data[k].get("ball"))
+            ck1 = _get_ball_center(frames_data[k+1].get("ball")) if k+1 < len(frames_data) else None
+            if ck and ck1:
+                vx_sum += ck1[0] - ck[0]
+                vx_count += 1
+        vx_avg = vx_sum / vx_count if vx_count > 0 else 0
+
+        # Pour but droite : ballon doit aller vers la droite (vx > 0) ou être arrêté
+        # Pour but gauche : ballon doit aller vers la gauche (vx < 0) ou être arrêté
+        if near_right and vx_avg < -20:  # va fortement vers gauche = pas ce but
+            i += 1
+            continue
+        if near_left and vx_avg > 20:   # va fortement vers droite = pas ce but
+            i += 1
+            continue
+
         # 5. Disparition + saut aberrant dans les frames suivantes
         disappeared = False
         for j in range(i+1, min(i+DISAPPEAR_WINDOW, len(frames_data))):
@@ -530,6 +548,27 @@ def detect_fast_goals_from_ball(
         # 4. Pic de vitesse récent (tir avant l'arrêt)
         peak_before = max(speeds[max(0, i-15):i+1]) if i > 0 else 0
         if peak_before < MIN_PEAK_SPEED:
+            continue
+
+        # 4b. Contrainte directionnelle : ballon doit se déplacer vers le but
+        # Calculer la vélocité moyenne sur les 3 frames précédentes
+        vx_sum = 0
+        vx_count = 0
+        for k in range(max(0, i-3), i):
+            ck = _get_ball_center(frames_data[k].get("ball"))
+            ck1 = _get_ball_center(frames_data[k+1].get("ball")) if k+1 < len(frames_data) else None
+            if ck and ck1:
+                vx_sum += ck1[0] - ck[0]
+                vx_count += 1
+        vx_avg = vx_sum / vx_count if vx_count > 0 else 0
+
+        # Pour but droite : ballon doit aller vers la droite (vx > 0) ou être arrêté
+        # Pour but gauche : ballon doit aller vers la gauche (vx < 0) ou être arrêté
+        if near_right and vx_avg < -20:  # va fortement vers gauche = pas ce but
+            i += 1
+            continue
+        if near_left and vx_avg > 20:   # va fortement vers droite = pas ce but
+            i += 1
             continue
 
         # 5. Disparition + saut aberrant dans les frames suivantes
