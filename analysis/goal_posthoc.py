@@ -158,7 +158,7 @@ def detect_fast_goals_from_ball(
     GOAL_Y_BOTTOM     = frame_h * 0.80
     LINE_MARGIN       = frame_w * 0.002
     MIN_PEAK_SPEED    = 8.0
-    SHOT_LOOKBACK_LOOSE = 20.0
+    SHOT_LOOKBACK_LOOSE = 12.0
     _DISAPPEAR_L_MIN  = 0
     _DISAPPEAR_L_MAX  = frame_w * 0.20
     _DISAPPEAR_R_MIN  = frame_w * 0.80
@@ -421,10 +421,6 @@ def detect_fast_goals_from_ball(
         # Utiliser zones dynamiques (goal_box) si disponibles
         near_right = _DISAPPEAR_R_MIN < x < _DISAPPEAR_R_MAX
         near_left  = _DISAPPEAR_L_MIN < x < _DISAPPEAR_L_MAX
-        # Fallback : zones fixes si goal_box absent
-        if not (near_right or near_left):
-            near_right = STOP_NEAR_GOAL_X_MIN < x < STOP_NEAR_GOAL_X_MAX
-            near_left  = (frame_w - STOP_NEAR_GOAL_X_MAX) < x < (frame_w - STOP_NEAR_GOAL_X_MIN)
         if not (near_right or near_left):
             continue
 
@@ -530,10 +526,6 @@ def detect_fast_goals_from_ball(
         # Utiliser zones dynamiques (goal_box) si disponibles
         near_right = _DISAPPEAR_R_MIN < x < _DISAPPEAR_R_MAX
         near_left  = _DISAPPEAR_L_MIN < x < _DISAPPEAR_L_MAX
-        # Fallback : zones fixes si goal_box absent
-        if not (near_right or near_left):
-            near_right = STOP_NEAR_GOAL_X_MIN < x < STOP_NEAR_GOAL_X_MAX
-            near_left  = (frame_w - STOP_NEAR_GOAL_X_MAX) < x < (frame_w - STOP_NEAR_GOAL_X_MIN)
         if not (near_right or near_left):
             continue
 
