@@ -302,7 +302,7 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
         dict {"is_goal": bool, "timestamp": float, "confidence": float, "desc": str}
         ou None si Gemini indisponible
     """
-    global _quota_exhausted, _gemini_unavailable, _gemini_calls, _gemini_time
+    global _quota_exhausted, _gemini_unavailable
 
     if _quota_exhausted or _gemini_unavailable:
         return None
@@ -368,8 +368,8 @@ Be conservative. If uncertain, return is_goal=false."""
         t0 = time.time()
         result = _call_gemini(client, parts_with_prompt)
         elapsed = time.time() - t0
-        _gemini_calls += 1
-        _gemini_time  += elapsed
+        _METRICS["cache_misses"] += 1
+        _METRICS["gemini_time"]  += elapsed
 
         if result is None:
             return None
@@ -1190,24 +1190,19 @@ def validate_events_with_gemini(
 
             # Zone grise — après refine, on exige goal_votes >= 1
             # Si Gemini n'a pas vu de but même avec le zoom fin → supprimé
-            has_recent_shot = event.get("shot_linked", False)
-            has_rebound     = event.get("rebound", False)
-            gemini_saw_goal = result.get("_goal_votes", 0) >= 1
+            gemini_goal_votes = result.get("_goal_votes", 0)
 
-            if gemini_saw_goal:
-                print("    → GARDÉ (Gemini a vu au moins 1 goal)")
+            if gemini_goal_votes >= 2:
+                print(f"    → GARDÉ (Gemini a vu {gemini_goal_votes} goal)")
 
-            elif high_conf_phys and tracker_conf_val > 0.95:
-                print("    → GARDÉ (signal physique très fort)")
-
-            elif has_recent_shot and has_rebound and tracker_conf_val > 0.90:
-                # Tir récent + rebond filet + tracker confiant → garder
-                print(f"    → GARDÉ (shot_linked + rebound + tracker={tracker_conf_val:.2f})")
+            elif high_conf_phys and tracker_conf_val > 0.95 and gemini_goal_votes >= 1:
+                print("    → GARDÉ (signal physique très fort + 1 vote Gemini)")
 
             else:
+                # Gemini n a pas confirmé → supprimé
                 event["_remove"] = True
                 removed += 1
-                print("    → SUPPRIMÉ")
+                print("    → SUPPRIMÉ (Gemini n a pas confirmé)")
 
         event["gemini_validated"] = True
         event["gemini_type"]      = gemini_type
