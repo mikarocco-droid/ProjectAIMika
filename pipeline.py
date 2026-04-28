@@ -619,12 +619,16 @@ def run_pipeline(
             from ai.gemini_validator import find_goal_after_shot
             shots_on_target = [
                 e for e in events_validated
-                if e.get("type") == "shot"
+                if isinstance(e, dict)
+                and e.get("type") == "shot"
                 and e.get("on_target", False)
-                and e.get("xg", 0) >= 0.05  # Seuil minimal de dangerosité
+                and e.get("xg", 0) >= 0.05
             ]
             # Cooldown pour éviter doublons avec buts déjà détectés
-            existing_goal_times = [e.get("time", 0) for e in events_validated if e.get("type") == "goal"]
+            existing_goal_times = [
+                e.get("time", 0) for e in events_validated
+                if isinstance(e, dict) and e.get("type") == "goal"
+            ]
             shot_goal_candidates = []
             for shot in shots_on_target:
                 st = shot.get("time", 0)
