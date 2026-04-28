@@ -624,7 +624,6 @@ def run_pipeline(
                 and e.get("on_target", False)
                 and e.get("xg", 0) >= 0.05
             ]
-            # Cooldown pour éviter doublons avec buts déjà détectés
             existing_goal_times = [
                 e.get("time", 0) for e in events_validated
                 if isinstance(e, dict) and e.get("type") == "goal"
@@ -632,7 +631,6 @@ def run_pipeline(
             shot_goal_candidates = []
             for shot in shots_on_target:
                 st = shot.get("time", 0)
-                # Skip si un but est déjà détecté dans la fenêtre [st-5, st+35]
                 already_covered = any(abs(gt - st) < 35 for gt in existing_goal_times)
                 if already_covered:
                     continue
@@ -647,7 +645,6 @@ def run_pipeline(
                 )
                 if result and result.get("is_goal") and result.get("confidence", 0) >= 0.70:
                     goal_t = result["timestamp"]
-                    # Vérifier qu'on ne crée pas un doublon
                     too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
                     if not too_close:
                         new_goal = {
