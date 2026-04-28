@@ -285,6 +285,125 @@ import threading as _threading
 _AV_CONTAINERS = {}
 _AV_LOCK        = _threading.Lock()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# find_goal_after_shot — Gemini cherche un but dans la fenêtre [shot_t, shot_t+window]
+# Remplace goal_posthoc_disappear pour les buts difficiles (caméra face, tracking perdu)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
+                         frame_w=1920, frame_h=1080):
+    """
+    Analyse la fenêtre [shot_time, shot_time+window] après un tir détecté.
+    Envoie des frames espacées de 3s à Gemini avec la question :
+    "Est-ce qu'un but a été marqué ? Si oui, à quel timestamp exact ?"
+
+    Returns:
+        dict {"is_goal": bool, "timestamp": float, "confidence": float, "desc": str}
+        ou None si Gemini indisponible
+    """
+    global _quota_exhausted, _gemini_unavailable, _gemini_calls, _gemini_time
+
+    if _quota_exhausted or _gemini_unavailable:
+        return None
+
+    client = get_client()
+    if client is None:
+        return None
+
+    # Échantillonner toutes les 3s dans la fenêtre
+    sample_times = []
+    t = shot_time
+    while t <= shot_time + window:
+        sample_times.append(round(t, 1))
+        t += 3.0
+
+    # Extraire les frames
+    parts = []
+    valid_times = []
+    for st in sample_times:
+        frame_id = int(st * fps)
+        frame_id = max(0, frame_id)
+        frame = safe_seek_frame(video_path, frame_id, fps)
+        if frame is not None:
+            parts.append(frame_to_part(frame))
+            valid_times.append(st)
+
+    if not parts:
+        return None
+
+    # Prompt Gemini
+    times_str = ", ".join(f"{int(t//60):02d}:{int(t%60):02d}" for t in valid_times)
+    prompt = f"""You are analyzing a football/soccer match video.
+I'm showing you {len(parts)} frames from timestamps: {times_str}
+These frames cover {window} seconds after a detected shot on target at {int(shot_time//60):02d}:{int(shot_time%60):02d}.
+
+Your task: determine if a GOAL was scored in this time window.
+
+Return ONLY valid JSON, no markdown, no explanation:
+{{
+  "is_goal": true or false,
+  "timestamp": <exact seconds when ball crosses the line, or null if no goal>,
+  "confidence": <0.0 to 1.0>,
+  "evidence": "<brief description of what you see: ball in net, goalkeeper reaction, kickoff, etc.>"
+}}
+
+Return is_goal=true ONLY if you clearly see:
+- ball crossing the goal line OR
+- ball inside the net OR
+- immediate kickoff after a confirmed scoring sequence
+
+Be conservative. If uncertain, return is_goal=false."""
+
+    parts_with_prompt = [text_to_part(prompt)] + parts
+
+    try:
+        t0 = time.time()
+        result = _call_gemini(client, parts_with_prompt)
+        elapsed = time.time() - t0
+        _gemini_calls += 1
+        _gemini_time  += elapsed
+
+        if result is None:
+            return None
+
+        text = extract_response_text(result)
+        parsed = _safe_json_load(text)
+
+        if parsed is None:
+            return None
+
+        is_goal    = bool(parsed.get("is_goal", False))
+        timestamp  = parsed.get("timestamp")
+        confidence = float(parsed.get("confidence", 0.0))
+        evidence   = parsed.get("evidence", "")
+
+        # Valider le timestamp dans la fenêtre
+        if is_goal and timestamp is not None:
+            try:
+                timestamp = float(timestamp)
+                if not (shot_time - 5 <= timestamp <= shot_time + window + 5):
+                    # Timestamp hors fenêtre — utiliser centre de la fenêtre
+                    timestamp = shot_time + window / 2
+            except (ValueError, TypeError):
+                timestamp = shot_time + window / 2
+        elif is_goal:
+            timestamp = shot_time + window / 2
+
+        log.info(f"  [SHOT→GOAL] shot={shot_time:.1f}s → is_goal={is_goal} "
+                 f"t={timestamp} conf={confidence:.2f} | {evidence[:80]}")
+
+        return {
+            "is_goal":    is_goal,
+            "timestamp":  timestamp,
+            "confidence": confidence,
+            "desc":       evidence,
+        }
+
+    except Exception as e:
+        log.warning(f"  [SHOT→GOAL] Erreur : {e}")
+        return None
+
 def print_metrics():
     total = _METRICS["cache_hits"] + _METRICS["cache_misses"]
     hit_rate = (_METRICS["cache_hits"] / total) if total else 0
