@@ -397,8 +397,8 @@ Be conservative. If uncertain, return is_goal=false."""
         elif is_goal:
             timestamp = shot_time + window / 2
 
-        log.info(f"  [SHOT→GOAL] shot={shot_time:.1f}s → is_goal={is_goal} "
-                 f"t={timestamp} conf={confidence:.2f} | {evidence[:80]}")
+        print(f"  [SHOT→GOAL] shot={shot_time:.1f}s → is_goal={is_goal} "
+              f"t={timestamp} conf={confidence:.2f} | {evidence[:80]}")
 
         return {
             "is_goal":    is_goal,
@@ -408,7 +408,7 @@ Be conservative. If uncertain, return is_goal=false."""
         }
 
     except Exception as e:
-        log.warning(f"  [SHOT→GOAL] Erreur : {e}")
+        print(f"  [SHOT→GOAL] Erreur : {e}")
         return None
 
 def print_metrics():
