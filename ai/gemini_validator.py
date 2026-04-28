@@ -321,13 +321,20 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
     # Extraire les frames
     parts = []
     valid_times = []
-    for st in sample_times:
-        frame_id = int(st * fps)
-        frame_id = max(0, frame_id)
-        frame = safe_seek_frame(video_path, frame_id, fps)
-        if frame is not None:
-            parts.append(frame_to_part(frame))
-            valid_times.append(st)
+    cap = cv2.VideoCapture(video_path)
+    try:
+        for st in sample_times:
+            frame_id = int(st * fps)
+            frame_id = max(0, frame_id)
+            frame = safe_seek_frame(cap, frame_id, max_jump=30)
+            if frame is not None:
+                h, w = frame.shape[:2]
+                if w > 960:
+                    frame = cv2.resize(frame, (960, int(h * 960 / w)))
+                parts.append(frame_to_part(frame))
+                valid_times.append(st)
+    finally:
+        cap.release()
 
     if not parts:
         return None
