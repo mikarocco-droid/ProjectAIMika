@@ -484,56 +484,62 @@ def extract_frames_window_pyav(video_path, center_time, window_sec=2.0, fps=25):
     if cached is not None:
         return cached
 
-    if _get_av_container(video_path) is None:
-        return []
-
     start_t = max(0.0, center_time - window_sec)
-    end_t = center_time + window_sec
-    frames = []
-    t0 = time.time()
+    end_t   = center_time + window_sec
+    frames  = []
+    t0      = time.time()
 
-    try:
-        container = _get_av_container(video_path)
-        if container is None:
-            return frames
+    # Tentative PyAV
+    pyav_ok = False
+    if _get_av_container(video_path) is not None:
+        try:
+            container = _get_av_container(video_path)
+            stream    = container.streams.video[0]
+            seek_ts   = int(start_t / float(stream.time_base))
+            with _AV_LOCK:
+                container.seek(seek_ts, backward=True, stream=stream)
+                try:
+                    container.flush_buffers()
+                except AttributeError:
+                    pass
+                for pkt_frame in container.decode(stream):
+                    if pkt_frame.pts is None:
+                        continue
+                    t = float(pkt_frame.pts * pkt_frame.time_base)
+                    if t < start_t:
+                        continue
+                    if t > end_t:
+                        break
+                    img = pkt_frame.to_ndarray(format="bgr24")
+                    h, w = img.shape[:2]
+                    if w > 960:
+                        img = cv2.resize(img, (960, int(h * 960 / w)))
+                    frames.append((t, img))
+            pyav_ok = len(frames) > 0
+        except Exception as e:
+            print(f"[PyAV batch] erreur : {e} — fallback OpenCV")
+            frames = []
 
-        stream = container.streams.video[0]
-        seek_ts = int(start_t / float(stream.time_base))
+    # Fallback OpenCV si PyAV a echoue ou indisponible
+    if not pyav_ok:
+        try:
+            cap   = cv2.VideoCapture(video_path)
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            sample_offsets = [-window_sec, -window_sec * 0.5, 0.0, window_sec * 0.5, window_sec]
+            for off in sample_offsets:
+                t_target  = center_time + off
+                frame_idx = max(0, min(int(t_target * fps), total - 1))
+                frame     = safe_seek_frame(cap, frame_idx, max_jump=30)
+                if frame is not None:
+                    h, w = frame.shape[:2]
+                    if w > 960:
+                        frame = cv2.resize(frame, (960, int(h * 960 / w)))
+                    frames.append((t_target, frame))
+            cap.release()
+        except Exception as e2:
+            print(f"[OpenCV fallback] erreur : {e2}")
 
-        with _AV_LOCK:
-            container.seek(seek_ts, backward=True, stream=stream)
-            try:
-                container.flush_buffers()
-            except AttributeError:
-                pass  # flush_buffers absent dans certaines versions PyAV
-
-            for pkt_frame in container.decode(stream):
-                if pkt_frame.pts is None:
-                    continue
-
-                t = float(pkt_frame.pts * pkt_frame.time_base)
-
-                if t < start_t:
-                    continue
-
-                if t > end_t:
-                    break
-
-                img = pkt_frame.to_ndarray(format="bgr24")
-
-                h, w = img.shape[:2]
-                if w > 960:
-                    img = cv2.resize(img, (960, int(h * 960 / w)))
-
-                frames.append((t, img))
-
-    except Exception as e:
-        print(f"[PyAV batch] erreur : {e}")
-        return []
-
-    finally:
-        _METRICS["decode_time"] += time.time() - t0
-
+    _METRICS["decode_time"] += time.time() - t0
     _cache_put(key, frames)
     return frames
     
