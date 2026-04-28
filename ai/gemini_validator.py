@@ -73,6 +73,7 @@ def get_client():
 # ─────────────────────────────────────────
 _quota_exhausted    = False
 _gemini_unavailable = False
+rebound_sig         = 0.15   # bonus signal pour candidats avec rebond filet
 
 def _call_gemini(client, parts, max_retries=2):
     global _quota_exhausted, _gemini_unavailable
