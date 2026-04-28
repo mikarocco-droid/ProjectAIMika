@@ -614,6 +614,61 @@ def run_pipeline(
                       f"tracker_conf={e.get('confidence',0):.2f} "
                       f"validated={e.get('gemini_validated',False)}")
 
+        # ── SHOT→GOAL : Gemini cherche un but dans la fenêtre après chaque tir ──
+        try:
+            from ai.gemini_validator import find_goal_after_shot
+            shots_on_target = [
+                e for e in events_validated
+                if e.get("type") == "shot"
+                and e.get("on_target", False)
+                and e.get("xg", 0) >= 0.05  # Seuil minimal de dangerosité
+            ]
+            # Cooldown pour éviter doublons avec buts déjà détectés
+            existing_goal_times = [e.get("time", 0) for e in events_validated if e.get("type") == "goal"]
+            shot_goal_candidates = []
+            for shot in shots_on_target:
+                st = shot.get("time", 0)
+                # Skip si un but est déjà détecté dans la fenêtre [st-5, st+35]
+                already_covered = any(abs(gt - st) < 35 for gt in existing_goal_times)
+                if already_covered:
+                    continue
+                print(f"  [SHOT→GOAL] Analyse tir on_target t={int(st//60):02d}:{int(st%60):02d} xg={shot.get('xg',0):.3f}")
+                result = find_goal_after_shot(
+                    video_path = video_path,
+                    shot_time  = st,
+                    window     = 30,
+                    fps        = fps,
+                    frame_w    = _frame_w,
+                    frame_h    = _frame_h,
+                )
+                if result and result.get("is_goal") and result.get("confidence", 0) >= 0.70:
+                    goal_t = result["timestamp"]
+                    # Vérifier qu'on ne crée pas un doublon
+                    too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
+                    if not too_close:
+                        new_goal = {
+                            "type":             "goal",
+                            "time":             goal_t,
+                            "source":           "shot_to_goal_gemini",
+                            "detected_from":    "shot_to_goal_gemini",
+                            "confidence":       result["confidence"],
+                            "gemini_validated": True,
+                            "gemini_type":      "goal",
+                            "gemini_conf":      result["confidence"],
+                            "xg":               shot.get("xg", 0.5),
+                            "desc":             result.get("desc", ""),
+                            "player":           shot.get("player"),
+                            "team":             shot.get("team"),
+                        }
+                        shot_goal_candidates.append(new_goal)
+                        existing_goal_times.append(goal_t)
+                        print(f"  [SHOT→GOAL] ✅ BUT détecté à {int(goal_t//60):02d}:{int(goal_t%60):02d} conf={result['confidence']:.2f}")
+            if shot_goal_candidates:
+                events_validated = events_validated + shot_goal_candidates
+                print(f"  [SHOT→GOAL] {len(shot_goal_candidates)} but(s) ajouté(s) via analyse tirs")
+        except Exception as _e:
+            print(f"  [SHOT→GOAL] Ignoré : {_e}")
+
         # Réassembler dans l'ordre chronologique
         events = sorted(
             events_validated + events_eco,
