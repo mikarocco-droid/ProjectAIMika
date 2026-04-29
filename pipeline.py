@@ -628,17 +628,31 @@ def run_pipeline(
                 e.get("time", 0) for e in events_validated
                 if isinstance(e, dict) and e.get("type") == "goal"
             ]
+            # Trier les tirs par temps pour calculer la fenêtre dynamique
+            shots_on_target_sorted = sorted(shots_on_target, key=lambda e: e.get("time", 0))
+            shot_times_all = [e.get("time", 0) for e in shots_on_target_sorted]
+
             shot_goal_candidates = []
-            for shot in shots_on_target:
+            for i, shot in enumerate(shots_on_target_sorted):
                 st = shot.get("time", 0)
                 already_covered = any(abs(gt - st) < 35 for gt in existing_goal_times)
                 if already_covered:
                     continue
-                print(f"  [SHOT→GOAL] Analyse tir on_target t={int(st//60):02d}:{int(st%60):02d} xg={shot.get('xg',0):.3f}")
+
+                # Fenêtre dynamique :
+                # - Max 45s (temps de jeu suffisant pour voir le kickoff)
+                # - Min 25s (assez pour voir le but + réaction)
+                # - Réduite si un autre tir arrive avant 45s
+                next_shot_t = shot_times_all[i + 1] if i + 1 < len(shot_times_all) else st + 999
+                time_to_next = next_shot_t - st
+                window = max(25, min(45, time_to_next - 5))
+
+                print(f"  [SHOT→GOAL] Analyse tir on_target t={int(st//60):02d}:{int(st%60):02d} "
+                      f"xg={shot.get('xg',0):.3f} fenêtre={window:.0f}s")
                 result = find_goal_after_shot(
                     video_path = video_path,
                     shot_time  = st,
-                    window     = 30,
+                    window     = window,
                     fps        = fps,
                     frame_w    = _frame_w,
                     frame_h    = _frame_h,
