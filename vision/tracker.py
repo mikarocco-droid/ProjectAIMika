@@ -11,7 +11,7 @@ except ImportError:
     print("boxmot non installe — fallback DeepSort")
 
 import config
-from tracking.player_reid import PlayerReID
+from analysis.player_reid import PlayerReID
 
 
 class Tracker:
