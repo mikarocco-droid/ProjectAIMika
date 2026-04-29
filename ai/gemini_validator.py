@@ -296,7 +296,7 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
                          frame_w=1920, frame_h=1080):
     """
     Analyse la fenêtre [shot_time, shot_time+window] après un tir détecté.
-    Envoie des frames espacées de 3s à Gemini avec la question :
+    Envoie des frames espacées à Gemini avec la question :
     "Est-ce qu'un but a été marqué ? Si oui, à quel timestamp exact ?"
 
     Returns:
@@ -312,35 +312,71 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
     if client is None:
         return None
 
-    # Échantillonner toutes les 3s dans la fenêtre
+    # Stratégie d'échantillonnage en 3 phases :
+    # Phase 1 : [shot_time, shot_time+5s] toutes les 1s — capture le tir et l'impact immédiat
+    # Phase 2 : [shot_time+5s, shot_time+20s] toutes les 2s — réaction des joueurs, gardien
+    # Phase 3 : [shot_time+20s, shot_time+window] toutes les 4s — remise en jeu / kickoff
     sample_times = []
     t = shot_time
     while t <= shot_time + window:
         sample_times.append(round(t, 1))
-        t += 3.0
+        elapsed = t - shot_time
+        if elapsed < 5:
+            t += 1.0
+        elif elapsed < 20:
+            t += 2.0
+        else:
+            t += 4.0
 
-    # Extraire les frames
+    # Extraire les frames en une seule passe séquentielle
+    # (évite les seeks répétés qui peuvent sauter des frames sur fichier Drive/réseau)
     parts = []
     valid_times = []
     cap = cv2.VideoCapture(video_path)
     try:
-        for st in sample_times:
-            frame_id = int(st * fps)
-            frame_id = max(0, frame_id)
-            frame = safe_seek_frame(cap, frame_id, max_jump=30)
-            if frame is not None:
-                h, w = frame.shape[:2]
-                if w > 960:
-                    frame = cv2.resize(frame, (960, int(h * 960 / w)))
-                parts.append(frame_to_part(frame))
-                valid_times.append(st)
+        if not sample_times:
+            pass
+        else:
+            # Seek unique au début de la fenêtre
+            first_frame_id = max(0, int(sample_times[0] * fps) - 5)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, first_frame_id)
+            current_frame_id = first_frame_id
+
+            # Construire un set des frame_ids cibles
+            targets = {int(st * fps): st for st in sample_times}
+            target_ids = sorted(targets.keys())
+            target_idx = 0
+
+            while target_idx < len(target_ids):
+                target_id = target_ids[target_idx]
+
+                # Avancer jusqu'à la frame cible
+                while current_frame_id < target_id:
+                    ret, _ = cap.read()
+                    if not ret:
+                        break
+                    current_frame_id += 1
+
+                # Lire la frame cible
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    current_frame_id += 1
+                    h, w = frame.shape[:2]
+                    if w > 960:
+                        frame = cv2.resize(frame, (960, int(h * 960 / w)))
+                    parts.append(frame_to_part(frame))
+                    valid_times.append(targets[target_id])
+                else:
+                    break
+
+                target_idx += 1
     finally:
         cap.release()
 
     if not parts:
         return None
 
-    # Prompt Gemini
+    # Prompt Gemini — signaux post-but + strict sur kickoff vs remise en touche
     times_str = ", ".join(f"{int(t//60):02d}:{int(t%60):02d}" for t in valid_times)
     prompt = f"""You are analyzing a football/soccer match video.
 I'm showing you {len(parts)} frames from timestamps: {times_str}
@@ -348,20 +384,40 @@ These frames cover {window} seconds after a detected shot on target at {int(shot
 
 Your task: determine if a GOAL was scored in this time window.
 
+Look for these GOAL INDICATORS (any one is sufficient):
+
+1. DIRECT EVIDENCE:
+   - Ball physically inside the net or crossing the goal line
+   - Goalkeeper retrieving ball from inside the net
+
+2. CELEBRATION SIGNALS (strong indicator):
+   - Attacking players raising arms, running with fists pumped, hugging teammates
+   - Multiple players from the same team celebrating together
+   - Defending players looking dejected, hands on head
+
+3. RESTART AFTER GOAL:
+   - CENTER KICKOFF only: players lined up at the CENTER CIRCLE, ball at center spot
+   - NOT a goal: throw-in from sideline, corner kick, goal kick, free kick
+
+IMPORTANT — NOT a goal:
+- A throw-in (player throws ball from sideline) — very common false positive
+- Players walking or jogging — not necessarily after a goal
+- Corner kick, goal kick, free kick
+
+For the timestamp: if you see celebration or goalkeeper in net, estimate when the ball entered.
+If you only see the kickoff at center, estimate ~15-20 seconds before that.
+
 Return ONLY valid JSON, no markdown, no explanation:
 {{
   "is_goal": true or false,
   "timestamp": <exact seconds when ball crosses the line, or null if no goal>,
   "confidence": <0.0 to 1.0>,
-  "evidence": "<brief description of what you see: ball in net, goalkeeper reaction, kickoff, etc.>"
+  "evidence": "<describe the strongest signal you see: celebration / ball in net / center kickoff / throw-in / etc.>"
 }}
 
-Return is_goal=true ONLY if you clearly see:
-- ball crossing the goal line OR
-- ball inside the net OR
-- immediate kickoff after a confirmed scoring sequence
-
-Be conservative. If uncertain, return is_goal=false."""
+If you see clear celebration OR ball in net: is_goal=true, confidence >= 0.80
+If you only see center kickoff: is_goal=true, confidence=0.70
+If you see throw-in or corner only: is_goal=false"""
 
     parts_with_prompt = [text_to_part(prompt)] + parts
 
