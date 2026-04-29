@@ -772,18 +772,8 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # 1c. SMART FILTERING (tirs)
     # ─────────────────────────────────────────
-    try:
-        validated = []
-        for i, e in enumerate(events):
-            prev = events[i - 1] if i > 0 else None
-            if e.get("type") == "shot":
-                if not e.get("detected_from") and not e.get("synthetic") and not detect_real_shots(e, prev):
-                    continue
-            validated.append(e)
-        events = validated
-        print(f"  SMART {len(events)} events")
-    except Exception as e:
-        print(f"  Smart filtering ignoré : {e}")
+    # Smart filtering — désactivé (detect_real_shots nécessite ball_history)
+    # Les tirs sont déjà filtrés par is_valid_shot dans events.py
 
     # ─────────────────────────────────────────
     # 1d. RE-ID + TEAMS

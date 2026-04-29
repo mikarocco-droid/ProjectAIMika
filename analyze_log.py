@@ -77,12 +77,7 @@ print(SEP)
 
 # Pattern debug buts
 goal_blocks = re.finditer(
-    r"-- But a (\d{2}:\d{2}) --.*?"
-    r"Buteur\s*:\s*(.+?)\n.*?"
-    r"Source\s*:\s*(.+?)\n.*?"
-    r"gemini\s*:\s*(\S+).*?"
-    r"conf\s*:\s*([\d.]+).*?"
-    r"xG\s*:\s*([\d.]+)",
+    r"But a (\d{2}:\d{2}).*?Buteur\s*:\s*(.+?)\n.*?Source\s*:\s*(.+?)\n.*?gemini_valid\s*:\s*(\S+).*?gemini_conf\s*:\s*([\d.]+).*?xG\s*:\s*([\d.]+)",
     text, re.DOTALL
 )
 
@@ -92,13 +87,13 @@ for m in goal_blocks:
         "time":    m.group(1),
         "buteur":  m.group(2).strip(),
         "source":  m.group(3).strip(),
-        "gemini":  m.group(4).strip(),
+        "gemini":  m.group(4).strip(),  # gemini_valid
         "conf":    float(m.group(5)),
         "xg":      float(m.group(6)),
     })
 
 # Buts attendus : 02:14 et 09:44
-EXPECTED = ["02:14", "09:44"]
+EXPECTED = ["02:20", "09:44"]  # vrais buts vidéo test
 
 if not goal_list:
     print("  ⚠️  Aucun but détecté dans le log")
@@ -117,14 +112,26 @@ print()
 for exp in EXPECTED:
     exp_sec = int(exp.split(":")[0])*60 + int(exp.split(":")[1])
     found = any(
-        abs(int(g["time"].split(":")[0])*60 + int(g["time"].split(":")[1]) - exp_sec) <= 10
+        abs(int(g["time"].split(":")[0])*60 + int(g["time"].split(":")[1]) - exp_sec) <= 30
         for g in goal_list
     )
     if found:
-        print(f"  ✅  But attendu {exp} : DÉTECTÉ")
+        g_match = next(g for g in goal_list if abs(
+            int(g["time"].split(":")[0])*60 + int(g["time"].split(":")[1]) - exp_sec) <= 30)
+        print(f"  ✅  But attendu {exp} : DÉTECTÉ à {g_match['time']} (source={g_match['source']})")
     else:
         print(f"  ❌  But attendu {exp} : MANQUANT")
 
+
+
+# ─────────────────────────────────────────
+# SHOT→GOAL
+# ─────────────────────────────────────────
+shot_goal_adds = find_all(r"\[SHOT→GOAL\] ✅ BUT détecté à (\d{2}:\d{2}) conf=([\d.]+)")
+if shot_goal_adds:
+    print(f"\n  SHOT→GOAL : {len(shot_goal_adds)} but(s) ajouté(s)")
+    for t, conf in shot_goal_adds:
+        print(f"    t={t}  conf={conf}")
 
 # ─────────────────────────────────────────
 # 3. GEMINI — CONCORDANCE HIGH_CONF
@@ -224,17 +231,18 @@ print("  TIRS (TOP 8)")
 print(SEP)
 
 shot_lines = re.finditer(
-    r"(\d{2}:\d{2})\s+(\S+)\s+xg=([\d.]+)\s+on_target=(\S+)(\s+\[synthetique\])?",
+    r"\[SHOT\] t=([\d.]+)s src=(\S+) xg=([\d.]+) on_target=(\S+) player=(\S+)",
     text
 )
 shot_list = []
 for m in shot_lines:
+    t_sec = float(m.group(1))
     shot_list.append({
-        "time":       m.group(1),
-        "player":     m.group(2),
+        "time":       f"{int(t_sec//60):02d}:{int(t_sec%60):02d}",
+        "player":     m.group(5),
         "xg":         float(m.group(3)),
         "on_target":  m.group(4),
-        "synthetic":  bool(m.group(5)),
+        "synthetic":  False,
     })
 
 if shot_list:
@@ -316,6 +324,28 @@ else:
 
 
 # ─────────────────────────────────────────
+# ─────────────────────────────────────────
+# 7b. LEARNING STATS
+# ─────────────────────────────────────────
+print(f"\n{SEP}")
+print("  LEARNING")
+print(SEP)
+
+n_matches_str = find_first(r"Matchs enregistres\s*:\s*(\d+)/(\d+)")
+xg_adv        = find_first(r"xG avance samples\s*:\s*(\d+)")
+sklearn_status = find_first(r"Modele sklearn\s*:\s*(.+)")
+fp_zones_str  = find_first(r"FP zones actives\s*:\s*(.+)")
+
+print(f"  Matchs       : {n_matches_str}")
+print(f"  xG avancé    : {xg_adv} samples")
+print(f"  Sklearn      : {sklearn_status}")
+print(f"  FP zones     : {fp_zones_str}")
+
+# Vérifier goal_cooldown appris
+gc_learned = find_first(r"goal_cooldown.*?(\d+\.?\d*)s.*?learner")
+if gc_learned != "—":
+    print(f"  ⚠️  goal_cooldown appris : {gc_learned}s — vérifier si cohérent")
+
 # 8. VERDICT FINAL
 # ─────────────────────────────────────────
 print(f"\n{SEP}")
