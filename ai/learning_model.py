@@ -278,7 +278,7 @@ class MatchLearner:
     # ENTRAÎNEMENT SKLEARN
     # ─────────────────────────────────────────
     def _train_advanced_if_possible(self):
-        if len(self.xg_advanced) < 50:
+        if len(self.xg_advanced) < 25:
             self._sklearn_model = None
             return
 
@@ -458,8 +458,8 @@ class MatchLearner:
         if new_samples > 0:
             print(f"  Learning xG avancé : {n_total} samples "
                   f"({n_goals} buts, taux={n_goals/n_total:.1%})"
-                  + (" → modèle actif ✅" if n_total >= 50
-                     else f" → encore {50 - n_total} avant activation"))
+                  + (" → modèle actif ✅" if n_total >= 25
+                     else f" → encore {25 - n_total} avant activation"))
 
     # ─────────────────────────────────────────
     # HISTORIQUE
@@ -941,3 +941,23 @@ class MatchLearner:
             "type_weights":          self.type_weights,
             "xg_training_total":     len(self.xg_training),
         }
+
+# ─────────────────────────────────────────
+# RESET — repart de zéro
+# ─────────────────────────────────────────
+def reset_learning(sport="football", base_dir="outputs/learning"):
+    """
+    Supprime toutes les données apprises pour repartir de zéro.
+    Appeler une fois depuis un script ou notebook avant les 25 nouveaux matchs.
+
+    Usage :
+        from ai.learning_model import reset_learning
+        reset_learning()
+    """
+    import shutil
+    path = os.path.join(base_dir, sport)
+    if os.path.exists(path):
+        shutil.rmtree(path)
+        print(f"Learning reset : {path} supprimé")
+    else:
+        print(f"Learning reset : rien à supprimer ({path} inexistant)")
