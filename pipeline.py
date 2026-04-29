@@ -443,11 +443,11 @@ def run_pipeline(
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={GOAL_POSITION_THRESHOLD*100:.0f}%")
         else:
-            goal_cooldown = learner.get_thresholds().get("goal_cooldown", 30.0) \
-                            if learner else 30.0
-            # Clamp : le learner peut stocker 150s (ancien défaut) → on plafonne à 60s
-            # V9.7 — plafond réduit 60s → 45s (évite d'éliminer vrais buts dans clusters posthoc)
-            goal_cooldown = min(goal_cooldown, 45.0)
+            if learner and learner.stats().get("n_matches", 0) >= 25:
+                goal_cooldown = learner.get_thresholds().get("goal_cooldown", 45.0)
+                goal_cooldown = min(goal_cooldown, 45.0)
+            else:
+                goal_cooldown = 45.0
             print(f"  Match complet ({video_duration:.0f}s) — "
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={GOAL_POSITION_THRESHOLD*100:.0f}%")
@@ -660,6 +660,10 @@ def run_pipeline(
                             "desc":             result.get("desc", ""),
                             "player":           shot.get("player"),
                             "team":             shot.get("team"),
+                            "x":                shot.get("x", _frame_w * 0.85),
+                            "y":                shot.get("y", _frame_h * 0.5),
+                            "frame":            int(goal_t * fps),
+                            "shot_linked":      True,
                         }
                         shot_goal_candidates.append(new_goal)
                         existing_goal_times.append(goal_t)
@@ -679,7 +683,8 @@ def run_pipeline(
         for e in events:
             e.pop("_eco", None)
 
-        if learner:
+        # FP zones — actif seulement après 25 matchs propres
+        if learner and learner.stats().get("n_matches", 0) >= 25:
             n_before = len(events)
             events   = [
                 e for e in events
