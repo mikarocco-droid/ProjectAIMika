@@ -590,16 +590,30 @@ def detect_events(
                         state["events_buffer"][-1], shot
                     )
 
-            if is_shot_z and state["shot_cd"] == 0 and shot_speed_ok:
+            if is_shot_z and state["shot_cd"] == 0:
                 if not (state["_gk_holding_ball"] or state["_gk_release_cd"] > 0):
-                    if is_valid_shot(_bt, frame_w, frame_h):
+                    # V9.7+ — is_shot_candidate() est le filtre principal :
+                    # vitesse > frame_w*1.5 px/s + accélération x1.4 + zone 25%
+                    # Élimine les passes, centres, et dégagements
+                    if (_bt is not None
+                            and hasattr(_bt, "is_shot_candidate")
+                            and not ball_interpolated):
+                        if _bt.is_shot_candidate(frame_w, frame_h):
+                            _register_shot(
+                                compute_xg(x, y, frame_w, frame_h, learner),
+                                source    = "events_standard",
+                                on_target = fast_shot_in_goal
+                            )
+                    elif _bt is None and is_valid_shot(_bt, frame_w, frame_h):
+                        # Fallback si pas de tracker (compatibilité)
                         _register_shot(
                             compute_xg(x, y, frame_w, frame_h, learner),
-                            source    = "events_standard",
+                            source    = "events_standard_fallback",
                             on_target = fast_shot_in_goal
                         )
 
             elif fast_shot_in_goal and state["shot_cd"] > 0:
+                # Tir rapide dans la zone de but même pendant le cooldown
                 if ball_speed > frame_w * 0.10:
                     _register_shot(
                         compute_xg(x, y, frame_w, frame_h, learner),
@@ -607,24 +621,6 @@ def detect_events(
                         on_target = True,
                         fast      = True
                     )
-
-            elif (_bt is not None
-                    and hasattr(_bt, "is_shot_candidate")
-                    and state["shot_cd"] == 0
-                    and not state["_gk_holding_ball"]
-                    and state["_gk_release_cd"] == 0
-                    and not ball_interpolated):
-
-                if _bt.is_shot_candidate(frame_w, frame_h):
-                    _in_shot, _in_goal = is_shot_zone(
-                        x, y, sport, shot_zones, frame_w, frame_h
-                    )
-                    if _in_shot and is_valid_shot(_bt, frame_w, frame_h):
-                        _register_shot(
-                            compute_xg(x, y, frame_w, frame_h, learner),
-                            source    = "ball_tracker_v23",
-                            on_target = _in_goal
-                        )
 
             # ── UPGRADE #5 — tick shot candidate → lien tir→but ─────────
             _in_goal_zone_now = is_goal_zone
