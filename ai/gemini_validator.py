@@ -435,37 +435,63 @@ Default to is_goal=false if any doubt."""
 I'm showing you {len(parts)} frames from timestamps: {times_str}
 These frames cover {window} seconds after a detected shot on target at {int(shot_time//60):02d}:{int(shot_time%60):02d}.
 
+Focus ONLY on ball position relative to the goal line. Ignore all other context unless it directly confirms a goal.
+
 Your task: determine if a GOAL was scored in this time window.
+This is an amateur/semi-professional football match filmed from the sideline.
+The goalkeeper wears a different colored jersey from both outfield teams.
+The goals have white posts and white or colored nets at each end of the pitch.
+
+IMPORTANT TEMPORAL RULE:
+Interpret these frames as a continuous sequence of ONE event, not independent snapshots.
+If the ball is inside the net in any frame, the goal happened slightly BEFORE that frame.
+If a celebration is visible, the goal happened several seconds before.
+Do NOT treat each frame as isolated — the story builds across frames.
 
 A goal is confirmed ONLY by ONE of these TWO evidences:
 
 EVIDENCE A — BALL IN NET (most reliable):
-- Ball is physically visible INSIDE the net
+- Ball is physically visible INSIDE the net (behind the goal line, between the posts)
 - OR goalkeeper is crouching/diving to retrieve ball FROM INSIDE the net
 - The net must be visibly deformed or ball clearly behind the line
+- The goalkeeper's position INSIDE the goal area confirms the ball went in
+
+AMBIGUITY RULE (very important):
+If the ball position is unclear, partially hidden, or you are not 100% certain it crossed the line:
+→ ALWAYS return is_goal=false
+→ NEVER guess a goal from partial visibility
+→ When in doubt = no goal
 
 EVIDENCE B — CENTER KICKOFF (very specific restart):
-A center kickoff after a goal looks EXACTLY like this:
-- Players from BOTH teams are STATIONARY, spread symmetrically across the field
-- The ball is placed at the CENTER SPOT (exact middle of the pitch)
-- Players are on OPPOSITE sides of the halfway line — one team in each half
-- Players are WAITING, not running or moving toward any direction
-- A player stands over the ball at center, ready to kick off
-- The scene looks STATIC and ORGANIZED, like a photo
+A center kickoff is valid ONLY if ALL of these conditions are met simultaneously:
+1. Ball is exactly at the CENTER SPOT (geometric middle of the pitch)
+2. BOTH teams are clearly on OPPOSITE halves — visible midfield line symmetry
+3. ALL players are STATIC or walking very slowly — nobody running
+4. NO cluster of players near the ball — they are spread across the whole field
+5. The scene looks like a PHOTO — frozen, organized, symmetric
+6. You can clearly see the halfway line separating the two teams
+
+If ANY of these conditions is missing → it is NOT a center kickoff → is_goal=false
 
 This is COMPLETELY DIFFERENT from:
-- Free kick: players are clustered together in one zone, not spread across field
-- Throw-in: one player on sideline, others moving nearby
+- Free kick: players clustered in one zone, not symmetric across field
+- Throw-in: players near sideline, not at center
 - Normal play: players running in various directions
-- Players spread across field BUT still moving = NOT a kickoff
+- Defensive repositioning: players walking back but NOT at center spot
+- Players spread but still moving = NOT a kickoff
 
 DO NOT interpret as a goal:
-- Throw-in: ONE player on the SIDELINE throwing the ball with both hands overhead
+- Throw-in: player on the SIDELINE throwing or preparing to throw the ball
+- Players clustered or fighting near the SIDELINE = throw-in situation, NOT goal
+- Players grouped on ONE side of the field = NOT a kickoff (kickoff = spread across whole field)
 - Free kick: players standing around ball anywhere on the pitch
 - Players running or fighting for the ball = normal play, NOT celebration
 - Players raising one arm = could be calling for the ball, NOT necessarily celebrating
 - Corner kick: player near the corner flag
-- Any restart near the sideline or corner = NOT a goal kickoff
+- Any restart near the sideline or touchline = NOT a goal kickoff
+- If the ball or players are near the sideline = almost certainly a throw-in, NOT a goal
+- Defensive free kick in the middle of the pitch: one player about to kick stationary ball, others spread = NOT a kickoff
+- Players walking back to positions after a foul = NOT a celebration, NOT a goal
 
 For celebrations to count as evidence they must be UNAMBIGUOUS:
 - Multiple players from SAME team running toward each other with arms wide open
@@ -1085,9 +1111,14 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
             }
 
         # Cas rebond : tir contré puis but dans la même fenêtre
-        # shot_votes >= 1 + goal_votes >= 1 = tir suivi d'un but → valider
-        if goal_votes >= 1 and shot_votes >= 1 and goal_score >= 0.25:
-            print(f"  [REBOND] shot+goal détectés dans même fenêtre → BUT confirmé")
+        # Contrainte temporelle : goal APRÈS shot, dans les 6s
+        # ex: tir contré à offset 0s → but à offset +5s = rebond → valider
+        if (goal_votes >= 1 and shot_votes >= 1 and goal_score >= 0.25
+                and best_goal_offset is not None and best_shot_offset is not None
+                and best_goal_offset > best_shot_offset
+                and (best_goal_offset - best_shot_offset) <= 6):
+            print(f"  [REBOND] shot@{best_shot_offset:+d}s → goal@{best_goal_offset:+d}s "
+                  f"(Δ={best_goal_offset - best_shot_offset}s) → BUT confirmé")
             return {
                 "type": "goal",
                 "confiance": min(best_conf, 0.65),
