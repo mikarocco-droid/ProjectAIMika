@@ -1084,6 +1084,18 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
                 "_shot_votes": shot_votes,
             }
 
+        # Cas rebond : tir contré puis but dans la même fenêtre
+        # shot_votes >= 1 + goal_votes >= 1 = tir suivi d'un but → valider
+        if goal_votes >= 1 and shot_votes >= 1 and goal_score >= 0.25:
+            print(f"  [REBOND] shot+goal détectés dans même fenêtre → BUT confirmé")
+            return {
+                "type": "goal",
+                "confiance": min(best_conf, 0.65),
+                "description": best_result.get("description", "") if best_result else "",
+                "_goal_votes": goal_votes,
+                "_shot_votes": shot_votes,
+            }
+
         return {
             "type": "none",
             "confiance": 0.3,
