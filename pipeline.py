@@ -1083,14 +1083,13 @@ def run_pipeline(
     summary["is_summary"]    = is_summary
     summary["context_stats"] = ctx_stats
 
-    # V9.7 — mettre à jour shots/xG avec les tirs qui ont passé tous les filtres
-    # (highlights = tirs validés par Gemini scorer après filtrage)
+    # V9.7 — shots depuis events (tous les tirs détectés, pas seulement les highlights)
     n_highlight_shots = sum(1 for h in highlights if h.get("main_type") == "shot")
     n_highlight_goals = sum(1 for h in highlights if h.get("main_type") in ("goal", "score"))
-    xg_highlight = sum(float(h.get("xg", 0) or 0) for h in highlights
-                       if h.get("main_type") == "shot")
-    summary["shots"]    = n_highlight_shots
-    summary["total_xg"] = round(xg_highlight, 2)
+    n_all_shots = sum(1 for e in events if e.get("type") == "shot")
+    xg_all = sum(float(e.get("xg", 0) or 0) for e in events if e.get("type") == "shot")
+    summary["shots"]    = n_all_shots   # tous les tirs détectés
+    summary["total_xg"] = round(xg_all, 2)
     if n_highlight_goals > summary["goals"]:
         summary["goals"] = n_highlight_goals
 
