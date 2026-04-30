@@ -657,7 +657,7 @@ def run_pipeline(
                     frame_w    = _frame_w,
                     frame_h    = _frame_h,
                 )
-                if result and result.get("is_goal") and result.get("confidence", 0) >= 0.70:
+                if result and result.get("is_goal") and result.get("confidence", 0) >= 0.85:
                     goal_t = result["timestamp"]
                     too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
                     if not too_close:
@@ -1069,27 +1069,42 @@ def run_pipeline(
             formation  = formation,
             style      = tactical.get("style"),
         )
-        story = generate_match_story(events, fps=fps)
+        story = generate_match_story(events_clean, fps=fps)
         print(f"  OK MVP={mvp_label} | commentary={len(commentary)} lines")
     except Exception as e:
         print(f"  Ratings error : {e}")
 
     # ─────────────────────────────────────────
-    # 11. SUMMARY
+    # events_clean — version filtrée pour summary + story
+    # Garde : buts validés + tirs dans highlights + tout le reste
+    # Retire : tirs bruts non confirmés dans highlights
+    # ─────────────────────────────────────────
+    highlight_shot_times = set()
+    for h in highlights:
+        if h.get("main_type") == "shot":
+            t = h.get("time_start", h.get("time", 0))
+            highlight_shot_times.add(round(float(t), 1))
+
+    events_clean = [
+        e for e in events
+        if e.get("type") != "shot"
+        or round(float(e.get("time", 0)), 1) in highlight_shot_times
+    ]
+
+    # ─────────────────────────────────────────
+    # 11. SUMMARY — sur events_clean (buts + tirs validés uniquement)
     # ─────────────────────────────────────────
     print("Step 11 : Summary...")
-    summary = compute_match_summary(events, stats, total_frames, fps)
+    summary = compute_match_summary(events_clean, stats, total_frames, fps)
     summary["possession"]    = possession
     summary["is_summary"]    = is_summary
     summary["context_stats"] = ctx_stats
 
-    # V9.7 — shots depuis events (tous les tirs détectés, pas seulement les highlights)
+    # V9.7+ — shots/xG/goals depuis events_clean (tirs validés par highlights)
     n_highlight_shots = sum(1 for h in highlights if h.get("main_type") == "shot")
     n_highlight_goals = sum(1 for h in highlights if h.get("main_type") in ("goal", "score"))
-    n_all_shots = sum(1 for e in events if e.get("type") == "shot")
-    xg_all = sum(float(e.get("xg", 0) or 0) for e in events if e.get("type") == "shot")
-    summary["shots"]    = n_all_shots   # tous les tirs détectés
-    summary["total_xg"] = round(xg_all, 2)
+    # events_clean contient déjà les bons tirs — summary les a comptés
+    # On force aussi les buts depuis highlights si supérieur
     if n_highlight_goals > summary["goals"]:
         summary["goals"] = n_highlight_goals
 
@@ -1198,7 +1213,7 @@ def run_pipeline(
     result = {
         "summary":       summary,
         "coarse_stats":  coarse_stats,
-        "events":        events,
+        "events":        events_clean,
         "stats":         stats,
         "highlights":    highlights,
         "jersey_map":    jersey_map,
