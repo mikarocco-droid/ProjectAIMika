@@ -658,8 +658,13 @@ def run_pipeline(
             # Préparer les tirs à analyser (avec fenêtre dynamique)
             shots_to_analyze = []
             detected_goal_times = []
+            shots_already_checked = []  # cooldown avant Gemini
             for i, shot in enumerate(shots_on_target_sorted):
                 st = shot.get("time", 0)
+                # Cooldown : skip si un tir proche a déjà été analysé
+                if any(abs(st - prev) < 20 for prev in shots_already_checked):
+                    print(f"  [SHOT→GOAL] Skip t={int(st//60):02d}:{int(st%60):02d} — tir trop proche d'un déjà analysé")
+                    continue
                 already_covered = any(abs(gt - st) < 35 for gt in existing_goal_times)
                 if already_covered:
                     continue
@@ -667,6 +672,7 @@ def run_pipeline(
                 time_to_next = next_shot_t - st
                 window = max(25, min(45, time_to_next - 5))
                 shots_to_analyze.append((shot, st, window))
+                shots_already_checked.append(st)
 
             print(f"  [SHOT→GOAL] {len(shots_to_analyze)} tirs à analyser")
 
