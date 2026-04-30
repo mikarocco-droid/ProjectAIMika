@@ -446,11 +446,18 @@ EVIDENCE A — BALL IN NET (most reliable):
 
 EVIDENCE B — CENTER KICKOFF (very specific restart):
 A center kickoff after a goal looks EXACTLY like this:
-- Both teams are spread across the entire field
+- Players from BOTH teams are STATIONARY, spread symmetrically across the field
 - The ball is placed at the CENTER SPOT (exact middle of the pitch)
-- Players from BOTH teams are visibly positioned on their respective halves
-- A player stands over the ball at center, about to kick off
-- This is DIFFERENT from: free kick, corner, throw-in, goal kick
+- Players are on OPPOSITE sides of the halfway line — one team in each half
+- Players are WAITING, not running or moving toward any direction
+- A player stands over the ball at center, ready to kick off
+- The scene looks STATIC and ORGANIZED, like a photo
+
+This is COMPLETELY DIFFERENT from:
+- Free kick: players are clustered together in one zone, not spread across field
+- Throw-in: one player on sideline, others moving nearby
+- Normal play: players running in various directions
+- Players spread across field BUT still moving = NOT a kickoff
 
 DO NOT interpret as a goal:
 - Throw-in: ONE player on the SIDELINE throwing the ball with both hands overhead
