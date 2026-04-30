@@ -962,37 +962,8 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # STEP 7b : Heatmaps avec events filtrés
     # ─────────────────────────────────────────
-    print("Step 7b : Heatmaps (events filtrés)...")
-    try:
-        # Filtrer les tirs : garder uniquement ceux qui matchent les highlights
-        # Les autres events (possession, passes, goals) restent tous
-        highlight_shot_times = set()
-        for h in highlights:
-            if h.get("main_type") == "shot":
-                t = h.get("time_start", 0)
-                # fenêtre ±5s pour matcher avec l'event original
-                highlight_shot_times.add(round(t))
-
-        events_for_heatmap = [
-            e for e in events
-            if e.get("type") != "shot"                          # garder non-tirs
-            or any(abs(e.get("time", 0) - ht) <= 8
-                   for ht in highlight_shot_times)              # garder tirs filtrés
-        ]
-
-        heatmaps = generate_all_heatmaps(
-            events     = events_for_heatmap,
-            output_dir = os.path.join(output_dir, "heatmaps"),
-            width      = config.FRAME_WIDTH,
-            height     = config.FRAME_HEIGHT,
-            sport      = sport
-        )
-        heatmap_path  = heatmaps.get("global")
-        heatmap_paths = heatmaps
-        print(f"  OK {len(heatmaps)} heatmaps "
-              f"({len(highlight_shot_times)} tirs filtrés / {sum(1 for e in events if e.get('type')=='shot')} bruts)")
-    except Exception as e:
-        print(f"  Heatmaps error : {e}")
+    # Step 7b déplacé après Step 8 — heatmaps générées sur events_clean
+    # (highlights doivent être prêts pour filtrer les tirs)
 
     print("Step 8 : Highlights...")
     reel_path = None
@@ -1069,15 +1040,15 @@ def run_pipeline(
             formation  = formation,
             style      = tactical.get("style"),
         )
-        story = generate_match_story(events_clean, fps=fps)
+        story = None  # calculé après events_clean (Step 11)
         print(f"  OK MVP={mvp_label} | commentary={len(commentary)} lines")
     except Exception as e:
         print(f"  Ratings error : {e}")
 
     # ─────────────────────────────────────────
-    # events_clean — version filtrée pour summary + story
-    # Garde : buts validés + tirs dans highlights + tout le reste
-    # Retire : tirs bruts non confirmés dans highlights
+    # events_clean — version filtrée pour summary + story + heatmaps + PDF
+    # Garde : buts validés + tirs dans highlights + passes + tous les autres events
+    # Retire : tirs bruts non confirmés (faux tirs / passes mal classées)
     # ─────────────────────────────────────────
     highlight_shot_times = set()
     for h in highlights:
@@ -1090,6 +1061,36 @@ def run_pipeline(
         if e.get("type") != "shot"
         or round(float(e.get("time", 0)), 1) in highlight_shot_times
     ]
+
+    n_shots_clean = sum(1 for e in events_clean if e.get("type") == "shot")
+    n_shots_raw   = sum(1 for e in events if e.get("type") == "shot")
+    print(f"  events_clean : {len(events_clean)} events | "
+          f"{n_shots_clean} tirs validés / {n_shots_raw} bruts")
+
+    # Recalculer story sur events_clean
+    try:
+        story = generate_match_story(events_clean, fps=fps)
+    except Exception as _e:
+        print(f"  Story error : {_e}")
+
+    # ─────────────────────────────────────────
+    # Step 7b : Heatmaps (sur events_clean)
+    # ─────────────────────────────────────────
+    print("Step 7b : Heatmaps (events filtrés)...")
+    try:
+        heatmaps = generate_all_heatmaps(
+            events     = events_clean,
+            output_dir = os.path.join(output_dir, "heatmaps"),
+            width      = config.FRAME_WIDTH,
+            height     = config.FRAME_HEIGHT,
+            sport      = sport
+        )
+        heatmap_path  = heatmaps.get("global")
+        heatmap_paths = heatmaps
+        print(f"  OK {len(heatmaps)} heatmaps "
+              f"({n_shots_clean} tirs filtrés / {n_shots_raw} bruts)")
+    except Exception as e:
+        print(f"  Heatmaps error : {e}")
 
     # ─────────────────────────────────────────
     # 11. SUMMARY — sur events_clean (buts + tirs validés uniquement)
