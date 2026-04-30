@@ -378,7 +378,58 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
     if not parts:
         return None
 
-    # Prompt Gemini — signaux post-but + strict sur kickoff vs remise en touche
+    # ── EARLY STOP — prompt minimal sur frames 0-5s ─────────────────────
+    # À 0-5s après le tir : chercher UNIQUEMENT le ballon dans le filet
+    # Pas de kickoff possible à ce stade → prompt simplifié et rapide
+    # Seuil 0.90 minimum, au moins 2 frames pour éviter faux positif
+    EARLY_STOP_MAX_OFFSET = 5.0
+    EARLY_STOP_MIN_CONF   = 0.90
+
+    early_parts = [p for p, t in zip(parts, valid_times)
+                   if t - shot_time <= EARLY_STOP_MAX_OFFSET]
+    early_times = [t for t in valid_times
+                   if t - shot_time <= EARLY_STOP_MAX_OFFSET]
+
+    if len(early_parts) >= 2:
+        _et_str = ", ".join(f"{int(t//60):02d}:{int(t%60):02d}" for t in early_times)
+        _early_prompt = f"""Football match analysis.
+{len(early_parts)} frames from {_et_str}, taken 0-5 seconds after a shot on goal at {int(shot_time//60):02d}:{int(shot_time%60):02d}.
+
+Question: Is the ball clearly INSIDE the goal (behind the goal line, inside the net)?
+
+Rules — read carefully:
+- YES: ball is fully past the goal line, inside the net, net is visibly deformed by the ball
+- YES: goalkeeper is retrieving the ball from INSIDE the net (body inside goal area)
+- NO: ball in front of the goal or on the goal line
+- NO: goalkeeper holding/catching ball in front of the goal
+- NO: ball near the post but not inside
+- NO: ball anywhere outside the net
+
+Return ONLY valid JSON:
+{{"is_goal": true or false, "timestamp": <seconds or null>, "confidence": <0.0-1.0>, "evidence": "<describe exactly: ball position relative to net/line>"}}
+confidence=0.95 only if ball is unmistakably inside the net.
+Default to is_goal=false if any doubt."""
+        try:
+            _resp = client.models.generate_content(
+                model    = "gemini-2.5-flash",
+                contents = [_early_prompt] + list(early_parts),
+            )
+            _data = _safe_json_load(_resp.text.strip())
+            if (_data and _data.get("is_goal")
+                    and _data.get("confidence", 0) >= EARLY_STOP_MIN_CONF):
+                _ts = _data.get("timestamp")
+                print(f"  [SHOT→GOAL EARLY] shot={shot_time:.1f}s → BUT t={_ts} "
+                      f"conf={_data['confidence']:.2f} | {_data.get('evidence','')[:80]}")
+                return {
+                    "is_goal":    True,
+                    "timestamp":  _ts if _ts else shot_time + 2,
+                    "confidence": _data["confidence"],
+                    "desc":       _data.get("evidence", ""),
+                }
+        except Exception:
+            pass  # early stop échoue → continue avec analyse complète
+
+        # Prompt Gemini — signaux post-but + strict sur kickoff vs remise en touche
     times_str = ", ".join(f"{int(t//60):02d}:{int(t%60):02d}" for t in valid_times)
     prompt = f"""You are analyzing a football/soccer match video.
 I'm showing you {len(parts)} frames from timestamps: {times_str}
