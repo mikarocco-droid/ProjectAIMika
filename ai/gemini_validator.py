@@ -384,40 +384,50 @@ These frames cover {window} seconds after a detected shot on target at {int(shot
 
 Your task: determine if a GOAL was scored in this time window.
 
-Look for these GOAL INDICATORS (any one is sufficient):
+A goal is confirmed ONLY by ONE of these TWO evidences:
 
-1. DIRECT EVIDENCE:
-   - Ball physically inside the net or crossing the goal line
-   - Goalkeeper retrieving ball from inside the net
+EVIDENCE A — BALL IN NET (most reliable):
+- Ball is physically visible INSIDE the net
+- OR goalkeeper is crouching/diving to retrieve ball FROM INSIDE the net
+- The net must be visibly deformed or ball clearly behind the line
 
-2. CELEBRATION SIGNALS (strong indicator):
-   - Attacking players raising arms, running with fists pumped, hugging teammates
-   - Multiple players from the same team celebrating together
-   - Defending players looking dejected, hands on head
+EVIDENCE B — CENTER KICKOFF (very specific restart):
+A center kickoff after a goal looks EXACTLY like this:
+- Both teams are spread across the entire field
+- The ball is placed at the CENTER SPOT (exact middle of the pitch)
+- Players from BOTH teams are visibly positioned on their respective halves
+- A player stands over the ball at center, about to kick off
+- This is DIFFERENT from: free kick, corner, throw-in, goal kick
 
-3. RESTART AFTER GOAL:
-   - CENTER KICKOFF only: players lined up at the CENTER CIRCLE, ball at center spot
-   - NOT a goal: throw-in from sideline, corner kick, goal kick, free kick
+DO NOT interpret as a goal:
+- Throw-in: ONE player on the SIDELINE throwing the ball with both hands overhead
+- Free kick: players standing around ball anywhere on the pitch
+- Players running or fighting for the ball = normal play, NOT celebration
+- Players raising one arm = could be calling for the ball, NOT necessarily celebrating
+- Corner kick: player near the corner flag
+- Any restart near the sideline or corner = NOT a goal kickoff
 
-IMPORTANT — NOT a goal:
-- A throw-in (player throws ball from sideline) — very common false positive
-- Players walking or jogging — not necessarily after a goal
-- Corner kick, goal kick, free kick
+For celebrations to count as evidence they must be UNAMBIGUOUS:
+- Multiple players from SAME team running toward each other with arms wide open
+- Players jumping on each other, clearly hugging in joy
+- NOT: players jogging, disputing a ball, or one player raising a hand
 
-For the timestamp: if you see celebration or goalkeeper in net, estimate when the ball entered.
-If you only see the kickoff at center, estimate ~15-20 seconds before that.
-
-Return ONLY valid JSON, no markdown, no explanation:
+Return ONLY valid JSON, no markdown:
 {{
   "is_goal": true or false,
-  "timestamp": <exact seconds when ball crosses the line, or null if no goal>,
+  "timestamp": <seconds when ball crossed line, or null>,
   "confidence": <0.0 to 1.0>,
-  "evidence": "<describe the strongest signal you see: celebration / ball in net / center kickoff / throw-in / etc.>"
+  "evidence": "<EXACTLY what you see: describe the specific visual — e.g. 'ball visible inside net at 02:21' or 'center kickoff at 04:30 with both teams positioned' or 'throw-in from sideline' or 'players fighting for ball near touchline'>"
 }}
 
-If you see clear celebration OR ball in net: is_goal=true, confidence >= 0.80
-If you only see center kickoff: is_goal=true, confidence=0.70
-If you see throw-in or corner only: is_goal=false"""
+Confidence scale:
+- 0.95 : ball clearly inside net with goalkeeper reaction
+- 0.90 : center kickoff WITH unambiguous celebration visible
+- 0.85 : center kickoff clearly visible (both teams, center spot, proper formation)
+- 0.80 : ball appears to cross line but partially obstructed
+- below 0.80 : insufficient evidence → set is_goal=false
+
+DEFAULT TO is_goal=false if you have any doubt."""
 
     parts_with_prompt = [text_to_part(prompt)] + parts
 
