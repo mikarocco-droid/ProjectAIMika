@@ -312,21 +312,23 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
     if client is None:
         return None
 
-    # Stratégie d'échantillonnage en 3 phases :
-    # Phase 1 : [shot_time, shot_time+5s] toutes les 1s — capture le tir et l'impact immédiat
-    # Phase 2 : [shot_time+5s, shot_time+20s] toutes les 2s — réaction des joueurs, gardien
-    # Phase 3 : [shot_time+20s, shot_time+window] toutes les 4s — remise en jeu / kickoff
+    # Stratégie d'échantillonnage optimisée — 8 frames max pour réduire le temps Gemini
+    # Frame 1 : t+0s  — état au moment du tir
+    # Frame 2 : t+2s  — ballon dans le filet ou gardien qui plonge
+    # Frame 3 : t+4s  — réaction immédiate gardien / célébration
+    # Frame 4 : t+7s  — célébration ou reprise du jeu
+    # Frame 5 : t+12s — si célébration, elle est visible ici
+    # Frame 6 : t+18s — remise en jeu commence
+    # Frame 7 : t+25s — kickoff au centre ou corner/touche visible
+    # Frame 8 : t+window — confirmation finale
+    offsets = [0, 2, 4, 7, 12, 18, 25, window]
     sample_times = []
-    t = shot_time
-    while t <= shot_time + window:
-        sample_times.append(round(t, 1))
-        elapsed = t - shot_time
-        if elapsed < 5:
-            t += 1.0
-        elif elapsed < 20:
-            t += 2.0
-        else:
-            t += 4.0
+    seen = set()
+    for off in offsets:
+        t = round(shot_time + off, 1)
+        if t not in seen and t <= shot_time + window:
+            sample_times.append(t)
+            seen.add(t)
 
     # Extraire les frames en une seule passe séquentielle
     # (évite les seeks répétés qui peuvent sauter des frames sur fichier Drive/réseau)
