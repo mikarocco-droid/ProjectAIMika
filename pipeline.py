@@ -593,13 +593,34 @@ def run_pipeline(
                         print(f"  [DEBUG CLIP] {os.path.basename(_out)}")
         # ────────────────────────────────────────────────────────────
 
+        # Buts cross_line → confiance physique élevée → bypass Gemini
+        cross_line_goals = [
+            e for e in events_for_gemini
+            if e.get("type") == "goal" and e.get("cross_line")
+        ]
+        events_for_gemini_filtered = [
+            e for e in events_for_gemini
+            if not (e.get("type") == "goal" and e.get("cross_line"))
+        ]
+        if cross_line_goals:
+            print(f"  [CROSS_LINE] {len(cross_line_goals)} but(s) franchissement ligne → bypass Gemini")
+            for g in cross_line_goals:
+                g["gemini_validated"] = True
+                g["gemini_type"]      = "goal"
+                g["gemini_conf"]      = g.get("confidence", 0.90)
+
         events_validated = validate_events_with_gemini(
-            events        = events_for_gemini,
+            events        = events_for_gemini_filtered,
             video_path    = video_path,
             fps           = fps,
             sport         = sport,
             MIN_CONF_GOAL = 0.85 if not is_summary else 0.75,
             MIN_CONF_SHOT = 0.70,
+        )
+        # Réintégrer les buts cross_line confirmés
+        events_validated = sorted(
+            events_validated + cross_line_goals,
+            key=lambda e: e.get("time", 0)
         )
 
         # Log POST-GEMINI — résultat après validation
