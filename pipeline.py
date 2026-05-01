@@ -662,7 +662,7 @@ def run_pipeline(
             for i, shot in enumerate(shots_on_target_sorted):
                 st = shot.get("time", 0)
                 # Cooldown : skip si un tir proche a déjà été analysé
-                if any(abs(st - prev) < 20 for prev in shots_already_checked):
+                if any(abs(st - prev) < 12 for prev in shots_already_checked):
                     print(f"  [SHOT→GOAL] Skip t={int(st//60):02d}:{int(st%60):02d} — tir trop proche d'un déjà analysé")
                     continue
                 already_covered = any(abs(gt - st) < 35 for gt in existing_goal_times)
@@ -670,7 +670,7 @@ def run_pipeline(
                     continue
                 next_shot_t = shot_times_all[i + 1] if i + 1 < len(shot_times_all) else st + 999
                 time_to_next = next_shot_t - st
-                window = max(25, min(45, time_to_next - 5))
+                window = max(22, min(35, time_to_next - 5))
                 shots_to_analyze.append((shot, st, window))
                 shots_already_checked.append(st)
 
