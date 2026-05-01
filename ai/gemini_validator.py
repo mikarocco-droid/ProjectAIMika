@@ -455,6 +455,7 @@ EVIDENCE A — BALL IN NET (most reliable):
 - OR goalkeeper is crouching/diving to retrieve ball FROM INSIDE the net
 - The net must be visibly deformed or ball clearly behind the line
 - The goalkeeper's position INSIDE the goal area confirms the ball went in
+- The goalkeeper must be CROUCHING or DIVING to pick up the ball — NOT simply standing in goal waiting
 
 AMBIGUITY RULE (very important):
 If the ball position is unclear, partially hidden, or you are not 100% certain it crossed the line:
@@ -479,6 +480,8 @@ This is COMPLETELY DIFFERENT from:
 - Normal play: players running in various directions
 - Defensive repositioning: players walking back but NOT at center spot
 - Players spread but still moving = NOT a kickoff
+- Goalkeeper standing upright in goal = normal positioning, NOT retrieving ball from net
+- Ball near goal but outside net = NOT a goal, even if goalkeeper is nearby
 
 DO NOT interpret as a goal:
 - Throw-in: player on the SIDELINE throwing or preparing to throw the ball
@@ -512,6 +515,12 @@ Confidence scale:
 - 0.85 : center kickoff clearly visible (both teams, center spot, proper formation)
 - 0.80 : ball appears to cross line but partially obstructed
 - below 0.80 : insufficient evidence → set is_goal=false
+
+MULTI-FRAME RULE:
+A goal should ideally be visible in MORE THAN ONE frame (ball inside net, or goalkeeper retrieving).
+If you only see evidence in exactly ONE frame and it is ambiguous → is_goal=false.
+Single-frame evidence is only sufficient if the ball is UNMISTAKABLY inside the net (confidence=0.95).
+If only ONE frame suggests a goal but the other frames show normal play, active play, or contradict it → is_goal=false.
 
 DEFAULT TO is_goal=false if you have any doubt."""
 
