@@ -11,8 +11,7 @@ from sports.config import get_sport_config, get_highlight_types
 # 0.50 = tir vraiment dangereux
 # Évite les faux positifs quand sklearn pas encore actif
 # ─────────────────────────────────────────
-# V9.7 — relevé 0.50 → 0.55 pour réduire les faux tirs
-XG_MIN_FOR_HIGHLIGHT = 0.55
+XG_MIN_FOR_HIGHLIGHT = 0.50
 
 
 # ─────────────────────────────────────────
@@ -114,11 +113,11 @@ def merge_close_events(events, window=8, fps=25, mode="match"):
 def cut_clip(video_path, start, end, output_path):
     subprocess.run([
         "ffmpeg", "-y",
+        "-ss", str(max(0, start - 0.5)),
+        "-to", str(end),
         "-i", video_path,
-        "-ss", str(max(0, start)),
-        "-t", str(max(0, end - start)),
-        "-r", "25",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        "-ss", "0.5",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-c:a", "aac",
         "-avoid_negative_ts", "make_zero",
         "-movflags", "+faststart",
@@ -185,23 +184,16 @@ def create_highlights(
     n_shots = sum(1 for e in key_events if e.get("type") == "shot")
     print(f"  Highlights sélectionnés : {n_goals} buts + {n_shots} tirs qualifiés")
 
-    # V9.7 — Séparer buts et tirs
-    # Les buts sont toujours inclus (jamais évincés par des tirs)
-    goals_only = [e for e in key_events if e.get("type") in ["goal", "score"]]
-    shots_only = [e for e in key_events if e.get("type") == "shot"]
-
-    # Trier les tirs par xG décroissant
-    shots_only = sorted(shots_only, key=lambda e: e.get("xg", 0), reverse=True)
-
-    # Dédupliquer les tirs proches (window=8s) avant de couper
-    shots_only = merge_close_events(shots_only, fps=fps, mode=mode)
-
-    # Budget tirs = max_clips - nb buts (les buts ont priorité absolue)
-    budget_shots = max(max_clips - len(goals_only), 5)
-    shots_only   = shots_only[:budget_shots]
-
-    # Réassembler : buts + top tirs → tri chronologique
-    key_events = goals_only + shots_only
+    key_events = sorted(
+        key_events,
+        key=lambda e: (
+            e.get("type") in ["goal", "score"],
+            e.get("xg", 0),
+            score_event(e, mode),
+        ),
+        reverse=True
+    )
+    key_events = key_events[:max_clips * 2]
     key_events = merge_close_events(key_events, fps=fps, mode=mode)
     key_events = sorted(key_events, key=lambda e: e.get("frame", 0))
     key_events = key_events[:max_clips]
@@ -296,8 +288,7 @@ def create_highlight_reel(highlights, output_path="outputs/reel.mp4"):
         "ffmpeg", "-y",
         "-f", "concat", "-safe", "0",
         "-i", list_file,
-        "-r", "25",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-c:a", "aac",
         "-movflags", "+faststart",
         output_path

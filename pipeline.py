@@ -586,7 +586,7 @@ def run_pipeline(
                     _sp.run([
                         "ffmpeg", "-y", "-ss", str(_t0),
                         "-i", video_path, "-t", "25",
-                        "-c:v", "libx264", "-crf", "28",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
                         "-c:a", "aac", "-loglevel", "error", _out
                     ], capture_output=True)
                     if os.path.exists(_out):
