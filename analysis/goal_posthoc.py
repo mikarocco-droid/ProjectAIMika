@@ -642,6 +642,10 @@ def detect_fast_goals_from_ball(
     ABSENT_MAX_FRAMES   = 40  # pas plus de 40 frames (~6s) → sinon c'est autre chose
     APPEAR_IN_GOAL_X    = _DISAPPEAR_L_MAX  # zone gauche
     APPEAR_IN_GOAL_X_R  = _DISAPPEAR_R_MIN  # zone droite
+    # Zone hauteur élargie pour ball_appears_in_goal (15% au lieu de 20%)
+    # car le ballon peut réapparaître légèrement au-dessus de la barre
+    APPEAR_Y_TOP    = frame_h * 0.15
+    APPEAR_Y_BOTTOM = frame_h * 0.85
 
     absent_since = None  # frame index depuis laquelle le ballon est absent
 
@@ -667,9 +671,13 @@ def detect_fast_goals_from_ball(
                 in_goal_left  = x < APPEAR_IN_GOAL_X and GOAL_Y_TOP < y < GOAL_Y_BOTTOM
                 in_goal_right = x > APPEAR_IN_GOAL_X_R and GOAL_Y_TOP < y < GOAL_Y_BOTTOM
 
+                # Zone hauteur élargie pour réapparition ballon
+                in_goal_left  = x < APPEAR_IN_GOAL_X  and APPEAR_Y_TOP < y < APPEAR_Y_BOTTOM
+                in_goal_right = x > APPEAR_IN_GOAL_X_R and APPEAR_Y_TOP < y < APPEAR_Y_BOTTOM
+
                 if in_goal_left or in_goal_right:
-                    # Filtre touche/corner : y trop haut ou trop bas → rejet
-                    if y < frame_h * 0.15 or y > frame_h * 0.85:
+                    # Filtre touche/corner : y vraiment trop extrême
+                    if y < frame_h * 0.10 or y > frame_h * 0.90:
                         absent_since = None
                         continue
                     # Pas doublon
