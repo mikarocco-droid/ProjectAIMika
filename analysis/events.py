@@ -592,9 +592,9 @@ def detect_events(
 
             if is_shot_z and state["shot_cd"] == 0:
                 if not (state["_gk_holding_ball"] or state["_gk_release_cd"] > 0):
-                    # V9.7+ — is_shot_candidate() est le filtre principal :
+                    # V9.7+ — is_shot_candidate() est le filtre principal
                     # vitesse > frame_w*1.5 px/s + accélération x1.4 + zone 25%
-                    # Élimine les passes, centres, et dégagements
+                    # Élimine les passes, centres, dégagements (~33 → ~8-12 tirs)
                     if (_bt is not None
                             and hasattr(_bt, "is_shot_candidate")
                             and not ball_interpolated):
@@ -605,7 +605,7 @@ def detect_events(
                                 on_target = fast_shot_in_goal
                             )
                     elif _bt is None and is_valid_shot(_bt, frame_w, frame_h):
-                        # Fallback si pas de tracker (compatibilité)
+                        # Fallback si pas de tracker
                         _register_shot(
                             compute_xg(x, y, frame_w, frame_h, learner),
                             source    = "events_standard_fallback",
@@ -613,7 +613,6 @@ def detect_events(
                         )
 
             elif fast_shot_in_goal and state["shot_cd"] > 0:
-                # Tir rapide dans la zone de but même pendant le cooldown
                 if ball_speed > frame_w * 0.10:
                     _register_shot(
                         compute_xg(x, y, frame_w, frame_h, learner),
