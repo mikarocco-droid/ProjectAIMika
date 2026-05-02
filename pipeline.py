@@ -504,7 +504,10 @@ def run_pipeline(
                 fps         = fps,
                 frame_w     = _frame_w,
                 frame_h     = _frame_h,
-                goal_box    = _goal_box,
+                goal_box    = (_goal_box.get("goal_box_h2", _goal_box)
+                               if _goal_box and _goal_box.get("halftime_shift")
+                               and e.get("time", 0) > _duration / 2
+                               else _goal_box),
             )
             if fast_goals:
                 events.extend(fast_goals)
@@ -609,7 +612,7 @@ def run_pipeline(
                     _sp.run([
                         "ffmpeg", "-y", "-ss", str(_t0),
                         "-i", video_path, "-t", "25",
-                        "-c:v", "libx264", "-crf", "28",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
                         "-c:a", "aac", "-loglevel", "error", _out
                     ], capture_output=True)
                     if os.path.exists(_out):
