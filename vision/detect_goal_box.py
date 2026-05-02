@@ -99,12 +99,12 @@ def _detect_goal_in_frame(frame, frame_w, frame_h):
     small = cv2.resize(frame, (int(frame_w * scale), int(frame_h * scale)))
     sh, sw = small.shape[:2]
 
-    roi_y1 = int(sh * 0.10)
-    roi_y2 = int(sh * 0.90)
+    roi_y1 = int(sh * 0.20)
+    roi_y2 = int(sh * 0.80)
     roi = small[roi_y1:roi_y2, :]
 
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, np.array([0, 0, 170]), np.array([180, 55, 255]))
+    mask = cv2.inRange(hsv, np.array([0, 0, 200]), np.array([180, 40, 255]))
 
     kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 10))
     kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 2))
@@ -177,7 +177,7 @@ def _detect_goal_in_frame(frame, frame_w, frame_h):
             # Score longueur des poteaux
             len_score = min(1.0, (v1[3] + v2[3]) / (2 * frame_h * 0.3))
 
-            # Score barre transversale
+            # Score barre transversale — garder la meilleure (pas break)
             bar_score = 0.0
             bar_y     = None
             for h in horizontals:
@@ -185,10 +185,9 @@ def _detect_goal_in_frame(frame, frame_w, frame_h):
                 if hy > y_bot_v:
                     continue
                 overlap = (min(hx2, x_right) - max(hx1, x_left)) / max(goal_w, 1)
-                if overlap > 0.5:
+                if overlap > 0.7 and overlap > bar_score:
                     bar_score = min(1.0, overlap)
                     bar_y = hy
-                    break
 
             score = ratio_score * 0.3 + len_score * 0.3 + bar_score * 0.4
 
@@ -237,9 +236,16 @@ def _cluster_candidates(candidates, frame_w, x_tol_pct=0.08):
     if len(best) < 3:
         return None
 
-    # Log
+    # Validation variance — le but doit être stable (faible écart-type)
+    xl_std = float(np.std([c[1] for c in best]))
+    xr_std = float(np.std([c[2] for c in best]))
+    if xl_std > 50 or xr_std > 50:  # > 50px de variance → instable
+        print(f"  [GOAL_BOX] Cluster instable (std_xl={xl_std:.0f} std_xr={xr_std:.0f}) → fallback")
+        return None
+
     print(f"  [GOAL_BOX] Cluster principal : {len(best)} frames | "
-          f"x_left≈{int(best[0][1])} x_right≈{int(best[0][2])}")
+          f"x_left≈{int(best[0][1])} x_right≈{int(best[0][2])} | "
+          f"std=({xl_std:.0f},{xr_std:.0f})px")
 
     return best
 
@@ -252,12 +258,12 @@ def _fallback_goal_box(frame_w, frame_h):
         "frame_h":    frame_h,
         "method":     "fallback",
         "score":      0.0,
-        "but_gauche": int(frame_w * 0.04),
-        "but_droit":  int(frame_w * 0.96),
+        "but_gauche": int(frame_w * 0.25),
+        "but_droit":  int(frame_w * 0.75),
         "but_top":    goal_h_min,
         "but_bottom": goal_h_max,
-        "left":  {"x_center": int(frame_w * 0.04), "x_min": 0,               "x_max": int(frame_w * 0.08), "y_min": goal_h_min, "y_max": goal_h_max},
-        "right": {"x_center": int(frame_w * 0.96), "x_min": int(frame_w * 0.92), "x_max": frame_w,         "y_min": goal_h_min, "y_max": goal_h_max},
+        "left":  {"x_center": int(frame_w * 0.25), "x_min": int(frame_w * 0.20), "x_max": int(frame_w * 0.30), "y_min": goal_h_min, "y_max": goal_h_max},
+        "right": {"x_center": int(frame_w * 0.75), "x_min": int(frame_w * 0.70), "x_max": int(frame_w * 0.80), "y_min": goal_h_min, "y_max": goal_h_max},
     }
 
 
