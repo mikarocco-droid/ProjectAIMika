@@ -33,11 +33,11 @@ class BallBuffer:
     def add(self, x, y, t, frame_w=None, frame_h=None):
         # V9.7+ : ignorer les positions hors frame (Kalman/interpolation ratée)
         # Ces positions (-95,-6) ou (-198,-38) faussent toward_goal et stability
+        # Filtre strict : toute position hors [0,frame_w] x [0,frame_h] ignorée
         if frame_w is not None and frame_h is not None:
-            margin = 0.15  # 15% de marge autour du frame
-            if (x < -frame_w * margin or x > frame_w * (1 + margin)
-                    or y < -frame_h * margin or y > frame_h * (1 + margin)):
-                return  # position aberrante → ignorée
+            if x < 0 or x > frame_w or y < 0 or y > frame_h:
+                print(f"  [BALL FILTERED] ({x:.1f},{y:.1f}) t={t:.1f}s")
+                return  # position hors frame → ignorée
         self._buf.append((float(x), float(y), float(t)))
 
     def get(self):
