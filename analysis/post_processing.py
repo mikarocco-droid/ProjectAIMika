@@ -194,9 +194,12 @@ def filter_goals(events, window, frame_w, position_threshold):
         candidates_per_group.append(max(candidates, key=_sort_key))
 
     # Passe 2 — appliquer le cooldown large entre buts distincts
+    # V9.7+ : réduit à 20s — Gemini valide ensuite les vrais doublons
+    # 45s bloquait des vrais buts proches (ex: but à 140s bloqué par faux positif à 103s)
+    cooldown_filter = min(window, 20.0)
     kept = []
     for g in sorted(candidates_per_group, key=lambda x: x.get("time", 0)):
-        if not kept or abs(g["time"] - kept[-1]["time"]) >= window:
+        if not kept or abs(g["time"] - kept[-1]["time"]) >= cooldown_filter:
             kept.append(g)
         else:
             # Garder le meilleur des deux
