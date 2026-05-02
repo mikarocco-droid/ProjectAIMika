@@ -178,6 +178,8 @@ def detect_fast_goals_from_ball(
     GOAL_X_LEFT  = frame_w * GOAL_PCT
     GOAL_X_RIGHT = frame_w * (1 - GOAL_PCT)
 
+    _goal_x_left  = None  # poteau gauche détecté
+    _goal_x_right = None  # poteau droit détecté
     if goal_box and goal_box.get("method") == "vision":
         try:
             from vision.detect_goal_box import goal_box_to_posthoc_params
@@ -186,7 +188,12 @@ def detect_fast_goals_from_ball(
             _DISAPPEAR_L_MAX = _p.get("DISAPPEAR_X_LEFT_MAX",  frame_w * 0.12)
             _DISAPPEAR_R_MIN = _p.get("DISAPPEAR_X_RIGHT_MIN", frame_w * 0.88)
             _DISAPPEAR_R_MAX = _p.get("DISAPPEAR_X_RIGHT_MAX", frame_w)
+            # V9.7+ — stocker les poteaux pour zone centre
+            _goal_x_left  = goal_box.get("but_gauche")
+            _goal_x_right = goal_box.get("but_droit")
             print(f"  [GOAL_BOX] Zones disappear : L<{_DISAPPEAR_L_MAX:.0f} R>{_DISAPPEAR_R_MIN:.0f}")
+            if _goal_x_left and _goal_x_right:
+                print(f"  [GOAL_BOX] Zone centre : {_goal_x_left}px → {_goal_x_right}px")
         except Exception as _e:
             print(f"  [GOAL_BOX] fallback zones fixes : {_e}")
             _DISAPPEAR_L_MIN = 0
@@ -421,7 +428,12 @@ def detect_fast_goals_from_ball(
         # Utiliser zones dynamiques (goal_box) si disponibles
         near_right = _DISAPPEAR_R_MIN < x < _DISAPPEAR_R_MAX
         near_left  = _DISAPPEAR_L_MIN < x < _DISAPPEAR_L_MAX
-        if not (near_right or near_left):
+        # V9.7+ — le but peut être au centre du frame (caméra latérale)
+        # Si goal_box disponible, accepter aussi x entre les deux poteaux
+        near_center = False
+        if _goal_x_left is not None and _goal_x_right is not None:
+            near_center = _goal_x_left <= x <= _goal_x_right
+        if not (near_right or near_left or near_center):
             continue
 
         # 2. Ballon dans la hauteur de but
@@ -526,7 +538,12 @@ def detect_fast_goals_from_ball(
         # Utiliser zones dynamiques (goal_box) si disponibles
         near_right = _DISAPPEAR_R_MIN < x < _DISAPPEAR_R_MAX
         near_left  = _DISAPPEAR_L_MIN < x < _DISAPPEAR_L_MAX
-        if not (near_right or near_left):
+        # V9.7+ — le but peut être au centre du frame (caméra latérale)
+        # Si goal_box disponible, accepter aussi x entre les deux poteaux
+        near_center = False
+        if _goal_x_left is not None and _goal_x_right is not None:
+            near_center = _goal_x_left <= x <= _goal_x_right
+        if not (near_right or near_left or near_center):
             continue
 
         # 2. Ballon dans la hauteur de but
