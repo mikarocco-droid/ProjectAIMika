@@ -387,29 +387,6 @@ def run_pipeline(
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
-    # ─── Validation post-YOLO du goal_box ───────────────────────────────
-    # Maintenant qu'on a frames_data, on peut valider/booster le score
-    # du goal_box avec la position du gardien (bonus, jamais bloquant)
-    if _goal_box and _goal_box.get("method") == "vision" and frames_data:
-        try:
-            _gk_positions = []
-            for _fd in frames_data[:200]:  # 200 premières frames suffisent
-                for _p in _fd.get("players", []):
-                    if _p.get("is_goalkeeper"):
-                        _gk_positions.append(_p.get("x", 0))
-            if _gk_positions:
-                _gk_x_median = float(np.median(_gk_positions))
-                _bx_l = _goal_box.get("but_gauche", 0)
-                _bx_r = _goal_box.get("but_droit", _frame_w)
-                _gk_in_goal = _bx_l <= _gk_x_median <= _bx_r
-                if _gk_in_goal:
-                    _goal_box["score"] = min(1.0, _goal_box.get("score", 0.5) + 0.2)
-                    print(f"  [GOAL_BOX] Gardien dans la zone → score boosté ({_goal_box['score']:.2f})")
-                else:
-                    print(f"  [GOAL_BOX] Gardien hors zone (x={_gk_x_median:.0f}) → score inchangé")
-        except Exception as _e:
-            pass  # validation bonus — jamais bloquant
-
     for e in events:
         if not e.get("time"):
             frame     = e.get("frame", 0) or 0
@@ -467,10 +444,10 @@ def run_pipeline(
                   f"position_threshold={GOAL_POSITION_THRESHOLD*100:.0f}%")
         else:
             if learner and learner.stats().get("n_matches", 0) >= 25:
-                goal_cooldown = learner.get_thresholds().get("goal_cooldown", 45.0)
-                goal_cooldown = min(goal_cooldown, 45.0)
+                goal_cooldown = learner.get_thresholds().get("goal_cooldown", 30.0)
+                goal_cooldown = min(goal_cooldown, 30.0)
             else:
-                goal_cooldown = 45.0
+                goal_cooldown = 30.0
             print(f"  Match complet ({video_duration:.0f}s) — "
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={GOAL_POSITION_THRESHOLD*100:.0f}%")
@@ -504,10 +481,7 @@ def run_pipeline(
                 fps         = fps,
                 frame_w     = _frame_w,
                 frame_h     = _frame_h,
-                goal_box    = (_goal_box.get("goal_box_h2", _goal_box)
-                               if _goal_box and _goal_box.get("halftime_shift")
-                               and e.get("time", 0) > _duration / 2
-                               else _goal_box),
+                goal_box    = _goal_box,
             )
             if fast_goals:
                 events.extend(fast_goals)
@@ -612,7 +586,7 @@ def run_pipeline(
                     _sp.run([
                         "ffmpeg", "-y", "-ss", str(_t0),
                         "-i", video_path, "-t", "25",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                        "-c:v", "libx264", "-crf", "28",
                         "-c:a", "aac", "-loglevel", "error", _out
                     ], capture_output=True)
                     if os.path.exists(_out):
