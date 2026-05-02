@@ -30,7 +30,14 @@ class BallBuffer:
     def __init__(self, size=30):
         self._buf = deque(maxlen=size)
 
-    def add(self, x, y, t):
+    def add(self, x, y, t, frame_w=None, frame_h=None):
+        # V9.7+ : ignorer les positions hors frame (Kalman/interpolation ratée)
+        # Ces positions (-95,-6) ou (-198,-38) faussent toward_goal et stability
+        if frame_w is not None and frame_h is not None:
+            margin = 0.15  # 15% de marge autour du frame
+            if (x < -frame_w * margin or x > frame_w * (1 + margin)
+                    or y < -frame_h * margin or y > frame_h * (1 + margin)):
+                return  # position aberrante → ignorée
         self._buf.append((float(x), float(y), float(t)))
 
     def get(self):
@@ -287,7 +294,7 @@ class BallTracker:
                 self.last_valid_ball  = (cx, cy)
                 self.last_valid_frame = self.frame_id
 
-                self.ball_buffer.add(cx, cy, t)
+                self.ball_buffer.add(cx, cy, t, frame_w, frame_h)
                 self.last_seen   = self.frame_id
                 self.lost_frames = 0
                 pos = self.kalman.update((cx, cy))
@@ -302,7 +309,7 @@ class BallTracker:
                 pos = self.kalman.update(None)
                 if pos is not None:
                     cx, cy = int(pos[0]), int(pos[1])
-                    self.ball_buffer.add(cx, cy, t)
+                    self.ball_buffer.add(cx, cy, t, frame_w, frame_h)
                     return self.get_ball_bbox(pos), True
                 # MODIF 4 — prédiction par vélocité si Kalman échoue
                 elif self.last_valid_ball is not None:
@@ -316,7 +323,7 @@ class BallTracker:
                         self.velocity[0] * 0.7,
                         self.velocity[1] * 0.7
                     )
-                    self.ball_buffer.add(px, py, t)
+                    self.ball_buffer.add(px, py, t, frame_w, frame_h)
                     return self.get_ball_bbox(np.array([px, py])), True
             else:
                 self.ball_buffer.clear()
