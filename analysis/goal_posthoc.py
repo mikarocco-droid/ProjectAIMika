@@ -428,8 +428,7 @@ def detect_fast_goals_from_ball(
         if not (GOAL_Y_TOP < y < GOAL_Y_BOTTOM):
             continue
 
-        # 2b. Filtre touche — rejeter si ballon près bord haut/bas
-        # Touche = sortie latérale (y < 10% ou y > 90%) ≠ but = fond (x extrême)
+        # 2b. Filtre touche latérale
         if y < frame_h * 0.10 or y > frame_h * 0.90:
             print(f"  [DISAPPEAR FILTERED] t={frames_data[i].get('frame',i)/fps:.1f}s "
                   f"x={x:.0f} y={y:.0f} → touche latérale")
@@ -465,19 +464,6 @@ def detect_fast_goals_from_ball(
             i += 1
             continue
 
-        # 4c. Contexte offensif — log joueurs dans la zone (debug)
-        _players_near = 0
-        _frame_players = frames_data[i].get("players", [])
-        for _p in _frame_players:
-            _px = (_p.get("bbox", [0,0,0,0])[0] + _p.get("bbox", [0,0,0,0])[2]) / 2
-            if near_left and _px < frame_w * 0.30:
-                _players_near += 1
-            elif near_right and _px > frame_w * 0.70:
-                _players_near += 1
-        if _players_near > 0:
-            print(f"  [DISAPPEAR CONTEXT] t={frames_data[i].get('frame',i)/fps:.1f}s "
-                  f"x={x:.0f} players_near={_players_near}")
-
         # 5. Disparition + saut aberrant dans les frames suivantes
         disappeared = False
         for j in range(i+1, min(i+DISAPPEAR_WINDOW, len(frames_data))):
@@ -508,13 +494,11 @@ def detect_fast_goals_from_ball(
         if any(abs(goal_time - t) < 10 for t in existing):
             continue
 
-        # Bonus contextuel doux : 0.2 * joueurs proches, max 0.5
-        score = 6.5
+        score = 6.5  # score de base légèrement plus bas que cross_line
         _ctx_bonus = min(0.5, 0.2 * _players_near)
         score += _ctx_bonus
         if _players_near >= 2:
             print(f"  [DISAPPEAR CONTEXT] t={goal_time:.1f}s → {_players_near} joueurs zone bonus={_ctx_bonus:.1f}")
-
         confidence = round(min(0.6 + score * 0.07, 0.90), 2)
 
         goals.append({
@@ -560,8 +544,7 @@ def detect_fast_goals_from_ball(
         if not (GOAL_Y_TOP < y < GOAL_Y_BOTTOM):
             continue
 
-        # 2b. Filtre touche — rejeter si ballon près bord haut/bas
-        # Touche = sortie latérale (y < 10% ou y > 90%) ≠ but = fond (x extrême)
+        # 2b. Filtre touche latérale
         if y < frame_h * 0.10 or y > frame_h * 0.90:
             print(f"  [DISAPPEAR FILTERED] t={frames_data[i].get('frame',i)/fps:.1f}s "
                   f"x={x:.0f} y={y:.0f} → touche latérale")
@@ -597,19 +580,6 @@ def detect_fast_goals_from_ball(
             i += 1
             continue
 
-        # 4c. Contexte offensif — log joueurs dans la zone (debug)
-        _players_near = 0
-        _frame_players = frames_data[i].get("players", [])
-        for _p in _frame_players:
-            _px = (_p.get("bbox", [0,0,0,0])[0] + _p.get("bbox", [0,0,0,0])[2]) / 2
-            if near_left and _px < frame_w * 0.30:
-                _players_near += 1
-            elif near_right and _px > frame_w * 0.70:
-                _players_near += 1
-        if _players_near > 0:
-            print(f"  [DISAPPEAR CONTEXT] t={frames_data[i].get('frame',i)/fps:.1f}s "
-                  f"x={x:.0f} players_near={_players_near}")
-
         # 5. Disparition + saut aberrant dans les frames suivantes
         disappeared = False
         for j in range(i+1, min(i+DISAPPEAR_WINDOW, len(frames_data))):
@@ -640,12 +610,11 @@ def detect_fast_goals_from_ball(
         if any(abs(goal_time - t) < 10 for t in existing):
             continue
 
-        score = 6.5
+        score = 6.5  # score de base légèrement plus bas que cross_line
         _ctx_bonus = min(0.5, 0.2 * _players_near)
         score += _ctx_bonus
         if _players_near >= 2:
             print(f"  [DISAPPEAR CONTEXT] t={goal_time:.1f}s → {_players_near} joueurs zone bonus={_ctx_bonus:.1f}")
-
         confidence = round(min(0.6 + score * 0.07, 0.90), 2)
 
         goals.append({
@@ -665,5 +634,75 @@ def detect_fast_goals_from_ball(
         print(f"⚽ GOAL_DISAPPEAR {goal_time:.2f}s | score={score:.2f} | x={x:.0f} near={'right' if near_right else 'left'} | players={_players_near}")
         existing.append(goal_time)
 
+    # ── Détection "ball appears in goal" (V9.7+) ─────────────────────────────
+    # Couvre les tirs cachés / occlusions : ballon absent X frames puis
+    # réapparaît directement dans la zone du but
+    # Cas réel : tir de près masqué par défenseur → ballon invisible → réapparaît dans le filet
+    ABSENT_MIN_FRAMES   = 3   # absent au moins 3 frames (~0.5s avec frame_skip=4)
+    ABSENT_MAX_FRAMES   = 40  # pas plus de 40 frames (~6s) → sinon c'est autre chose
+    APPEAR_IN_GOAL_X    = _DISAPPEAR_L_MAX  # zone gauche
+    APPEAR_IN_GOAL_X_R  = _DISAPPEAR_R_MIN  # zone droite
+
+    absent_since = None  # frame index depuis laquelle le ballon est absent
+
+    for i in range(5, len(frames_data) - 3):
+        c = _get_ball_center(frames_data[i].get("ball"))
+        _frame_id_abs = frames_data[i].get("frame", i)
+        t_curr = _frame_id_abs / fps
+
+        if c is None:
+            # Ballon absent — noter le début de l'absence
+            if absent_since is None:
+                absent_since = i
+            continue
+
+        x, y = c
+
+        # Position valide — est-ce une réapparition dans le but ?
+        if absent_since is not None:
+            n_absent = i - absent_since
+
+            if ABSENT_MIN_FRAMES <= n_absent <= ABSENT_MAX_FRAMES:
+                # Réapparition dans zone but gauche ou droite
+                in_goal_left  = x < APPEAR_IN_GOAL_X and GOAL_Y_TOP < y < GOAL_Y_BOTTOM
+                in_goal_right = x > APPEAR_IN_GOAL_X_R and GOAL_Y_TOP < y < GOAL_Y_BOTTOM
+
+                if in_goal_left or in_goal_right:
+                    # Filtre touche/corner : y trop haut ou trop bas → rejet
+                    if y < frame_h * 0.15 or y > frame_h * 0.85:
+                        absent_since = None
+                        continue
+                    # Pas doublon
+                    if not any(abs(t_curr - t) < 10 for t in existing):
+                        # Compter joueurs dans la zone
+                        _players_near = 0
+                        for _p in frames_data[i].get("players", []):
+                            _px = (_p.get("bbox",[0,0,0,0])[0] + _p.get("bbox",[0,0,0,0])[2]) / 2
+                            if in_goal_left  and _px < frame_w * 0.35: _players_near += 1
+                            if in_goal_right and _px > frame_w * 0.65: _players_near += 1
+
+                        score = 6.0 + min(0.5, 0.2 * _players_near)
+                        confidence = round(min(0.6 + score * 0.07, 0.88), 2)
+
+                        print(f"⚽ BALL_APPEARS_IN_GOAL t={t_curr:.1f}s | "
+                              f"absent={n_absent}fr | x={x:.0f} | players={_players_near}")
+
+                        goals.append({
+                            "type":          "goal",
+                            "time":          round(t_curr, 2),
+                            "frame":         _frame_id_abs,
+                            "x":             x,
+                            "y":             y,
+                            "confidence":    confidence,
+                            "score":         round(score, 2),
+                            "players_near":  _players_near,
+                            "detected_from": "ball_appears_in_goal",
+                            "shot_linked":   False,
+                            "rebound":       False,
+                        })
+                        existing.append(t_curr)
+
+        # Reset : ballon visible → réinitialiser compteur d'absence
+        absent_since = None
 
     return goals
