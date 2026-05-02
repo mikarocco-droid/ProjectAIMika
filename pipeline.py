@@ -444,10 +444,10 @@ def run_pipeline(
                   f"position_threshold={GOAL_POSITION_THRESHOLD*100:.0f}%")
         else:
             if learner and learner.stats().get("n_matches", 0) >= 25:
-                goal_cooldown = learner.get_thresholds().get("goal_cooldown", 30.0)
-                goal_cooldown = min(goal_cooldown, 30.0)
+                goal_cooldown = learner.get_thresholds().get("goal_cooldown", 45.0)
+                goal_cooldown = min(goal_cooldown, 45.0)
             else:
-                goal_cooldown = 30.0
+                goal_cooldown = 45.0
             print(f"  Match complet ({video_duration:.0f}s) — "
                   f"goal_cooldown={goal_cooldown:.0f}s | "
                   f"position_threshold={GOAL_POSITION_THRESHOLD*100:.0f}%")
@@ -634,6 +634,30 @@ def run_pipeline(
                       f"gemini_conf={e.get('gemini_conf',0):.2f} "
                       f"tracker_conf={e.get('confidence',0):.2f} "
                       f"validated={e.get('gemini_validated',False)}")
+
+        # ── Cooldown post-Gemini — éliminer les doublons après validation ────────
+        # V9.7+ : le cooldown long s'applique UNIQUEMENT sur les buts validés
+        # Les candidats rejetés par Gemini ne bloquent plus les suivants
+        _GOAL_COOLDOWN_POST = goal_cooldown  # 30s ou 45s selon le learning
+        _confirmed_times = []
+        _goals_deduped = []
+        for _e in sorted(events_validated, key=lambda x: x.get("time", 0)):
+            if _e.get("type") not in ("goal", "score"):
+                _goals_deduped.append(_e)
+                continue
+            _t = _e.get("time", 0)
+            _validated = _e.get("gemini_validated", False)
+            if _validated:
+                # But validé : vérifier cooldown contre autres buts validés
+                if any(abs(_t - _ct) < _GOAL_COOLDOWN_POST for _ct in _confirmed_times):
+                    print(f"  [COOLDOWN POST] t={int(_t//60):02d}:{int(_t%60):02d} "
+                          f"trop proche d'un but confirmé → supprimé")
+                    continue
+                _confirmed_times.append(_t)
+                print(f"  [GOAL CONFIRMED] t={int(_t//60):02d}:{int(_t%60):02d} "
+                      f"→ cooldown actif ({_GOAL_COOLDOWN_POST:.0f}s)")
+            _goals_deduped.append(_e)
+        events_validated = _goals_deduped
 
         # ── SHOT→GOAL : Gemini cherche un but dans la fenêtre après chaque tir ──
         try:
