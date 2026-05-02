@@ -365,10 +365,10 @@ class BallTracker:
 
     def is_shot_candidate(self, frame_w, frame_h,
                           speed_threshold_px_per_sec=None,
-                          alignment_threshold=0.75,
-                          stability_threshold=0.75):
-        # V9.7 — seuils resserrés : stability 0.75, alignment 0.75
-        # Évite les passes rapides, centres, et trajectoires Kalman lissées
+                          alignment_threshold=0.55,
+                          stability_threshold=0.55):
+        # V9.7+ — seuils assouplis pour imgsz=640 (positions moins précises)
+        # alignment 0.75→0.55, stability 0.75→0.55 : ballon moins précis à 640
         """
         Combine vitesse px/s + alignement vers but + stabilité direction.
         Évite les faux tirs sur rebonds et passes rapides.
@@ -377,7 +377,8 @@ class BallTracker:
             speed_threshold_px_per_sec = self._dynamic_shot_threshold(frame_w)
 
         # Rejeter si position interpolée (Kalman/vélocité)
-        if self.lost_frames > 0:
+        # Tolérance 2 frames pour imgsz=640 qui perd plus souvent le ballon
+        if self.lost_frames > 2:
             return False
 
         # Filtre zone offensive — tirs partent des 25% proches des buts
@@ -404,7 +405,7 @@ class BallTracker:
             spd_recent = seg_speed(pts[-2], pts[-1])
             spd_before = seg_speed(pts[-4], pts[-3])
             accel_ratio = spd_recent / (spd_before + 1e-6)
-            accel_ok = accel_ratio >= 1.4  # vitesse 40% plus haute = accélération réelle
+            accel_ok = accel_ratio >= 1.2  # vitesse 20% plus haute (frame_skip=4 = timestamps espacés)
 
         result = (spd > speed_threshold_px_per_sec
                   and toward
