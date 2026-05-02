@@ -16,6 +16,12 @@ _N_FRAMES        = 80
 
 
 def detect_goal_box(video_path, n_frames=_N_FRAMES, fps=25):
+    """
+    Détecte la position du but via analyse en 2 passes :
+    - 1ère mi-temps : premières n_frames/2 frames
+    - 2ème mi-temps : n_frames/2 frames autour de la mi-temps
+    Robuste aux changements de côté et de zone caméra à la mi-temps.
+    """
     try:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -24,74 +30,136 @@ def detect_goal_box(video_path, n_frames=_N_FRAMES, fps=25):
         frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total   = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        step    = max(1, total // n_frames)
+        n_half  = n_frames // 2
 
-        candidates = []
-
-        for frame_idx in range(0, min(n_frames * step, total), step):
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = cap.read()
-            if not ret:
-                break
-            result = _detect_goal_in_frame(frame, frame_w, frame_h)
-            if result:
-                candidates.append(result)
+        # Passe 1 — début du match (0-15%) : représentatif de la 1ère mi-temps
+        cands_h1 = _analyze_frames(cap, frame_w, frame_h,
+                                   0,
+                                   int(total * 0.15),
+                                   n_half)
+        # Passe 2 — autour de la mi-temps (40-60%) : capture le changement de côté
+        cands_h2 = _analyze_frames(cap, frame_w, frame_h,
+                                   int(total * 0.40),
+                                   int(total * 0.60),
+                                   n_half)
 
         cap.release()
 
-        if not candidates:
-            print("  [GOAL_BOX] Aucune structure détectée → fallback")
-            return _fallback_goal_box(frame_w, frame_h)
+        box_h1 = _build_goal_box(cands_h1, frame_w, frame_h, label="H1")
+        box_h2 = _build_goal_box(cands_h2, frame_w, frame_h, label="H2")
 
-        candidates.sort(key=lambda c: c[0], reverse=True)
+        # Comparer les deux résultats
+        if box_h1 and box_h2:
+            shift = abs(box_h1["but_gauche"] - box_h2["but_gauche"])
+            if shift < frame_w * 0.08:
+                # Positions proches → fusion (moyenne pondérée par score)
+                s1, s2 = box_h1["score"], box_h2["score"]
+                total_s = s1 + s2
+                merged = {
+                    "frame_w":    frame_w,
+                    "frame_h":    frame_h,
+                    "method":     "vision_merged",
+                    "score":      max(s1, s2),
+                    "but_gauche": int((box_h1["but_gauche"] * s1 + box_h2["but_gauche"] * s2) / total_s),
+                    "but_droit":  int((box_h1["but_droit"]  * s1 + box_h2["but_droit"]  * s2) / total_s),
+                    "but_top":    int((box_h1["but_top"]    * s1 + box_h2["but_top"]    * s2) / total_s),
+                    "but_bottom": int((box_h1["but_bottom"] * s1 + box_h2["but_bottom"] * s2) / total_s),
+                    "halftime_shift": False,
+                    "left":  {"x_center": 0, "x_min": 0, "x_max": 0, "y_min": 0, "y_max": 0},
+                    "right": {"x_center": 0, "x_min": 0, "x_max": 0, "y_min": 0, "y_max": 0},
+                }
+                merged["left"]  = {"x_center": merged["but_gauche"], "x_min": merged["but_gauche"]-30, "x_max": merged["but_gauche"]+30, "y_min": merged["but_top"], "y_max": merged["but_bottom"]}
+                merged["right"] = {"x_center": merged["but_droit"],  "x_min": merged["but_droit"] -30, "x_max": merged["but_droit"] +30, "y_min": merged["but_top"], "y_max": merged["but_bottom"]}
+                print(f"  [GOAL_BOX] Fusion H1+H2 : but_gauche x={merged['but_gauche']} | but_droit x={merged['but_droit']}")
+                return merged
+            elif shift > frame_w * 0.10:
+                # Changement de côté → garder les deux
+                print(f"  [GOAL_BOX] Changement de côté détecté (shift={shift}px)")
+                box_h1["halftime_shift"] = True
+                box_h1["goal_box_h2"]    = box_h2
+            else:
+                # Légère variation → prendre le meilleur score
+                best = box_h1 if box_h1["score"] >= box_h2["score"] else box_h2
+                best["halftime_shift"] = False
+                print(f"  [GOAL_BOX] Variation légère → meilleur score retenu")
+                return best
+            return box_h1
 
-        # Filtre fréquence : garder seulement les structures vues souvent
-        # Un but est stable → visible sur >20% des frames
-        # Une barrière en arrière-plan → apparaît de façon intermittente
-        freq_threshold = max(3, len(candidates) * 0.20)
-        if len(candidates) < freq_threshold:
-            print(f"  [GOAL_BOX] Structure trop rare ({len(candidates)} frames) → fallback")
-            return _fallback_goal_box(frame_w, frame_h)
+        result = box_h1 or box_h2
+        if result:
+            result["halftime_shift"] = False
+            return result
 
-        # Clustering : regrouper les candidats proches (même but)
-        # Un but doit avoir x_left stable sur plusieurs frames
-        clustered = _cluster_candidates(candidates, frame_w)
-        if not clustered:
-            print("  [GOAL_BOX] Pas de cluster stable → fallback")
-            return _fallback_goal_box(frame_w, frame_h)
-
-        top = clustered
-
-        x_left   = int(np.median([c[1] for c in top]))
-        x_right  = int(np.median([c[2] for c in top]))
-        y_top    = int(np.median([c[3] for c in top]))
-        y_bottom = int(np.median([c[4] for c in top]))
-        score    = float(np.mean([c[0] for c in top]))
-
-        goal_w = x_right - x_left
-        if goal_w < frame_w * _MIN_GOAL_WIDTH or goal_w > frame_w * _MAX_GOAL_WIDTH:
-            print(f"  [GOAL_BOX] Largeur incohérente ({goal_w}px) → fallback")
-            return _fallback_goal_box(frame_w, frame_h)
-
-        print(f"  [GOAL_BOX] Détecté : but_gauche x={x_left} | but_droit x={x_right}")
-        print(f"  [GOAL_BOX] Poteaux détectés via vision (score={score:.2f}, n={len(top)}/{len(candidates)})")
-
-        return {
-            "frame_w":    frame_w,
-            "frame_h":    frame_h,
-            "method":     "vision",
-            "score":      score,
-            "but_gauche": x_left,
-            "but_droit":  x_right,
-            "but_top":    y_top,
-            "but_bottom": y_bottom,
-            "left":  {"x_center": x_left,  "x_min": x_left  - 30, "x_max": x_left  + 30, "y_min": y_top, "y_max": y_bottom},
-            "right": {"x_center": x_right, "x_min": x_right - 30, "x_max": x_right + 30, "y_min": y_top, "y_max": y_bottom},
-        }
+        print("  [GOAL_BOX] Aucune structure détectée → fallback")
+        return _fallback_goal_box(frame_w, frame_h)
 
     except Exception as e:
         print(f"  [GOAL_BOX] Erreur : {e} → fallback")
         return _fallback_goal_box(1920, 1080)
+
+
+def _analyze_frames(cap, frame_w, frame_h, start, end, n):
+    """Analyse n frames entre start et end, retourne les candidats."""
+    candidates = []
+    total_range = end - start
+    if total_range <= 0 or n <= 0:
+        return candidates
+    step = max(1, total_range // n)
+    for frame_idx in range(start, min(end, start + n * step), step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        if not ret:
+            break
+        result = _detect_goal_in_frame(frame, frame_w, frame_h)
+        if result:
+            candidates.append(result)
+    return candidates
+
+
+def _build_goal_box(candidates, frame_w, frame_h, label=""):
+    """Construit un goal_box depuis une liste de candidats."""
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda c: c[0], reverse=True)
+
+    freq_threshold = max(3, len(candidates) * 0.20)
+    if len(candidates) < freq_threshold:
+        print(f"  [GOAL_BOX] {label} : structure trop rare ({len(candidates)} frames)")
+        return None
+
+    clustered = _cluster_candidates(candidates, frame_w)
+    if not clustered:
+        print(f"  [GOAL_BOX] {label} : pas de cluster stable")
+        return None
+
+    top = clustered
+
+    x_left   = int(np.median([c[1] for c in top]))
+    x_right  = int(np.median([c[2] for c in top]))
+    y_top    = int(np.median([c[3] for c in top]))
+    y_bottom = int(np.median([c[4] for c in top]))
+    score    = float(np.mean([c[0] for c in top]))
+
+    goal_w = x_right - x_left
+    if goal_w < frame_w * _MIN_GOAL_WIDTH or goal_w > frame_w * _MAX_GOAL_WIDTH:
+        print(f"  [GOAL_BOX] {label} : largeur incohérente ({goal_w}px)")
+        return None
+
+    print(f"  [GOAL_BOX] {label} : but_gauche x={x_left} | but_droit x={x_right} | score={score:.2f}")
+
+    return {
+        "frame_w":    frame_w,
+        "frame_h":    frame_h,
+        "method":     "vision",
+        "score":      score,
+        "but_gauche": x_left,
+        "but_droit":  x_right,
+        "but_top":    y_top,
+        "but_bottom": y_bottom,
+        "left":  {"x_center": x_left,  "x_min": x_left  - 30, "x_max": x_left  + 30, "y_min": y_top, "y_max": y_bottom},
+        "right": {"x_center": x_right, "x_min": x_right - 30, "x_max": x_right + 30, "y_min": y_top, "y_max": y_bottom},
+    }
 
 
 def _detect_goal_in_frame(frame, frame_w, frame_h):
