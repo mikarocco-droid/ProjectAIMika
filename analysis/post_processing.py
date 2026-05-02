@@ -193,17 +193,18 @@ def filter_goals(events, window, frame_w, position_threshold):
 
         candidates_per_group.append(max(candidates, key=_sort_key))
 
-    # Passe 2 — appliquer le cooldown large entre buts distincts
-    # V9.7+ : réduit à 20s — Gemini valide ensuite les vrais doublons
-    # 45s bloquait des vrais buts proches (ex: but à 140s bloqué par faux positif à 103s)
-    cooldown_filter = min(window, 20.0)
+    # Passe 2 — anti-doublon court seulement (10s max)
+    # V9.7+ : le vrai cooldown long se fait APRÈS validation Gemini dans pipeline.py
+    # Un candidat rejeté par Gemini ne doit pas bloquer le candidat suivant
+    ANTI_DEDUP = min(window, 10.0)
     kept = []
     for g in sorted(candidates_per_group, key=lambda x: x.get("time", 0)):
-        if not kept or abs(g["time"] - kept[-1]["time"]) >= cooldown_filter:
+        if not kept or abs(g["time"] - kept[-1]["time"]) >= ANTI_DEDUP:
             kept.append(g)
         else:
-            # Garder le meilleur des deux
-            if (g.get("confidence", 0), g.get("score", 0)) >                (kept[-1].get("confidence", 0), kept[-1].get("score", 0)):
+            # Dans la fenêtre → garder le meilleur
+            if (g.get("confidence", 0), g.get("score", 0)) > \
+               (kept[-1].get("confidence", 0), kept[-1].get("score", 0)):
                 kept[-1] = g
 
     return sorted(others + kept, key=lambda x: x.get("time", 0))
