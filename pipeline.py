@@ -387,6 +387,29 @@ def run_pipeline(
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
+    # ─── Validation post-YOLO du goal_box ───────────────────────────────
+    # Maintenant qu'on a frames_data, on peut valider/booster le score
+    # du goal_box avec la position du gardien (bonus, jamais bloquant)
+    if _goal_box and _goal_box.get("method") == "vision" and frames_data:
+        try:
+            _gk_positions = []
+            for _fd in frames_data[:200]:  # 200 premières frames suffisent
+                for _p in _fd.get("players", []):
+                    if _p.get("is_goalkeeper"):
+                        _gk_positions.append(_p.get("x", 0))
+            if _gk_positions:
+                _gk_x_median = float(np.median(_gk_positions))
+                _bx_l = _goal_box.get("but_gauche", 0)
+                _bx_r = _goal_box.get("but_droit", _frame_w)
+                _gk_in_goal = _bx_l <= _gk_x_median <= _bx_r
+                if _gk_in_goal:
+                    _goal_box["score"] = min(1.0, _goal_box.get("score", 0.5) + 0.2)
+                    print(f"  [GOAL_BOX] Gardien dans la zone → score boosté ({_goal_box['score']:.2f})")
+                else:
+                    print(f"  [GOAL_BOX] Gardien hors zone (x={_gk_x_median:.0f}) → score inchangé")
+        except Exception as _e:
+            pass  # validation bonus — jamais bloquant
+
     for e in events:
         if not e.get("time"):
             frame     = e.get("frame", 0) or 0
@@ -586,7 +609,7 @@ def run_pipeline(
                     _sp.run([
                         "ffmpeg", "-y", "-ss", str(_t0),
                         "-i", video_path, "-t", "25",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                        "-c:v", "libx264", "-crf", "28",
                         "-c:a", "aac", "-loglevel", "error", _out
                     ], capture_output=True)
                     if os.path.exists(_out):
@@ -658,21 +681,15 @@ def run_pipeline(
             # Préparer les tirs à analyser (avec fenêtre dynamique)
             shots_to_analyze = []
             detected_goal_times = []
-            shots_already_checked = []  # cooldown avant Gemini
             for i, shot in enumerate(shots_on_target_sorted):
                 st = shot.get("time", 0)
-                # Cooldown : skip si un tir proche a déjà été analysé
-                if any(abs(st - prev) < 12 for prev in shots_already_checked):
-                    print(f"  [SHOT→GOAL] Skip t={int(st//60):02d}:{int(st%60):02d} — tir trop proche d'un déjà analysé")
-                    continue
                 already_covered = any(abs(gt - st) < 35 for gt in existing_goal_times)
                 if already_covered:
                     continue
                 next_shot_t = shot_times_all[i + 1] if i + 1 < len(shot_times_all) else st + 999
                 time_to_next = next_shot_t - st
-                window = max(22, min(35, time_to_next - 5))
+                window = max(25, min(45, time_to_next - 5))
                 shots_to_analyze.append((shot, st, window))
-                shots_already_checked.append(st)
 
             print(f"  [SHOT→GOAL] {len(shots_to_analyze)} tirs à analyser")
 
