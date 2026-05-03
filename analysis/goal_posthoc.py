@@ -443,6 +443,7 @@ def detect_fast_goals_from_ball(
         if peak_before < MIN_PEAK_SPEED:
             continue
 
+        _players_near = 0  # initialisé ici — évite UnboundLocalError si continue avant 4c
         # 4b. Contrainte directionnelle : ballon doit se déplacer vers le but
         # Calculer la vélocité moyenne sur les 3 frames précédentes
         vx_sum = 0
@@ -559,6 +560,7 @@ def detect_fast_goals_from_ball(
         if peak_before < MIN_PEAK_SPEED:
             continue
 
+        _players_near = 0  # initialisé ici — évite UnboundLocalError si continue avant 4c
         # 4b. Contrainte directionnelle : ballon doit se déplacer vers le but
         # Calculer la vélocité moyenne sur les 3 frames précédentes
         vx_sum = 0
