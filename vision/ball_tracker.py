@@ -30,7 +30,12 @@ class BallBuffer:
     def __init__(self, size=30):
         self._buf = deque(maxlen=size)
 
-    def add(self, x, y, t):
+    def add(self, x, y, t, frame_w=None, frame_h=None):
+        # V9.7+ : ignorer les positions hors frame (Kalman/interpolation ratée)
+        if frame_w is not None and frame_h is not None:
+            if x < 0 or x > frame_w or y < 0 or y > frame_h:
+                print(f"  [BALL FILTERED] ({x:.1f},{y:.1f}) t={t:.1f}s")
+                return
         self._buf.append((float(x), float(y), float(t)))
 
     def get(self):
@@ -145,6 +150,11 @@ class SimpleKalman:
             if self.state is not None:
                 self.state    = self.state + self.velocity
                 self.velocity = self.velocity * 0.7
+                # Limiter vélocité max — évite divergence Kalman
+                speed = float(np.hypot(self.velocity[0], self.velocity[1]))
+                if speed > 300:
+                    scale = 300 / speed
+                    self.velocity = self.velocity * scale
                 # Limiter la vélocité max — évite divergence Kalman
                 speed = float(np.hypot(self.velocity[0], self.velocity[1]))
                 if speed > 300:  # max 300px/frame = très rapide
@@ -292,7 +302,7 @@ class BallTracker:
                 self.last_valid_ball  = (cx, cy)
                 self.last_valid_frame = self.frame_id
 
-                self.ball_buffer.add(cx, cy, t)
+                self.ball_buffer.add(cx, cy, t, frame_w, frame_h)
                 self.last_seen   = self.frame_id
                 self.lost_frames = 0
                 pos = self.kalman.update((cx, cy))
@@ -307,7 +317,7 @@ class BallTracker:
                 pos = self.kalman.update(None)
                 if pos is not None:
                     cx, cy = int(pos[0]), int(pos[1])
-                    self.ball_buffer.add(cx, cy, t)
+                    self.ball_buffer.add(cx, cy, t, frame_w, frame_h)
                     return self.get_ball_bbox(pos), True
                 # MODIF 4 — prédiction par vélocité si Kalman échoue
                 elif self.last_valid_ball is not None:
@@ -322,7 +332,7 @@ class BallTracker:
                         self.velocity[0] * 0.5,
                         self.velocity[1] * 0.5
                     )
-                    self.ball_buffer.add(px, py, t)
+                    self.ball_buffer.add(px, py, t, frame_w, frame_h)
                     return self.get_ball_bbox(np.array([px, py])), True
             else:
                 self.ball_buffer.clear()
