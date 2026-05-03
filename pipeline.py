@@ -10,7 +10,13 @@
 #   - post_processing.py  : module de transformation pure, sans décision métier
 
 import os
+import sys
 import json
+
+# Garantir que le repo est dans sys.path — nécessaire sur Kaggle
+_repo = os.path.dirname(os.path.abspath(__file__))
+if _repo not in sys.path:
+    sys.path.insert(0, _repo)
 
 import config
 from main import process_video
