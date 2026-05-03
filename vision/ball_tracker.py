@@ -313,31 +313,33 @@ class BallTracker:
 
         if best is None:
             self.lost_frames += 1
-            if self.lost_frames <= self.max_lost:
+            if self.lost_frames <= 2:
+                # Frames 1-2 : prédiction courte (micro-occlusion / tirs rapides)
                 pos = self.kalman.update(None)
                 if pos is not None:
                     cx, cy = int(pos[0]), int(pos[1])
                     self.ball_buffer.add(cx, cy, t, frame_w, frame_h)
                     return self.get_ball_bbox(pos), True
-                # MODIF 4 — prédiction par vélocité si Kalman échoue
                 elif self.last_valid_ball is not None:
                     px = int(self.last_valid_ball[0] + self.velocity[0])
                     py = int(self.last_valid_ball[1] + self.velocity[1])
-                    # FIX 3 — clamp dans l'image (évite sortie d'écran)
                     px = max(0, min(frame_w - 1, px))
                     py = max(0, min(frame_h - 1, py))
-                    # amortir la vélocité à chaque frame perdue
-                    # Décroissance plus agressive — évite divergence
-                    self.velocity = (
-                        self.velocity[0] * 0.5,
-                        self.velocity[1] * 0.5
-                    )
+                    self.velocity = (self.velocity[0] * 0.5, self.velocity[1] * 0.5)
                     self.ball_buffer.add(px, py, t, frame_w, frame_h)
                     return self.get_ball_bbox(np.array([px, py])), True
+            elif self.lost_frames <= self.max_lost:
+                # Frames 3+ : vraie absence → couper le signal
+                # Permet à ball_appears_in_goal de détecter la réapparition
+                self.velocity = (0.0, 0.0)
+                self.kalman.update(None)  # maintenir l'état interne
+                return None, False
             else:
+                # Après max_lost → reset complet
                 self.ball_buffer.clear()
                 self.kalman.reset()
                 self.last_valid_ball  = None
+                self.velocity         = (0.0, 0.0)
                 self.last_valid_frame = -1
                 self.velocity         = (0.0, 0.0)
             return None, True
