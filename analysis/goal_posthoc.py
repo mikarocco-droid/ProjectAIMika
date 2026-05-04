@@ -20,32 +20,9 @@ def _get_ball_center(ball):
         return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
 
     if ball.get("x") is not None:
-        return float(ball["x"]), float(ball.get("y", 0))# -*- coding: utf-8 -*-
-
-import math
-
-
-# =========================================================
-# UTILS
-# =========================================================
-
-def _get_ball_center(ball):
-    if not ball:
-        return None
-
-    c = ball.get("center")
-    if c and len(c) >= 2:
-        return float(c[0]), float(c[1])
-
-    bbox = ball.get("bbox")
-    if bbox and len(bbox) == 4:
-        return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
-
-    if ball.get("x") is not None:
         return float(ball["x"]), float(ball.get("y", 0))
 
-    return None
-
+import math
 
 def _resolve_resolution(frames_data, fw, fh):
     if frames_data and frames_data[0].get("frame_w"):
@@ -285,6 +262,13 @@ def detect_fast_goals_from_ball(
             continue
 
         if not (GOAL_Y_TOP < y < GOAL_Y_BOTTOM):
+            i += 1
+            continue
+
+        accel = speeds[i] - speeds[i - 3] if i >= 3 else 0
+        peak_recent = max(speeds[max(0, i-5):i+1])
+
+        if accel < 1.0 and peak_recent < SPEED_THRESHOLD:
             i += 1
             continue
 
