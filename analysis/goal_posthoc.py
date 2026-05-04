@@ -277,6 +277,13 @@ def detect_fast_goals_from_ball(
 
         x, y = c
 
+        if not (
+            x <= GOAL_X_LEFT + frame_w * 0.15 or
+            x >= GOAL_X_RIGHT - frame_w * 0.15
+        ):
+            i += 1
+            continue
+
         if not (GOAL_Y_TOP < y < GOAL_Y_BOTTOM):
             i += 1
             continue
