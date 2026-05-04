@@ -20,6 +20,28 @@ def _get_ball_center(ball):
         return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
 
     if ball.get("x") is not None:
+        return float(ball["x"]), float(ball.get("y", 0))# -*- coding: utf-8 -*-
+
+import math
+
+
+# =========================================================
+# UTILS
+# =========================================================
+
+def _get_ball_center(ball):
+    if not ball:
+        return None
+
+    c = ball.get("center")
+    if c and len(c) >= 2:
+        return float(c[0]), float(c[1])
+
+    bbox = ball.get("bbox")
+    if bbox and len(bbox) == 4:
+        return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+
+    if ball.get("x") is not None:
         return float(ball["x"]), float(ball.get("y", 0))
 
     return None
@@ -640,17 +662,18 @@ def detect_fast_goals_from_ball(
     # Couvre les tirs cachés / occlusions : ballon absent X frames puis
     # réapparaît directement dans la zone du but
     # Cas réel : tir de près masqué par défenseur → ballon invisible → réapparaît dans le filet
-    ABSENT_MIN_FRAMES   = 12  # absent au moins 12 frames (~0.5s réel) — filtre pertes tracking
-    ABSENT_MAX_FRAMES   = 40  # pas plus de 40 frames (~6s) → sinon c'est autre chose
-    APPEAR_IN_GOAL_X    = frame_w * 0.04   # zone gauche stricte (4%) — vraiment dans le filet
-    APPEAR_IN_GOAL_X_R  = frame_w * 0.96   # zone droite stricte (96%)
-    # Zone hauteur élargie pour ball_appears_in_goal
-    APPEAR_Y_TOP    = frame_h * 0.15
-    APPEAR_Y_BOTTOM = frame_h * 0.85
-    APPEAR_COOLDOWN = 5.0  # cooldown entre deux candidats ball_appears_in_goal
+    ABSENT_MIN_FRAMES   = 12  # absent au moins 12 frames (~0.5s réel)
+    ABSENT_MAX_FRAMES   = 40
+    APPEAR_IN_GOAL_X    = frame_w * 0.03   # zone gauche très stricte (3%)
+    APPEAR_IN_GOAL_X_R  = frame_w * 0.97   # zone droite très stricte (97%)
+    APPEAR_Y_TOP    = frame_h * 0.20
+    APPEAR_Y_BOTTOM = frame_h * 0.80
+    APPEAR_COOLDOWN = 5.0
+    APPEAR_SCORE_MIN = 7.5  # score minimum — filtre faux positifs sans contexte
 
-    absent_since   = None   # frame index depuis laquelle le ballon est absent
-    _last_appear_t = -999.0  # cooldown entre candidats
+    absent_since   = None
+    _last_appear_t = -999.0
+    _last_seen_x   = None  # dernière position X connue avant absence
 
     for i in range(5, len(frames_data) - 3):
         c = _get_ball_center(frames_data[i].get("ball"))
@@ -664,21 +687,28 @@ def detect_fast_goals_from_ball(
             continue
 
         x, y = c
+        _last_seen_x = x  # mémoriser dernière position avant absence
 
         # Position valide — est-ce une réapparition dans le but ?
         if absent_since is not None:
             n_absent = i - absent_since
 
             if ABSENT_MIN_FRAMES <= n_absent <= ABSENT_MAX_FRAMES:
-                # Réapparition dans zone but gauche ou droite
-                in_goal_left  = x < APPEAR_IN_GOAL_X and GOAL_Y_TOP < y < GOAL_Y_BOTTOM
-                in_goal_right = x > APPEAR_IN_GOAL_X_R and GOAL_Y_TOP < y < GOAL_Y_BOTTOM
-
-                # Zone hauteur élargie pour réapparition ballon
                 in_goal_left  = x < APPEAR_IN_GOAL_X  and APPEAR_Y_TOP < y < APPEAR_Y_BOTTOM
                 in_goal_right = x > APPEAR_IN_GOAL_X_R and APPEAR_Y_TOP < y < APPEAR_Y_BOTTOM
 
                 if in_goal_left or in_goal_right:
+                    # Contrainte directionnelle : ballon disparu du même côté qu'il réapparaît
+                    if _last_seen_x is not None:
+                        disappeared_left  = _last_seen_x < frame_w * 0.20
+                        disappeared_right = _last_seen_x > frame_w * 0.80
+                        if in_goal_left  and not disappeared_left:
+                            absent_since = None
+                            continue
+                        if in_goal_right and not disappeared_right:
+                            absent_since = None
+                            continue
+
                     # Filtre touche/corner : y vraiment trop extrême
                     if y < frame_h * 0.10 or y > frame_h * 0.90:
                         absent_since = None
@@ -696,10 +726,10 @@ def detect_fast_goals_from_ball(
                             if in_goal_left  and _px < frame_w * 0.35: _players_near += 1
                             if in_goal_right and _px > frame_w * 0.65: _players_near += 1
 
-                        score = 6.0 + min(0.5, 0.2 * _players_near)
+                        score = 6.0 + min(2.0, 0.5 * _players_near)
 
-                        # Score minimum — filtre les détections trop faibles
-                        if score < 6.5:
+                        # Score minimum strict
+                        if score < APPEAR_SCORE_MIN:
                             absent_since = None
                             continue
 
