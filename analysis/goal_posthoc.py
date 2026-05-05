@@ -470,13 +470,13 @@ def detect_fast_goals_from_ball(
     # Zones de disparition : utiliser les zones dynamiques si disponibles
     # Sinon fallback sur zones fixes couvrant les 2 côtés
 
-    speeds = _compute_speeds(frames_data)  # déjà calculé mais recalcul propre
+    # PARAMÈTRES ÉQUILIBRÉS (important)
+    MIN_PLAYERS_NEAR = 1          # ← clé pour ne pas rater
+    DISAPPEAR_MIN_FRAMES = 2      # ← 3 = trop strict
+    SHOT_LOOKBACK_STRICT = 5.0    # ← 3 = trop court
+    MIN_GOAL_SPEED = 60           # ← 80 = trop violent
 
-    # PARAMÈTRES STRICTS
-    MIN_PLAYERS_NEAR = 2
-    DISAPPEAR_MIN_FRAMES = 3
-    SHOT_LOOKBACK_STRICT = 3.0
-    MIN_GOAL_SPEED = 80
+    speeds = _compute_speeds(frames_data)
 
     for i in range(10, len(frames_data) - DISAPPEAR_WINDOW):
 
@@ -486,28 +486,30 @@ def detect_fast_goals_from_ball(
 
         x, y = c
 
+        # zone but
         near_right = _DISAPPEAR_R_MIN < x < _DISAPPEAR_R_MAX
         near_left  = _DISAPPEAR_L_MIN < x < _DISAPPEAR_L_MAX
         if not (near_right or near_left):
             continue
 
+        # hauteur
         if not (GOAL_Y_TOP < y < GOAL_Y_BOTTOM):
             continue
 
-        # 🚫 filtre touches
+        # filtre touches
         if y < frame_h * 0.15 or y > frame_h * 0.85:
             continue
 
-        # 🚀 vitesse actuelle
+        # vitesse actuelle (doit ralentir)
         if speeds[i] > STOP_SPEED_MAX:
             continue
 
-        # 🚀 vrai tir avant
+        # pic de vitesse (tir)
         peak_before = max(speeds[max(0, i-10):i+1])
         if peak_before < MIN_GOAL_SPEED:
             continue
 
-        # 🎯 direction cohérente
+        # direction
         vx = 0
         count = 0
         for k in range(max(0, i-3), i):
@@ -518,22 +520,22 @@ def detect_fast_goals_from_ball(
                 count += 1
         vx = vx / count if count else 0
 
-        if near_right and vx < 0:
+        if near_right and vx < -10:
             continue
-        if near_left and vx > 0:
+        if near_left and vx > 10:
             continue
 
-        # 🧠 joueurs autour (IMPORTANT)
+        # joueurs proches (SOUPLE)
         _players_near = 0
         for p in frames_data[i].get("players", []):
             px, py = p["center"]
-            if abs(px - x) < 150 and abs(py - y) < 120:
+            if abs(px - x) < 180 and abs(py - y) < 140:
                 _players_near += 1
 
         if _players_near < MIN_PLAYERS_NEAR:
             continue
 
-        # 🚨 vraie disparition (multi-frames)
+        # disparition (plus robuste)
         disappear_count = 0
         for j in range(i+1, i+DISAPPEAR_WINDOW):
             cj = _get_ball_center(frames_data[j].get("ball"))
@@ -545,7 +547,7 @@ def detect_fast_goals_from_ball(
         if disappear_count < DISAPPEAR_MIN_FRAMES:
             continue
 
-        # 🔫 tir récent strict
+        # shot lié
         goal_time = frames_data[i].get("frame", i) / fps
 
         recent_shot = any(
@@ -555,13 +557,12 @@ def detect_fast_goals_from_ball(
         if not recent_shot:
             continue
 
-        # 🔁 anti doublon
-        if any(abs(goal_time - t) < 20 for t in existing):
+        # anti doublon
+        if any(abs(goal_time - t) < 15 for t in existing):
             continue
 
-        # 🎯 score dynamique
+        # score
         score = 6.5 + min(1.0, 0.3 * _players_near)
-
         confidence = min(0.95, 0.7 + score * 0.05)
 
         goals.append({
@@ -572,7 +573,7 @@ def detect_fast_goals_from_ball(
             "y": y,
             "confidence": round(confidence, 2),
             "players_near": _players_near,
-            "detected_from": "goal_posthoc_disappear_v2",
+            "detected_from": "goal_posthoc_disappear_v3",
         })
 
         print(f"✅ GOAL {goal_time:.2f}s | players={_players_near} | speed={peak_before:.1f}")
