@@ -351,6 +351,36 @@ def detect_fast_goals_from_ball(
                 break  # trié par temps → inutile de chercher plus loin
 
         recent_motion_ok = recent_motion >= MIN_RECENT_MOTION * 2.0
+        
+        # 🔥 NOUVEAU : validation du shot (qualité du tir)
+        valid_shot = False
+
+        for s in reversed(shots):
+            dt = goal_time - s.get("time", 0)
+            if dt < 0:
+                continue
+            if dt > SHOT_LOOKBACK_LOOSE:
+                break
+
+            shot_speed = s.get("speed", 0)  # doit exister dans ton pipeline
+            shot_x     = s.get("x", None)
+
+            # conditions d'un VRAI tir
+            is_real_shot = (
+                shot_speed >= MIN_SHOT_SPEED and
+                (
+                    (cross_right and shot_x is not None and shot_x > frame_w * 0.4) or
+                    (cross_left  and shot_x is not None and shot_x < frame_w * 0.6)
+                )
+            )
+
+            if is_real_shot:
+                valid_shot = True
+                break
+
+        if not valid_shot:
+            i += 1
+            continue
 
         if not recent_shot_strict:
             # Fallback strict (AND) : tir ancien + rebond + vitesse requis simultanément
