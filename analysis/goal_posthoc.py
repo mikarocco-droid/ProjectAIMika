@@ -289,6 +289,25 @@ def detect_fast_goals_from_ball(
         if not _trajectory_ok(frames_data, i):
             i += 1
             continue
+            
+         # ── V9.8 — Filtre anti centres / dégagements ─────────────────
+        # Si la balle se déplace de manière trop stable trop longtemps
+        # → probablement une phase de jeu continue, pas un tir
+        long_dx = []
+        for k in range(max(0, i-20), i):
+            c0 = _get_ball_center(frames_data[k].get("ball"))
+            c1 = _get_ball_center(frames_data[k+1].get("ball")) if k+1 < len(frames_data) else None
+            if c0 and c1:
+                long_dx.append(c1[0] - c0[0])
+
+        if len(long_dx) >= 10:
+            same_dir = sum(1 for d in long_dx if d > 0) >= 0.8 * len(long_dx) or \
+                       sum(1 for d in long_dx if d < 0) >= 0.8 * len(long_dx)
+
+            # Mouvement trop propre et constant → pas un tir
+            if same_dir:
+                i += 1
+                continue
 
         peak = max(speeds[max(0, i - 8):i + 1])
         if peak < SPEED_THRESHOLD:
