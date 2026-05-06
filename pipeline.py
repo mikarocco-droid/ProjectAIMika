@@ -673,7 +673,7 @@ def run_pipeline(
                 if isinstance(e, dict)
                 and e.get("type") == "shot"
                 and e.get("on_target", False)
-                and e.get("xg", 0) >= 0.05  # tous les tirs on_target
+                and e.get("xg", 0) >= 0.15  # filtrer les tirs faibles xG
             ]
             print(f"  [SHOT→GOAL] {len(shots_on_target)} tirs on_target xg>=0.15 "
                   f"(sur {sum(1 for e in events_validated if isinstance(e,dict) and e.get('type')=='shot' and e.get('on_target'))} on_target total)")
@@ -690,7 +690,7 @@ def run_pipeline(
             detected_goal_times = []
             for i, shot in enumerate(shots_on_target_sorted):
                 st = shot.get("time", 0)
-                already_covered = any(abs(gt - st) < 35 for gt in existing_goal_times)
+                already_covered = any(abs(gt - st) < 45 for gt in existing_goal_times)
                 if already_covered:
                     continue
                 next_shot_t = shot_times_all[i + 1] if i + 1 < len(shot_times_all) else st + 999
@@ -732,7 +732,7 @@ def run_pipeline(
                 already_covered = any(abs(gt - st) < 35 for gt in detected_goal_times)
                 if already_covered:
                     continue
-                if result and result.get("is_goal") and result.get("confidence", 0) >= 0.85:
+                if result and result.get("is_goal") and result.get("confidence", 0) >= 0.92:
                     goal_t = result["timestamp"]
                     too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
                     if not too_close:
