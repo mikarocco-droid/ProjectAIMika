@@ -511,7 +511,7 @@ def detect_fast_goals_from_ball(
     ABSENT_MAX_FRAMES   = 40
     APPEAR_IN_GOAL_X    = frame_w * 0.03   # zone gauche très stricte (3%)
     APPEAR_IN_GOAL_X_R  = frame_w * 0.97   # zone droite très stricte (97%)
-    APPEAR_Y_TOP    = frame_h * 0.20
+    APPEAR_Y_TOP    = frame_h * 0.15
     APPEAR_Y_BOTTOM = frame_h * 0.80
     APPEAR_COOLDOWN = 5.0
     APPEAR_SCORE_MIN = 7.5  # score minimum — filtre faux positifs sans contexte
