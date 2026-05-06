@@ -511,6 +511,11 @@ DO NOT interpret as a goal:
 - If the ball or players are near the sideline = almost certainly a throw-in, NOT a goal
 - Defensive free kick in the middle of the pitch: one player about to kick stationary ball, others spread = NOT a kickoff
 - Players walking back to positions after a foul = NOT a celebration, NOT a goal
+- GOALKEEPER HOLDING BALL: goalkeeper catching, holding, or securing the ball in hands/arms = NOT a goal, even inside goal area or crouching
+- GOALKEEPER STANDING WITH BALL: goalkeeper upright or slightly bent holding ball = NOT a goal
+- DEFENSIVE CLEARANCE: ball kicked or headed away from goal by a defender = NOT a goal
+- CROSS OR CENTER: ball played from wing into penalty area but cleared by defender = NOT a goal
+- BALL HIT POST: ball bouncing off post or crossbar without clearly entering the net = NOT a goal
 
 For celebrations to count as evidence they must be UNAMBIGUOUS:
 - Multiple players from SAME team running toward each other with arms wide open
