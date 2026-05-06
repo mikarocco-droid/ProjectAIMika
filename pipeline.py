@@ -665,106 +665,114 @@ def run_pipeline(
             _goals_deduped.append(_e)
         events_validated = _goals_deduped
 
-        # ── SHOT→GOAL : désactivé — trop de faux positifs (gardien, dégagements)
-        print("  [SHOT→GOAL] Désactivé")
-        if False:
-            pass
+        # ── SHOT→GOAL conditionnel ────────────────────────────────────────────────
+        # Activé uniquement si un tir xG > 0.35 n'a pas de but dans les 30s suivantes.
+        # Évite les faux positifs (gardien, dégagements, centres) sur les vidéos standard
+        # où goal_posthoc + ball_appears_in_goal suffisent.
         try:
             from ai.gemini_validator import find_goal_after_shot
-            raise Exception("SHOT→GOAL désactivé volontairement")
-            shots_on_target = [
+
+            _confirmed_goal_times = [
+                e.get("time", 0) for e in events_validated
+                if isinstance(e, dict) and e.get("type") == "goal"
+            ]
+
+            # Tirs candidats : xG > 0.35, on_target, pas de but dans les 30s suivantes
+            _stg_candidates = [
                 e for e in events_validated
                 if isinstance(e, dict)
                 and e.get("type") == "shot"
                 and e.get("on_target", False)
-                and e.get("xg", 0) >= 0.15  # filtrer les tirs faibles xG
-            ]
-            print(f"  [SHOT→GOAL] {len(shots_on_target)} tirs on_target xg>=0.15 "
-                  f"(sur {sum(1 for e in events_validated if isinstance(e,dict) and e.get('type')=='shot' and e.get('on_target'))} on_target total)")
-            existing_goal_times = [
-                e.get("time", 0) for e in events_validated
-                if isinstance(e, dict) and e.get("type") == "goal"
-            ]
-            # Trier les tirs par temps pour calculer la fenêtre dynamique
-            shots_on_target_sorted = sorted(shots_on_target, key=lambda e: e.get("time", 0))
-            shot_times_all = [e.get("time", 0) for e in shots_on_target_sorted]
-
-            # Préparer les tirs à analyser (avec fenêtre dynamique)
-            shots_to_analyze = []
-            detected_goal_times = []
-            for i, shot in enumerate(shots_on_target_sorted):
-                st = shot.get("time", 0)
-                already_covered = any(abs(gt - st) < 45 for gt in existing_goal_times)
-                if already_covered:
-                    continue
-                next_shot_t = shot_times_all[i + 1] if i + 1 < len(shot_times_all) else st + 999
-                time_to_next = next_shot_t - st
-                window = max(25, min(45, time_to_next - 5))
-                shots_to_analyze.append((shot, st, window))
-
-            print(f"  [SHOT→GOAL] {len(shots_to_analyze)} tirs à analyser")
-
-            # Parallélisation — max 3 workers pour ne pas saturer l'API Gemini
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            def _analyze_shot(args):
-                shot, st, window = args
-                return shot, st, find_goal_after_shot(
-                    video_path = video_path,
-                    shot_time  = st,
-                    window     = window,
-                    fps        = fps,
-                    frame_w    = _frame_w,
-                    frame_h    = _frame_h,
+                and float(e.get("xg", 0) or 0) > 0.35
+                and not any(
+                    0 <= gt - e.get("time", 0) <= 30
+                    for gt in _confirmed_goal_times
                 )
+            ]
 
-            shot_goal_candidates = []
-            results_map = {}
+            if not _stg_candidates:
+                print("  [SHOT→GOAL] Aucun tir éligible (xG>0.35 sans but dans 30s) → ignoré")
+            else:
+                print(f"  [SHOT→GOAL] {len(_stg_candidates)} tir(s) éligible(s) → analyse Gemini stricte")
 
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                futures = {executor.submit(_analyze_shot, args): args for args in shots_to_analyze}
-                for future in as_completed(futures):
-                    try:
-                        shot, st, result = future.result()
-                        results_map[st] = (shot, result)
-                    except Exception as _e:
-                        print(f"  [SHOT→GOAL] Erreur analyse : {_e}")
+                shots_on_target_sorted = sorted(_stg_candidates, key=lambda e: e.get("time", 0))
+                shot_times_all = [e.get("time", 0) for e in shots_on_target_sorted]
+                existing_goal_times = list(_confirmed_goal_times)
+                shots_to_analyze = []
+                detected_goal_times = []
 
-            # Traiter les résultats dans l'ordre chronologique
-            for shot, st, window in shots_to_analyze:
-                result = results_map.get(st, (shot, None))[1]
-                already_covered = any(abs(gt - st) < 35 for gt in detected_goal_times)
-                if already_covered:
-                    continue
-                if result and result.get("is_goal") and result.get("confidence", 0) >= 0.92:
-                    goal_t = result["timestamp"]
-                    too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
-                    if not too_close:
-                        new_goal = {
-                            "type":             "goal",
-                            "time":             goal_t,
-                            "source":           "shot_to_goal_gemini",
-                            "detected_from":    "shot_to_goal_gemini",
-                            "confidence":       result["confidence"],
-                            "gemini_validated": True,
-                            "gemini_type":      "goal",
-                            "gemini_conf":      result["confidence"],
-                            "xg":               shot.get("xg", 0.5),
-                            "desc":             result.get("desc", ""),
-                            "player":           shot.get("player"),
-                            "team":             shot.get("team"),
-                            "x":                shot.get("x", _frame_w * 0.85),
-                            "y":                shot.get("y", _frame_h * 0.5),
-                            "frame":            int(goal_t * fps),
-                            "shot_linked":      True,
-                        }
-                        shot_goal_candidates.append(new_goal)
-                        existing_goal_times.append(goal_t)
-                        detected_goal_times.append(goal_t)
-                        print(f"  [SHOT→GOAL] ✅ BUT détecté à {int(goal_t//60):02d}:{int(goal_t%60):02d} conf={result['confidence']:.2f}")
-            if shot_goal_candidates:
-                events_validated = events_validated + shot_goal_candidates
-                print(f"  [SHOT→GOAL] {len(shot_goal_candidates)} but(s) ajouté(s) via analyse tirs")
+                for i, shot in enumerate(shots_on_target_sorted):
+                    st = shot.get("time", 0)
+                    already_covered = any(abs(gt - st) < 45 for gt in existing_goal_times)
+                    if already_covered:
+                        continue
+                    next_shot_t = shot_times_all[i + 1] if i + 1 < len(shot_times_all) else st + 999
+                    window = max(25, min(45, next_shot_t - st - 5))
+                    shots_to_analyze.append((shot, st, window))
+
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                def _analyze_shot(args):
+                    shot, st, window = args
+                    return shot, st, find_goal_after_shot(
+                        video_path = video_path,
+                        shot_time  = st,
+                        window     = window,
+                        fps        = fps,
+                        frame_w    = _frame_w,
+                        frame_h    = _frame_h,
+                    )
+
+                shot_goal_candidates = []
+                results_map = {}
+
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    futures = {executor.submit(_analyze_shot, args): args for args in shots_to_analyze}
+                    for future in as_completed(futures):
+                        try:
+                            shot, st, result = future.result()
+                            results_map[st] = (shot, result)
+                        except Exception as _e:
+                            print(f"  [SHOT→GOAL] Erreur analyse : {_e}")
+
+                for shot, st, window in shots_to_analyze:
+                    result = results_map.get(st, (shot, None))[1]
+                    already_covered = any(abs(gt - st) < 35 for gt in detected_goal_times)
+                    if already_covered:
+                        continue
+                    if result and result.get("is_goal") and result.get("confidence", 0) >= 0.92:
+                        goal_t = result["timestamp"]
+                        too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
+                        if not too_close:
+                            new_goal = {
+                                "type":             "goal",
+                                "time":             goal_t,
+                                "source":           "shot_to_goal_gemini",
+                                "detected_from":    "shot_to_goal_gemini",
+                                "confidence":       result["confidence"],
+                                "gemini_validated": True,
+                                "gemini_type":      "goal",
+                                "gemini_conf":      result["confidence"],
+                                "xg":               shot.get("xg", 0.5),
+                                "desc":             result.get("desc", ""),
+                                "player":           shot.get("player"),
+                                "team":             shot.get("team"),
+                                "x":                shot.get("x", _frame_w * 0.85),
+                                "y":                shot.get("y", _frame_h * 0.5),
+                                "frame":            int(goal_t * fps),
+                                "shot_linked":      True,
+                            }
+                            shot_goal_candidates.append(new_goal)
+                            existing_goal_times.append(goal_t)
+                            detected_goal_times.append(goal_t)
+                            print(f"  [SHOT→GOAL] ✅ BUT détecté à {int(goal_t//60):02d}:{int(goal_t%60):02d} conf={result['confidence']:.2f}")
+
+                if shot_goal_candidates:
+                    events_validated = events_validated + shot_goal_candidates
+                    print(f"  [SHOT→GOAL] {len(shot_goal_candidates)} but(s) ajouté(s) via analyse tirs")
+                else:
+                    print(f"  [SHOT→GOAL] Aucun but confirmé")
+
         except Exception as _e:
             print(f"  [SHOT→GOAL] Ignoré : {_e}")
 
