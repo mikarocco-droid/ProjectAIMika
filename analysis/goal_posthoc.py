@@ -157,11 +157,11 @@ def detect_fast_goals_from_ball(
     GOAL_Y_TOP        = frame_h * 0.20
     GOAL_Y_BOTTOM     = frame_h * 0.80
     LINE_MARGIN       = frame_w * 0.002
-    MIN_PEAK_SPEED    = 15.0   # vitesse min avant disparition (tirs seulement)
-    SHOT_LOOKBACK_LOOSE = 12.0
+    MIN_PEAK_SPEED    = 15.0
+    SHOT_LOOKBACK_LOOSE = 8.0
     _DISAPPEAR_L_MIN  = 0
-    _DISAPPEAR_L_MAX  = frame_w * 0.08   # 8% — vraiment dans la cage gauche
-    _DISAPPEAR_R_MIN  = frame_w * 0.92   # 92% — vraiment dans la cage droite
+    _DISAPPEAR_L_MAX  = frame_w * 0.06
+    _DISAPPEAR_R_MIN  = frame_w * 0.94
     _DISAPPEAR_R_MAX  = frame_w
     STOP_NEAR_GOAL_X_MIN  = frame_w * 0.45
     STOP_NEAR_GOAL_X_MAX  = frame_w * 0.92
@@ -190,13 +190,13 @@ def detect_fast_goals_from_ball(
         except Exception as _e:
             print(f"  [GOAL_BOX] fallback zones fixes : {_e}")
             _DISAPPEAR_L_MIN = 0
-            _DISAPPEAR_L_MAX = frame_w * 0.08
-            _DISAPPEAR_R_MIN = frame_w * 0.92
+            _DISAPPEAR_L_MAX = frame_w * 0.06
+            _DISAPPEAR_R_MIN = frame_w * 0.94
             _DISAPPEAR_R_MAX = frame_w
     else:
         _DISAPPEAR_L_MIN = 0
-        _DISAPPEAR_L_MAX = frame_w * 0.08
-        _DISAPPEAR_R_MIN = frame_w * 0.92
+        _DISAPPEAR_L_MAX = frame_w * 0.06
+        _DISAPPEAR_R_MIN = frame_w * 0.94
         _DISAPPEAR_R_MAX = frame_w
 
     GOAL_Y_TOP = frame_h * 0.2
