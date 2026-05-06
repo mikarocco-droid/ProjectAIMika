@@ -166,7 +166,15 @@ def create_highlights(
                 key_events.append(e)
             elif etype == "shot":
                 if _shot_qualifies(e, events):
-                    key_events.append(e)
+                    # Ne pas inclure un tir si un but arrive dans les 15s suivantes
+                    t_shot = e.get("time", 0)
+                    too_close_to_goal = any(
+                        g.get("type") in ["goal", "score"]
+                        and 0 <= g.get("time", 0) - t_shot <= 15
+                        for g in events
+                    )
+                    if not too_close_to_goal:
+                        key_events.append(e)
         else:
             key_events.append(e)
 

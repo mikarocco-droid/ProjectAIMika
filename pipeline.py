@@ -665,9 +665,13 @@ def run_pipeline(
             _goals_deduped.append(_e)
         events_validated = _goals_deduped
 
-        # ── SHOT→GOAL : Gemini cherche un but dans la fenêtre après chaque tir ──
+        # ── SHOT→GOAL : désactivé — trop de faux positifs (gardien, dégagements)
+        print("  [SHOT→GOAL] Désactivé")
+        if False:
+            pass
         try:
             from ai.gemini_validator import find_goal_after_shot
+            raise Exception("SHOT→GOAL désactivé volontairement")
             shots_on_target = [
                 e for e in events_validated
                 if isinstance(e, dict)
