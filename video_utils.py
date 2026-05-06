@@ -60,7 +60,7 @@ def _shot_qualifies(e, all_events):
     if xg >= XG_MIN_FOR_HIGHLIGHT:
         return True
 
-    if on_target:
+    if on_target and xg >= 0.12:
         return True
 
     has_blocked = any(
