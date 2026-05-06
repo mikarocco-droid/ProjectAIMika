@@ -420,9 +420,23 @@ Default to is_goal=false if any doubt."""
                 _ts = _data.get("timestamp")
                 print(f"  [SHOT→GOAL EARLY] shot={shot_time:.1f}s → BUT t={_ts} "
                       f"conf={_data['confidence']:.2f} | {_data.get('evidence','')[:80]}")
+                # Valider que le timestamp est dans la fenêtre réelle
+                _ts_validated = None
+                if _ts is not None:
+                    try:
+                        _ts_f = float(_ts)
+                        if shot_time - 5 <= _ts_f <= shot_time + window + 5:
+                            _ts_validated = _ts_f
+                        else:
+                            # Timestamp hors fenêtre (ex: Gemini renvoie mm:ss au lieu de secondes)
+                            _ts_validated = shot_time + 2
+                    except (ValueError, TypeError):
+                        _ts_validated = shot_time + 2
+                else:
+                    _ts_validated = shot_time + 2
                 return {
                     "is_goal":    True,
-                    "timestamp":  _ts if _ts else shot_time + 2,
+                    "timestamp":  _ts_validated,
                     "confidence": _data["confidence"],
                     "desc":       _data.get("evidence", ""),
                 }
