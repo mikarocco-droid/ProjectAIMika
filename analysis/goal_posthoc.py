@@ -402,15 +402,12 @@ def detect_fast_goals_from_ball(
         existing.append(goal_time)
         i += max(stuck, 5)
 
-    # ── Détection complémentaire : ballon s'arrête near goal puis disparaît ──
-    # Couvre le cas où le but est visible (caméra de face) mais le tracker
-    # perd le ballon dans le filet avant qu'il ne franchisse la ligne x
-    # Zones de disparition : utiliser les zones dynamiques si disponibles
-    # Sinon fallback sur zones fixes couvrant les 2 côtés
+    # ── Détection complémentaire : DÉSACTIVÉE V9.7+ ─────────────────────────
+    # Génère trop de faux positifs (touches, dégagements, remises en jeu)
+    # ball_appears_in_goal couvre les vrais cas de tirs masqués
+    speeds = _compute_speeds(frames_data)
 
-    speeds = _compute_speeds(frames_data)  # déjà calculé mais recalcul propre
-
-    for i in range(10, len(frames_data) - DISAPPEAR_WINDOW):
+    for i in range(10, len(frames_data) - DISAPPEAR_WINDOW) if False else []:
         c = _get_ball_center(frames_data[i].get("ball"))
         if not c:
             continue
