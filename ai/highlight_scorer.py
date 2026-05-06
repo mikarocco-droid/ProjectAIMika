@@ -121,7 +121,10 @@ def score_highlight(video_path, highlight, sport="football"):
             f"- Gardien qui tient ou porte le ballon → type_reel = 'goalkeeper_action'\n"
             f"- Relance à la main ou au pied du gardien → type_reel = 'goalkeeper_action'\n"
             f"- Dégagement de tête d'un défenseur → type_reel = 'defensive_clearance'\n"
-            f"- Dégagement du poing du gardien → type_reel = 'goalkeeper_action'"
+            f"- Dégagement du poing du gardien → type_reel = 'goalkeeper_action'\n"
+            f"- Passe latérale ou longue balle qui sort en touche sans danger → type_reel = 'touche', score <= 2\n"
+            f"- Balle qui sort en touche depuis le milieu du terrain → type_reel = 'touche', score <= 2\n"
+            f"- Action sans danger réel hors de la surface adverse → score <= 3"
         )]
 
         for i, frame in enumerate(frames):
@@ -213,7 +216,7 @@ def score_all_highlights(
         if result["type_reel"] in [
             "goalkeeper_action", "defensive_clearance",
             "touche", "corner", "none"
-        ] and result["score"] < 4:
+        ] and result["score"] < 5:
             filtered += 1
             continue
 
