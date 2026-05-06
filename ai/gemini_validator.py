@@ -400,6 +400,8 @@ Question: Is the ball clearly INSIDE the goal (behind the goal line, inside the 
 Rules — read carefully:
 - YES: ball is fully past the goal line, inside the net, net is visibly deformed by the ball
 - YES: goalkeeper is retrieving the ball from INSIDE the net (body inside goal area)
+- NO: goalkeeper holding/catching the ball in his hands or arms (even if inside the goal area)
+- NO: goalkeeper picking up the ball while standing upright
 - NO: ball in front of the goal or on the goal line
 - NO: goalkeeper holding/catching ball in front of the goal
 - NO: ball near the post but not inside
@@ -1385,8 +1387,16 @@ def validate_events_with_gemini(
             # Si Gemini n'a pas vu de but même avec le zoom fin → supprimé
             gemini_goal_votes = result.get("_goal_votes", 0)
 
+            _desc_lower = result.get("description", "").lower()
+            _has_celebration = any(w in _desc_lower for w in
+                ["célébr", "celebr", "joie", "jump", "saute", "fête", "fete",
+                 "bras lev", "arms", "franchit la ligne", "dans le filet"])
+
             if gemini_goal_votes >= 2:
                 print(f"    → GARDÉ (Gemini a vu {gemini_goal_votes} goal)")
+
+            elif gemini_goal_votes >= 1 and _has_celebration:
+                print(f"    → GARDÉ (1 vote goal + célébration détectée)")
 
             elif high_conf_phys and tracker_conf_val > 0.95 and gemini_goal_votes >= 1:
                 print("    → GARDÉ (signal physique très fort + 1 vote Gemini)")
