@@ -74,6 +74,11 @@ def _shot_qualifies(e, all_events):
     if gemini_ok:
         return True
 
+    # Tir confirmé visuellement par Gemini lors de la validation des candidats buts
+    # (shot conf >= 0.90 sur un offset proche) → occasion dangereuse à montrer
+    if e.get("gemini_shot_confirmed", False):
+        return True
+
     return False
 
 
@@ -166,15 +171,7 @@ def create_highlights(
                 key_events.append(e)
             elif etype == "shot":
                 if _shot_qualifies(e, events):
-                    # Ne pas inclure un tir si un but arrive dans les 15s suivantes
-                    t_shot = e.get("time", 0)
-                    too_close_to_goal = any(
-                        g.get("type") in ["goal", "score"]
-                        and 0 <= g.get("time", 0) - t_shot <= 15
-                        for g in events
-                    )
-                    if not too_close_to_goal:
-                        key_events.append(e)
+                    key_events.append(e)
         else:
             key_events.append(e)
 
