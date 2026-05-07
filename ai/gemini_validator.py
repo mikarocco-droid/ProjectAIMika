@@ -999,6 +999,13 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
             elif rtype == "shot":
                 shot_votes += 1
 
+                # Mémoriser les timestamps où Gemini confirme un tir dangereux
+                # → utilisé pour marquer les events tirs comme occasions à montrer
+                if rconf >= 0.90:
+                    if "_shot_offsets_seen" not in event:
+                        event["_shot_offsets_seen"] = []
+                    event["_shot_offsets_seen"].append(t_analyzed)
+
                 shot_signal = signal
 
                 # tir loin du but → probablement dégagement / relance
@@ -1418,6 +1425,22 @@ def validate_events_with_gemini(
 
     events = [e for e in events if not e.get("_remove", False)]
     print(f"  Gemini : {validated} validés | {corrected} corrigés | {removed} supprimés")
+
+    # ── Marquer les tirs confirmés par Gemini comme occasions dangereuses ──
+    # Pendant la validation, certains offsets retournent "shot conf >= 0.90"
+    # → marquer les events tirs proches comme gemini_shot_confirmed=True
+    # → utilisé par _shot_qualifies pour les inclure dans les highlights
+    _shot_timestamps_confirmed = set()
+    for e in events:
+        for _ts in e.get("_shot_offsets_seen", []):
+            _shot_timestamps_confirmed.add(_ts)
+
+    if _shot_timestamps_confirmed:
+        for e in events:
+            if e.get("type") == "shot":
+                t_s = e.get("time", 0)
+                if any(abs(t_s - _ts) <= 8.0 for _ts in _shot_timestamps_confirmed):
+                    e["gemini_shot_confirmed"] = True
 
     # Libérer les containers PyAV en fin de validation
     close_all_av_containers()
