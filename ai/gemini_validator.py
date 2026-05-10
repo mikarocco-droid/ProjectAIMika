@@ -1407,8 +1407,8 @@ def validate_events_with_gemini(
             if gemini_goal_votes >= 2:
                 print(f"    → GARDÉ (Gemini a vu {gemini_goal_votes} goal)")
 
-            elif gemini_goal_votes >= 1 and _has_celebration:
-                print(f"    → GARDÉ (1 vote goal + célébration détectée)")
+            elif gemini_goal_votes >= 1 and _has_celebration and confiance >= 0.85:
+                print(f"    → GARDÉ (1 vote goal conf={confiance:.2f} >= 0.85 + célébration)")
 
             elif high_conf_phys and tracker_conf_val > 0.95 and gemini_goal_votes >= 1:
                 print("    → GARDÉ (signal physique très fort + 1 vote Gemini)")
