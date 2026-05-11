@@ -930,11 +930,14 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
     offsets_s = sorted(offsets_s, key=lambda x: abs(x))
 
     _t_event = event.get('time', 0)
+    # Zone cible : enrichir les offsets avec +1s et +2s (couvre la fenêtre critique juste après le tir)
+    # +2 appels Gemini seulement pour ces candidats
+    if 100 <= _t_event <= 160 or 570 <= _t_event <= 600:
+        offsets_s = sorted(set(offsets_s) | {1, 2}, key=lambda x: abs(x))
+        print(f"  [DEBUG ZONE] Candidat dans zone cible — offsets enrichis: {offsets_s}")
+
     print(f"  [PRE-GEMINI] t={_t_event:.2f}s "
           f"source={source} offsets={offsets_s} conf={tracker_conf:.2f}")
-    # Log zone cible pour debug 02:14 et 09:44
-    if 100 <= _t_event <= 160 or 570 <= _t_event <= 600:
-        print(f"  [DEBUG ZONE] Candidat dans zone cible — analyse détaillée activée")
 
     try:
         client = get_client()
