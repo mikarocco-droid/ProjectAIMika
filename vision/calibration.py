@@ -313,12 +313,21 @@ def calibrate(video_path, sport):
     if not cap.isOpened():
         raise ValueError(f"Impossible d'ouvrir : {video_path}")
 
-    # Analyser les 5 premières frames et moyenner
+    # Analyser 30 frames réparties sur les 60 premières secondes
+    # Évite les frames atypiques (boue, ombre, joueur en gros plan)
+    fps_cap = cap.get(cv2.CAP_PROP_FPS) or 25
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    sample_end = min(int(fps_cap * 60), total_frames)  # 60s max
+    step = max(1, sample_end // 30)
+
     frames_sample = []
-    for _ in range(10):
+    for i in range(0, sample_end, step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ret, frame = cap.read()
         if ret:
             frames_sample.append(frame)
+        if len(frames_sample) >= 30:
+            break
 
     cap.release()
 
@@ -334,8 +343,19 @@ def calibrate(video_path, sport):
     camera_angle = detect_camera_angle(frame)
     print(f"  Angle camera : {camera_angle}")
 
-    # 2. Couleur terrain
-    pitch_color, _ = detect_pitch_color(frame)
+    # 2. Couleur terrain — médiane sur plusieurs frames
+    # Plus robuste que frame unique sur terrains boueux/hivernaux
+    color_scores_all = {"green": [], "wood": [], "ice": [], "blue": []}
+    for f in frames_sample:
+        _, scores = detect_pitch_color(f)
+        for k, v in scores.items():
+            color_scores_all[k].append(v)
+    # Médiane de chaque couleur → plus robuste aux outliers
+    median_scores = {k: float(np.median(v)) for k, v in color_scores_all.items()}
+    pitch_color = max(median_scores, key=median_scores.get)
+    print(f"  Couleur terrain (médiane) : {pitch_color} "
+          f"(vert={median_scores['green']:.1%} bois={median_scores['wood']:.1%} "
+          f"glace={median_scores['ice']:.1%} bleu={median_scores['blue']:.1%})")
 
     # 3. Zone de jeu
     play_zone = detect_play_zone(frame, pitch_color)
