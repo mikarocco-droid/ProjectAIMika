@@ -20,6 +20,13 @@ def is_valid_ball(ball, frame_w, frame_h):
         return False
     if w > frame_w * 0.2:
         return False
+    # V9.7+ — rejeter si centre hors frame (faux positifs YOLO hors cadre)
+    cx = x + w // 2
+    cy = y + h // 2
+    if cx < 0 or cx >= frame_w:
+        return False
+    if cy < 0 or cy >= frame_h:
+        return False
     return True
 
 
@@ -219,16 +226,20 @@ class ShotCandidate:
 # ─────────────────────────────────────────
 # ANTI-SAUT — filtre faux positifs tracking
 # ─────────────────────────────────────────
-def is_valid_jump(prev, new_pos, max_dist=150):
+def is_valid_jump(prev, new_pos, max_dist=250, velocity=(0.0, 0.0)):
     """
     Rejette les sauts impossibles du ballon.
-    Un ballon ne peut pas téléporter à > 150px entre 2 frames.
+    max_dist dynamique : 250px de base + bonus vélocité estimée.
+    Plus permissif pour football avec frame_skip=2 (tirs, dégagements).
     """
     if prev is None:
         return True
     dx = prev[0] - new_pos[0]
     dy = prev[1] - new_pos[1]
-    return (dx * dx + dy * dy) < max_dist * max_dist
+    # Distance max dynamique : base + vélocité estimée * facteur
+    speed_bonus = math.hypot(velocity[0], velocity[1]) * 1.5
+    dynamic_max = min(350, max_dist + speed_bonus)
+    return (dx * dx + dy * dy) < dynamic_max * dynamic_max
 
 
 # ─────────────────────────────────────────
@@ -250,6 +261,10 @@ class BallTracker:
         self.last_valid_ball  = None   # dernière position fiable
         self.last_valid_frame = -1     # frame correspondante
         self.velocity         = (0.0, 0.0)  # vélocité estimée
+
+        # V9.7+ — anti-blocage tracker
+        self._filtered_streak    = 0   # frames consécutives sans ballon valide
+        self._MAX_FILTERED_STREAK = 25  # au-delà → reset complet
 
     def select_best_ball(self, balls, last_pos):
         if not balls:
@@ -274,6 +289,24 @@ class BallTracker:
         self.frame_id += 1
         t = timestamp if timestamp is not None else self.frame_id / self.fps
 
+        # V9.7+ FIX B — reset last_valid_ball si gap > 30 frames
+        if (self.last_valid_ball is not None
+                and self.last_valid_frame >= 0
+                and self.frame_id - self.last_valid_frame > 30):
+            self.last_valid_ball  = None
+            self.last_valid_frame = -1
+            self.velocity         = (0.0, 0.0)
+
+        # V9.7+ FIX C — reset complet si streak trop long
+        if self._filtered_streak >= self._MAX_FILTERED_STREAK:
+            print(f"  [BALL TRACKER RESET] streak={self._filtered_streak} → reset")
+            self.ball_buffer.clear()
+            self.kalman.reset()
+            self.last_valid_ball  = None
+            self.last_valid_frame = -1
+            self.velocity         = (0.0, 0.0)
+            self._filtered_streak = 0
+
         detected_balls = [
             b for b in detected_balls
             if is_valid_ball(b, frame_w, frame_h)
@@ -288,7 +321,7 @@ class BallTracker:
             cy = y + h // 2
 
             # MODIF 3 — anti-saut : rejeter faux positifs
-            if is_valid_jump(self.last_valid_ball, (cx, cy)):
+            if is_valid_jump(self.last_valid_ball, (cx, cy), velocity=self.velocity):
                 # MODIF 4 — lissage exponentiel vélocité (alpha=0.6)
                 if self.last_valid_ball is not None:
                     vx = cx - self.last_valid_ball[0]
@@ -301,6 +334,7 @@ class BallTracker:
                 # MODIF 2 — mémoriser dernière position fiable
                 self.last_valid_ball  = (cx, cy)
                 self.last_valid_frame = self.frame_id
+                self._filtered_streak = 0  # ballon valide → reset streak
 
                 self.ball_buffer.add(cx, cy, t, frame_w, frame_h)
                 self.last_seen   = self.frame_id
@@ -312,6 +346,7 @@ class BallTracker:
                 best = None
 
         if best is None:
+            self._filtered_streak += 1
             self.lost_frames += 1
             if self.lost_frames <= 2:
                 # Frames 1-2 : prédiction courte (micro-occlusion / tirs rapides)
@@ -509,3 +544,4 @@ class BallTracker:
         self.last_valid_ball  = None
         self.last_valid_frame = -1
         self.velocity         = (0.0, 0.0)
+        self._filtered_streak = 0
