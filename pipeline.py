@@ -1192,10 +1192,10 @@ def run_pipeline(
     # V9.7+ — shots/xG/goals depuis events_clean (tirs validés par highlights)
     n_highlight_shots = sum(1 for h in highlights if h.get("main_type") == "shot")
     n_highlight_goals = sum(1 for h in highlights if h.get("main_type") in ("goal", "score"))
-    # events_clean contient déjà les bons tirs — summary les a comptés
-    # On force aussi les buts depuis highlights si supérieur
-    if n_highlight_goals > summary["goals"]:
-        summary["goals"] = n_highlight_goals
+    # Buts = depuis events_validated (source de vérité) — pas depuis highlights
+    # Les highlights peuvent inclure des SHOT→GOAL faux positifs
+    n_validated_goals = sum(1 for e in events_validated if e.get("type") in ("goal", "score"))
+    summary["goals"] = n_validated_goals
 
     # V9.7 — recalculer stats joueurs (tirs + xG) depuis highlights filtrés
     # Les stats brutes de compute_stats incluent tous les faux tirs

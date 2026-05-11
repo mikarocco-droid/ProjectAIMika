@@ -57,6 +57,14 @@ def _shot_qualifies(e, all_events):
                  and e.get("gemini_type") == "shot")
     t         = e.get("time", 0)
 
+    # Exclure tout tir dans les 15s avant un but confirmé
+    # (évite le doublon tir+but sur la même action)
+    for ev in all_events:
+        if ev.get("type") in ["goal", "score"]:
+            t_goal = ev.get("time", 0)
+            if 0 <= t_goal - t <= 15.0:
+                return False
+
     if xg >= XG_MIN_FOR_HIGHLIGHT:
         return True
 
