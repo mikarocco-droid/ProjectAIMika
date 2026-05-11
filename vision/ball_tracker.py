@@ -23,11 +23,8 @@ def is_valid_ball(ball, frame_w, frame_h):
     # V9.7+ — rejeter si centre hors frame (faux positifs YOLO hors cadre)
     cx = x + w // 2
     cy = y + h // 2
-    if cx < 0 or cx >= frame_w:
+    if cx < 0 or cx >= frame_w or cy < 0 or cy >= frame_h:
         return False
-    if cy < 0 or cy >= frame_h:
-        return False
-    return True
 
 
 # ─────────────────────────────────────────
@@ -227,19 +224,12 @@ class ShotCandidate:
 # ANTI-SAUT — filtre faux positifs tracking
 # ─────────────────────────────────────────
 def is_valid_jump(prev, new_pos, max_dist=250, velocity=(0.0, 0.0)):
-    """
-    Rejette les sauts impossibles du ballon.
-    max_dist dynamique : 250px de base + bonus vélocité estimée.
-    Plus permissif pour football avec frame_skip=2 (tirs, dégagements).
-    """
     if prev is None:
         return True
     dx = prev[0] - new_pos[0]
     dy = prev[1] - new_pos[1]
-    # Distance max dynamique : base + vélocité estimée * facteur
-    speed_bonus = math.hypot(velocity[0], velocity[1]) * 1.5
-    dynamic_max = min(350, max_dist + speed_bonus)
-    return (dx * dx + dy * dy) < dynamic_max * dynamic_max
+    dyn = min(350, max_dist + math.hypot(velocity[0], velocity[1]) * 1.5)
+    return (dx * dx + dy * dy) < dyn * dyn
 
 
 # ─────────────────────────────────────────
@@ -311,6 +301,21 @@ class BallTracker:
             b for b in detected_balls
             if is_valid_ball(b, frame_w, frame_h)
         ]
+        
+        if self.frame_id > 0 and self.frame_id % 5000 == 0:
+            print(f"  [BALL TRACKER] reset périodique frame={self.frame_id}")
+            self.ball_buffer.clear(); self.kalman.reset()
+            self.last_valid_ball=None; self.last_valid_frame=-1
+            self.velocity=(0.0,0.0); self._filtered_streak=0
+        if self.last_valid_ball is not None and self.last_valid_frame>=0 and self.frame_id-self.last_valid_frame>30:
+            self.last_valid_ball=None; self.last_valid_frame=-1; self.velocity=(0.0,0.0)
+        if self._filtered_streak >= self._MAX_FILTERED_STREAK:
+            print(f"  [BALL TRACKER RESET] streak={self._filtered_streak}")
+            self.ball_buffer.clear(); self.kalman.reset()
+            self.last_valid_ball=None; self.last_valid_frame=-1
+            self.velocity=(0.0,0.0); self._filtered_streak=0
+        elif self._filtered_streak > 10:
+            self.kalman.reset(); self.velocity=(0.0,0.0)
 
         last_pos = self.ball_buffer.last_pos()
         best     = self.select_best_ball(detected_balls, last_pos)
@@ -367,6 +372,8 @@ class BallTracker:
                 # Frames 3+ : vraie absence → couper le signal
                 # Permet à ball_appears_in_goal de détecter la réapparition
                 self.velocity = (0.0, 0.0)
+                self._filtered_streak     = 0
+                self._MAX_FILTERED_STREAK = 25
                 self.kalman.update(None)  # maintenir l'état interne
                 return None, False
             else:
