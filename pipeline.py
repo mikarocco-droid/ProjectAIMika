@@ -707,7 +707,7 @@ def run_pipeline(
                     if already_covered:
                         continue
                     next_shot_t = shot_times_all[i + 1] if i + 1 < len(shot_times_all) else st + 999
-                    window = max(10, min(15, next_shot_t - st - 5))  # max 15s
+                    window = max(25, min(45, next_shot_t - st - 5))
                     shots_to_analyze.append((shot, st, window))
 
                 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -740,13 +740,24 @@ def run_pipeline(
                     already_covered = any(abs(gt - st) < 35 for gt in detected_goal_times)
                     if already_covered:
                         continue
-                    _gv = result.get("goal_votes", 1) if result else 0
+                    _gv_stg = result.get("goal_votes", 1) if result else 0
                     if (result and result.get("is_goal")
                             and result.get("confidence", 0) >= 0.92
-                            and _gv >= 2):
+                            and _gv_stg >= 2):
                         goal_t = result["timestamp"]
                         too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
-                        if not too_close:
+                        # Exiger un signal physique posthoc dans la fenêtre tir→but
+                        # Évite de valider un kickoff initial confondu avec un kickoff après but
+                        _posthoc_times = [
+                            e.get("time", 0) for e in events
+                            if isinstance(e, dict)
+                            and e.get("type") in ("goal", "score")
+                            and e.get("source", "").startswith("goal_posthoc")
+                        ]
+                        _has_physical = any(abs(pt - goal_t) <= 30 for pt in _posthoc_times)
+                        if not _has_physical:
+                            print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±30s")
+                        if not too_close and _has_physical:
                             new_goal = {
                                 "type":             "goal",
                                 "time":             goal_t,
