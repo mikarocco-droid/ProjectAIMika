@@ -441,6 +441,8 @@ Default to is_goal=false if any doubt."""
                     "timestamp":  _ts_validated,
                     "confidence": _data["confidence"],
                     "desc":       _data.get("evidence", ""),
+                    "goal_votes": 2,   # early stop = ballon dans filet évident = score >= 5
+                    "goal_score": 8,
                 }
         except Exception:
             pass  # early stop échoue → continue avec analyse complète
@@ -522,28 +524,45 @@ For celebrations to count as evidence they must be UNAMBIGUOUS:
 - Players jumping on each other, clearly hugging in joy
 - NOT: players jogging, disputing a ball, or one player raising a hand
 
+SCORING SYSTEM — assign a score based on ALL frames combined:
+
+POSITIVE signals (accumulate across frames):
++5 : center kickoff clearly visible (ball at center spot, both teams on opposite halves, static formation)
++4 : unambiguous multi-player celebration (multiple players running toward each other, arms wide, hugging)
++3 : ball clearly visible INSIDE the net (net deformed or ball unmistakably behind line)
++3 : attacking players walking/jogging back toward center circle after action
++1 : ball near goal line but position unclear
+
+NEGATIVE signals (subtract immediately):
+-5 : goalkeeper holding/catching/securing ball in hands or arms → is_goal=false, override ALL positives
+-4 : ball clearly kicked/headed away from goal (defensive clearance)
+-4 : corner kick or throw-in visible immediately after
+-3 : goalkeeper standing upright with ball (not diving, not retrieving from inside net)
+-2 : ball visible outside the net after the action
+
+DECISION:
+- total_score >= 5 → is_goal=true
+- total_score 3-4 → is_goal=true ONLY if ball in net clearly confirmed (+3 signal present)
+- total_score <= 2 → is_goal=false
+- goalkeeper holding ball detected (-5) → is_goal=false immediately, no exception
+
+Confidence mapping:
+- score >= 8 → confidence=0.95
+- score 6-7 → confidence=0.90
+- score 5 → confidence=0.85
+- score 3-4 with ball in net → confidence=0.80
+- score <= 2 → is_goal=false, confidence=0.0
+
 Return ONLY valid JSON, no markdown:
 {{
   "is_goal": true or false,
   "timestamp": <seconds when ball crossed line, or null>,
   "confidence": <0.0 to 1.0>,
-  "evidence": "<EXACTLY what you see: describe the specific visual — e.g. 'ball visible inside net at 02:21' or 'center kickoff at 04:30 with both teams positioned' or 'throw-in from sideline' or 'players fighting for ball near touchline'>"
+  "goal_score": <integer: your computed total score>,
+  "evidence": "<list each signal detected with its score — e.g. 'center kickoff +5, celebration +4 = 9' or 'goalkeeper holding ball -5 = -5, is_goal=false'>"
 }}
 
-Confidence scale:
-- 0.95 : ball clearly inside net with goalkeeper reaction
-- 0.90 : center kickoff WITH unambiguous celebration visible
-- 0.85 : center kickoff clearly visible (both teams, center spot, proper formation)
-- 0.80 : ball appears to cross line but partially obstructed
-- below 0.80 : insufficient evidence → set is_goal=false
-
-MULTI-FRAME RULE:
-A goal should ideally be visible in MORE THAN ONE frame (ball inside net, or goalkeeper retrieving).
-If you only see evidence in exactly ONE frame and it is ambiguous → is_goal=false.
-Single-frame evidence is only sufficient if the ball is UNMISTAKABLY inside the net (confidence=0.95).
-If only ONE frame suggests a goal but the other frames show normal play, active play, or contradict it → is_goal=false.
-
-DEFAULT TO is_goal=false if you have any doubt."""
+DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected."""
 
     parts_with_prompt = [text_to_part(prompt)] + parts
 
@@ -567,6 +586,10 @@ DEFAULT TO is_goal=false if you have any doubt."""
         timestamp  = parsed.get("timestamp")
         confidence = float(parsed.get("confidence", 0.0))
         evidence   = parsed.get("evidence", "")
+        goal_score = int(parsed.get("goal_score", 0))
+        # Convertir goal_score en goal_votes pour la logique pipeline
+        # score >= 5 = 2 votes (fiable), score 3-4 = 1 vote (borderline)
+        goal_votes = 2 if goal_score >= 5 else (1 if goal_score >= 3 else 0)
 
         # Valider le timestamp dans la fenêtre
         if is_goal and timestamp is not None:
@@ -583,11 +606,14 @@ DEFAULT TO is_goal=false if you have any doubt."""
         print(f"  [SHOT→GOAL] shot={shot_time:.1f}s → is_goal={is_goal} "
               f"t={timestamp} conf={confidence:.2f} | {evidence[:80]}")
 
+        print(f"  [SHOT→GOAL SCORE] goal_score={goal_score} → goal_votes={goal_votes}")
         return {
             "is_goal":    is_goal,
             "timestamp":  timestamp,
             "confidence": confidence,
             "desc":       evidence,
+            "goal_votes": goal_votes,
+            "goal_score": goal_score,
         }
 
     except Exception as e:
