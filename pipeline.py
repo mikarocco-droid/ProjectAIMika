@@ -707,7 +707,7 @@ def run_pipeline(
                     if already_covered:
                         continue
                     next_shot_t = shot_times_all[i + 1] if i + 1 < len(shot_times_all) else st + 999
-                    window = max(25, min(45, next_shot_t - st - 5))
+                    window = max(10, min(15, next_shot_t - st - 5))  # max 15s
                     shots_to_analyze.append((shot, st, window))
 
                 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -740,7 +740,10 @@ def run_pipeline(
                     already_covered = any(abs(gt - st) < 35 for gt in detected_goal_times)
                     if already_covered:
                         continue
-                    if result and result.get("is_goal") and result.get("confidence", 0) >= 0.92:
+                    _gv = result.get("goal_votes", 1) if result else 0
+                    if (result and result.get("is_goal")
+                            and result.get("confidence", 0) >= 0.92
+                            and _gv >= 2):
                         goal_t = result["timestamp"]
                         too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
                         if not too_close:
