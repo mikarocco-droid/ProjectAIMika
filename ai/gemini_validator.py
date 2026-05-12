@@ -24,7 +24,7 @@ except ImportError:
 # ─────────────────────────────────────────
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
 # ─────────────────────────────────────────
-OFFSETS_POSTHOC = [-20, -10, -5, 0, +5, +10, +15]
+OFFSETS_POSTHOC = [-3, 0, +3]  # 3 offsets serrés — SHOT→GOAL gère la précision
 OFFSETS_EVENTS  = [-1, 0, 2]
 
 _METRICS = {
@@ -952,7 +952,7 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
         }
 
     # Offsets triés (plus proches d'abord)
-    offsets_s = OFFSETS_POSTHOC if "posthoc" in str(source) else OFFSETS_EVENTS
+    offsets_s = OFFSETS_POSTHOC if "posthoc" in str(source) else OFFSETS_EVENTS  # 3 offsets posthoc
     offsets_s = sorted(offsets_s, key=lambda x: abs(x))
 
     _t_event = event.get('time', 0)
