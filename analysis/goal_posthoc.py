@@ -289,7 +289,15 @@ def detect_fast_goals_from_ball(
         rebound = _net_rebound_signature(speeds, frames_data, i)
 
         # 🔥 règle clé V9.5
-        if stuck < 2 or (stuck < 3 and disappear < 2 and not rebound):
+        # Exception lucarne : tir très rapide qui ressort immédiatement du but
+        # stuck=0 mais peak élevé + disparition rapide = but réel non collant
+        _LUCARNE_PEAK_MIN = SPEED_THRESHOLD * 2.5   # frappe forte requise
+        _lucarne = (
+            stuck == 0
+            and disappear >= 1
+            and peak >= _LUCARNE_PEAK_MIN
+        )
+        if not _lucarne and (stuck < 2 or (stuck < 3 and disappear < 2 and not rebound)):
             i += 1
             continue
 
@@ -328,7 +336,14 @@ def detect_fast_goals_from_ball(
                 and rebound          # rebond filet obligatoire
                 and recent_motion_ok # vitesse cohérente obligatoire
             )
-            if not valid_loose:
+            # Exception lucarne : pas de tir préalable détecté (début vidéo coupée,
+            # ou tir trop rapide pour être capturé) mais signal physique très fort
+            valid_lucarne = (
+                _lucarne
+                and peak >= SPEED_THRESHOLD * 3.0  # frappe très forte
+                and disappear >= 2                  # disparition confirmée
+            )
+            if not valid_loose and not valid_lucarne:
                 i += 1
                 continue  # ❌ signal insuffisant
 
