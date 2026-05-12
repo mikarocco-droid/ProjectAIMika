@@ -490,6 +490,13 @@ def run_pipeline(
                 goal_box    = _goal_box,
             )
             if fast_goals:
+                # Cap posthoc dynamique selon durée vidéo
+                # ~1 candidat / 2min, min=5, max=15
+                _dur = video_duration or 600
+                MAX_POSTHOC_CANDIDATES = max(5, min(15, int(_dur / 120)))
+                if len(fast_goals) > MAX_POSTHOC_CANDIDATES:
+                    fast_goals = sorted(fast_goals, key=lambda x: x.get('score', 0), reverse=True)[:MAX_POSTHOC_CANDIDATES]
+                    print(f"  [POSTHOC] cap {MAX_POSTHOC_CANDIDATES} candidats pour {int(_dur//60)}min de vidéo")
                 events.extend(fast_goals)
                 events.sort(key=lambda e: e.get("time", 0))
                 print(f"  goal_posthoc : {len(fast_goals)} but(s) détecté(s)")
@@ -754,10 +761,7 @@ def run_pipeline(
                             e.get("time", 0) for e in events
                             if isinstance(e, dict)
                             and e.get("type") in ("goal", "score")
-                            and (
-                                e.get("source", "").startswith("goal_posthoc")
-                                or e.get("detected_from", "").startswith("goal_posthoc")
-                            )
+                            and e.get("source", "").startswith("goal_posthoc")
                         ]
                         _has_physical = any(abs(pt - goal_t) <= 30 for pt in _posthoc_times)
                         if not _has_physical:
