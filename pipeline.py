@@ -498,7 +498,6 @@ def run_pipeline(
                 else:
                     MAX_POSTHOC = max(5, min(15, int(_dur / 120)))
                 if len(fast_goals) > MAX_POSTHOC:
-                    # Ancrages = candidats dans ±10s d'un tir (fenêtre serrée)
                     _shot_times = [e.get("time", 0) for e in events if e.get("type") == "shot"]
                     _anchors = [fg for fg in fast_goals if any(abs(fg.get("time", 0) - st) <= 10 for st in _shot_times)]
                     _others  = [fg for fg in fast_goals if fg not in _anchors]
@@ -594,9 +593,7 @@ def run_pipeline(
                       f"offsets={offs}")
 
         # ── DEBUG clips candidats buts ──────────────────────────────
-        # DEBUG_CLIPS = True  ← décommenter pour réactiver
-        DEBUG_CLIPS = False
-        if DEBUG_CLIPS and DEBUG:
+        if DEBUG:
             import subprocess as _sp
             _goals_pre = [e for e in events_for_gemini if e.get("type") == "goal"]
             if _goals_pre:
