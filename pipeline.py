@@ -578,7 +578,9 @@ def run_pipeline(
                       f"offsets={offs}")
 
         # ── DEBUG clips candidats buts ──────────────────────────────
-        if DEBUG:
+        # DEBUG_CLIPS = True  ← décommenter pour réactiver (~40s/clip)
+        DEBUG_CLIPS = False
+        if DEBUG_CLIPS and DEBUG:
             import subprocess as _sp
             _goals_pre = [e for e in events_for_gemini if e.get("type") == "goal"]
             if _goals_pre:
@@ -752,7 +754,10 @@ def run_pipeline(
                             e.get("time", 0) for e in events
                             if isinstance(e, dict)
                             and e.get("type") in ("goal", "score")
-                            and e.get("source", "").startswith("goal_posthoc")
+                            and (
+                                e.get("source", "").startswith("goal_posthoc")
+                                or e.get("detected_from", "").startswith("goal_posthoc")
+                            )
                         ]
                         _has_physical = any(abs(pt - goal_t) <= 30 for pt in _posthoc_times)
                         if not _has_physical:
