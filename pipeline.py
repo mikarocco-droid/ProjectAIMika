@@ -490,13 +490,17 @@ def run_pipeline(
                 goal_box    = _goal_box,
             )
             if fast_goals:
-                # Cap posthoc dynamique selon durée vidéo
-                # ~1 candidat / 2min, min=5, max=15
+                # Cap posthoc dynamique — préserver les ancrages SHOT→GOAL
                 _dur = video_duration or 600
-                MAX_POSTHOC_CANDIDATES = max(5, min(15, int(_dur / 120)))
-                if len(fast_goals) > MAX_POSTHOC_CANDIDATES:
-                    fast_goals = sorted(fast_goals, key=lambda x: x.get('score', 0), reverse=True)[:MAX_POSTHOC_CANDIDATES]
-                    print(f"  [POSTHOC] cap {MAX_POSTHOC_CANDIDATES} candidats pour {int(_dur//60)}min de vidéo")
+                MAX_POSTHOC = max(5, min(15, int(_dur / 120)))
+                if len(fast_goals) > MAX_POSTHOC:
+                    _shot_times = [e.get("time", 0) for e in events if e.get("type") == "shot"]
+                    _anchors = [fg for fg in fast_goals if any(abs(fg.get("time",0) - st) <= 30 for st in _shot_times)]
+                    _others  = [fg for fg in fast_goals if fg not in _anchors]
+                    _slots   = max(0, MAX_POSTHOC - len(_anchors))
+                    _others  = sorted(_others, key=lambda x: x.get("score", 0), reverse=True)[:_slots]
+                    fast_goals = _anchors + _others
+                    print(f"  [POSTHOC] cap {MAX_POSTHOC} pour {int(_dur//60)}min ({len(_anchors)} ancrages + {len(_others)} autres)")
                 events.extend(fast_goals)
                 events.sort(key=lambda e: e.get("time", 0))
                 print(f"  goal_posthoc : {len(fast_goals)} but(s) détecté(s)")
@@ -585,7 +589,7 @@ def run_pipeline(
                       f"offsets={offs}")
 
         # ── DEBUG clips candidats buts ──────────────────────────────
-        # DEBUG_CLIPS = True  ← décommenter pour réactiver (~40s/clip)
+        # DEBUG_CLIPS = True  ← décommenter pour réactiver
         DEBUG_CLIPS = False
         if DEBUG_CLIPS and DEBUG:
             import subprocess as _sp
@@ -761,7 +765,11 @@ def run_pipeline(
                             e.get("time", 0) for e in events
                             if isinstance(e, dict)
                             and e.get("type") in ("goal", "score")
-                            and e.get("source", "").startswith("goal_posthoc")
+                            and (
+                                e.get("source", "").startswith("goal_posthoc")
+                                or e.get("detected_from", "").startswith("goal_posthoc")
+                                or e.get("detected_from") == "ball_appears_in_goal"
+                            )
                         ]
                         _has_physical = any(abs(pt - goal_t) <= 30 for pt in _posthoc_times)
                         if not _has_physical:
