@@ -514,7 +514,18 @@ def detect_fast_goals_from_ball(
     APPEAR_Y_TOP    = frame_h * 0.15
     APPEAR_Y_BOTTOM = frame_h * 0.80
     APPEAR_COOLDOWN = 5.0
-    APPEAR_SCORE_MIN = 7.5  # score minimum — filtre faux positifs sans contexte
+    APPEAR_SCORE_MIN = 9.0  # strict — réduit les faux candidats posthoc
+
+    # Calculer le frame_skip réel depuis frames_data pour adapter ABSENT_MIN_FRAMES
+    # Avec frame_skip 2/4, les frames analysées sont espacées de ~0.5s au lieu de 0.04s
+    _frames_spacing = 1  # défaut : 1 frame analysée = 1 frame réelle
+    if len(frames_data) > 10:
+        _f1 = frames_data[5].get("frame", 5)
+        _f2 = frames_data[6].get("frame", 6)
+        _frames_spacing = max(1, _f2 - _f1)
+    # ABSENT_MIN_FRAMES adapté : minimum 1 frame (frame_skip élevé = peu de frames)
+    # Le score et la vitesse compensent le filtre d'absence
+    ABSENT_MIN_FRAMES = max(1, int(0.3 * 25 / _frames_spacing))
 
     absent_since   = None
     _last_appear_t = -999.0
@@ -532,6 +543,15 @@ def detect_fast_goals_from_ball(
             continue
 
         x, y = c
+
+        # Ignorer les positions hors zone but (fausses détections bas de l'écran)
+        # Une position y > APPEAR_Y_BOTTOM ne peut pas être dans le but → traiter comme absent
+        _in_valid_zone = (y < frame_h * 0.80) and (-frame_w * 0.05 <= x <= frame_w * 1.05)
+        if not _in_valid_zone:
+            if absent_since is None:
+                absent_since = i
+            continue
+
         _last_seen_x = x  # mémoriser dernière position avant absence
 
         # Position valide — est-ce une réapparition dans le but ?
@@ -573,8 +593,16 @@ def detect_fast_goals_from_ball(
 
                         score = 6.0 + min(2.0, 0.5 * _players_near)
 
-                        # Score minimum strict
-                        if score < APPEAR_SCORE_MIN:
+                        # Bonus vitesse : si le ballon réapparaît loin de sa dernière position connue
+                        # c'est un signe de tir rapide (ex: t=139.5s, x=0 après x=-9 à t=137.5s)
+                        if _last_seen_x is not None:
+                            _dist_jump = abs(x - _last_seen_x)
+                            if _dist_jump > 50:  # saut spatial > 50px = tir rapide probable
+                                score += 0.5
+
+                        # Score minimum : strict par défaut, assoupli si absence longue (ballon masqué)
+                        _score_min = APPEAR_SCORE_MIN if n_absent < 20 else 6.5
+                        if score < _score_min:
                             absent_since = None
                             continue
 
