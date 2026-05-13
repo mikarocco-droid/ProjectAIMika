@@ -71,7 +71,16 @@ def _shot_qualifies(e, all_events, confirmed_goal_times=None):
     if xg >= XG_MIN_FOR_HIGHLIGHT:
         return True
 
-    if on_target and xg >= 0.25:
+    # Score combiné — évite les tirs cadrés lointains non dangereux
+    # Remplace le simple 'on_target and xg >= 0.25' trop permissif
+    gemini_shot_confirmed = e.get('gemini_shot_confirmed', False)
+    _qual_score = 0
+    if on_target:               _qual_score += 2
+    if xg >= 0.20:              _qual_score += 1
+    if xg >= 0.35:              _qual_score += 1
+    if gemini_shot_confirmed:   _qual_score += 1
+    if xg < 0.15:               _qual_score -= 1  # malus anti faux positifs faibles
+    if _qual_score >= 4:
         return True
 
     has_blocked = any(
