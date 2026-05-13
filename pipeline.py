@@ -497,14 +497,17 @@ def run_pipeline(
                     MAX_POSTHOC = max(5, min(15, int(_dur / 120)))
                 if len(fast_goals) > MAX_POSTHOC:
                     _shot_times = [e.get("time", 0) for e in events if e.get("type") == "shot"]
-                    _shot_times_sorted = sorted(_shot_times)
-                    _anchors = [fg for fg in fast_goals if any(abs(fg.get("time", 0) - st) <= 5 for st in _shot_times_sorted)]
-                    _anchors = sorted(_anchors, key=lambda x: x.get("score", 0), reverse=True)[:MAX_POSTHOC]
-                    _others  = [fg for fg in fast_goals if fg not in _anchors]
-                    _slots   = max(0, MAX_POSTHOC - len(_anchors))
+                    # Protéger les candidats très précoces (t < 30s) — début de vidéo coupée
+                    _early = [fg for fg in fast_goals if fg.get("time", 0) < 30]
+                    _rest  = [fg for fg in fast_goals if fg not in _early]
+                    _anchors = [fg for fg in _rest if any(abs(fg.get("time", 0) - st) <= 5 for st in _shot_times)]
+                    _anchors = sorted(_anchors, key=lambda x: x.get("score", 0), reverse=True)
+                    _others  = [fg for fg in _rest if fg not in _anchors]
+                    _slots   = max(0, MAX_POSTHOC - len(_early) - len(_anchors))
                     _others  = sorted(_others, key=lambda x: x.get("score", 0), reverse=True)[:_slots]
-                    fast_goals = _anchors + _others
-                    print(f"  [POSTHOC] cap {MAX_POSTHOC} pour {int(_dur//60)}min ({len(_anchors)} ancrages ±5s + {len(_others)} autres)")
+                    fast_goals = _early + _anchors + _others
+                    fast_goals = fast_goals[:MAX_POSTHOC + len(_early)]  # early toujours inclus
+                    print(f"  [POSTHOC] cap {MAX_POSTHOC} pour {int(_dur//60)}min ({len(_early)} précoces + {len(_anchors)} ancrages ±5s + {len(_others)} autres)")
                 events.extend(fast_goals)
                 events.sort(key=lambda e: e.get("time", 0))
                 print(f"  goal_posthoc : {len(fast_goals)} but(s) détecté(s)")
