@@ -328,7 +328,7 @@ def generate_pdf(result, output_path, sport="football"):
     pdf.section_title("Match Summary")
     kpis = [
         ("Goals",   summary.get("goals",    0),               ACCENT2),
-        ("Shots",   summary.get("shots",    0),               ACCENT),
+        ("Tirs cadrés", summary.get("shots", 0),             ACCENT),
         ("xG",      round(summary.get("total_xg", 0), 2),     ACCENT3),
         ("Passes",  summary.get("passes",   0),               ACCENT4),
         ("Players", summary.get("players",  0),               GRAY_L),
@@ -402,7 +402,7 @@ def generate_pdf(result, output_path, sport="football"):
     # Stats par equipe
     if len(team_stats) >= 2:
         pdf.section_title("Team Comparison")
-        cols   = ["TEAM", "PASSES", "SHOTS", "GOALS", "xG", "INTERC.", "DRIBBLES"]
+        cols   = ["TEAM", "PASSES", "CADRÉS", "GOALS", "xG", "INTERC.", "DRIBBLES"]
         widths = [24, 27, 27, 27, 27, 27, 27]
         pdf.table_row(cols, widths, is_header=True)
         for idx, (team, ts) in enumerate(sorted(team_stats.items())):
