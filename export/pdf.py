@@ -57,11 +57,17 @@ def fmt_time(seconds):
 
 
 def player_label(pid, jersey_map=None):
+    if pid is None:
+        return "?"
+    pid_str = str(pid)
+    # Eviter le double # si pid contient déjà un #
+    if pid_str.startswith("#"):
+        return pid_str
     if jersey_map:
-        jersey = jersey_map.get(str(pid)) or jersey_map.get(pid)
+        jersey = jersey_map.get(pid_str) or jersey_map.get(pid)
         if jersey:
             return f"#{jersey}"
-    return f"#{pid}" if pid else "?"
+    return f"#{pid_str}"
 
 
 def deduplicate_stats(stats, jersey_map):
@@ -98,14 +104,21 @@ def deduplicate_stats(stats, jersey_map):
     return merged
 
 
-def fix_highlight_times(highlights):
+def fix_highlight_times(highlights, fps=25):
     fixed = []
     for h in highlights:
+        h = dict(h)
         t_start = float(h.get("time_start") or 0)
         t_end   = float(h.get("time_end")   or 0)
+        # Si time_start=0 mais frame>0, recalculer depuis frame
+        if t_start == 0 and h.get("frame", 0):
+            t_start = round(float(h["frame"]) / fps, 2)
+        # Clip de but : remonter context_before secondes
+        is_goal = (h.get("main_type") or "").lower() in ("goal", "score")
+        if is_goal and t_start > 0:
+            t_start = max(0, t_start - 12)  # context_before=12s
         if t_end <= t_start:
-            t_end = t_start + 3.0
-        h = dict(h)
+            t_end = t_start + (17 if is_goal else 7)
         h["time_start"] = t_start
         h["time_end"]   = t_end
 
