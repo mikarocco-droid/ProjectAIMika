@@ -1007,6 +1007,10 @@ def run_pipeline(
     possession = {}
     try:
         possession = compute_possession_from_stats(events, stats)
+        # Si 50/50 exact = valeur par défaut (non fiable) — marquer comme N/A
+        _poss_vals = list(possession.values())
+        if _poss_vals == [50.0, 50.0] or _poss_vals == [50.0]:
+            possession["_unreliable"] = True
         print(f"  Possession corrigée : {possession}")
     except Exception as e:
         print(f"  Possession correction ignorée : {e}")
@@ -1233,8 +1237,17 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 7b : Heatmaps (events filtrés)...")
     try:
+        # events_clean pour global/goals/équipes
+        # events bruts pour la heatmap shots (sinon 0 points)
+        _events_for_shots = [
+            e for e in events
+            if e.get("type") == "shot"
+            and float(e.get("time", 0)) > 1.0
+        ]
+        _events_heatmap = events_clean + _events_for_shots
+
         heatmaps = generate_all_heatmaps(
-            events     = events_clean,
+            events     = _events_heatmap,
             output_dir = os.path.join(output_dir, "heatmaps"),
             width      = config.FRAME_WIDTH,
             height     = config.FRAME_HEIGHT,
@@ -1243,7 +1256,7 @@ def run_pipeline(
         heatmap_path  = heatmaps.get("global")
         heatmap_paths = heatmaps
         print(f"  OK {len(heatmaps)} heatmaps "
-              f"({n_shots_clean} tirs filtrés / {n_shots_raw} bruts)")
+              f"({len(_events_for_shots)} tirs bruts / {n_shots_raw} total)")
     except Exception as e:
         print(f"  Heatmaps error : {e}")
 
@@ -1264,22 +1277,39 @@ def run_pipeline(
     n_validated_goals = sum(1 for e in events_validated if e.get("type") in ("goal", "score"))
     summary["goals"] = n_validated_goals
 
+    # Tirs cadrés = on_target=True ET xG >= 0.15 ET time > 1s
+    summary["shots"] = sum(
+        1 for e in events
+        if e.get("type") == "shot"
+        and e.get("on_target", False)
+        and float(e.get("xg", 0) or 0) >= 0.15
+        and float(e.get("time", 0)) > 1.0
+    )
+    # xG total = somme tirs avec xG >= 0.10 ET time > 1s
+    summary["total_xg"] = round(sum(
+        float(e.get("xg", 0) or 0)
+        for e in events
+        if e.get("type") == "shot"
+        and float(e.get("xg", 0) or 0) >= 0.10
+        and float(e.get("time", 0)) > 1.0
+    ), 2)
+
     # V9.7 — recalculer stats joueurs (tirs + xG) depuis highlights filtrés
     # Les stats brutes de compute_stats incluent tous les faux tirs
     highlight_times = {round(h.get("time_start", 0)): h for h in highlights}
+    # Recalculer tirs depuis highlights (filtrés), garder xg_total brut de compute_stats
     for pid in stats:
-        stats[pid]["tirs"]     = 0
-        stats[pid]["xg_total"] = 0.0
+        stats[pid]["tirs"] = 0
     for h in highlights:
         if h.get("main_type") != "shot":
             continue
         pid = str(h.get("player", ""))
         if pid and pid in stats:
-            stats[pid]["tirs"]     += 1
-            stats[pid]["xg_total"] += float(h.get("xg", 0) or 0)
+            stats[pid]["tirs"] += 1
         elif pid:
-            # joueur pas encore dans stats (edge case) → ignorer
             pass
+    # xg_total reste celui calculé par compute_stats (depuis events bruts)
+    # Plus représentatif que les highlights filtrés
     # Recalculer aussi les buts depuis highlights
     for h in highlights:
         if h.get("main_type") not in ("goal", "score"):
