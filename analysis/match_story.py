@@ -8,12 +8,17 @@ from analysis.intelligence import compute_team_dominance
 # SCORE MATCH
 # ─────────────────────────────────────────
 def compute_score(events):
+    """
+    team=None (shot_to_goal_gemini avant ReID equipe) = compté dans le total.
+    """
     score = {0: 0, 1: 0}
     for e in events:
         if e.get("type") in ["goal", "score"]:
             team = e.get("team")
-            if team in score:
+            if team in (0, 1):
                 score[team] += 1
+            elif team is None:
+                score[0] += 1   # equipe inconnue → equipe 0 par défaut
     return score
 
 
@@ -96,7 +101,7 @@ def extract_key_moments(events, limit=5, fps=25):
 # ─────────────────────────────────────────
 # GÉNÉRATION TEXTE
 # ─────────────────────────────────────────
-def generate_match_story(events, stats=None, fps=25):
+def generate_match_story(events, stats=None, fps=25, jersey_map=None):
 
     if not events:
         return "Match sans données exploitables."
@@ -156,7 +161,17 @@ def generate_match_story(events, stats=None, fps=25):
                 continue
 
             if m["type"] in ["goal", "score"]:
-                story += f"But {label}. "
+                pid = m.get("player")
+                if jersey_map and pid:
+                    jersey = jersey_map.get(str(pid)) or jersey_map.get(pid)
+                    if jersey and not str(jersey).startswith("#"):
+                        story += f"But de #{jersey} {label}. "
+                    elif jersey:
+                        story += f"But de {jersey} {label}. "
+                    else:
+                        story += f"But {label}. "
+                else:
+                    story += f"But {label}. "
             elif m["type"] == "shot":
                 # Enrichi si shot_context disponible
                 ctx = m.get("shot_context", "")
