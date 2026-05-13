@@ -1152,13 +1152,49 @@ def run_pipeline(
         mvp               = get_mvp(ratings)
         mvp_label         = resolve_mvp_label(mvp, stats, jersey_map)
 
-        commentary = generate_commentary(
-            ranked_highlights[:10],
-            jersey_map = jersey_map,
-            sport      = sport,
-            formation  = formation,
-            style      = tactical.get("style"),
-        )
+        # Commentary depuis les descriptions Gemini des highlights (déjà scorés en Step 8)
+        # Buts en premier avec timing et numéro joueur, puis tirs avec description Gemini
+        commentary = []
+        import random as _rnd
+
+        # 1. Buts en premier
+        for h in sorted([h for h in highlights if h.get("main_type") in ("goal","score")],
+                         key=lambda h: h.get("time_start", 0)):
+            t    = h.get("time_start", 0) or 0
+            mins = int(t // 60); secs = int(t % 60)
+            pid  = str(h.get("player", "") or "")
+            jersey = jersey_map.get(pid) if jersey_map and pid else None
+            js   = f" #{jersey}" if jersey else ""
+            desc = h.get("description", "")
+            if desc:
+                commentary.append(f"⚽ {mins:02d}:{secs:02d} —{js} {desc}")
+            else:
+                commentary.append(f"⚽ {mins:02d}:{secs:02d} — BUUUUT !{js}")
+
+        # 2. Tirs et autres highlights avec description Gemini
+        for h in sorted([h for h in highlights if h.get("main_type") not in ("goal","score")],
+                         key=lambda h: h.get("time_start", 0)):
+            t    = h.get("time_start", 0) or 0
+            mins = int(t // 60); secs = int(t % 60)
+            pid  = str(h.get("player", "") or "")
+            jersey = jersey_map.get(pid) if jersey_map and pid else None
+            js   = f" #{jersey}" if jersey else ""
+            desc = h.get("description", "")
+            if desc:
+                commentary.append(f"{mins:02d}:{secs:02d} —{js} {desc}")
+
+        # 3. Compléter avec des événements généraux si moins de 8 lignes
+        if len(commentary) < 8:
+            from ai.commentary import generate_commentary as _gen_cm
+            _extra = _gen_cm(
+                ranked_highlights[:10],
+                jersey_map = jersey_map,
+                sport      = sport,
+                formation  = formation,
+                style      = tactical.get("style"),
+            )
+            commentary += [l for l in _extra if l not in commentary][:8 - len(commentary)]
+
         story = None  # calculé après events_clean (Step 11)
         print(f"  OK MVP={mvp_label} | commentary={len(commentary)} lines")
     except Exception as e:
