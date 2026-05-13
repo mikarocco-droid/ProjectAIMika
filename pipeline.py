@@ -490,11 +490,30 @@ def run_pipeline(
                 goal_box    = _goal_box,
             )
             if fast_goals:
+                _dur = video_duration or 600
+                if _dur >= 2700:
+                    MAX_POSTHOC = 25
+                else:
+                    MAX_POSTHOC = max(5, min(15, int(_dur / 120)))
+                if len(fast_goals) > MAX_POSTHOC:
+                    _shot_times = [e.get("time", 0) for e in events if e.get("type") == "shot"]
+                    _early = [fg for fg in fast_goals if fg.get("time", 0) < 30]
+                    _rest  = [fg for fg in fast_goals if fg not in _early]
+                    _anchors = [fg for fg in _rest if any(abs(fg.get("time", 0) - st) <= 5 for st in _shot_times)]
+                    _anchors = sorted(_anchors, key=lambda x: x.get("score", 0), reverse=True)
+                    _others  = [fg for fg in _rest if fg not in _anchors]
+                    _slots   = max(0, MAX_POSTHOC - len(_early) - len(_anchors))
+                    _others  = sorted(_others, key=lambda x: x.get("score", 0), reverse=True)[:_slots]
+                    fast_goals = _early + _anchors + _others
+                    fast_goals = fast_goals[:MAX_POSTHOC + len(_early)]
+                    print(f"  [POSTHOC] cap {MAX_POSTHOC} pour {int(_dur//60)}min ({len(_early)} précoces + {len(_anchors)} ancrages ±5s + {len(_others)} autres)")
+                _posthoc_times_raw = [fg.get("time", 0) for fg in fast_goals]
                 events.extend(fast_goals)
                 events.sort(key=lambda e: e.get("time", 0))
                 print(f"  goal_posthoc : {len(fast_goals)} but(s) détecté(s)")
         except Exception as eg:
             print(f"  goal_posthoc ignoré : {eg}")
+            _posthoc_times_raw = []
 
         # ── Étape 3 : dedup fenêtre courte 3s (doublons immédiats posthoc/events)
         n_before = sum(1 for e in events if e.get("type") in ("goal", "score"))
@@ -578,7 +597,7 @@ def run_pipeline(
                       f"offsets={offs}")
 
         # ── DEBUG clips candidats buts ──────────────────────────────
-        if DEBUG:
+        if False:  # DEBUG_CLIPS désactivé — décommenter pour réactiver
             import subprocess as _sp
             _goals_pre = [e for e in events_for_gemini if e.get("type") == "goal"]
             if _goals_pre:
@@ -748,11 +767,16 @@ def run_pipeline(
                         too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
                         # Exiger un signal physique posthoc dans la fenêtre tir→but
                         # Évite de valider un kickoff initial confondu avec un kickoff après but
-                        _posthoc_times = [
+                        _posthoc_times = list(_posthoc_times_raw) if "_posthoc_times_raw" in locals() else []
+                        _posthoc_times += [
                             e.get("time", 0) for e in events
                             if isinstance(e, dict)
                             and e.get("type") in ("goal", "score")
-                            and e.get("source", "").startswith("goal_posthoc")
+                            and (
+                                e.get("source", "").startswith("goal_posthoc")
+                                or e.get("detected_from", "").startswith("goal_posthoc")
+                                or e.get("detected_from") == "ball_appears_in_goal"
+                            )
                         ]
                         _has_physical = any(abs(pt - goal_t) <= 30 for pt in _posthoc_times)
                         if not _has_physical:
@@ -1075,15 +1099,21 @@ def run_pipeline(
         _max_hl = max(10, min(int(_duration_min * 1.2), 30))
         print(f"  Highlights max : {_max_hl} (durée={_duration_min:.0f} min)")
 
+        _confirmed_goal_times_hl = [
+            e.get("time", 0) for e in events_validated
+            if isinstance(e, dict) and e.get("type") in ("goal", "score")
+        ] if "events_validated" in dir() else []
+
         highlights = create_highlights(
-            video_path = video_path,
-            events     = events,
-            output_dir = os.path.join(output_dir, "highlights"),
-            fps        = fps,
-            max_clips  = _max_hl,
-            mode       = mode,
-            player_id  = player_id,
-            sport      = sport
+            video_path           = video_path,
+            events               = events,
+            output_dir           = os.path.join(output_dir, "highlights"),
+            fps                  = fps,
+            max_clips            = _max_hl,
+            mode                 = mode,
+            player_id            = player_id,
+            sport                = sport,
+            confirmed_goal_times = _confirmed_goal_times_hl,
         )
         highlights = normalize_highlights(highlights, mode=mode)
 
@@ -1158,7 +1188,6 @@ def run_pipeline(
             t = h.get("time_start", h.get("time", 0))
             highlight_shot_times.add(round(float(t), 1))
 
-    # Buts confirmés (inclut shot_to_goal_gemini avec frame/team=None)
     _confirmed_goal_times_clean = set()
     if "events_validated" in dir():
         for _eg in events_validated:
