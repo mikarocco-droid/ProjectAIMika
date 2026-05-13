@@ -10,7 +10,7 @@ from analysis.events import process_match, detect_events
 from rendering.overlay import Overlay, TeamColorDetector
 import config
 
-from config import FRAME_SKIP_EVERY, YOLO_BATCH_SIZE, YOLO_IMGSZ
+from config import FRAME_SKIP_EVERY, YOLO_BATCH_SIZE
 
 PROCESS_W = 960
 PROCESS_H = 540
@@ -112,6 +112,7 @@ def process_batch(
     if not batch_frames:
         return [], events_state
 
+    # Utilise b_size effectif pour imgsz (impacte la qualité de détection YOLO)
     effective_batch = b_size if b_size is not None else YOLO_BATCH_SIZE
 
     small_frames  = [bf[2] for bf in batch_frames]
@@ -119,7 +120,7 @@ def process_batch(
         small_frames,
         conf    = config.YOLO_CONFIDENCE,
         verbose = False,
-        imgsz   = YOLO_IMGSZ   # indépendant du batch_size
+        imgsz   = effective_batch * 240
     )
 
     batch_data = []
@@ -271,7 +272,7 @@ def process_video(
     print(f"  Sport : {sport}")
     print(f"  Frame skip  : 2/{skip_every} → ~{analyzed_count} frames analysées "
           f"({analyzed_count * 100 // total_frames}%)")
-    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={YOLO_IMGSZ}")
+    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={b_size * 240}")
 
     if shot_zones:
         hi = shot_zones.get("threshold_hi", 0.85)
@@ -306,6 +307,49 @@ def process_video(
     current_batch = []
     events_state  = None
 
+    # ──────────────────────────────────────────────────────────
+    # PIPELINE 2 VITESSES
+    # Mode léger  : skip_every normal (config)
+    # Mode action : skip_every=1 si ballon rapide ou près du but
+    # ──────────────────────────────────────────────────────────
+    _skip_base       = skip_every   # skip configuré (2 ou 4)
+    _skip_action     = 1            # skip en mode action
+    _action_mode     = False
+    _action_ttl      = 0
+    ACTION_TTL       = 75           # ~3s @25fps avant retour léger
+    ACTION_SPD_THR   = 80.0         # px/frame seuil vitesse ballon
+    ACTION_ZONE_THR  = 0.18         # % frame — zone de but gauche/droite
+    _n_action        = 0            # compteur passages mode action
+    _last_ball_data  = {}
+
+    def _check_action_mode(ball_dict):
+        nonlocal _action_mode, _action_ttl, _n_action, _last_ball_data
+        if not ball_dict:
+            if _action_ttl > 0:
+                _action_ttl -= 1
+                if _action_ttl == 0:
+                    _action_mode = False
+            return
+        _last_ball_data = ball_dict
+        bx = ball_dict.get("x") or ball_dict.get("cx") or ball_dict.get("center", [None])[0]
+        bs = float(ball_dict.get("speed", 0) or 0)
+
+        in_goal_zone = (
+            bx is not None and w > 0
+            and (bx / w < ACTION_ZONE_THR or bx / w > (1 - ACTION_ZONE_THR))
+        )
+        was_action = _action_mode
+
+        if bs > ACTION_SPD_THR or in_goal_zone:
+            _action_mode = True
+            _action_ttl  = ACTION_TTL
+            if not was_action:
+                _n_action += 1
+        elif _action_ttl > 0:
+            _action_ttl -= 1
+            if _action_ttl == 0:
+                _action_mode = False
+
     def flush_batch(batch, analyzed_so_far):
         nonlocal events_state
         if not batch:
@@ -317,7 +361,7 @@ def process_video(
             analyzed_offset = analyzed_so_far - len(batch) + 1,
             fps             = fps,
             events_state    = events_state,
-            b_size          = b_size,   # ← propagé jusqu'à imgsz
+            b_size          = b_size,
         )
         for fd in data:
             if writer and overlay:
@@ -331,13 +375,17 @@ def process_video(
             else:
                 fd.pop("_frame_orig", None)
             frames_data.append(fd)
+            # Mettre à jour le mode action après chaque frame traitée
+            _check_action_mode(fd.get("ball"))
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        if frame_id % skip_every == (skip_every - 1):
+        # Skip dynamique selon le mode courant
+        _cur_skip = _skip_action if _action_mode else _skip_base
+        if frame_id % _cur_skip == (_cur_skip - 1):
             frame_id += 1
             continue
 
@@ -369,6 +417,7 @@ def process_video(
 
     print(f"\n  {frame_id} frames lues | {analyzed} analysées"
           f" | batches de {b_size}")
+    print(f"  2-speed : {_n_action} passages mode action ({_skip_action}→{_skip_base})")
 
     jersey_map = ocr.get_jersey_map()
     ocr.reset()
