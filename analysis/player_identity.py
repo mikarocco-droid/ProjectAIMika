@@ -113,13 +113,10 @@ def get_player_label(pid, jersey_map):
     if jersey is not None:
         return f"#{jersey}"
 
-    # ID canonique type "P3" → "#3"
-    if pid.startswith("P") and pid[1:].isdigit():
-        return f"#{pid[1:]}"
-
-    # Fallback court propre
-    short = pid[:4] if len(pid) > 4 else pid
-    return f"Joueur {short}"
+    # ID canonique type "P3" — NE PAS convertir en numéro de maillot
+    # P4 ne signifie PAS #4 — c'est le 4ème tracker DeepSort
+    # Sans lecture Gemini confirmée, le numéro est inconnu
+    return "?"
 
 
 # ─────────────────────────────────────────
