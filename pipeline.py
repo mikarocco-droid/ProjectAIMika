@@ -1240,13 +1240,27 @@ def run_pipeline(
     summary["is_summary"]    = is_summary
     summary["context_stats"] = ctx_stats
 
-    # V9.7+ — shots/xG/goals depuis events_clean (tirs validés par highlights)
-    n_highlight_shots = sum(1 for h in highlights if h.get("main_type") == "shot")
-    n_highlight_goals = sum(1 for h in highlights if h.get("main_type") in ("goal", "score"))
-    # Buts = depuis events_validated (source de vérité) — pas depuis highlights
-    # Les highlights peuvent inclure des SHOT→GOAL faux positifs
+    # V9.7+ — shots/xG/goals depuis events_validated + tirs bruts
     n_validated_goals = sum(1 for e in events_validated if e.get("type") in ("goal", "score"))
     summary["goals"] = n_validated_goals
+    # Shots cadrés au but = on_target ET fast_shot (tir rapide dans zone de but)
+    # Exclut les centres/dégagements qui traversent la zone sans vrai tir
+    n_shots_on_target = sum(
+        1 for e in events
+        if e.get("type") == "shot"
+        and e.get("on_target", False)
+        and e.get("fast_shot", False)
+    )
+    summary["shots"] = n_shots_on_target
+    # xG total = somme des xG des tirs cadrés au but
+    xg_total_on_target = round(sum(
+        float(e.get("xg", 0) or 0)
+        for e in events
+        if e.get("type") == "shot"
+        and e.get("on_target", False)
+        and e.get("fast_shot", False)
+    ), 2)
+    summary["total_xg"] = xg_total_on_target
 
     # V9.7 — recalculer stats joueurs (tirs + xG) depuis highlights filtrés
     # Les stats brutes de compute_stats incluent tous les faux tirs
@@ -1264,12 +1278,16 @@ def run_pipeline(
         elif pid:
             # joueur pas encore dans stats (edge case) → ignorer
             pass
-    # Recalculer aussi les buts depuis highlights
-    for h in highlights:
-        if h.get("main_type") not in ("goal", "score"):
+    # Recalculer buts depuis events_validated (inclut shot_to_goal_gemini avec frame=0)
+    for e in events_validated:
+        if e.get("type") not in ("goal", "score"):
             continue
-        pid = str(h.get("player", ""))
+        pid = str(e.get("player", "") or "")
         if pid and pid in stats:
+            stats[pid]["buts"] = stats[pid].get("buts", 0) + 1
+        elif pid:
+            # Joueur pas dans stats — créer entrée minimale
+            stats[pid] = stats.get(pid, {"tirs": 0, "xg_total": 0.0, "buts": 0})
             stats[pid]["buts"] = stats[pid].get("buts", 0) + 1
 
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
