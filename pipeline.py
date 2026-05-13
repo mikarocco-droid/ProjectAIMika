@@ -490,30 +490,11 @@ def run_pipeline(
                 goal_box    = _goal_box,
             )
             if fast_goals:
-                _dur = video_duration or 600
-                if _dur >= 2700:
-                    MAX_POSTHOC = 25
-                else:
-                    MAX_POSTHOC = max(5, min(15, int(_dur / 120)))
-                if len(fast_goals) > MAX_POSTHOC:
-                    _shot_times = [e.get("time", 0) for e in events if e.get("type") == "shot"]
-                    _early = [fg for fg in fast_goals if fg.get("time", 0) < 30]
-                    _rest  = [fg for fg in fast_goals if fg not in _early]
-                    _anchors = [fg for fg in _rest if any(abs(fg.get("time", 0) - st) <= 5 for st in _shot_times)]
-                    _anchors = sorted(_anchors, key=lambda x: x.get("score", 0), reverse=True)
-                    _others  = [fg for fg in _rest if fg not in _anchors]
-                    _slots   = max(0, MAX_POSTHOC - len(_early) - len(_anchors))
-                    _others  = sorted(_others, key=lambda x: x.get("score", 0), reverse=True)[:_slots]
-                    fast_goals = _early + _anchors + _others
-                    fast_goals = fast_goals[:MAX_POSTHOC + len(_early)]
-                    print(f"  [POSTHOC] cap {MAX_POSTHOC} pour {int(_dur//60)}min ({len(_early)} précoces + {len(_anchors)} ancrages ±5s + {len(_others)} autres)")
-                _posthoc_times_raw = [fg.get("time", 0) for fg in fast_goals]
                 events.extend(fast_goals)
                 events.sort(key=lambda e: e.get("time", 0))
                 print(f"  goal_posthoc : {len(fast_goals)} but(s) détecté(s)")
         except Exception as eg:
             print(f"  goal_posthoc ignoré : {eg}")
-            _posthoc_times_raw = []
 
         # ── Étape 3 : dedup fenêtre courte 3s (doublons immédiats posthoc/events)
         n_before = sum(1 for e in events if e.get("type") in ("goal", "score"))
@@ -597,7 +578,7 @@ def run_pipeline(
                       f"offsets={offs}")
 
         # ── DEBUG clips candidats buts ──────────────────────────────
-        if False:  # DEBUG_CLIPS désactivé — décommenter pour réactiver
+        if DEBUG:
             import subprocess as _sp
             _goals_pre = [e for e in events_for_gemini if e.get("type") == "goal"]
             if _goals_pre:
@@ -767,16 +748,11 @@ def run_pipeline(
                         too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
                         # Exiger un signal physique posthoc dans la fenêtre tir→but
                         # Évite de valider un kickoff initial confondu avec un kickoff après but
-                        _posthoc_times = list(_posthoc_times_raw) if "_posthoc_times_raw" in locals() else []
-                        _posthoc_times += [
+                        _posthoc_times = [
                             e.get("time", 0) for e in events
                             if isinstance(e, dict)
                             and e.get("type") in ("goal", "score")
-                            and (
-                                e.get("source", "").startswith("goal_posthoc")
-                                or e.get("detected_from", "").startswith("goal_posthoc")
-                                or e.get("detected_from") == "ball_appears_in_goal"
-                            )
+                            and e.get("source", "").startswith("goal_posthoc")
                         ]
                         _has_physical = any(abs(pt - goal_t) <= 30 for pt in _posthoc_times)
                         if not _has_physical:
@@ -835,8 +811,17 @@ def run_pipeline(
                 print(f"  FP zones : {n_before - len(events)} shots filtrés")
 
         # Lecture maillots prioritaire
+        # Pour les buts shot_to_goal_gemini (frame=0), utiliser le tir source
         seen_pids    = set()
         prio_players = []
+
+        # Index des tirs par pid pour retrouver la vraie frame/bbox
+        _shot_by_pid = {}
+        for e in events:
+            if e.get("type") == "shot":
+                pid = str(e.get("player", "") or "")
+                if pid and pid not in _shot_by_pid:
+                    _shot_by_pid[pid] = e
 
         for e in events:
             if e.get("type") not in ["goal", "shot"]:
@@ -848,11 +833,19 @@ def run_pipeline(
                 seen_pids.add(pid)
                 continue
             frame_id = e.get("frame", 0) or 0
+            bbox     = e.get("bbox") or [100, 100, 200, 300]
+            # Pour les buts sans frame (shot_to_goal_gemini), utiliser le tir source
+            if frame_id == 0 and pid in _shot_by_pid:
+                src = _shot_by_pid[pid]
+                frame_id = src.get("frame", 0) or 0
+                bbox     = src.get("bbox") or bbox
+            if frame_id == 0:
+                frame_id = int(fps * 30)  # fallback frame 30s
             for offset in [-10, 0, 10]:
                 prio_players.append({
                     "id":       pid,
                     "frame_id": max(0, frame_id + offset),
-                    "bbox":     e.get("bbox", [100, 100, 200, 300])
+                    "bbox":     bbox,
                 })
             seen_pids.add(pid)
 
@@ -1099,21 +1092,15 @@ def run_pipeline(
         _max_hl = max(10, min(int(_duration_min * 1.2), 30))
         print(f"  Highlights max : {_max_hl} (durée={_duration_min:.0f} min)")
 
-        _confirmed_goal_times_hl = [
-            e.get("time", 0) for e in events_validated
-            if isinstance(e, dict) and e.get("type") in ("goal", "score")
-        ] if "events_validated" in dir() else []
-
         highlights = create_highlights(
-            video_path           = video_path,
-            events               = events,
-            output_dir           = os.path.join(output_dir, "highlights"),
-            fps                  = fps,
-            max_clips            = _max_hl,
-            mode                 = mode,
-            player_id            = player_id,
-            sport                = sport,
-            confirmed_goal_times = _confirmed_goal_times_hl,
+            video_path = video_path,
+            events     = events,
+            output_dir = os.path.join(output_dir, "highlights"),
+            fps        = fps,
+            max_clips  = _max_hl,
+            mode       = mode,
+            player_id  = player_id,
+            sport      = sport
         )
         highlights = normalize_highlights(highlights, mode=mode)
 
@@ -1188,17 +1175,10 @@ def run_pipeline(
             t = h.get("time_start", h.get("time", 0))
             highlight_shot_times.add(round(float(t), 1))
 
-    _confirmed_goal_times_clean = set()
-    if "events_validated" in dir():
-        for _eg in events_validated:
-            if isinstance(_eg, dict) and _eg.get("type") in ("goal", "score"):
-                _confirmed_goal_times_clean.add(round(float(_eg.get("time", 0)), 1))
-
     events_clean = [
         e for e in events
-        if e.get("type") not in ("shot",)
+        if e.get("type") != "shot"
         or round(float(e.get("time", 0)), 1) in highlight_shot_times
-        or round(float(e.get("time", 0)), 1) in _confirmed_goal_times_clean
     ]
 
     n_shots_clean = sum(1 for e in events_clean if e.get("type") == "shot")
@@ -1208,7 +1188,7 @@ def run_pipeline(
 
     # Recalculer story sur events_clean
     try:
-        story = generate_match_story(events_clean, fps=fps, jersey_map=jersey_map)
+        story = generate_match_story(events_clean, fps=fps)
     except Exception as _e:
         print(f"  Story error : {_e}")
 
@@ -1240,27 +1220,13 @@ def run_pipeline(
     summary["is_summary"]    = is_summary
     summary["context_stats"] = ctx_stats
 
-    # V9.7+ — shots/xG/goals depuis events_validated + tirs bruts
+    # V9.7+ — shots/xG/goals depuis events_clean (tirs validés par highlights)
+    n_highlight_shots = sum(1 for h in highlights if h.get("main_type") == "shot")
+    n_highlight_goals = sum(1 for h in highlights if h.get("main_type") in ("goal", "score"))
+    # Buts = depuis events_validated (source de vérité) — pas depuis highlights
+    # Les highlights peuvent inclure des SHOT→GOAL faux positifs
     n_validated_goals = sum(1 for e in events_validated if e.get("type") in ("goal", "score"))
     summary["goals"] = n_validated_goals
-    # Shots cadrés au but = on_target ET fast_shot (tir rapide dans zone de but)
-    # Exclut les centres/dégagements qui traversent la zone sans vrai tir
-    n_shots_on_target = sum(
-        1 for e in events
-        if e.get("type") == "shot"
-        and e.get("on_target", False)
-        and e.get("fast_shot", False)
-    )
-    summary["shots"] = n_shots_on_target
-    # xG total = somme des xG des tirs cadrés au but
-    xg_total_on_target = round(sum(
-        float(e.get("xg", 0) or 0)
-        for e in events
-        if e.get("type") == "shot"
-        and e.get("on_target", False)
-        and e.get("fast_shot", False)
-    ), 2)
-    summary["total_xg"] = xg_total_on_target
 
     # V9.7 — recalculer stats joueurs (tirs + xG) depuis highlights filtrés
     # Les stats brutes de compute_stats incluent tous les faux tirs
@@ -1278,16 +1244,12 @@ def run_pipeline(
         elif pid:
             # joueur pas encore dans stats (edge case) → ignorer
             pass
-    # Recalculer buts depuis events_validated (inclut shot_to_goal_gemini avec frame=0)
-    for e in events_validated:
-        if e.get("type") not in ("goal", "score"):
+    # Recalculer aussi les buts depuis highlights
+    for h in highlights:
+        if h.get("main_type") not in ("goal", "score"):
             continue
-        pid = str(e.get("player", "") or "")
+        pid = str(h.get("player", ""))
         if pid and pid in stats:
-            stats[pid]["buts"] = stats[pid].get("buts", 0) + 1
-        elif pid:
-            # Joueur pas dans stats — créer entrée minimale
-            stats[pid] = stats.get(pid, {"tirs": 0, "xg_total": 0.0, "buts": 0})
             stats[pid]["buts"] = stats[pid].get("buts", 0) + 1
 
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
