@@ -384,10 +384,12 @@ def process_video(
             break
 
         # Skip dynamique selon le mode courant
-        _cur_skip = _skip_action if _action_mode else _skip_base
-        if frame_id % _cur_skip == (_cur_skip - 1):
-            frame_id += 1
-            continue
+        # Mode action : analyser toutes les frames (pas de skip)
+        # Mode léger  : skip normal configuré
+        if not _action_mode:
+            if frame_id % _skip_base == (_skip_base - 1):
+                frame_id += 1
+                continue
 
         frame_small = cv2.resize(
             frame, (PROCESS_W, PROCESS_H),
