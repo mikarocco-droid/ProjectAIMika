@@ -331,7 +331,7 @@ def generate_pdf(result, output_path, sport="football"):
         ("Tirs cadrés", summary.get("shots", 0),             ACCENT),
         ("xG",      round(summary.get("total_xg", 0), 2),     ACCENT3),
         ("Passes",  summary.get("passes",   0),               ACCENT4),
-        ("Players", summary.get("players",  0),               GRAY_L),
+        ("Joueurs", summary.get("players",  0),               GRAY_L),
     ]
     y0 = pdf.get_y()
     x  = 12
@@ -342,16 +342,17 @@ def generate_pdf(result, output_path, sport="football"):
 
     # Possession
     if possession:
-        teams = sorted(possession.items())
-        if len(teams) >= 2:
+        _unreliable = possession.pop("_unreliable", False)
+        teams = sorted((k, v) for k, v in possession.items() if isinstance(k, int))
+        cy = pdf.get_y() + 3
+        pdf.card_bg(12, cy, 186, 20)
+        pdf.set_font("Helvetica", "B", 7)
+        pdf.set_text_color(*ACCENT)
+        pdf.set_xy(15, cy + 3)
+        pdf.cell(180, 5, "POSSESSION", align="L")
+        if not _unreliable and len(teams) >= 2:
             t0, p0 = teams[0]
             t1, p1 = teams[1]
-            cy = pdf.get_y() + 3
-            pdf.card_bg(12, cy, 186, 20)
-            pdf.set_font("Helvetica", "B", 7)
-            pdf.set_text_color(*ACCENT)
-            pdf.set_xy(15, cy + 3)
-            pdf.cell(180, 5, "POSSESSION", align="L")
             bx, by, bw = 15, cy + 10, 180
             pdf.set_fill_color(*ACCENT)
             pdf.rect(bx, by, int(bw * float(p0) / 100), 5, "F")
@@ -360,12 +361,18 @@ def generate_pdf(result, output_path, sport="football"):
             pdf.rect(bx + bw - fill1, by, fill1, 5, "F")
             pdf.set_font("Helvetica", "B", 8)
             pdf.set_text_color(*ACCENT)
-            pdf.set_xy(15, by)
+            pdf.set_xy(15, cy + 10)
             pdf.cell(50, 5, f"  {p0}%", align="L")
             pdf.set_text_color(*ACCENT2)
-            pdf.set_xy(145, by)
+            pdf.set_xy(145, cy + 10)
             pdf.cell(50, 5, f"{p1}%  ", align="R")
-            pdf.set_y(cy + 24)
+        else:
+            # Données insuffisantes pour calculer la possession
+            pdf.set_font("Helvetica", "", 7)
+            pdf.set_text_color(*GRAY_D)
+            pdf.set_xy(15, cy + 10)
+            pdf.cell(180, 5, "Données insuffisantes", align="C")
+        pdf.set_y(cy + 24)
 
     # MVP + Formation
     pdf.ln(3)
@@ -424,8 +431,23 @@ def generate_pdf(result, output_path, sport="football"):
         pdf.add_page()
         pdf.section_title("Heatmaps")
 
-        hmap_list = [(k, v) for k, v in heatmaps.items()
-                     if v and os.path.exists(str(v))]
+        # Labels français pour les heatmaps
+        _hmap_labels = {
+            "global":   "Activité globale",
+            "shot":     "Zones de tir",
+            "goal":     "Positions buts",
+            "team_a":   "Équipe A",
+            "team_b":   "Équipe B",
+            "team_0":   "Équipe A",
+            "team_1":   "Équipe B",
+            "passes":   "Passes",
+            "pressing": "Pressing",
+        }
+        hmap_list = [
+            (_hmap_labels.get(k, k.replace("_", " ").title()), v)
+            for k, v in heatmaps.items()
+            if v and os.path.exists(str(v))
+        ]
         i = 0
         while i < len(hmap_list):
             yh = pdf.get_y()
@@ -457,7 +479,7 @@ def generate_pdf(result, output_path, sport="football"):
     # ════════════════════════
     if deduped:
         pdf.add_page()
-        pdf.section_title("Players Performance")
+        pdf.section_title("Performances Joueurs")
 
         field = {l: s for l, s in deduped.items() if not s.get("is_goalkeeper")}
         gks   = {l: s for l, s in deduped.items() if s.get("is_goalkeeper")}
@@ -539,12 +561,16 @@ def generate_pdf(result, output_path, sport="football"):
                 return "-"
             return max(candidates, key=lambda x: x[1].get(key, 0))[0]
 
+        _top_xg_val = top_by("xg_total")
         badges = [
             ("Top Buteur",   top_by("buts"),          ACCENT2),
-            ("Top xG",       top_by("xg_total"),       ACCENT3),
+            ("Top xG",       _top_xg_val if _top_xg_val != "-" else "-", ACCENT3),
             ("Top Passeur",  top_by("passes"),         ACCENT4),
             ("Top Interc.",  top_by("interceptions"),  ACCENT),
         ]
+        # Masquer Top xG si xG total = 0 (non fiable)
+        if summary.get("total_xg", 0) == 0:
+            badges[1] = ("Top xG", "-", ACCENT3)
         bx = 12
         for blabel, bval, bcolor in badges:
             pdf.card_bg(bx, yb, 43, 18)
