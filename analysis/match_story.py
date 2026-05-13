@@ -69,20 +69,33 @@ def seconds_to_mmss(t_sec):
 #        + priorité aux events importants
 # ─────────────────────────────────────────
 def extract_key_moments(events, limit=5, fps=25):
-    # Priorité : buts > tirs > interceptions > dribbles
-    priority = {"goal": 0, "score": 0, "shot": 1, "interception": 2, "dribble": 3}
+    """
+    Moments clés : buts en priorité absolue, puis tirs dangereux (xG > 0.15),
+    puis dribbles. Les interceptions ne sont mentionnées que si aucun autre
+    moment n'est disponible.
+    """
+    # Priorité : buts > tirs dangereux > dribbles > interceptions (dernier recours)
+    priority = {"goal": 0, "score": 0, "shot": 1, "dribble": 2, "interception": 3}
 
     moments = []
     for e in events:
-        if e.get("type") not in priority:
+        etype = e.get("type")
+        if etype not in priority:
+            continue
+        # Filtrer les tirs peu dangereux
+        if etype == "shot" and float(e.get("xg", 0) or 0) < 0.15:
             continue
         t = event_to_minute(e, fps)
         if t is None or t <= 0:
             continue
-        moments.append((priority[e["type"]], t, e))
+        moments.append((priority[etype], t, e))
 
-    # Tri : d'abord par priorité type, puis chronologique
     moments.sort(key=lambda x: (x[0], x[1]))
+
+    # Ne garder les interceptions que si < 2 moments sans elles
+    non_interc = [(p, t, e) for p, t, e in moments if e.get("type") != "interception"]
+    if len(non_interc) >= 2:
+        moments = non_interc
 
     # Dédoublonner — pas deux events dans la même minute
     seen_minutes = set()
@@ -182,7 +195,7 @@ def generate_match_story(events, stats=None, fps=25, jersey_map=None):
                 else:
                     story += f"Tir dangereux {label}. "
             elif m["type"] == "interception":
-                story += f"Interception clé {label}. "
+                story += f"Récupération importante {label}. "
             elif m["type"] == "dribble":
                 story += f"Belle percée individuelle {label}. "
 
