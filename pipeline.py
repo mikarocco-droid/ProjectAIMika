@@ -1194,10 +1194,18 @@ def run_pipeline(
             t = h.get("time_start", h.get("time", 0))
             highlight_shot_times.add(round(float(t), 1))
 
+    # Temps des buts confirmés (inclut shot_to_goal_gemini avec frame=0)
+    _confirmed_goal_times_clean = set()
+    if "events_validated" in dir():
+        for _eg in events_validated:
+            if isinstance(_eg, dict) and _eg.get("type") in ("goal", "score"):
+                _confirmed_goal_times_clean.add(round(float(_eg.get("time", 0)), 1))
+
     events_clean = [
         e for e in events
-        if e.get("type") != "shot"
+        if e.get("type") not in ("shot",)
         or round(float(e.get("time", 0)), 1) in highlight_shot_times
+        or round(float(e.get("time", 0)), 1) in _confirmed_goal_times_clean
     ]
 
     n_shots_clean = sum(1 for e in events_clean if e.get("type") == "shot")
