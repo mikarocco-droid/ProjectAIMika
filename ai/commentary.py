@@ -277,14 +277,21 @@ def _get_context_suffix(event, context, event_index, total_events):
 def _format_player(event, jersey_map=None):
     """
     Retourne une désignation du joueur si disponible.
-    Ex : "le numéro 9" ou "" si inconnu.
+    N'affiche rien si le pid n'est pas résolu dans jersey_map
+    (évite d'afficher P4 comme #4 quand c'est en réalité #11).
     """
     if not jersey_map:
         return ""
     pid = str(event.get("player", ""))
-    if pid and pid in jersey_map:
-        return f" — #{jersey_map[pid]}"
-    return ""
+    if not pid:
+        return ""
+    jersey = jersey_map.get(pid) or jersey_map.get(event.get("player"))
+    if jersey is None:
+        return ""   # pid non résolu — ne pas afficher l'ID interne comme numéro
+    jersey_str = str(jersey).strip()
+    if not jersey_str.startswith("#"):
+        jersey_str = f"#{jersey_str}"
+    return f" — {jersey_str}"
 
 
 # ─────────────────────────────────────────
@@ -319,7 +326,14 @@ def generate_commentary(
     lines       = []
     used_recent = []   # Évite les répétitions consécutives
 
-    for i, e in enumerate(events):
+    # Trier : buts en premier (toujours commentés), puis ordre chronologique
+    priority_order = {"goal": 0, "score": 0}
+    events_sorted = sorted(events, key=lambda e: (
+        priority_order.get(e.get("type",""), 1),
+        e.get("time", 0)
+    ))
+
+    for i, e in enumerate(events_sorted):
         etype  = e.get("type", "default")
         pool   = _COMMENTARY.get(etype, _DEFAULT)
         player = _format_player(e, jersey_map)
