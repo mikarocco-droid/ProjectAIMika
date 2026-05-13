@@ -80,7 +80,9 @@ def _shot_qualifies(e, all_events, confirmed_goal_times=None):
     if xg >= 0.35:              _qual_score += 1
     if gemini_shot_confirmed:   _qual_score += 1
     if xg < 0.15:               _qual_score -= 1  # malus anti faux positifs faibles
-    if _qual_score >= 4:
+    # Seuil 5 : évite les tirs cadrés lointains (on_target=2 + xg~0.22=1 = 3, rejeté)
+    # Un vrai tir dangereux : on_target=2 + xg>=0.35=2 = 4, ou + gemini=1 = 5
+    if _qual_score >= 5:
         return True
 
     has_blocked = any(
@@ -184,7 +186,9 @@ def create_highlights(
         if etype not in allowed_types:
             continue
 
-        if e.get("frame") is None or e.get("frame", 0) <= 0:
+        # Exclure les events sans frame SAUF les buts confirmés (shot_to_goal_gemini ont frame=0)
+        is_confirmed_goal = etype in ["goal", "score"] and e.get("gemini_validated", False)
+        if not is_confirmed_goal and (e.get("frame") is None or e.get("frame", 0) <= 0):
             continue
 
         if mode == "match":
