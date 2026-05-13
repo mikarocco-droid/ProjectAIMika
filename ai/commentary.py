@@ -376,11 +376,9 @@ def generate_commentary(
 def generate_live_commentary(events, jersey_map=None, sport="football",
                               formation=None, style=None, max_lines=15):
     """
-    Génère un commentaire live enrichi — sélectionne les
-    moments les plus importants et les commente en détail.
-    Utilisé pour la section "Moments clés" du rapport PDF.
+    Génère un commentaire live enrichi.
+    Les buts sont toujours commentés en premier avec leur vrai contexte.
     """
-    # Priorités : buts > tirs > contre-attaques > interceptions > dribbles
     priority = {
         "goal": 10, "score": 10,
         "shot": 7,
@@ -396,14 +394,38 @@ def generate_live_commentary(events, jersey_map=None, sport="football",
         key=lambda x: (priority.get(x.get("type", ""), 0), x.get("xg", 0)),
         reverse=True
     )[:max_lines]
-
-    # Remettre dans l'ordre chronologique
     scored.sort(key=lambda x: x.get("time", 0))
 
-    return generate_commentary(
-        scored,
-        jersey_map = jersey_map,
-        sport      = sport,
-        formation  = formation,
-        style      = style,
-    )
+    # Générer les commentaires avec contexte but enrichi
+    lines = []
+    for e in scored:
+        etype = e.get("type", "")
+        t = e.get("time", 0)
+        mins = int(t // 60)
+        secs = int(t % 60)
+        
+        if etype in ("goal", "score"):
+            # Commentaire de but avec numéro joueur et timing réel
+            pid = str(e.get("player", "") or "")
+            jersey = None
+            if jersey_map and pid:
+                jersey = jersey_map.get(pid)
+                if jersey:
+                    jersey_str = str(jersey).strip()
+                    if not jersey_str.startswith("#"):
+                        jersey_str = f"#{jersey_str}"
+                else:
+                    jersey_str = None
+            
+            base = random.choice(_COMMENTARY.get("goal", ["BUUUUT !"]))
+            if jersey_str:
+                line = f"⚽ {mins:02d}:{secs:02d} — {base} {jersey_str} marque !"
+            else:
+                line = f"⚽ {mins:02d}:{secs:02d} — {base}"
+        else:
+            pool = _COMMENTARY.get(etype, _DEFAULT)
+            line = random.choice(pool)
+        
+        lines.append(line)
+
+    return lines
