@@ -681,11 +681,16 @@ def generate_pdf(result, output_path, sport="football"):
                 pdf.cell(22, 9, f"xG {float(xg_val):.2f}")
                 pdf.progress_bar(101, yh + 9, 22, min(float(xg_val), 1.0), ACCENT3, h=2)
 
-            # Raison
+            # Raison / Confiance fusionnée
             pdf.set_font("Helvetica", "", 6.5)
             pdf.set_text_color(*GRAY_D)
             pdf.set_xy(126, yh + 2)
-            pdf.cell(70, 9, clean(reason or f"score {score:.1f}"), align="R")
+            _conf_str = ""
+            if is_goal:
+                _gc = h.get("goal_confidence")
+                if _gc is not None:
+                    _conf_str = f"conf {float(_gc):.0%}  "
+            pdf.cell(70, 9, clean(_conf_str + (reason or f"score {score:.1f}")), align="R")
 
             pdf.set_text_color(*WHITE)
             pdf.set_y(yh + 15)
