@@ -50,22 +50,23 @@ def frame_to_time(frame, fps=25):
 #   4. Gemini a confirmé "shot"
 # Les buts sont TOUJOURS inclus
 # ─────────────────────────────────────────
-def _shot_qualifies(e, all_events):
+def _shot_qualifies(e, all_events, confirmed_goal_times=None):
     xg        = float(e.get("xg", 0) or 0)
     on_target = bool(e.get("on_target", False))
     gemini_ok = (e.get("gemini_validated", False)
                  and e.get("gemini_type") == "shot")
     t         = e.get("time", 0)
 
-    # Exclure tout tir dans les 20s avant/après un but confirmé
+    # Exclure tout tir dans les 20s autour d'un but confirmé
     # (évite le doublon tir+but sur la même action)
-    # Fenêtre élargie à 20s car shot_to_goal_gemini peut placer le but
-    # quelques secondes après le tir (ex: tir à 6s, but à 8s)
+    # confirmed_goal_times inclut les buts shot_to_goal_gemini non encore dans all_events
+    _goal_times = list(confirmed_goal_times or [])
     for ev in all_events:
         if ev.get("type") in ["goal", "score"]:
-            t_goal = ev.get("time", 0)
-            if abs(t_goal - t) <= 20.0:
-                return False
+            _goal_times.append(ev.get("time", 0))
+    for t_goal in set(_goal_times):
+        if abs(t_goal - t) <= 20.0:
+            return False
 
     if xg >= XG_MIN_FOR_HIGHLIGHT:
         return True
@@ -146,12 +147,13 @@ def cut_clip(video_path, start, end, output_path):
 def create_highlights(
     video_path,
     events,
-    output_dir = "outputs/highlights",
-    fps        = 25,
-    max_clips  = 20,
-    mode       = "match",
-    player_id  = None,
-    sport      = "football"
+    output_dir           = "outputs/highlights",
+    fps                  = 25,
+    max_clips            = 20,
+    mode                 = "match",
+    player_id            = None,
+    sport                = "football",
+    confirmed_goal_times = None,   # Liste des temps buts confirmés (incl. shot_to_goal_gemini)
 ):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -180,7 +182,7 @@ def create_highlights(
             if etype in ["goal", "score"]:
                 key_events.append(e)
             elif etype == "shot":
-                if _shot_qualifies(e, events):
+                if _shot_qualifies(e, events, confirmed_goal_times=confirmed_goal_times):
                     key_events.append(e)
         else:
             key_events.append(e)

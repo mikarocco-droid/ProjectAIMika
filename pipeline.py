@@ -497,7 +497,6 @@ def run_pipeline(
                     MAX_POSTHOC = max(5, min(15, int(_dur / 120)))
                 if len(fast_goals) > MAX_POSTHOC:
                     _shot_times = [e.get("time", 0) for e in events if e.get("type") == "shot"]
-                    # Protéger les candidats très précoces (t < 30s) — début de vidéo coupée
                     _early = [fg for fg in fast_goals if fg.get("time", 0) < 30]
                     _rest  = [fg for fg in fast_goals if fg not in _early]
                     _anchors = [fg for fg in _rest if any(abs(fg.get("time", 0) - st) <= 5 for st in _shot_times)]
@@ -506,13 +505,16 @@ def run_pipeline(
                     _slots   = max(0, MAX_POSTHOC - len(_early) - len(_anchors))
                     _others  = sorted(_others, key=lambda x: x.get("score", 0), reverse=True)[:_slots]
                     fast_goals = _early + _anchors + _others
-                    fast_goals = fast_goals[:MAX_POSTHOC + len(_early)]  # early toujours inclus
+                    fast_goals = fast_goals[:MAX_POSTHOC + len(_early)]
                     print(f"  [POSTHOC] cap {MAX_POSTHOC} pour {int(_dur//60)}min ({len(_early)} précoces + {len(_anchors)} ancrages ±5s + {len(_others)} autres)")
+                # Sauvegarder les temps posthoc AVANT Gemini (Gemini peut les supprimer)
+                _posthoc_times_raw = [fg.get("time", 0) for fg in fast_goals]
                 events.extend(fast_goals)
                 events.sort(key=lambda e: e.get("time", 0))
                 print(f"  goal_posthoc : {len(fast_goals)} but(s) détecté(s)")
         except Exception as eg:
             print(f"  goal_posthoc ignoré : {eg}")
+            _posthoc_times_raw = []
 
         # ── Étape 3 : dedup fenêtre courte 3s (doublons immédiats posthoc/events)
         n_before = sum(1 for e in events if e.get("type") in ("goal", "score"))
@@ -766,7 +768,11 @@ def run_pipeline(
                         too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
                         # Exiger un signal physique posthoc dans la fenêtre tir→but
                         # Évite de valider un kickoff initial confondu avec un kickoff après but
-                        _posthoc_times = [
+                        # _posthoc_times_raw : temps sauvegardés avant validation Gemini
+                        # (Gemini supprime les posthocs mais les temps restent nécessaires
+                        #  pour valider les SHOT→GOAL via _has_physical)
+                        _posthoc_times = list(_posthoc_times_raw) if "_posthoc_times_raw" in locals() else []
+                        _posthoc_times += [
                             e.get("time", 0) for e in events
                             if isinstance(e, dict)
                             and e.get("type") in ("goal", "score")
@@ -1097,15 +1103,23 @@ def run_pipeline(
         _max_hl = max(10, min(int(_duration_min * 1.2), 30))
         print(f"  Highlights max : {_max_hl} (durée={_duration_min:.0f} min)")
 
+        # Buts confirmés = events_validated (inclut shot_to_goal_gemini)
+        # Passés à create_highlights pour éviter le doublon tir+but sur la même action
+        _confirmed_goal_times_hl = [
+            e.get("time", 0) for e in events_validated
+            if isinstance(e, dict) and e.get("type") in ("goal", "score")
+        ] if "events_validated" in dir() else []
+
         highlights = create_highlights(
-            video_path = video_path,
-            events     = events,
-            output_dir = os.path.join(output_dir, "highlights"),
-            fps        = fps,
-            max_clips  = _max_hl,
-            mode       = mode,
-            player_id  = player_id,
-            sport      = sport
+            video_path           = video_path,
+            events               = events,
+            output_dir           = os.path.join(output_dir, "highlights"),
+            fps                  = fps,
+            max_clips            = _max_hl,
+            mode                 = mode,
+            player_id            = player_id,
+            sport                = sport,
+            confirmed_goal_times = _confirmed_goal_times_hl,
         )
         highlights = normalize_highlights(highlights, mode=mode)
 
