@@ -318,10 +318,11 @@ def process_video(
     _skip_action     = 2            # skip en mode action (skip_base/2 = densité x2)
     _action_mode     = False
     _action_ttl      = 0
-    ACTION_TTL       = 50           # ~2s @25fps avant retour léger
-    ACTION_SPD_THR   = 80.0         # px/frame RÉELLE — seuil d'ENTRÉE mode action
-    ACTION_SPD_EXIT  = 45.0         # px/frame RÉELLE — seuil de SORTIE (hystérésis)
-    ACTION_ZONE_THR  = 0.12         # 12% bords frame = zone de but
+    ACTION_TTL       = 25           # ~1s @25fps — on sort vite si rien ne suit
+    ACTION_SPD_THR   = 120.0        # px/frame RÉELLE — seuil d'ENTRÉE (tir fort, pas simple passe)
+    ACTION_SPD_EXIT  = 60.0         # px/frame RÉELLE — seuil de SORTIE (hystérésis)
+    ACTION_ZONE_THR  = 0.08         # 8% bords frame — zone de but stricte (était 12%)
+    ACTION_MIN_SCORE = 3            # score de danger minimum pour activer
     _n_action        = 0            # compteur passages mode action
     _last_ball_data  = {}
     _prev_ball_cx    = None         # position X précédente du ballon (calcul vitesse)
@@ -358,14 +359,27 @@ def process_video(
         )
         was_action = _action_mode
 
-        if bs > ACTION_SPD_THR or in_goal_zone:
+        # Danger score — activer seulement si vraiment dangereux
+        # (éviter de déclencher sur chaque dégagement ou passe longue)
+        danger = 0
+        if in_goal_zone:              danger += 2   # ballon proche des cages
+        if bs > ACTION_SPD_THR:       danger += 2   # tir fort (>120px/frame)
+        elif bs > ACTION_SPD_EXIT:    danger += 1   # mouvement rapide
+        # recent_shot : vérifier si un event shot existe dans les 3 dernières secondes
+        _recent_shot = any(
+            e.get("type") == "shot" and abs(e.get("time", 0) - frame_id / max(fps, 1)) < 3.0
+            for e in (events_state.get("events", []) or [])[-20:]
+        ) if events_state else False
+        if _recent_shot:              danger += 2   # tir récent = danger immédiat
+
+        if danger >= ACTION_MIN_SCORE:
             _action_mode = True
             _action_ttl  = ACTION_TTL
             if not was_action:
                 _n_action += 1
                 t = frame_id / fps if fps > 0 else 0
                 print(f"  [2-SPEED] Mode ACTION activé à {int(t//60):02d}:{int(t%60):02d} "
-                      f"— ball_speed={bs:.0f}px in_goal_zone={in_goal_zone}")
+                      f"— ball_speed={bs:.0f}px in_goal_zone={in_goal_zone} danger={danger}")
         elif _action_mode and bs > ACTION_SPD_EXIT:
             # Toujours en mouvement mais sous le seuil d'entrée → recharger TTL
             _action_ttl = min(_action_ttl + 5, ACTION_TTL)
