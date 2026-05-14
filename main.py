@@ -318,9 +318,9 @@ def process_video(
     _skip_action     = 1            # skip en mode action
     _action_mode     = False
     _action_ttl      = 0
-    ACTION_TTL       = 75           # ~3s @25fps avant retour léger
-    ACTION_SPD_THR   = 80.0         # px/frame seuil vitesse ballon
-    ACTION_ZONE_THR  = 0.18         # % frame — zone de but gauche/droite
+    ACTION_TTL       = 50           # ~2s @25fps avant retour léger (réduit pour moins de surcharge)
+    ACTION_SPD_THR   = 200.0        # px/frame seuil vitesse ballon (tir/accélération forte)
+    ACTION_ZONE_THR  = 0.12         # % frame — zone de but gauche/droite (12% = zone très proche)
     _n_action        = 0            # compteur passages mode action
     _last_ball_data  = {}
     _prev_ball_cx    = None         # position X précédente du ballon (calcul vitesse)
