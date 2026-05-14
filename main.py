@@ -318,9 +318,9 @@ def process_video(
     _skip_action     = 1            # skip en mode action
     _action_mode     = False
     _action_ttl      = 0
-    ACTION_TTL       = 50           # ~2s @25fps avant retour léger (réduit pour moins de surcharge)
-    ACTION_SPD_THR   = 200.0        # px/frame seuil vitesse ballon (tir/accélération forte)
-    ACTION_ZONE_THR  = 0.12         # % frame — zone de but gauche/droite (12% = zone très proche)
+    ACTION_TTL       = 50           # ~2s @25fps avant retour léger
+    ACTION_SPD_THR   = 80.0         # px/frame RÉELLE normalisée (tir fort ~80-200px/f, passe ~30px/f)
+    ACTION_ZONE_THR  = 0.12         # 12% bords frame = zone de but
     _n_action        = 0            # compteur passages mode action
     _last_ball_data  = {}
     _prev_ball_cx    = None         # position X précédente du ballon (calcul vitesse)
@@ -340,10 +340,12 @@ def process_video(
         _center = ball_dict.get("center")
         bx = _center[0] if (_center and len(_center) > 0) else None
 
-        # Calculer la vitesse depuis la position précédente (px de déplacement)
+        # Vitesse = déplacement normalisé par le skip courant (px/frame réelle)
         bs = float(ball_dict.get("speed", 0) or 0)
         if bs == 0 and bx is not None and _prev_ball_cx is not None:
-            bs = abs(bx - _prev_ball_cx)
+            raw_disp = abs(bx - _prev_ball_cx)
+            # Normaliser par le skip : avec skip=4, les frames analysées sont espacées de 4
+            bs = raw_disp / max(1, _skip_base)
         _prev_ball_cx = bx
 
         # Largeur de référence pour la zone de but
