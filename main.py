@@ -322,7 +322,6 @@ def process_video(
     ACTION_SPD_THR   = 120.0        # px/frame RÉELLE — seuil d'ENTRÉE (tir fort, pas simple passe)
     ACTION_SPD_EXIT  = 60.0         # px/frame RÉELLE — seuil de SORTIE (hystérésis)
     ACTION_ZONE_THR  = 0.05         # 5% bords frame — zone de but très stricte (devant les poteaux)
-    ACTION_MIN_SCORE = 3            # score de danger minimum pour activer
     _n_action        = 0            # compteur passages mode action
     _last_ball_data  = {}
     _prev_ball_cx    = None         # position X précédente du ballon (calcul vitesse)
@@ -359,20 +358,10 @@ def process_video(
         )
         was_action = _action_mode
 
-        # Danger score — zone seule ne suffit pas, il faut vitesse + zone
-        # Les dégagements latéraux (zone=True, bs=50-80) ne doivent pas déclencher
-        danger = 0
-        if in_goal_zone and bs > ACTION_SPD_THR:  danger += 4   # tir fort EN zone = danger max
-        elif in_goal_zone and bs > ACTION_SPD_EXIT: danger += 3  # mouvement rapide en zone
-        if bs > ACTION_SPD_THR and not in_goal_zone: danger += 2 # tir fort hors zone (contre-attaque)
-        # recent_shot : vérifier si un event shot existe dans les 3 dernières secondes
-        _recent_shot = any(
-            e.get("type") == "shot" and abs(e.get("time", 0) - frame_id / max(fps, 1)) < 3.0
-            for e in (events_state.get("events", []) or [])[-20:]
-        ) if events_state else False
-        if _recent_shot:              danger += 2   # tir récent = danger immédiat
-
-        if danger >= ACTION_MIN_SCORE:
+        # Règle simple et stable : bs > 120px obligatoire pour activer
+        # Zone = bonus uniquement, jamais déclencheur seul
+        # Calibré sur skip=4 : 120px/frame = ~3000px/s = tir ou dégagement fort
+        if bs > ACTION_SPD_THR:
             _action_mode = True
             _action_ttl  = ACTION_TTL
             if not was_action:
