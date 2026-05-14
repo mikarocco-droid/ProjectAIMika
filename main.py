@@ -321,7 +321,7 @@ def process_video(
     ACTION_TTL       = 25           # ~1s @25fps — on sort vite si rien ne suit
     ACTION_SPD_THR   = 120.0        # px/frame RÉELLE — seuil d'ENTRÉE (tir fort, pas simple passe)
     ACTION_SPD_EXIT  = 60.0         # px/frame RÉELLE — seuil de SORTIE (hystérésis)
-    ACTION_ZONE_THR  = 0.08         # 8% bords frame — zone de but stricte (était 12%)
+    ACTION_ZONE_THR  = 0.05         # 5% bords frame — zone de but très stricte (devant les poteaux)
     ACTION_MIN_SCORE = 3            # score de danger minimum pour activer
     _n_action        = 0            # compteur passages mode action
     _last_ball_data  = {}
@@ -359,12 +359,12 @@ def process_video(
         )
         was_action = _action_mode
 
-        # Danger score — activer seulement si vraiment dangereux
-        # (éviter de déclencher sur chaque dégagement ou passe longue)
+        # Danger score — zone seule ne suffit pas, il faut vitesse + zone
+        # Les dégagements latéraux (zone=True, bs=50-80) ne doivent pas déclencher
         danger = 0
-        if in_goal_zone:              danger += 2   # ballon proche des cages
-        if bs > ACTION_SPD_THR:       danger += 2   # tir fort (>120px/frame)
-        elif bs > ACTION_SPD_EXIT:    danger += 1   # mouvement rapide
+        if in_goal_zone and bs > ACTION_SPD_THR:  danger += 4   # tir fort EN zone = danger max
+        elif in_goal_zone and bs > ACTION_SPD_EXIT: danger += 3  # mouvement rapide en zone
+        if bs > ACTION_SPD_THR and not in_goal_zone: danger += 2 # tir fort hors zone (contre-attaque)
         # recent_shot : vérifier si un event shot existe dans les 3 dernières secondes
         _recent_shot = any(
             e.get("type") == "shot" and abs(e.get("time", 0) - frame_id / max(fps, 1)) < 3.0
@@ -413,6 +413,7 @@ def process_video(
                     writer.write(ann)
             else:
                 fd.pop("_frame_orig", None)
+            fd["_skip"] = _cur_skip   # skip effectif : 2 (action) ou 4 (léger)
             frames_data.append(fd)
             # Mettre à jour le mode action après chaque frame traitée
             _check_action_mode(fd.get("ball"))
