@@ -112,15 +112,16 @@ def process_batch(
     if not batch_frames:
         return [], events_state
 
-    # Utilise b_size effectif pour imgsz (impacte la qualité de détection YOLO)
+    # imgsz depuis config (YOLO_IMGSZ) — NE PAS lier à la taille du batch
     effective_batch = b_size if b_size is not None else YOLO_BATCH_SIZE
+    _imgsz = getattr(config, "YOLO_IMGSZ", 640)
 
     small_frames  = [bf[2] for bf in batch_frames]
     batch_results = detector.model(
         small_frames,
         conf    = config.YOLO_CONFIDENCE,
         verbose = False,
-        imgsz   = effective_batch * 240
+        imgsz   = _imgsz
     )
 
     batch_data = []
@@ -272,7 +273,8 @@ def process_video(
     print(f"  Sport : {sport}")
     print(f"  Frame skip  : 2/{skip_every} → ~{analyzed_count} frames analysées "
           f"({analyzed_count * 100 // total_frames}%)")
-    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={b_size * 240}")
+    _imgsz_log = getattr(config, "YOLO_IMGSZ", 640)
+    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={_imgsz_log}")
 
     if shot_zones:
         hi = shot_zones.get("threshold_hi", 0.85)
@@ -321,6 +323,7 @@ def process_video(
     ACTION_ZONE_THR  = 0.18         # % frame — zone de but gauche/droite
     _n_action        = 0            # compteur passages mode action
     _last_ball_data  = {}
+    _prev_ball_cx    = None         # position X précédente du ballon (calcul vitesse)
 
     def _check_action_mode(ball_dict):
         nonlocal _action_mode, _action_ttl, _n_action, _last_ball_data
@@ -329,14 +332,26 @@ def process_video(
                 _action_ttl -= 1
                 if _action_ttl == 0:
                     _action_mode = False
+                    print(f"  [2-SPEED] Retour mode léger (skip={_skip_base})")
             return
         _last_ball_data = ball_dict
-        bx = ball_dict.get("x") or ball_dict.get("cx") or ball_dict.get("center", [None])[0]
+        # Format ball_dict : {bbox:[x1,y1,x2,y2], center:[cx,cy], conf, interpolated}
+        nonlocal _prev_ball_cx
+        _center = ball_dict.get("center")
+        bx = _center[0] if (_center and len(_center) > 0) else None
+
+        # Calculer la vitesse depuis la position précédente (px de déplacement)
         bs = float(ball_dict.get("speed", 0) or 0)
+        if bs == 0 and bx is not None and _prev_ball_cx is not None:
+            bs = abs(bx - _prev_ball_cx)
+        _prev_ball_cx = bx
+
+        # Largeur de référence pour la zone de but
+        _ref_w = w if w > 0 else PROCESS_W
 
         in_goal_zone = (
-            bx is not None and w > 0
-            and (bx / w < ACTION_ZONE_THR or bx / w > (1 - ACTION_ZONE_THR))
+            bx is not None and _ref_w > 0
+            and (bx / _ref_w < ACTION_ZONE_THR or bx / _ref_w > (1 - ACTION_ZONE_THR))
         )
         was_action = _action_mode
 
@@ -345,10 +360,14 @@ def process_video(
             _action_ttl  = ACTION_TTL
             if not was_action:
                 _n_action += 1
+                t = frame_id / fps if fps > 0 else 0
+                print(f"  [2-SPEED] Mode ACTION activé à {int(t//60):02d}:{int(t%60):02d} "
+                      f"— ball_speed={bs:.0f}px in_goal_zone={in_goal_zone}")
         elif _action_ttl > 0:
             _action_ttl -= 1
             if _action_ttl == 0:
                 _action_mode = False
+                print(f"  [2-SPEED] Retour mode léger (skip={_skip_base})")
 
     def flush_batch(batch, analyzed_so_far):
         nonlocal events_state
@@ -377,6 +396,10 @@ def process_video(
             frames_data.append(fd)
             # Mettre à jour le mode action après chaque frame traitée
             _check_action_mode(fd.get("ball"))
+
+    print(f"  [2-SPEED] Config : skip_base={_skip_base} | "
+          f"action_spd_thr={ACTION_SPD_THR}px | "
+          f"action_zone={ACTION_ZONE_THR*100:.0f}% | ttl={ACTION_TTL}f")
 
     while True:
         ret, frame = cap.read()
