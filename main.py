@@ -368,7 +368,7 @@ def process_video(
                 _n_action += 1
                 t = frame_id / fps if fps > 0 else 0
                 print(f"  [2-SPEED] Mode ACTION activé à {int(t//60):02d}:{int(t%60):02d} "
-                      f"— ball_speed={bs:.0f}px in_goal_zone={in_goal_zone} danger={danger}")
+                      f"— ball_speed={bs:.0f}px in_goal_zone={in_goal_zone}")
         elif _action_mode and bs > ACTION_SPD_EXIT:
             # Toujours en mouvement mais sous le seuil d'entrée → recharger TTL
             _action_ttl = min(_action_ttl + 5, ACTION_TTL)
