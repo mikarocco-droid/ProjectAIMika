@@ -315,11 +315,12 @@ def process_video(
     # Mode action : skip_every=1 si ballon rapide ou près du but
     # ──────────────────────────────────────────────────────────
     _skip_base       = skip_every   # skip configuré (2 ou 4)
-    _skip_action     = 1            # skip en mode action
+    _skip_action     = 2            # skip en mode action (skip_base/2 = densité x2)
     _action_mode     = False
     _action_ttl      = 0
     ACTION_TTL       = 50           # ~2s @25fps avant retour léger
-    ACTION_SPD_THR   = 80.0         # px/frame RÉELLE normalisée (tir fort ~80-200px/f, passe ~30px/f)
+    ACTION_SPD_THR   = 80.0         # px/frame RÉELLE — seuil d'ENTRÉE mode action
+    ACTION_SPD_EXIT  = 45.0         # px/frame RÉELLE — seuil de SORTIE (hystérésis)
     ACTION_ZONE_THR  = 0.12         # 12% bords frame = zone de but
     _n_action        = 0            # compteur passages mode action
     _last_ball_data  = {}
@@ -365,11 +366,14 @@ def process_video(
                 t = frame_id / fps if fps > 0 else 0
                 print(f"  [2-SPEED] Mode ACTION activé à {int(t//60):02d}:{int(t%60):02d} "
                       f"— ball_speed={bs:.0f}px in_goal_zone={in_goal_zone}")
+        elif _action_mode and bs > ACTION_SPD_EXIT:
+            # Toujours en mouvement mais sous le seuil d'entrée → recharger TTL
+            _action_ttl = min(_action_ttl + 5, ACTION_TTL)
         elif _action_ttl > 0:
             _action_ttl -= 1
             if _action_ttl == 0:
                 _action_mode = False
-                print(f"  [2-SPEED] Retour mode léger (skip={_skip_base})")
+                print(f"  [2-SPEED] Retour mode léger (skip={_skip_base}) après {_n_action} passages")
 
     def flush_batch(batch, analyzed_so_far):
         nonlocal events_state
@@ -408,13 +412,13 @@ def process_video(
         if not ret:
             break
 
-        # Skip dynamique selon le mode courant
-        # Mode action : analyser toutes les frames (pas de skip)
-        # Mode léger  : skip normal configuré
-        if not _action_mode:
-            if frame_id % _skip_base == (_skip_base - 1):
-                frame_id += 1
-                continue
+        # Skip dynamique 2 vitesses
+        # Mode action  : skip=2 (densité x2 près des buts)
+        # Mode léger   : skip=4 (normal)
+        _cur_skip = _skip_action if _action_mode else _skip_base
+        if frame_id % _cur_skip == (_cur_skip - 1):
+            frame_id += 1
+            continue
 
         frame_small = cv2.resize(
             frame, (PROCESS_W, PROCESS_H),
