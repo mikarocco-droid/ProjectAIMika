@@ -396,25 +396,21 @@ def detect_action_start(
 ) -> float:
     """
     Remonte dans frames_data depuis event_time pour trouver
-    le vrai début de l'action.
+    le timestamp exact du début de l'action.
 
-    Signaux de "début d'action" (du plus fort au plus faible) :
-      1. Ballon hors jeu juste avant (ball=None plusieurs frames)
-         → action commence juste après la remise en jeu
-      2. Changement brutal de vitesse ballon (0 → rapide)
-         → début d'une séquence offensive
-      3. Transition possession (changement d'équipe)
-         → début d'une contre-attaque
-      4. Calme prolongé (ballon lent + joueurs peu mobiles)
-         → début d'une phase de jeu placé
+    Retourne un TIMESTAMP (pas un offset) — le moment précis
+    où l'action a commencé, quelle que soit la durée.
 
-    Retourne le nombre de secondes à remonter (entre min et max).
+    Signaux détectés par ordre de priorité :
+      1. Ballon absent 3+ frames  → remise en jeu = début naturel
+      2. Calme prolongé >1.5s     → possession placée avant action
+      3. Transition équipe        → début de contre-attaque
+      4. Fallback                 → event_time - 15s
     """
     if not frames_data or fps <= 0:
-        return 15.0
+        return max(0, event_time - 15.0)
 
     # Construire la fenêtre de recherche (frames avant event_time)
-    max_rewind_frames = int(max_rewind_sec * fps)
     search_frames = []
     for fd in frames_data:
         t = _frame_time(fd, fps)
@@ -422,77 +418,95 @@ def detect_action_start(
             search_frames.append(fd)
 
     if not search_frames:
-        return 15.0
-
-    # Inverser pour remonter depuis l'événement vers le passé
-    search_frames = list(reversed(search_frames))
+        return max(0, event_time - 15.0)
 
     frame_w = search_frames[0].get("frame_w") or 1920
 
-    # ── Signal 1 : ballon absent plusieurs frames consécutives ──
-    # = remise en jeu = début naturel d'action
+    # Inverser : on remonte du plus récent vers le plus ancien
+    search_reversed = list(reversed(search_frames))
+
+    # ── Signal 1 : ballon absent 3+ frames = remise en jeu ──
+    # Le début de l'action = la frame JUSTE APRÈS la remise en jeu
     consecutive_missing = 0
-    for i, fd in enumerate(search_frames):
+    last_present_t = event_time
+    for fd in search_reversed:
+        t   = _frame_time(fd, fps)
         pos = _ball_pos(fd)
         if pos is None:
             consecutive_missing += 1
         else:
+            if consecutive_missing >= 3:
+                # t = dernier instant où le ballon était absent
+                # → action commence juste après = t + 0.5s
+                action_start = t + 0.5
+                action_start = max(event_time - max_rewind_sec,
+                                   min(action_start, event_time - min_rewind_sec))
+                return max(0, action_start)
             consecutive_missing = 0
+            last_present_t = t
 
-        if consecutive_missing >= 3:
-            # Ballon absent = remise en jeu = début d'action juste après
-            rewind = _frame_time(search_frames[0], fps) - _frame_time(fd, fps)
-            rewind = max(min_rewind_sec, min(rewind + 1.0, max_rewind_sec))
-            return rewind
-
-    # ── Signal 2 : transition vitesse 0 → rapide ──
-    # = premier toucher fort = début d'action offensive
-    speeds = []
-    for fd in search_frames:
-        spd = _ball_speed(fd, frame_w)
-        speeds.append(spd)
-
-    # Chercher la dernière fois où la vitesse était quasi nulle
-    # avant d'accélérer (en remontant = après en temps réel)
-    low_speed_idx = None
-    for i in range(len(speeds) - 1):
-        if speeds[i] > SPEED_FAST and speeds[i + 1] < 20:
-            low_speed_idx = i
-            break
-
-    if low_speed_idx is not None:
-        t_transition = _frame_time(search_frames[low_speed_idx], fps)
-        rewind = event_time - t_transition
-        rewind = max(min_rewind_sec, min(rewind + 1.0, max_rewind_sec))
-        return rewind
-
-    # ── Signal 3 : calme prolongé (ballon lent > 2s) ──
-    # = possession placée = début de séquence
+    # ── Signal 2 : calme prolongé >1.5s = fin de phase précédente ──
+    # Remonter jusqu'au dernier moment calme continu
+    # Le début de l'action = quand le calme se termine (vitesse repart)
+    calm_start_t  = None
     calm_duration = 0.0
-    prev_t = None
-    for fd in search_frames:
+    prev_t        = None
+
+    for fd in search_reversed:
         t   = _frame_time(fd, fps)
         spd = _ball_speed(fd, frame_w)
+        dt  = abs(t - prev_t) if prev_t is not None else (1.0 / fps)
 
-        if prev_t is not None:
-            dt = abs(t - prev_t)
-        else:
-            dt = 1.0 / fps
-
-        if spd < 30:
+        if spd < 25:
+            # Ballon lent : on accumule le calme
+            if calm_start_t is None:
+                calm_start_t = t
             calm_duration += dt
         else:
+            # Ballon rapide : fin du calme
+            if calm_duration >= 1.5 and calm_start_t is not None:
+                # L'action a commencé quand le calme s'est terminé
+                # = calm_start_t (en remontant) = fin du calme en temps réel
+                action_start = calm_start_t
+                action_start = max(event_time - max_rewind_sec,
+                                   min(action_start, event_time - min_rewind_sec))
+                return max(0, action_start)
+            calm_start_t  = None
             calm_duration = 0.0
-
-        if calm_duration >= 2.0:
-            rewind = event_time - t
-            rewind = max(min_rewind_sec, min(rewind + 1.0, max_rewind_sec))
-            return rewind
 
         prev_t = t
 
-    # ── Fallback : utiliser une heuristique par type d'événement ──
-    return 15.0
+    # ── Signal 3 : changement d'équipe en possession ──
+    prev_team = None
+    for fd in search_reversed:
+        t       = _frame_time(fd, fps)
+        players = fd.get("players") or []
+        # Trouver l'équipe qui a le ballon (joueur le plus proche)
+        ball    = fd.get("ball") or {}
+        bx      = ball.get("x") or ball.get("cx")
+        by      = ball.get("y") or ball.get("cy")
+        if bx is None:
+            continue
+        closest_team = None
+        closest_dist = float("inf")
+        for p in players:
+            px   = float(p.get("x", p.get("cx", 0)))
+            py   = float(p.get("y", p.get("cy", 0)))
+            dist = ((px - float(bx))**2 + (py - float(by))**2)**0.5
+            if dist < closest_dist:
+                closest_dist = dist
+                closest_team = p.get("team")
+        if closest_team is not None and closest_dist < 100:
+            if prev_team is not None and closest_team != prev_team:
+                # Changement d'équipe = début de contre-attaque
+                action_start = t
+                action_start = max(event_time - max_rewind_sec,
+                                   min(action_start, event_time - min_rewind_sec))
+                return max(0, action_start)
+            prev_team = closest_team
+
+    # ── Fallback ──
+    return max(0, event_time - 15.0)
 
 
 def detect_action_start_for_event(
@@ -544,7 +558,8 @@ def detect_action_start_for_event(
 
     min_r, max_r = REWIND_LIMITS.get(event_type, (5.0, 15.0))
 
-    rewind = detect_action_start(
+    # Retourne un timestamp précis (pas un offset)
+    action_start_t = detect_action_start(
         frames_data    = frames_data,
         event_time     = event_time,
         fps            = fps,
@@ -552,7 +567,7 @@ def detect_action_start_for_event(
         min_rewind_sec = min_r,
     )
 
-    return rewind
+    return action_start_t
 
 # ─────────────────────────────────────────────────────────────
 # Registre des fonctions par sport
@@ -658,18 +673,21 @@ def build_candidate_windows(
 
         # Détection dynamique du début d'action si données disponibles
         if frames_data is not None:
-            dynamic_rewind = detect_action_start_for_event(frames_data, ev, fps)
+            # action_start_t = timestamp précis du début de l'action
+            action_start_t = detect_action_start_for_event(frames_data, ev, fps)
         else:
-            dynamic_rewind = rewind_sec
+            action_start_t = max(0, t - rewind_sec)
+
+        actual_rewind = t - action_start_t
 
         windows.append({
             "time":          t,
-            "window_start":  max(0, t - dynamic_rewind),
+            "window_start":  action_start_t,
             "window_end":    t + end_sec,
             "source":        f"terminal_{ev['type']}",
             "confidence":    ev["confidence"],
             "terminal_type": ev["type"],
-            "rewind_sec":    dynamic_rewind,
+            "rewind_sec":    actual_rewind,   # pour les logs : durée réelle remontée
         })
 
     if existing_candidates:
