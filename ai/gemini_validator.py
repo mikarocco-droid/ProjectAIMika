@@ -24,7 +24,7 @@ except ImportError:
 # ─────────────────────────────────────────
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
 # ─────────────────────────────────────────
-OFFSETS_POSTHOC = [-20, -10, -5, 0, +5, +10, +15]
+OFFSETS_POSTHOC = [-3, 0, +3]  # 3 offsets serrés — SHOT→GOAL gère la précision
 OFFSETS_EVENTS  = [-1, 0, 2]
 
 _METRICS = {
@@ -937,57 +937,7 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
     if frame_w is None:
         frame_w = event.get("frame_w", 1920)
 
-    # ─────────────────────────────────────────
-    # AUTO-ACCEPT / AUTO-REJECT — évite appels Gemini inutiles
-    # ─────────────────────────────────────────
-    _phys_score = float(event.get("physical_score", 0) or
-                        event.get("score", 0) or 0)
-    _stuck      = int(event.get("stuck", 0) or 0)
-    _rebound    = bool(event.get("rebound", False))
-    _cross_line = bool(event.get("cross_line", False))
-    _ball_in_goal = bool(event.get("ball_appears_in_goal", False))
-
-    # AUTO-ACCEPT : signal physique très fort — pas besoin Gemini
-    # Conditions : score élevé + ballon bloqué longtemps + signal visuel fort
-    _auto_accept = (
-        (_phys_score >= 9.0 and _stuck >= 8 and _rebound)
-        or (_cross_line and tracker_conf > 0.95)
-        or (_ball_in_goal and _phys_score >= 7.0)
-    )
-    if _auto_accept:
-        print(f"  [AUTO-ACCEPT] t={event.get('time',0):.1f}s "
-              f"score={_phys_score:.1f} stuck={_stuck} "
-              f"cross={_cross_line} ball_in_goal={_ball_in_goal} → BUT sans Gemini")
-        return {
-            "type":        "goal",
-            "confiance":   min(tracker_conf, 0.92),
-            "_goal_votes": 2,
-            "_shot_votes": 0,
-            "description": "auto-accept : signal physique très fort",
-            "_auto":       "accept",
-        }
-
-    # AUTO-REJECT : signal trop faible — pas besoin Gemini
-    _auto_reject = (
-        _phys_score < 5.0
-        and not _rebound
-        and not near_goal
-        and not _cross_line
-        and tracker_conf < 0.80
-    )
-    if _auto_reject:
-        print(f"  [AUTO-REJECT] t={event.get('time',0):.1f}s "
-              f"score={_phys_score:.1f} tracker={tracker_conf:.2f} → rejeté sans Gemini")
-        return {
-            "type":        "none",
-            "confiance":   0.1,
-            "_goal_votes": 0,
-            "_shot_votes": 0,
-            "description": "",
-            "_auto":       "reject",
-        }
-
-    # 🔥 SKIP GEMINI (high_conf_physical legacy)
+    # 🔥 SKIP GEMINI (safe)
     if (
         tracker_conf > 0.97
         and event.get("high_conf_physical")
@@ -1002,7 +952,7 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
         }
 
     # Offsets triés (plus proches d'abord)
-    offsets_s = OFFSETS_POSTHOC if "posthoc" in str(source) else OFFSETS_EVENTS
+    offsets_s = OFFSETS_POSTHOC if "posthoc" in str(source) else OFFSETS_EVENTS  # 3 offsets posthoc
     offsets_s = sorted(offsets_s, key=lambda x: abs(x))
 
     _t_event = event.get('time', 0)
