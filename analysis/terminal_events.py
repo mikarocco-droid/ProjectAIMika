@@ -178,10 +178,13 @@ def _detect_goalkeeper_save(frames, fps, last_t):
         if not _cooldown_ok(last_t, "goalkeeper_save", t):
             continue
         last_t["goalkeeper_save"] = t
+        conf = min(0.95, 0.60 + (max_spd_before / 400))
+        mm = int(t//60); ss = int(t%60)
+        print(f"  [TERMINAL] goalkeeper_save à {mm:02d}:{ss:02d} | spd_before={max_spd_before:.0f}px spd_after={spd:.0f}px gk_dist={dist:.0f}px conf={conf:.2f}")
         events.append({
             "type":       "goalkeeper_save",
             "time":       t,
-            "confidence": min(0.95, 0.60 + (max_spd_before / 400)),
+            "confidence": conf,
         })
     return events
 
@@ -216,6 +219,8 @@ def _detect_ball_caught(frames, fps, last_t):
         if possession_count >= min_frames:
             if _cooldown_ok(last_t, "ball_caught", t):
                 last_t["ball_caught"] = t
+                mm = int(possession_start//60); ss = int(possession_start%60)
+                print(f"  [TERMINAL] ball_caught à {mm:02d}:{ss:02d} | durée={t-possession_start:.1f}s conf=0.80")
                 events.append({"type": "ball_caught", "time": possession_start, "confidence": 0.80})
             possession_count = 0; possession_start = None
     return events
@@ -242,8 +247,10 @@ def _detect_clearance(frames, fps, last_t):
         if not _cooldown_ok(last_t, "clearance", t):
             continue
         last_t["clearance"] = t
-        events.append({"type": "clearance", "time": t,
-                       "confidence": min(0.90, 0.55 + spd / 600)})
+        conf = min(0.90, 0.55 + spd / 600)
+        mm = int(t//60); ss = int(t%60)
+        print(f"  [TERMINAL] clearance à {mm:02d}:{ss:02d} | spd={spd:.0f}px conf={conf:.2f}")
+        events.append({"type": "clearance", "time": t, "confidence": conf})
     return events
 
 
@@ -270,6 +277,8 @@ def _detect_corner_or_goalkick(frames, fps, last_t):
             if _is_in_goal_zone(bx_last) and _is_valid_y(by_last):
                 if _cooldown_ok(last_t, "corner_or_goalkick", last_seen_t):
                     last_t["corner_or_goalkick"] = last_seen_t
+                    mm = int(last_seen_t//60); ss = int(last_seen_t%60)
+                    print(f"  [TERMINAL] corner_or_goalkick à {mm:02d}:{ss:02d} | bx_last={bx_last:.2f} conf=0.70")
                     events.append({"type": "corner_or_goalkick", "time": last_seen_t,
                                    "confidence": 0.70})
                 last_seen_pos = None
@@ -441,6 +450,8 @@ def detect_action_start(
                 action_start = t + 0.5
                 action_start = max(event_time - max_rewind_sec,
                                    min(action_start, event_time - min_rewind_sec))
+                mm = int(action_start//60); ss = int(action_start%60)
+                print(f"    [ACTION_START] signal=remise_en_jeu → {mm:02d}:{ss:02d} (ballon absent {consecutive_missing} frames)")
                 return max(0, action_start)
             consecutive_missing = 0
             last_present_t = t
@@ -470,6 +481,8 @@ def detect_action_start(
                 action_start = calm_start_t
                 action_start = max(event_time - max_rewind_sec,
                                    min(action_start, event_time - min_rewind_sec))
+                mm = int(action_start//60); ss = int(action_start%60)
+                print(f"    [ACTION_START] signal=calme_prolongé → {mm:02d}:{ss:02d} (calme={calm_duration:.1f}s)")
                 return max(0, action_start)
             calm_start_t  = None
             calm_duration = 0.0
@@ -502,11 +515,16 @@ def detect_action_start(
                 action_start = t
                 action_start = max(event_time - max_rewind_sec,
                                    min(action_start, event_time - min_rewind_sec))
+                mm = int(action_start//60); ss = int(action_start%60)
+                print(f"    [ACTION_START] signal=changement_équipe → {mm:02d}:{ss:02d} ({prev_team}→{closest_team})")
                 return max(0, action_start)
             prev_team = closest_team
 
     # ── Fallback ──
-    return max(0, event_time - 15.0)
+    fallback_t = max(0, event_time - 15.0)
+    mm = int(fallback_t // 60); ss = int(fallback_t % 60)
+    print(f"    [ACTION_START] fallback → {mm:02d}:{ss:02d} (aucun signal trouvé)")
+    return fallback_t
 
 
 def detect_action_start_for_event(
@@ -557,6 +575,8 @@ def detect_action_start_for_event(
     }
 
     min_r, max_r = REWIND_LIMITS.get(event_type, (5.0, 15.0))
+    ev_mm = int(event_time//60); ev_ss = int(event_time%60)
+    print(f"  [ACTION_START] cherche début de '{event_type}' à {ev_mm:02d}:{ev_ss:02d} | fenêtre [{min_r:.0f}s–{max_r:.0f}s]")
 
     # Retourne un timestamp précis (pas un offset)
     action_start_t = detect_action_start(
