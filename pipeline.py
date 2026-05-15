@@ -47,7 +47,8 @@ from sports.config import get_sport_config, compute_xg_sport
 from analysis.event_validator import detect_real_shots
 from analysis.context_engine import ContextEngine
 from analysis.player_identity import resolve_player_identities, get_player_label
-from analysis.goal_posthoc import detect_fast_goals_from_ball
+from analysis.goal_posthoc    import detect_fast_goals_from_ball
+from analysis.terminal_events import detect_terminal_events, build_candidate_windows
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTE ZONE DE BUT — source unique
@@ -496,6 +497,57 @@ def run_pipeline(
         except Exception as eg:
             print(f"  goal_posthoc ignoré : {eg}")
 
+        # ── Étape 2b : terminal_events — fenêtres candidates football-native ─────
+        _terminal_goals = []
+        try:
+            _terminal_evts = detect_terminal_events(
+                frames_data = frames_data,
+                fps         = fps,
+                frame_w     = _frame_w,
+                frame_h     = _frame_h,
+                goal_box    = _goal_box,
+                sport       = sport,
+            )
+            if _terminal_evts:
+                # Convertir en events "goal" candidats pour Gemini
+                # Chaque événement terminal génère une fenêtre [-15s, +2s]
+                _existing = [e for e in events if e.get("type") in ("goal", "score")]
+                _windows  = build_candidate_windows(
+                    _terminal_evts,
+                    frames_data = frames_data,
+                    fps         = fps,
+                    existing_candidates = [
+                        {"time": e.get("time", 0), "confidence": e.get("conf", 0.5),
+                         "source": e.get("source", "posthoc")}
+                        for e in _existing
+                    ],
+                )
+                # Ajouter les fenêtres non couvertes par posthoc comme nouveaux candidats
+                _posthoc_times = {e.get("time", 0) for e in events if e.get("type") in ("goal","score")}
+                for w in _windows:
+                    if w["source"].startswith("terminal_"):
+                        # Vérifier qu'aucun candidat posthoc n'est déjà dans cette fenêtre
+                        covered = any(
+                            w["window_start"] <= t <= w["window_end"]
+                            for t in _posthoc_times
+                        )
+                        if not covered:
+                            _terminal_goals.append({
+                                "type":       "goal",
+                                "time":       w["time"],
+                                "source":     w["source"],
+                                "conf":       w["confidence"],
+                                "xg":         0.3,
+                                "_terminal":  True,
+                                "_window_start": w["window_start"],
+                            })
+                if _terminal_goals:
+                    events.extend(_terminal_goals)
+                    events.sort(key=lambda e: e.get("time", 0))
+                    print(f"  terminal_events : {len(_terminal_goals)} nouveau(x) candidat(s)")
+        except Exception as et:
+            print(f"  terminal_events ignoré : {et}")
+
         # ── Étape 3 : dedup fenêtre courte 3s (doublons immédiats posthoc/events)
         n_before = sum(1 for e in events if e.get("type") in ("goal", "score"))
         events   = deduplicate_goals(events, window=3.0)
@@ -811,17 +863,8 @@ def run_pipeline(
                 print(f"  FP zones : {n_before - len(events)} shots filtrés")
 
         # Lecture maillots prioritaire
-        # Pour les buts shot_to_goal_gemini (frame=0), utiliser le tir source
         seen_pids    = set()
         prio_players = []
-
-        # Index des tirs par pid pour retrouver la vraie frame/bbox
-        _shot_by_pid = {}
-        for e in events:
-            if e.get("type") == "shot":
-                pid = str(e.get("player", "") or "")
-                if pid and pid not in _shot_by_pid:
-                    _shot_by_pid[pid] = e
 
         for e in events:
             if e.get("type") not in ["goal", "shot"]:
@@ -833,19 +876,11 @@ def run_pipeline(
                 seen_pids.add(pid)
                 continue
             frame_id = e.get("frame", 0) or 0
-            bbox     = e.get("bbox") or [100, 100, 200, 300]
-            # Pour les buts sans frame (shot_to_goal_gemini), utiliser le tir source
-            if frame_id == 0 and pid in _shot_by_pid:
-                src = _shot_by_pid[pid]
-                frame_id = src.get("frame", 0) or 0
-                bbox     = src.get("bbox") or bbox
-            if frame_id == 0:
-                frame_id = int(fps * 30)  # fallback frame 30s
             for offset in [-10, 0, 10]:
                 prio_players.append({
                     "id":       pid,
                     "frame_id": max(0, frame_id + offset),
-                    "bbox":     bbox,
+                    "bbox":     e.get("bbox", [100, 100, 200, 300])
                 })
             seen_pids.add(pid)
 
@@ -1007,10 +1042,6 @@ def run_pipeline(
     possession = {}
     try:
         possession = compute_possession_from_stats(events, stats)
-        # Si 50/50 exact = valeur par défaut (non fiable) — marquer comme N/A
-        _poss_vals = list(possession.values())
-        if _poss_vals == [50.0, 50.0] or _poss_vals == [50.0]:
-            possession["_unreliable"] = True
         print(f"  Possession corrigée : {possession}")
     except Exception as e:
         print(f"  Possession correction ignorée : {e}")
@@ -1156,49 +1187,13 @@ def run_pipeline(
         mvp               = get_mvp(ratings)
         mvp_label         = resolve_mvp_label(mvp, stats, jersey_map)
 
-        # Commentary depuis les descriptions Gemini des highlights (déjà scorés en Step 8)
-        # Buts en premier avec timing et numéro joueur, puis tirs avec description Gemini
-        commentary = []
-        import random as _rnd
-
-        # 1. Buts en premier
-        for h in sorted([h for h in highlights if h.get("main_type") in ("goal","score")],
-                         key=lambda h: h.get("time_start", 0)):
-            t    = h.get("time_start", 0) or 0
-            mins = int(t // 60); secs = int(t % 60)
-            pid  = str(h.get("player", "") or "")
-            jersey = jersey_map.get(pid) if jersey_map and pid else None
-            js   = f" #{jersey}" if jersey else ""
-            desc = h.get("description", "")
-            if desc:
-                commentary.append(f"⚽ {mins:02d}:{secs:02d} —{js} {desc}")
-            else:
-                commentary.append(f"⚽ {mins:02d}:{secs:02d} — BUUUUT !{js}")
-
-        # 2. Tirs et autres highlights avec description Gemini
-        for h in sorted([h for h in highlights if h.get("main_type") not in ("goal","score")],
-                         key=lambda h: h.get("time_start", 0)):
-            t    = h.get("time_start", 0) or 0
-            mins = int(t // 60); secs = int(t % 60)
-            pid  = str(h.get("player", "") or "")
-            jersey = jersey_map.get(pid) if jersey_map and pid else None
-            js   = f" #{jersey}" if jersey else ""
-            desc = h.get("description", "")
-            if desc:
-                commentary.append(f"{mins:02d}:{secs:02d} —{js} {desc}")
-
-        # 3. Compléter avec des événements généraux si moins de 8 lignes
-        if len(commentary) < 8:
-            from ai.commentary import generate_commentary as _gen_cm
-            _extra = _gen_cm(
-                ranked_highlights[:10],
-                jersey_map = jersey_map,
-                sport      = sport,
-                formation  = formation,
-                style      = tactical.get("style"),
-            )
-            commentary += [l for l in _extra if l not in commentary][:8 - len(commentary)]
-
+        commentary = generate_commentary(
+            ranked_highlights[:10],
+            jersey_map = jersey_map,
+            sport      = sport,
+            formation  = formation,
+            style      = tactical.get("style"),
+        )
         story = None  # calculé après events_clean (Step 11)
         print(f"  OK MVP={mvp_label} | commentary={len(commentary)} lines")
     except Exception as e:
@@ -1237,17 +1232,8 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 7b : Heatmaps (events filtrés)...")
     try:
-        # events_clean pour global/goals/équipes
-        # events bruts pour la heatmap shots (sinon 0 points)
-        _events_for_shots = [
-            e for e in events
-            if e.get("type") == "shot"
-            and float(e.get("time", 0)) > 1.0
-        ]
-        _events_heatmap = events_clean + _events_for_shots
-
         heatmaps = generate_all_heatmaps(
-            events     = _events_heatmap,
+            events     = events_clean,
             output_dir = os.path.join(output_dir, "heatmaps"),
             width      = config.FRAME_WIDTH,
             height     = config.FRAME_HEIGHT,
@@ -1256,7 +1242,7 @@ def run_pipeline(
         heatmap_path  = heatmaps.get("global")
         heatmap_paths = heatmaps
         print(f"  OK {len(heatmaps)} heatmaps "
-              f"({len(_events_for_shots)} tirs bruts / {n_shots_raw} total)")
+              f"({n_shots_clean} tirs filtrés / {n_shots_raw} bruts)")
     except Exception as e:
         print(f"  Heatmaps error : {e}")
 
@@ -1277,39 +1263,22 @@ def run_pipeline(
     n_validated_goals = sum(1 for e in events_validated if e.get("type") in ("goal", "score"))
     summary["goals"] = n_validated_goals
 
-    # Tirs cadrés = on_target=True ET xG >= 0.15 ET time > 1s
-    summary["shots"] = sum(
-        1 for e in events
-        if e.get("type") == "shot"
-        and e.get("on_target", False)
-        and float(e.get("xg", 0) or 0) >= 0.15
-        and float(e.get("time", 0)) > 1.0
-    )
-    # xG total = somme tirs avec xG >= 0.10 ET time > 1s
-    summary["total_xg"] = round(sum(
-        float(e.get("xg", 0) or 0)
-        for e in events
-        if e.get("type") == "shot"
-        and float(e.get("xg", 0) or 0) >= 0.10
-        and float(e.get("time", 0)) > 1.0
-    ), 2)
-
     # V9.7 — recalculer stats joueurs (tirs + xG) depuis highlights filtrés
     # Les stats brutes de compute_stats incluent tous les faux tirs
     highlight_times = {round(h.get("time_start", 0)): h for h in highlights}
-    # Recalculer tirs depuis highlights (filtrés), garder xg_total brut de compute_stats
     for pid in stats:
-        stats[pid]["tirs"] = 0
+        stats[pid]["tirs"]     = 0
+        stats[pid]["xg_total"] = 0.0
     for h in highlights:
         if h.get("main_type") != "shot":
             continue
         pid = str(h.get("player", ""))
         if pid and pid in stats:
-            stats[pid]["tirs"] += 1
+            stats[pid]["tirs"]     += 1
+            stats[pid]["xg_total"] += float(h.get("xg", 0) or 0)
         elif pid:
+            # joueur pas encore dans stats (edge case) → ignorer
             pass
-    # xg_total reste celui calculé par compute_stats (depuis events bruts)
-    # Plus représentatif que les highlights filtrés
     # Recalculer aussi les buts depuis highlights
     for h in highlights:
         if h.get("main_type") not in ("goal", "score"):
