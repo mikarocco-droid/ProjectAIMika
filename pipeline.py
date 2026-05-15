@@ -41,11 +41,6 @@ from analysis.tactical import (
 from analysis.highlight_ranker import rank_highlights
 from analysis.player_rating import compute_player_ratings, get_mvp, tag_key_passes
 from analysis.match_story import generate_match_story
-try:
-    from analysis.goal_confidence import compute_goal_confidence, format_confidence_label, enrich_goal_event
-    GOAL_CONFIDENCE_AVAILABLE = True
-except ImportError:
-    GOAL_CONFIDENCE_AVAILABLE = False
 from ai.commentary import generate_commentary
 from ai.learning import cluster_actions, learn_action_importance, detect_key_moments
 from sports.config import get_sport_config, compute_xg_sport
@@ -1281,18 +1276,6 @@ def run_pipeline(
     # Les highlights peuvent inclure des SHOT→GOAL faux positifs
     n_validated_goals = sum(1 for e in events_validated if e.get("type") in ("goal", "score"))
     summary["goals"] = n_validated_goals
-
-    # Enrichir les buts avec la confiance fusionnée
-    if GOAL_CONFIDENCE_AVAILABLE:
-        for e in events_validated:
-            if e.get("type") in ("goal", "score"):
-                enrich_goal_event(e)
-                label = format_confidence_label(e.get("goal_confidence", 0))
-                t = e.get("time", 0)
-                print(f"  [CONFIDENCE] but {int(t//60):02d}:{int(t%60):02d} "
-                      f"→ {label} | phys={e.get('goal_confidence_physical',0):.2f} "
-                      f"gemini={e.get('goal_confidence_gemini',0):.2f} "
-                      f"shot={e.get('goal_confidence_shot',0):.2f}")
 
     # Tirs cadrés = on_target=True ET xG >= 0.15 ET time > 1s
     summary["shots"] = sum(
