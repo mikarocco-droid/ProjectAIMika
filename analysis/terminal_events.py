@@ -38,7 +38,7 @@ TERMINAL_EVENTS_BY_SPORT = {
 # Paramètres
 # ─────────────────────────────────────────────────────────────
 
-GOAL_ZONE_PCT    = 0.10   # 10% depuis chaque bord latéral = zone but
+GOAL_ZONE_PCT    = 0.08   # 8% depuis chaque bord latéral = zone but
 BOX_ZONE_PCT     = 0.22   # 22% = surface de réparation approximative
 PLAY_Y_MIN_PCT   = 0.30   # ignorer le haut (score, ciel)
 PLAY_Y_MAX_PCT   = 0.97
@@ -46,7 +46,7 @@ PLAY_Y_MAX_PCT   = 0.97
 GK_BALL_DIST_MAX = 100    # px — gardien considéré "sur le ballon"
 GK_POSSESS_FRAMES = 3     # nb frames consécutives gardien+ballon immobile
 
-MISSING_FRAMES_CORNER = 3  # nb frames sans ballon pour déclencher corner/6m
+MISSING_FRAMES_CORNER = 5  # nb frames sans ballon pour déclencher corner/6m
 CLEARANCE_ZONE_IN  = 0.25  # ballon vient de la zone < 25% du bord
 CLEARANCE_ZONE_OUT = 0.40  # ballon va vers le centre > 40%
 
@@ -294,9 +294,11 @@ def _detect_goal(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict]:
     streak = 0
     streak_start_t = None
 
-    # Zone filet : entre 35% et 80% de hauteur (sous la barre, dans les montants)
-    GOAL_Y_MIN = 0.35
-    GOAL_Y_MAX = 0.80
+    # Zone filet stricte : < 5% des bords latéraux ET hauteur filet réelle
+    # Sur caméra latérale, le filet est très proche du bord
+    GOAL_X_STRICT = 0.05   # 5% = ~96px sur 1920
+    GOAL_Y_MIN    = 0.45   # pas trop haut (éviter ciel)
+    GOAL_Y_MAX    = 0.85   # pas trop bas (éviter sol)
 
     for fd in frames:
         t   = _frame_t(fd, fps)
@@ -309,8 +311,9 @@ def _detect_goal(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict]:
 
         bx_n, by_n = pos
 
-        # Ballon dans la zone but ET dans la zone filet
-        in_goal = _in_goal_zone(bx_n) and GOAL_Y_MIN <= by_n <= GOAL_Y_MAX
+        # Zone très stricte : vraiment dans le filet
+        in_goal_zone = (bx_n < GOAL_X_STRICT or bx_n > (1 - GOAL_X_STRICT))
+        in_goal = in_goal_zone and GOAL_Y_MIN <= by_n <= GOAL_Y_MAX
 
         if in_goal:
             if streak == 0:
