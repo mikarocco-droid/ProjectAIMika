@@ -52,7 +52,6 @@ RUN pip install \
     pytesseract \
     boto3 \
     deep-sort-realtime \
-    boxmot \
     runpod \
     celery[redis] \
     redis \
