@@ -481,6 +481,7 @@ def run_pipeline(
             print(f"  Filtre xG=0 : {n_goals_raw - n_goals_filtered} faux but(s) supprimés")
 
         # ── Étape 2 : goal_posthoc ────────────────────────────────────────────
+        _raw_posthoc_times = []  # init avant try — préservé pour SHOT→GOAL
         try:
             fast_goals = detect_fast_goals_from_ball(
                 frames_data = frames_data,
@@ -494,6 +495,12 @@ def run_pipeline(
                 events.extend(fast_goals)
                 events.sort(key=lambda e: e.get("time", 0))
                 print(f"  goal_posthoc : {len(fast_goals)} but(s) détecté(s)")
+            # Sauvegarder les temps posthoc bruts AVANT tout filtrage
+            # Utilisé plus tard par SHOT→GOAL pour valider la présence d'un signal physique
+            _raw_posthoc_times = [
+                e.get("time", 0) for e in (fast_goals or [])
+                if isinstance(e, dict)
+            ]
         except Exception as eg:
             print(f"  goal_posthoc ignoré : {eg}")
 
@@ -878,7 +885,11 @@ def run_pipeline(
                         too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
                         # Exiger un signal physique posthoc dans la fenêtre tir→but
                         # Évite de valider un kickoff initial confondu avec un kickoff après but
-                        _posthoc_times = [
+                        # Utiliser les posthoc BRUTS (avant filtrage Gemini)
+                        # pour ne pas rater les buts dont le posthoc a été supprimé
+                        # Posthoc BRUTS (avant filtrage Gemini) — évite de rejeter
+                        # des buts dont le candidat posthoc a été supprimé en amont
+                        _posthoc_times = _raw_posthoc_times if _raw_posthoc_times else [
                             e.get("time", 0) for e in events
                             if isinstance(e, dict)
                             and e.get("type") in ("goal", "score")

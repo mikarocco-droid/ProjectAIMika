@@ -178,9 +178,13 @@ def create_highlights(
     for e in events:
         etype = e.get("type", "")
 
-        if e.get("gemini_type") in ["touche", "corner", "none",
+        # Exclure les FP Gemini — SAUF si l'event est un but validé
+        # (gemini_type=none peut arriver quand Gemini confirme via goal_votes sans renvoyer type=goal)
+        _is_goal_event = etype in ["goal", "score"]
+        if (e.get("gemini_type") in ["touche", "corner", "none",
                                      "defensive_clearance",
-                                     "goalkeeper_hold", "goalkeeper_throw"]:
+                                     "goalkeeper_hold", "goalkeeper_throw"]
+                and not (_is_goal_event and e.get("gemini_validated", False))):
             continue
 
         if etype not in allowed_types:
