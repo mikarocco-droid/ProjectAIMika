@@ -546,9 +546,23 @@ def run_pipeline(
                                 "_window_start": w["window_start"],
                             })
                 if _terminal_goals:
-                    events.extend(_terminal_goals)
+                    # Déduplication contre posthoc : évite les doublons ±10s
+                    _posthoc_times = [
+                        e["time"] for e in events
+                        if e.get("type") == "goal"
+                        and "posthoc" in e.get("source", "")
+                    ]
+                    _filtered_terminal = []
+                    for _tg in _terminal_goals:
+                        _too_close = any(
+                            abs(_tg["time"] - _pt) < 10.0
+                            for _pt in _posthoc_times
+                        )
+                        if not _too_close:
+                            _filtered_terminal.append(_tg)
+                    events.extend(_filtered_terminal)
                     events.sort(key=lambda e: e.get("time", 0))
-                    print(f"  terminal_events : {len(_terminal_goals)} nouveau(x) candidat(s)")
+                    print(f"  terminal_events : {len(_filtered_terminal)} nouveau(x) candidat(s) ({len(_terminal_goals)-len(_filtered_terminal)} dédupliqués vs posthoc)")
         except Exception as et:
             print(f"  terminal_events ignoré : {et}")
 
