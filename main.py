@@ -10,7 +10,7 @@ from analysis.events import process_match, detect_events
 from rendering.overlay import Overlay, TeamColorDetector
 import config
 
-from config import FRAME_SKIP_EVERY, YOLO_BATCH_SIZE, YOLO_IMGSZ
+from config import FRAME_SKIP_EVERY, YOLO_BATCH_SIZE
 
 PROCESS_W = 960
 PROCESS_H = 540
@@ -112,6 +112,7 @@ def process_batch(
     if not batch_frames:
         return [], events_state
 
+    # Utilise b_size effectif pour imgsz (impacte la qualité de détection YOLO)
     effective_batch = b_size if b_size is not None else YOLO_BATCH_SIZE
 
     small_frames  = [bf[2] for bf in batch_frames]
@@ -119,7 +120,7 @@ def process_batch(
         small_frames,
         conf    = config.YOLO_CONFIDENCE,
         verbose = False,
-        imgsz   = YOLO_IMGSZ   # indépendant du batch_size
+        imgsz   = effective_batch * 240
     )
 
     batch_data = []
@@ -238,6 +239,17 @@ def process_video(
     skip_every = frame_skip_every if frame_skip_every is not None else FRAME_SKIP_EVERY
     b_size     = batch_size       if batch_size       is not None else YOLO_BATCH_SIZE
 
+    # Frame skip adaptatif : skip_every=4 (75%) en phase active, skip_every=2 (50%) en phase creuse
+    # Phase active = balle en zone dangereuse OU tir/but récent
+    # Phase creuse = possession tranquille au milieu → moins de frames nécessaires
+    SKIP_ACTIVE  = skip_every          # inchangé (ex: 4 → 75% analysées)
+    SKIP_CREUSE  = max(2, skip_every - 2)  # ex: skip=2 → 50% analysées, JAMAIS < 2
+    DANGER_X_LO  = 0.20               # balle à gauche de 20% → zone dangereuse
+    DANGER_X_HI  = 0.80               # balle à droite de 80% → zone dangereuse
+    ACTIVE_WINDOW_FRAMES = 20 * 25    # 20s × fps → durée min phase active après event
+    _last_active_frame = 0            # frame du dernier event dangereux
+    _current_skip = SKIP_ACTIVE       # commence en mode actif (calibration initiale)
+
     detector       = Detector(sport=sport)
     tracker        = Tracker()
     ocr            = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
@@ -269,9 +281,9 @@ def process_video(
     print(f"  {total_frames} frames | {fps:.1f} fps | {total_frames / fps:.1f}s")
     print(f"  Resolution : {w}x{h} → traitement {PROCESS_W}x{PROCESS_H}")
     print(f"  Sport : {sport}")
-    print(f"  Frame skip  : 2/{skip_every} → ~{analyzed_count} frames analysées "
-          f"({analyzed_count * 100 // total_frames}%)")
-    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={YOLO_IMGSZ}")
+    print(f"  Frame skip  : adaptatif skip{SKIP_CREUSE}(creuse)/skip{SKIP_ACTIVE}(active) "
+          f"| base={analyzed_count * 100 // total_frames}%")
+    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={b_size * 240}")
 
     if shot_zones:
         hi = shot_zones.get("threshold_hi", 0.85)
@@ -337,7 +349,35 @@ def process_video(
         if not ret:
             break
 
-        if frame_id % skip_every == (skip_every - 1):
+        # ── Frame skip adaptatif ────────────────────────────────────────────
+        # Mettre à jour le mode (actif/creuse) selon la position balle et events récents
+        if frame_id % 25 == 0:  # réévaluer toutes les 25 frames (≈1s)
+            _is_active = False
+            # Critère 1 : tir récent (events_state est un dict)
+            if isinstance(events_state, dict):
+                _last_t = events_state.get("_last_shot_time", -999)
+                if isinstance(_last_t, (int, float)) and _last_t > 0:
+                    _frames_since_shot = frame_id - int(_last_t * fps)
+                    if _frames_since_shot < ACTIVE_WINDOW_FRAMES:
+                        _is_active = True
+                        _last_active_frame = frame_id
+            # Critère 2 : balle en zone dangereuse (côté gauche ou droit)
+            if not _is_active and ball_tracker is not None:
+                try:
+                    _bpos = ball_tracker.last_valid_ball  # (x, y) ou None
+                    if _bpos is not None:
+                        _bx = _bpos[0] / w  # normaliser
+                        if _bx <= DANGER_X_LO or _bx >= DANGER_X_HI:
+                            _is_active = True
+                            _last_active_frame = frame_id
+                except Exception:
+                    pass
+            # Critère 3 : frame récente après dernière activité
+            if not _is_active and (frame_id - _last_active_frame) < ACTIVE_WINDOW_FRAMES:
+                _is_active = True
+            _current_skip = SKIP_ACTIVE if _is_active else SKIP_CREUSE
+
+        if frame_id % _current_skip == (_current_skip - 1):
             frame_id += 1
             continue
 
