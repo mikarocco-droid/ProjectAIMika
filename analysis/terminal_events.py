@@ -1,20 +1,20 @@
 """
 terminal_events.py — Détecteur d'événements terminaux multi-sport
 
-Chaque sport définit ses "fins naturelles d'action dangereuse".
-Le pipeline est identique pour tous les sports — seuls les détecteurs changent.
+Détecte les fins naturelles d'actions dangereuses.
+Logique uniquement positionnelle — pas besoin de vitesse.
 
-FOOTBALL   : save, ball_caught, clearance, corner, goalkick
+FOOTBALL   : goalkeeper_save, ball_caught, corner_or_goalkick, clearance
 BASKETBALL : 3pt_made, 2pt_made, block, defensive_rebound
 HANDBALL   : goal, goalkeeper_save, 7m_throw, fast_break
-HOCKEY     : save, powerplay_goal, penalty_shot
+HOCKEY     : goalkeeper_save, powerplay_goal, penalty_shot, icing
 RUGBY      : try, conversion, penalty_kick, tackle_in_22
 
 Usage :
     from analysis.terminal_events import detect_terminal_events, build_candidate_windows
 
     terminal = detect_terminal_events(frames_data, fps, frame_w, frame_h, goal_box, sport="football")
-    windows  = build_candidate_windows(terminal, rewind_sec=15)
+    windows  = build_candidate_windows(terminal, frames_data=frames_data, fps=fps)
 """
 
 from __future__ import annotations
@@ -26,370 +26,336 @@ from typing import List, Dict, Any, Optional
 # ─────────────────────────────────────────────────────────────
 
 TERMINAL_EVENTS_BY_SPORT = {
-    "football": [
-        "goalkeeper_save",      # ballon rapide → s'arrête près du gardien
-        "ball_caught",          # gardien capte le ballon
-        "clearance",            # dégagement d'urgence depuis la surface
-        "corner_or_goalkick",   # ballon sort par la ligne de but
-    ],
-    "basketball": [
-        "3pt_made",             # tir à 3 points marqué
-        "2pt_made",             # beau tir à 2 points
-        "block",                # contre
-        "defensive_rebound",    # rebond défensif (fin d'attaque)
-    ],
-    "handball": [
-        "goal",                 # but marqué
-        "goalkeeper_save",      # arrêt du gardien
-        "7m_throw",             # jet de 7m
-        "fast_break",           # contre-attaque rapide
-    ],
-    "hockey": [
-        "goalkeeper_save",      # arrêt du gardien
-        "powerplay_goal",       # but en supériorité numérique
-        "penalty_shot",         # tir de pénalité
-        "icing",                # dégagement interdit
-    ],
-    "rugby": [
-        "try",                  # essai
-        "conversion",           # transformation
-        "penalty_kick",         # coup de pied de pénalité
-        "tackle_in_22",         # plaquage dans les 22m
-    ],
-    "tennis": [
-        "ace",                  # ace
-        "double_fault",         # double faute
-        "winner",               # coup gagnant
-        "net_point",            # point au filet
-    ],
-    "volleyball": [
-        "spike_point",          # smash gagnant
-        "block_point",          # contre gagnant
-        "service_ace",          # ace au service
-        "dig_save",             # réception difficile
-    ],
+    "football":   ["goalkeeper_save", "ball_caught", "corner_or_goalkick", "clearance"],
+    "basketball": ["3pt_made", "2pt_made", "block", "defensive_rebound"],
+    "handball":   ["goal", "goalkeeper_save", "7m_throw", "fast_break"],
+    "hockey":     ["goalkeeper_save", "powerplay_goal", "penalty_shot", "icing"],
+    "rugby":      ["try", "conversion", "penalty_kick", "tackle_in_22"],
 }
 
 
 # ─────────────────────────────────────────────────────────────
-# Paramètres globaux
+# Paramètres
 # ─────────────────────────────────────────────────────────────
 
-GOAL_ZONE_PCT      = 0.10
-BOX_ZONE_PCT       = 0.20
-PLAY_Y_MIN_PCT     = 0.35
-PLAY_Y_MAX_PCT     = 0.95
-SPEED_FAST         = 120.0
-SPEED_CLEARANCE    = 140.0
-GK_BALL_DIST_MAX   = 80
-GK_POSSESSION_SEC  = 0.8
-COOLDOWN_SEC       = 8.0
-REWIND_SEC         = 15.0
-WINDOW_END_SEC     = 2.0
+GOAL_ZONE_PCT    = 0.10   # 10% depuis chaque bord latéral = zone but
+BOX_ZONE_PCT     = 0.22   # 22% = surface de réparation approximative
+PLAY_Y_MIN_PCT   = 0.30   # ignorer le haut (score, ciel)
+PLAY_Y_MAX_PCT   = 0.97
+
+GK_BALL_DIST_MAX = 100    # px — gardien considéré "sur le ballon"
+GK_POSSESS_FRAMES = 3     # nb frames consécutives gardien+ballon immobile
+
+MISSING_FRAMES_CORNER = 3  # nb frames sans ballon pour déclencher corner/6m
+CLEARANCE_ZONE_IN  = 0.25  # ballon vient de la zone < 25% du bord
+CLEARANCE_ZONE_OUT = 0.40  # ballon va vers le centre > 40%
+
+COOLDOWN_SEC     = 8.0
+REWIND_SEC       = 15.0
+WINDOW_END_SEC   = 2.0
 
 
 # ─────────────────────────────────────────────────────────────
-# Helpers communs
+# Helpers positionnels
 # ─────────────────────────────────────────────────────────────
 
-def _ball_pos(fd):
+def _ball_center(fd: Dict):
+    """Retourne (cx, cy) en pixels ou None."""
     ball = fd.get("ball") or {}
-    bx = ball.get("x") or ball.get("cx")
-    by = ball.get("y") or ball.get("cy")
-    w  = fd.get("frame_w") or 1920
-    h  = fd.get("frame_h") or 1080
-    if bx is None or by is None:
+    c = ball.get("center")
+    if c and len(c) >= 2:
+        return float(c[0]), float(c[1])
+    bbox = ball.get("bbox")
+    if bbox and len(bbox) == 4:
+        return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+    return None
+
+
+def _ball_norm(fd: Dict):
+    """Retourne (bx_norm, by_norm) en [0-1] ou None."""
+    c = _ball_center(fd)
+    if c is None:
         return None
-    return (float(bx) / w, float(by) / h)
+    w = fd.get("frame_w") or 1920
+    h = fd.get("frame_h") or 1080
+    return c[0] / w, c[1] / h
 
-def _ball_speed(fd, frame_w=1920):
-    return float((fd.get("ball") or {}).get("speed") or 0)
 
-def _frame_time(fd, fps):
+def _frame_t(fd: Dict, fps: float) -> float:
     return fd.get("frame", 0) / max(fps, 1)
 
-def _is_in_goal_zone(bx_norm):
-    return bx_norm < GOAL_ZONE_PCT or bx_norm > (1 - GOAL_ZONE_PCT)
 
-def _is_in_box_zone(bx_norm):
-    return bx_norm < BOX_ZONE_PCT or bx_norm > (1 - BOX_ZONE_PCT)
+def _in_goal_zone(bx_n: float) -> bool:
+    return bx_n < GOAL_ZONE_PCT or bx_n > (1 - GOAL_ZONE_PCT)
 
-def _is_valid_y(by_norm):
-    return PLAY_Y_MIN_PCT <= by_norm <= PLAY_Y_MAX_PCT
 
-def _find_goalkeeper(players, frame_w, frame_h):
-    gks = [p for p in players if p.get("role") == "goalkeeper"
-           or p.get("label", "").lower() in ("gk", "goalkeeper")]
-    if gks:
-        return gks[0]
-    best, best_dist = None, float("inf")
+def _in_box_zone(bx_n: float) -> bool:
+    return bx_n < BOX_ZONE_PCT or bx_n > (1 - BOX_ZONE_PCT)
+
+
+def _valid_y(by_n: float) -> bool:
+    return PLAY_Y_MIN_PCT <= by_n <= PLAY_Y_MAX_PCT
+
+
+def _gk_center(fd: Dict):
+    """Trouve le gardien = joueur le plus proche d'un bord latéral."""
+    players = fd.get("players") or []
+    w = fd.get("frame_w") or 1920
+
+    # Priorité : joueur avec role=goalkeeper
     for p in players:
-        px = float(p.get("x", p.get("cx", frame_w / 2)))
-        dist = min(px, frame_w - px)
-        if dist < best_dist:
-            best_dist = dist
-            best = p
-    return best if best_dist < frame_w * 0.12 else None
+        if p.get("role") == "goalkeeper" or p.get("label", "").lower() in ("gk", "goalkeeper"):
+            bbox = p.get("bbox") or []
+            if len(bbox) == 4:
+                return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
 
-def _dist_player_ball(player, ball, frame_w, frame_h):
-    px = float(player.get("x", player.get("cx", 0)))
-    py = float(player.get("y", player.get("cy", 0)))
-    bx = float(ball.get("x", ball.get("cx", -999)))
-    by = float(ball.get("y", ball.get("cy", -999)))
-    return ((px - bx) ** 2 + (py - by) ** 2) ** 0.5
+    # Fallback : joueur le plus près d'un bord latéral
+    best, best_d = None, float("inf")
+    for p in players:
+        bbox = p.get("bbox") or []
+        if len(bbox) < 4:
+            continue
+        px = (bbox[0] + bbox[2]) / 2.0
+        d  = min(px, w - px)
+        if d < best_d:
+            best_d = d
+            best   = ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0)
 
-def _cooldown_ok(last_t, event_type, t):
-    return t - last_t.get(event_type, -999) > COOLDOWN_SEC
+    return best if best_d < w * 0.12 else None
+
+
+def _dist(p1, p2) -> float:
+    if p1 is None or p2 is None:
+        return float("inf")
+    return ((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2) ** 0.5
+
+
+def _cooldown_ok(last_t: Dict, etype: str, t: float) -> bool:
+    return t - last_t.get(etype, -999) > COOLDOWN_SEC
 
 
 # ─────────────────────────────────────────────────────────────
 # Détecteurs FOOTBALL
 # ─────────────────────────────────────────────────────────────
 
-def _detect_goalkeeper_save(frames, fps, last_t):
+def _detect_gk_possession(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict]:
+    """
+    Gardien + corner ou goalkeeper_save :
+    Ballon dans la surface ET gardien proche du ballon pendant GK_POSSESS_FRAMES frames.
+    Signal purement positionnel — pas de vitesse.
+    """
     events = []
-    window = 8
-    for i in range(window, len(frames)):
-        fd  = frames[i]
-        t   = _frame_time(fd, fps)
-        w   = fd.get("frame_w") or 1920
-        h   = fd.get("frame_h") or 1080
-        ball = fd.get("ball") or {}
-        spd  = _ball_speed(fd, w)
-        pos  = _ball_pos(fd)
-        if pos is None:
-            continue
-        bx_n, by_n = pos
-        if not _is_in_box_zone(bx_n) or not _is_valid_y(by_n):
-            continue
-        if spd > 30:
-            continue
-        speeds_before = [_ball_speed(frames[j], w) for j in range(i - window, i)]
-        max_spd_before = max(speeds_before) if speeds_before else 0
-        if max_spd_before < SPEED_FAST:
-            continue
-        players = fd.get("players") or []
-        gk = _find_goalkeeper(players, w, h)
-        if gk is None:
-            continue
-        dist = _dist_player_ball(gk, ball, w, h)
-        if dist > GK_BALL_DIST_MAX * 1.5:
-            continue
-        if not _cooldown_ok(last_t, "goalkeeper_save", t):
-            continue
-        last_t["goalkeeper_save"] = t
-        conf = min(0.95, 0.60 + (max_spd_before / 400))
-        mm = int(t//60); ss = int(t%60)
-        print(f"  [TERMINAL] goalkeeper_save à {mm:02d}:{ss:02d} | spd_before={max_spd_before:.0f}px spd_after={spd:.0f}px gk_dist={dist:.0f}px conf={conf:.2f}")
-        events.append({
-            "type":       "goalkeeper_save",
-            "time":       t,
-            "confidence": conf,
-        })
-    return events
+    streak = 0
+    streak_start_t = None
 
-
-def _detect_ball_caught(frames, fps, last_t):
-    events = []
-    min_frames = max(1, int(GK_POSSESSION_SEC * fps / 4))
-    possession_start = None
-    possession_count = 0
     for fd in frames:
-        t    = _frame_time(fd, fps)
-        w    = fd.get("frame_w") or 1920
-        h    = fd.get("frame_h") or 1080
-        ball = fd.get("ball") or {}
-        spd  = _ball_speed(fd, w)
-        pos  = _ball_pos(fd)
-        if pos is None or spd > 25:
-            possession_count = 0; possession_start = None; continue
+        t   = _frame_t(fd, fps)
+        pos = _ball_norm(fd)
+        bc  = _ball_center(fd)
+
+        if pos is None or bc is None:
+            streak = 0
+            streak_start_t = None
+            continue
+
         bx_n, by_n = pos
-        if not _is_in_box_zone(bx_n) or not _is_valid_y(by_n):
-            possession_count = 0; possession_start = None; continue
-        players = fd.get("players") or []
-        gk = _find_goalkeeper(players, w, h)
-        if gk is None:
-            possession_count = 0; possession_start = None; continue
-        dist = _dist_player_ball(gk, ball, w, h)
-        if dist > GK_BALL_DIST_MAX:
-            possession_count = 0; possession_start = None; continue
-        if possession_start is None:
-            possession_start = t
-        possession_count += 1
-        if possession_count >= min_frames:
-            if _cooldown_ok(last_t, "ball_caught", t):
-                last_t["ball_caught"] = t
-                mm = int(possession_start//60); ss = int(possession_start%60)
-                print(f"  [TERMINAL] ball_caught à {mm:02d}:{ss:02d} | durée={t-possession_start:.1f}s conf=0.80")
-                events.append({"type": "ball_caught", "time": possession_start, "confidence": 0.80})
-            possession_count = 0; possession_start = None
+        if not _in_box_zone(bx_n) or not _valid_y(by_n):
+            streak = 0
+            streak_start_t = None
+            continue
+
+        gk = _gk_center(fd)
+        if gk is None or _dist(gk, bc) > GK_BALL_DIST_MAX:
+            streak = 0
+            streak_start_t = None
+            continue
+
+        # Gardien sur le ballon dans la surface
+        if streak == 0:
+            streak_start_t = t
+        streak += 1
+
+        if streak >= GK_POSSESS_FRAMES:
+            if _cooldown_ok(last_t, "goalkeeper_save", streak_start_t):
+                last_t["goalkeeper_save"] = streak_start_t
+                mm = int(streak_start_t // 60); ss = int(streak_start_t % 60)
+                print(f"  [TERMINAL] goalkeeper_save à {mm:02d}:{ss:02d} "
+                      f"| gk_dist={_dist(gk,bc):.0f}px streak={streak}f conf=0.82")
+                events.append({
+                    "type":       "goalkeeper_save",
+                    "time":       streak_start_t,
+                    "confidence": 0.82,
+                })
+            streak = 0
+            streak_start_t = None
+
     return events
 
 
-def _detect_clearance(frames, fps, last_t):
+def _detect_corner_goalkick(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict]:
+    """
+    Ballon disparaît (None) 3+ frames consécutives alors qu'il était
+    dans la zone but (bx < 10% ou bx > 90%).
+    → Corner ou six mètres.
+    """
     events = []
-    for i in range(1, len(frames)):
-        fd   = frames[i]
-        fd_p = frames[i - 1]
-        t    = _frame_time(fd, fps)
-        w    = fd.get("frame_w") or 1920
-        spd  = _ball_speed(fd, w)
-        pos  = _ball_pos(fd)
-        pos_p = _ball_pos(fd_p)
-        if pos is None or pos_p is None or spd < SPEED_CLEARANCE:
-            continue
-        bx_n, by_n   = pos
-        bx_p_n, _    = pos_p
-        if not _is_valid_y(by_n) or not _is_in_box_zone(bx_p_n):
-            continue
-        if abs(bx_n - 0.5) >= abs(bx_p_n - 0.5):
-            continue
-        if not _cooldown_ok(last_t, "clearance", t):
-            continue
-        last_t["clearance"] = t
-        conf = min(0.90, 0.55 + spd / 600)
-        mm = int(t//60); ss = int(t%60)
-        print(f"  [TERMINAL] clearance à {mm:02d}:{ss:02d} | spd={spd:.0f}px conf={conf:.2f}")
-        events.append({"type": "clearance", "time": t, "confidence": conf})
-    return events
+    missing_count  = 0
+    last_seen_pos  = None
+    last_seen_t    = None
 
-
-def _detect_corner_or_goalkick(frames, fps, last_t):
-    events = []
-    consecutive_missing = 0
-    last_seen_pos = None
-    last_seen_t   = None
     for fd in frames:
-        t   = _frame_time(fd, fps)
-        pos = _ball_pos(fd)
+        t   = _frame_t(fd, fps)
+        pos = _ball_norm(fd)
+
         if pos is not None:
             bx_n, by_n = pos
-            if _is_valid_y(by_n):
+            if _valid_y(by_n):
                 last_seen_pos = pos
                 last_seen_t   = t
-                consecutive_missing = 0
+                missing_count = 0
             else:
-                consecutive_missing += 1
+                missing_count += 1
         else:
-            consecutive_missing += 1
-        if consecutive_missing >= 3 and last_seen_pos is not None:
+            missing_count += 1
+
+        if missing_count >= MISSING_FRAMES_CORNER and last_seen_pos is not None:
             bx_last, by_last = last_seen_pos
-            if _is_in_goal_zone(bx_last) and _is_valid_y(by_last):
+            if _in_goal_zone(bx_last) and _valid_y(by_last):
                 if _cooldown_ok(last_t, "corner_or_goalkick", last_seen_t):
                     last_t["corner_or_goalkick"] = last_seen_t
-                    mm = int(last_seen_t//60); ss = int(last_seen_t%60)
-                    print(f"  [TERMINAL] corner_or_goalkick à {mm:02d}:{ss:02d} | bx_last={bx_last:.2f} conf=0.70")
-                    events.append({"type": "corner_or_goalkick", "time": last_seen_t,
-                                   "confidence": 0.70})
+                    mm = int(last_seen_t // 60); ss = int(last_seen_t % 60)
+                    print(f"  [TERMINAL] corner_or_goalkick à {mm:02d}:{ss:02d} "
+                          f"| bx_last={bx_last:.2f} missing={missing_count}f conf=0.72")
+                    events.append({
+                        "type":       "corner_or_goalkick",
+                        "time":       last_seen_t,
+                        "confidence": 0.72,
+                    })
                 last_seen_pos = None
-                consecutive_missing = 0
+                missing_count = 0
+
     return events
 
 
+def _detect_clearance(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict]:
+    """
+    Dégagement : ballon passe de la zone surface (<25% bord)
+    vers le centre (>40%) en 1-2 frames.
+    Signal positionnel pur — pas de vitesse nécessaire.
+    """
+    events = []
+    prev_pos = None
+
+    for fd in frames:
+        t   = _frame_t(fd, fps)
+        pos = _ball_norm(fd)
+
+        if pos is None:
+            prev_pos = None
+            continue
+
+        bx_n, by_n = pos
+
+        if prev_pos is not None:
+            bx_prev, _ = prev_pos
+            w = fd.get("frame_w") or 1920
+
+            # Vient d'une zone proche du but (surface)
+            in_danger_before = bx_prev < CLEARANCE_ZONE_IN or bx_prev > (1 - CLEARANCE_ZONE_IN)
+            # Va vers le centre
+            going_center = (CLEARANCE_ZONE_OUT < bx_n < (1 - CLEARANCE_ZONE_OUT))
+
+            if in_danger_before and going_center and _valid_y(by_n):
+                if _cooldown_ok(last_t, "clearance", t):
+                    last_t["clearance"] = t
+                    mm = int(t // 60); ss = int(t % 60)
+                    print(f"  [TERMINAL] clearance à {mm:02d}:{ss:02d} "
+                          f"| bx {bx_prev:.2f}→{bx_n:.2f} conf=0.68")
+                    events.append({
+                        "type":       "clearance",
+                        "time":       t,
+                        "confidence": 0.68,
+                    })
+
+        prev_pos = pos
+
+    return events
+
+
+
+def _detect_goal(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict]:
+    """
+    But : ballon dans la zone but (bx < 10% ou bx > 90%)
+    ET dans la zone filet (hauteur entre 35% et 80% de l'image)
+    pendant 2+ frames consécutives.
+    Signal positionnel pur.
+    """
+    events = []
+    streak = 0
+    streak_start_t = None
+
+    # Zone filet : entre 35% et 80% de hauteur (sous la barre, dans les montants)
+    GOAL_Y_MIN = 0.35
+    GOAL_Y_MAX = 0.80
+
+    for fd in frames:
+        t   = _frame_t(fd, fps)
+        pos = _ball_norm(fd)
+
+        if pos is None:
+            streak = 0
+            streak_start_t = None
+            continue
+
+        bx_n, by_n = pos
+
+        # Ballon dans la zone but ET dans la zone filet
+        in_goal = _in_goal_zone(bx_n) and GOAL_Y_MIN <= by_n <= GOAL_Y_MAX
+
+        if in_goal:
+            if streak == 0:
+                streak_start_t = t
+            streak += 1
+        else:
+            streak = 0
+            streak_start_t = None
+            continue
+
+        if streak >= 2:
+            if _cooldown_ok(last_t, "goal", streak_start_t):
+                last_t["goal"] = streak_start_t
+                mm = int(streak_start_t // 60); ss = int(streak_start_t % 60)
+                print(f"  [TERMINAL] goal à {mm:02d}:{ss:02d} "
+                      f"| bx={bx_n:.2f} by={by_n:.2f} streak={streak}f conf=0.88")
+                events.append({
+                    "type":       "goal",
+                    "time":       streak_start_t,
+                    "confidence": 0.88,
+                })
+            streak = 0
+            streak_start_t = None
+
+    return events
+
 # ─────────────────────────────────────────────────────────────
-# Détecteurs BASKETBALL (stubs — à implémenter)
+# Stubs autres sports (à implémenter)
 # ─────────────────────────────────────────────────────────────
 
-def _detect_basketball_3pt(frames, fps, last_t):
-    """
-    TODO : détecter tir à 3 points marqué.
-    Signal : joueur derrière la ligne des 3pts + ballon disparaît dans zone panier
-             + regroupement joueurs autour du cercle.
-    """
-    return []
-
-def _detect_basketball_2pt(frames, fps, last_t):
-    """
-    TODO : détecter beau tir à 2 points.
-    Signal : ballon en cloche vers panier + disparition + rebond
-    """
-    return []
-
-def _detect_basketball_block(frames, fps, last_t):
-    """
-    TODO : détecter contre.
-    Signal : ballon rapide vers panier → déviation violente vers l'extérieur
-    """
-    return []
-
-def _detect_basketball_defensive_rebound(frames, fps, last_t):
-    """
-    TODO : détecter rebond défensif.
-    Signal : ballon rebondit haut + récupéré par défense sous le panier
-    """
+def _stub(*args, **kwargs):
     return []
 
 
 # ─────────────────────────────────────────────────────────────
-# Détecteurs HANDBALL (stubs — à implémenter)
+# Registre des détecteurs
 # ─────────────────────────────────────────────────────────────
 
-def _detect_handball_goal(frames, fps, last_t):
-    """
-    TODO : ballon franchit la ligne de but + gardien ne bloque pas
-    """
-    return []
-
-def _detect_handball_goalkeeper_save(frames, fps, last_t):
-    """
-    TODO : tir rapide + arrêt dans les 6m
-    """
-    return []
-
-def _detect_handball_7m(frames, fps, last_t):
-    """
-    TODO : joueur isolé face au gardien depuis les 7m
-    """
-    return []
-
-def _detect_handball_fast_break(frames, fps, last_t):
-    """
-    TODO : ballon progresse rapidement vers le but en 1-2 passes
-    """
-    return []
-
-
-# ─────────────────────────────────────────────────────────────
-# Détecteurs HOCKEY (stubs — à implémenter)
-# ─────────────────────────────────────────────────────────────
-
-def _detect_hockey_save(frames, fps, last_t):
-    """TODO"""
-    return []
-
-def _detect_hockey_powerplay_goal(frames, fps, last_t):
-    """TODO"""
-    return []
-
-def _detect_hockey_penalty_shot(frames, fps, last_t):
-    """TODO"""
-    return []
-
-def _detect_hockey_icing(frames, fps, last_t):
-    """TODO"""
-    return []
-
-
-# ─────────────────────────────────────────────────────────────
-# Détecteurs RUGBY (stubs — à implémenter)
-# ─────────────────────────────────────────────────────────────
-
-def _detect_rugby_try(frames, fps, last_t):
-    """TODO : ballon aplatit derrière la ligne d'en-but"""
-    return []
-
-def _detect_rugby_conversion(frames, fps, last_t):
-    """TODO : tir au but après essai"""
-    return []
-
-def _detect_rugby_penalty_kick(frames, fps, last_t):
-    """TODO : coup de pied de pénalité"""
-    return []
-
-def _detect_rugby_tackle_in_22(frames, fps, last_t):
-    """TODO : plaquage dans les 22m adverses"""
-    return []
-
+_DETECTORS = {
+    "football":   [_detect_goal, _detect_gk_possession, _detect_corner_goalkick, _detect_clearance],
+    "basketball": [_stub],
+    "handball":   [_stub],
+    "hockey":     [_stub],
+    "rugby":      [_stub],
+}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -404,227 +370,134 @@ def detect_action_start(
     min_rewind_sec: float = 5.0,
 ) -> float:
     """
-    Remonte dans frames_data depuis event_time pour trouver
-    le timestamp exact du début de l'action.
+    Remonte depuis event_time pour trouver le timestamp exact du début d'action.
+    Utilise uniquement les positions du ballon — pas de vitesse.
 
-    Retourne un TIMESTAMP (pas un offset) — le moment précis
-    où l'action a commencé, quelle que soit la durée.
-
-    Signaux détectés par ordre de priorité :
-      1. Ballon absent 3+ frames  → remise en jeu = début naturel
-      2. Calme prolongé >1.5s     → possession placée avant action
-      3. Transition équipe        → début de contre-attaque
-      4. Fallback                 → event_time - 15s
+    Signaux par priorité :
+      1. Ballon absent 3+ frames = remise en jeu
+      2. Calme positionnel : ballon ne bouge plus pendant 1.5s
+      3. Changement d'équipe en possession
+      4. Fallback : event_time - 15s
     """
     if not frames_data or fps <= 0:
         return max(0, event_time - 15.0)
 
-    # Construire la fenêtre de recherche (frames avant event_time)
-    search_frames = []
-    for fd in frames_data:
-        t = _frame_time(fd, fps)
-        if event_time - max_rewind_sec <= t < event_time:
-            search_frames.append(fd)
-
-    if not search_frames:
+    search = [fd for fd in frames_data
+              if event_time - max_rewind_sec <= _frame_t(fd, fps) < event_time]
+    if not search:
         return max(0, event_time - 15.0)
 
-    frame_w = search_frames[0].get("frame_w") or 1920
+    search_rev = list(reversed(search))
 
-    # Inverser : on remonte du plus récent vers le plus ancien
-    search_reversed = list(reversed(search_frames))
-
-    # ── Signal 1 : ballon absent 3+ frames = remise en jeu ──
-    # Le début de l'action = la frame JUSTE APRÈS la remise en jeu
+    # Signal 1 : ballon absent = remise en jeu
     consecutive_missing = 0
-    last_present_t = event_time
-    for fd in search_reversed:
-        t   = _frame_time(fd, fps)
-        pos = _ball_pos(fd)
-        if pos is None:
+    for fd in search_rev:
+        t = _frame_t(fd, fps)
+        if _ball_norm(fd) is None:
             consecutive_missing += 1
         else:
             if consecutive_missing >= 3:
-                # t = dernier instant où le ballon était absent
-                # → action commence juste après = t + 0.5s
                 action_start = t + 0.5
                 action_start = max(event_time - max_rewind_sec,
                                    min(action_start, event_time - min_rewind_sec))
                 mm = int(action_start//60); ss = int(action_start%60)
-                print(f"    [ACTION_START] signal=remise_en_jeu → {mm:02d}:{ss:02d} (ballon absent {consecutive_missing} frames)")
+                print(f"    [ACTION_START] remise_en_jeu → {mm:02d}:{ss:02d} "
+                      f"(absent {consecutive_missing}f)")
                 return max(0, action_start)
             consecutive_missing = 0
-            last_present_t = t
 
-    # ── Signal 2 : calme prolongé >1.5s = fin de phase précédente ──
-    # Remonter jusqu'au dernier moment calme continu
-    # Le début de l'action = quand le calme se termine (vitesse repart)
-    calm_start_t  = None
-    calm_duration = 0.0
-    prev_t        = None
+    # Signal 2 : calme positionnel (ballon quasi immobile 1.5s)
+    calm_positions = []
+    calm_start_t   = None
+    prev_c         = None
 
-    for fd in search_reversed:
-        t   = _frame_time(fd, fps)
-        spd = _ball_speed(fd, frame_w)
-        dt  = abs(t - prev_t) if prev_t is not None else (1.0 / fps)
+    for fd in search_rev:
+        t  = _frame_t(fd, fps)
+        c  = _ball_center(fd)
+        w  = fd.get("frame_w") or 1920
 
-        if spd < 25:
-            # Ballon lent : on accumule le calme
-            if calm_start_t is None:
-                calm_start_t = t
-            calm_duration += dt
-        else:
-            # Ballon rapide : fin du calme
-            if calm_duration >= 1.5 and calm_start_t is not None:
-                # L'action a commencé quand le calme s'est terminé
-                # = calm_start_t (en remontant) = fin du calme en temps réel
-                action_start = calm_start_t
-                action_start = max(event_time - max_rewind_sec,
-                                   min(action_start, event_time - min_rewind_sec))
-                mm = int(action_start//60); ss = int(action_start%60)
-                print(f"    [ACTION_START] signal=calme_prolongé → {mm:02d}:{ss:02d} (calme={calm_duration:.1f}s)")
-                return max(0, action_start)
-            calm_start_t  = None
-            calm_duration = 0.0
-
-        prev_t = t
-
-    # ── Signal 3 : changement d'équipe en possession ──
-    prev_team = None
-    for fd in search_reversed:
-        t       = _frame_time(fd, fps)
-        players = fd.get("players") or []
-        # Trouver l'équipe qui a le ballon (joueur le plus proche)
-        ball    = fd.get("ball") or {}
-        bx      = ball.get("x") or ball.get("cx")
-        by      = ball.get("y") or ball.get("cy")
-        if bx is None:
+        if c is None:
+            calm_positions = []
+            calm_start_t   = None
+            prev_c         = None
             continue
-        closest_team = None
-        closest_dist = float("inf")
+
+        if prev_c is not None:
+            move = _dist(c, prev_c) / w  # mouvement normalisé
+            if move < 0.015:             # moins de 1.5% de la largeur
+                if calm_start_t is None:
+                    calm_start_t = t
+                calm_positions.append(t)
+            else:
+                if calm_start_t is not None and (t - calm_start_t) >= 1.5:
+                    action_start = max(event_time - max_rewind_sec,
+                                       min(calm_start_t, event_time - min_rewind_sec))
+                    mm = int(action_start//60); ss = int(action_start%60)
+                    print(f"    [ACTION_START] calme_positionnel → {mm:02d}:{ss:02d} "
+                          f"({t - calm_start_t:.1f}s)")
+                    return max(0, action_start)
+                calm_positions = []
+                calm_start_t   = None
+
+        prev_c = c
+
+    # Signal 3 : changement d'équipe
+    prev_team = None
+    for fd in search_rev:
+        t = _frame_t(fd, fps)
+        players = fd.get("players") or []
+        bc = _ball_center(fd)
+        if bc is None:
+            continue
+        closest_team, closest_d = None, float("inf")
         for p in players:
-            px   = float(p.get("x", p.get("cx", 0)))
-            py   = float(p.get("y", p.get("cy", 0)))
-            dist = ((px - float(bx))**2 + (py - float(by))**2)**0.5
-            if dist < closest_dist:
-                closest_dist = dist
+            bbox = p.get("bbox") or []
+            if len(bbox) < 4:
+                continue
+            pc = ((bbox[0]+bbox[2])/2, (bbox[1]+bbox[3])/2)
+            d  = _dist(pc, bc)
+            if d < closest_d:
+                closest_d    = d
                 closest_team = p.get("team")
-        if closest_team is not None and closest_dist < 100:
+        if closest_team is not None and closest_d < 80:
             if prev_team is not None and closest_team != prev_team:
-                # Changement d'équipe = début de contre-attaque
-                action_start = t
                 action_start = max(event_time - max_rewind_sec,
-                                   min(action_start, event_time - min_rewind_sec))
+                                   min(t, event_time - min_rewind_sec))
                 mm = int(action_start//60); ss = int(action_start%60)
-                print(f"    [ACTION_START] signal=changement_équipe → {mm:02d}:{ss:02d} ({prev_team}→{closest_team})")
+                print(f"    [ACTION_START] changement_equipe → {mm:02d}:{ss:02d} "
+                      f"({prev_team}→{closest_team})")
                 return max(0, action_start)
             prev_team = closest_team
 
-    # ── Fallback ──
+    # Fallback
     fallback_t = max(0, event_time - 15.0)
-    mm = int(fallback_t // 60); ss = int(fallback_t % 60)
-    print(f"    [ACTION_START] fallback → {mm:02d}:{ss:02d} (aucun signal trouvé)")
+    mm = int(fallback_t//60); ss = int(fallback_t%60)
+    print(f"    [ACTION_START] fallback → {mm:02d}:{ss:02d}")
     return fallback_t
 
 
-def detect_action_start_for_event(
-    frames_data: List[Dict],
-    terminal_event: Dict,
-    fps: float,
-) -> float:
-    """
-    Wrapper qui adapte max_rewind selon le type d'événement terminal.
-
-    Logique métier par type :
-      - goalkeeper_save   : action courte (tir direct) → max 12s
-      - ball_caught       : action peut être longue    → max 20s
-      - clearance         : dégagement = fin d'action  → max 18s
-      - corner_or_goalkick: peut venir de loin         → max 22s
-      - basketball 3pt    : action rapide              → max 8s
-      - handball fast_break: très rapide               → max 6s
-    """
-    event_type = terminal_event.get("type", "")
-    event_time = terminal_event.get("time", 0)
-
-    # Limites par type d'événement
-    REWIND_LIMITS = {
-        # Football
+def detect_action_start_for_event(frames_data, terminal_event, fps) -> float:
+    """Wrapper avec limites par type d'événement."""
+    LIMITS = {
+        "goal":              (5.0, 20.0),
         "goalkeeper_save":   (5.0, 12.0),
         "ball_caught":       (5.0, 20.0),
         "clearance":         (5.0, 18.0),
         "corner_or_goalkick":(5.0, 22.0),
-        # Basketball
         "3pt_made":          (3.0, 8.0),
         "2pt_made":          (3.0, 8.0),
         "block":             (2.0, 6.0),
-        "defensive_rebound": (3.0, 8.0),
-        # Handball
-        "goal":              (4.0, 12.0),
-        "goalkeeper_save":   (4.0, 10.0),
-        "7m_throw":          (3.0, 8.0),
         "fast_break":        (3.0, 6.0),
-        # Hockey
-        "powerplay_goal":    (5.0, 20.0),
-        "penalty_shot":      (3.0, 8.0),
-        "icing":             (2.0, 5.0),
-        # Rugby
         "try":               (5.0, 25.0),
-        "conversion":        (3.0, 8.0),
-        "penalty_kick":      (3.0, 8.0),
-        "tackle_in_22":      (5.0, 15.0),
     }
+    etype = terminal_event.get("type", "")
+    et    = terminal_event.get("time", 0)
+    min_r, max_r = LIMITS.get(etype, (5.0, 15.0))
 
-    min_r, max_r = REWIND_LIMITS.get(event_type, (5.0, 15.0))
-    ev_mm = int(event_time//60); ev_ss = int(event_time%60)
-    print(f"  [ACTION_START] cherche début de '{event_type}' à {ev_mm:02d}:{ev_ss:02d} | fenêtre [{min_r:.0f}s–{max_r:.0f}s]")
+    mm = int(et//60); ss = int(et%60)
+    print(f"  [ACTION_START] '{etype}' à {mm:02d}:{ss:02d} | fenêtre [{min_r:.0f}s–{max_r:.0f}s]")
 
-    # Retourne un timestamp précis (pas un offset)
-    action_start_t = detect_action_start(
-        frames_data    = frames_data,
-        event_time     = event_time,
-        fps            = fps,
-        max_rewind_sec = max_r,
-        min_rewind_sec = min_r,
-    )
-
-    return action_start_t
-
-# ─────────────────────────────────────────────────────────────
-# Registre des fonctions par sport
-# ─────────────────────────────────────────────────────────────
-
-_DETECTORS = {
-    "football": [
-        _detect_goalkeeper_save,
-        _detect_ball_caught,
-        _detect_clearance,
-        _detect_corner_or_goalkick,
-    ],
-    "basketball": [
-        _detect_basketball_3pt,
-        _detect_basketball_2pt,
-        _detect_basketball_block,
-        _detect_basketball_defensive_rebound,
-    ],
-    "handball": [
-        _detect_handball_goal,
-        _detect_handball_goalkeeper_save,
-        _detect_handball_7m,
-        _detect_handball_fast_break,
-    ],
-    "hockey": [
-        _detect_hockey_save,
-        _detect_hockey_powerplay_goal,
-        _detect_hockey_penalty_shot,
-        _detect_hockey_icing,
-    ],
-    "rugby": [
-        _detect_rugby_try,
-        _detect_rugby_conversion,
-        _detect_rugby_penalty_kick,
-        _detect_rugby_tackle_in_22,
-    ],
-}
+    return detect_action_start(frames_data, et, fps, max_r, min_r)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -638,11 +511,8 @@ def detect_terminal_events(
     frame_h  = 1080,
     goal_box = None,
     sport    = "football",
-):
-    """
-    Détecte tous les événements terminaux pour le sport donné.
-    Retourne une liste d'événements triés par temps.
-    """
+) -> List[Dict]:
+    """Détecte tous les événements terminaux pour le sport donné."""
     if not frames_data:
         return []
 
@@ -660,76 +530,66 @@ def detect_terminal_events(
     all_events.sort(key=lambda e: e["time"])
 
     print(f"  [TERMINAL EVENTS] sport={sport} | détectés={len(all_events)}")
-    by_type = {}
+    by_type: Dict[str, int] = {}
     for e in all_events:
         by_type[e["type"]] = by_type.get(e["type"], 0) + 1
-    for t, n in sorted(by_type.items()):
-        print(f"    {t:30} : {n}")
+    for tp, n in sorted(by_type.items()):
+        print(f"    {tp:30} : {n}")
 
     return all_events
 
 
 def build_candidate_windows(
     terminal_events,
-    rewind_sec           = REWIND_SEC,
-    end_sec              = WINDOW_END_SEC,
-    existing_candidates  = None,
-    merge_radius_sec     = 5.0,
-    frames_data          = None,
-    fps                  = 25.0,
-):
+    rewind_sec          = REWIND_SEC,
+    end_sec             = WINDOW_END_SEC,
+    existing_candidates = None,
+    merge_radius_sec    = 5.0,
+    frames_data         = None,
+    fps                 = 25.0,
+) -> List[Dict]:
     """
     Transforme les événements terminaux en fenêtres candidates.
-    Fusionne avec les candidats existants (goal_posthoc) si fournis.
-    Évite les doublons à ±merge_radius_sec.
-
-    Si frames_data + fps fournis : détection dynamique du début d'action.
-    Sinon : rewind fixe = rewind_sec.
+    Rewind dynamique si frames_data fourni, fixe sinon.
     """
     windows = []
 
     for ev in terminal_events:
         t = ev["time"]
-
-        # Détection dynamique du début d'action si données disponibles
         if frames_data is not None:
-            # action_start_t = timestamp précis du début de l'action
-            action_start_t = detect_action_start_for_event(frames_data, ev, fps)
+            action_start = detect_action_start_for_event(frames_data, ev, fps)
         else:
-            action_start_t = max(0, t - rewind_sec)
-
-        actual_rewind = t - action_start_t
+            action_start = max(0, t - rewind_sec)
 
         windows.append({
             "time":          t,
-            "window_start":  action_start_t,
+            "window_start":  action_start,
             "window_end":    t + end_sec,
             "source":        f"terminal_{ev['type']}",
             "confidence":    ev["confidence"],
             "terminal_type": ev["type"],
-            "rewind_sec":    actual_rewind,   # pour les logs : durée réelle remontée
+            "rewind_sec":    t - action_start,
         })
 
     if existing_candidates:
         for cand in existing_candidates:
-            t = cand.get("time", 0)
-            overlap = any(abs(t - w["time"]) < merge_radius_sec for w in windows)
-            if not overlap:
+            ct = cand.get("time", 0)
+            if not any(abs(ct - w["time"]) < merge_radius_sec for w in windows):
                 windows.append({
-                    "time":         t,
-                    "window_start": max(0, t - rewind_sec),
-                    "window_end":   t + end_sec,
+                    "time":         ct,
+                    "window_start": max(0, ct - rewind_sec),
+                    "window_end":   ct + end_sec,
                     "source":       cand.get("source", "posthoc"),
                     "confidence":   cand.get("confidence", 0.5),
+                    "rewind_sec":   rewind_sec,
                 })
 
     windows.sort(key=lambda w: w["time"])
 
     print(f"  [CANDIDATE WINDOWS] total={len(windows)}")
     for w in windows:
-        mm = int(w["time"] // 60)
-        ss = int(w["time"] % 60)
-        rewind = w.get("rewind_sec", REWIND_SEC)
-        print(f"    {mm:02d}:{ss:02d}  {w['source']:35} conf={w['confidence']:.2f}  rewind={rewind:.0f}s")
+        mm = int(w["time"]//60); ss = int(w["time"]%60)
+        print(f"    {mm:02d}:{ss:02d}  {w['source']:35} "
+              f"conf={w['confidence']:.2f}  rewind={w['rewind_sec']:.0f}s")
 
     return windows
