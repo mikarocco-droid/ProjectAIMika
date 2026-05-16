@@ -566,6 +566,33 @@ def run_pipeline(
         except Exception as et:
             print(f"  terminal_events ignoré : {et}")
 
+        # ── Étape 2c : zone_analyzer — analyse dense sur zones terminal_events ──
+        try:
+            from analysis.zone_analyzer import analyze_dense_zones
+            if _terminal_evts:
+                _dense_candidates = analyze_dense_zones(
+                    video_path      = video_path,
+                    terminal_events = _terminal_evts,
+                    fps             = fps,
+                    sport           = sport,
+                )
+                if _dense_candidates:
+                    _existing_times = [
+                        e["time"] for e in events if e.get("type") in ("goal", "score")
+                    ]
+                    for _dc in _dense_candidates:
+                        _too_close = any(
+                            abs(_dc["time"] - _et) < 10.0
+                            for _et in _existing_times
+                        )
+                        if not _too_close:
+                            events.append(_dc)
+                            _existing_times.append(_dc["time"])
+                    events.sort(key=lambda e: e.get("time", 0))
+                    print(f"  zone_analyzer : {len(_dense_candidates)} candidat(s) dense(s) ajouté(s)")
+        except Exception as _ez:
+            print(f"  zone_analyzer ignoré : {_ez}")
+
         # ── Étape 3 : dedup fenêtre courte 3s (doublons immédiats posthoc/events)
         n_before = sum(1 for e in events if e.get("type") in ("goal", "score"))
         events   = deduplicate_goals(events, window=3.0)
