@@ -532,9 +532,13 @@ def run_pipeline(
                             for t in _posthoc_times
                         )
                         if not covered:
+                            # Calculer frame_id depuis time et fps
+                            _t_ev = w["time"]
+                            _fid  = int(_t_ev * fps) if fps > 0 else 0
                             _terminal_goals.append({
                                 "type":       "goal",
-                                "time":       w["time"],
+                                "time":       _t_ev,
+                                "frame":      _fid,
                                 "source":     w["source"],
                                 "conf":       w["confidence"],
                                 "xg":         0.3,
