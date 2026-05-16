@@ -32,9 +32,17 @@ class Tracker:
             print("  Tracker : ByteTrack (buffer=150)")
         else:
             from deep_sort_realtime.deepsort_tracker import DeepSort
-            self.tracker = DeepSort(max_age=90, embedder=None)  # embedder=None → IoU+Kalman pur, pas de MobileNetV2
+            import torch as _torch
+            _has_gpu = _torch.cuda.is_available()
+            self.tracker = DeepSort(
+                max_age      = 90,
+                embedder     = "mobilenet",
+                half         = _has_gpu,   # FP16 seulement si GPU dispo
+                bgr          = True,
+                embedder_gpu = _has_gpu,
+            )
             self.mode    = "deepsort"
-            print("  Tracker : DeepSort IoU (embedder=None — pas de réseau par crop)")
+            print(f"  Tracker : DeepSort (mobilenet {'FP16 GPU' if _has_gpu else 'FP32 CPU'})")
 
         # ── ReID hybride (position + couleur + embedding) ──
         self.reid = PlayerReID(fps=config.FPS)
