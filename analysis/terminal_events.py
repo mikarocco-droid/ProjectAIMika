@@ -369,7 +369,22 @@ def _detect_goal(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict]:
             else:
                 break
 
-        if stuck < STUCK_MIN:
+        # CAS SPÉCIAL : tir rapide → ballon disparaît immédiatement après crossing
+        # Pattern physique : ballon dans le filet = tracking perdu en 1-2 frames
+        # Ex: bx=0.977 puis None → but rapide non détecté par stuck >= 4
+        FAST_SHOT_SPEED = 0.08  # vitesse horizontale normalisée = tir puissant
+        next_frames_none = sum(
+            1 for j in range(i + 1, min(i + 4, len(frames)))
+            if _ball_norm(frames[j]) is None
+        )
+        fast_disappear = (
+            peak_speed >= FAST_SHOT_SPEED
+            and next_frames_none >= 2
+            and stuck <= 2
+        )
+        stuck_min_effective = 2 if fast_disappear else STUCK_MIN
+
+        if stuck < stuck_min_effective:
             i += 1
             continue
 
@@ -384,6 +399,7 @@ def _detect_goal(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict]:
         elif stuck >= 4: score += 1.0
         if rebound: score += 1.5
         if peak_speed > SPEED_MIN * 2: score += 0.5
+        if fast_disappear: score += 2.0  # tir rapide + disparition = signal fort
 
         if score < 4.5:
             i += 1
