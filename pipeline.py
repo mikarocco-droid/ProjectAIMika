@@ -574,6 +574,7 @@ def run_pipeline(
                     video_path      = video_path,
                     terminal_events = _terminal_evts,
                     fps             = fps,
+                    frames_data     = frames_data,   # pass 1 → fenêtres dynamiques
                     sport           = sport,
                 )
                 if _dense_candidates:
