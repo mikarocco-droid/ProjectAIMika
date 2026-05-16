@@ -840,7 +840,7 @@ def run_pipeline(
                         continue
                     _gv_stg = result.get("goal_votes", 1) if result else 0
                     if (result and result.get("is_goal")
-                            and result.get("confidence", 0) >= 0.92
+                            and result.get("confidence", 0) >= 0.80  # abaissé 0.92→0.80 : kickoff visible = signal fort
                             and _gv_stg >= 2):
                         goal_t = result["timestamp"]
                         too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
