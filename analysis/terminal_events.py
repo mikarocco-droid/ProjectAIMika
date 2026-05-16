@@ -285,58 +285,126 @@ def _detect_clearance(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict
 
 def _detect_goal(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict]:
     """
-    But : ballon dans la zone but (bx < 10% ou bx > 90%)
-    ET dans la zone filet (hauteur entre 35% et 80% de l'image)
-    pendant 2+ frames consécutives.
-    Signal positionnel pur.
+    But : détection par franchissement de ligne (crossing) + physique du ballon.
+    Même logique que goal_posthoc mais en coordonnées normalisées :
+
+    1. CROSSING : ballon franchit la ligne de but (bx passe de > seuil à < seuil)
+    2. STUCK    : ballon reste dans zone but 4+ frames après le crossing
+    3. VITESSE  : pic de vitesse > seuil avant impact (tir réel, pas touche lente)
+    4. REBOUND  : décélération brutale après impact (filet absorbe l'énergie)
+
+    Évite les faux positifs touches latérales : une touche =
+    ballon disparaît immédiatement, pas de stuck.
     """
     events = []
-    streak = 0
-    streak_start_t = None
 
-    # Zone filet stricte : < 5% des bords latéraux ET hauteur filet réelle
-    # Sur caméra latérale, le filet est très proche du bord
-    GOAL_X_STRICT = 0.05   # 5% = ~96px sur 1920
-    GOAL_Y_MIN    = 0.45   # pas trop haut (éviter ciel)
-    GOAL_Y_MAX    = 0.85   # pas trop bas (éviter sol)
+    # ── Paramètres (normalisés 0-1) ────────────────────────────────────────
+    GOAL_X_LINE   = 0.05   # ligne de but = 5% depuis chaque bord
+    GOAL_Y_MIN    = 0.45   # hauteur filet min (sous la barre)
+    GOAL_Y_MAX    = 0.85   # hauteur filet max (au-dessus du sol)
+    LINE_MARGIN   = 0.02   # marge anti-bruit pour le crossing
+    STUCK_MIN     = 4      # frames minimum immobiles dans zone but
+    SPEED_MIN     = 0.04   # vitesse normalisée minimum avant crossing (évite touche molle)
+    REBOUND_DROP  = 0.4    # chute de vitesse minimum pour rebond filet
 
-    for fd in frames:
+    # ── Pré-calcul des vitesses normalisées ───────────────────────────────
+    speeds_n = [0.0]
+    for k in range(1, len(frames)):
+        p1 = _ball_norm(frames[k])
+        p0 = _ball_norm(frames[k - 1])
+        if p1 and p0:
+            speeds_n.append(abs(p1[0] - p0[0]))  # vitesse horizontale normalisée
+        else:
+            speeds_n.append(0.0)
+
+    # ── Boucle détection ──────────────────────────────────────────────────
+    i = 10
+    while i < len(frames) - 8:
+        fd  = frames[i]
         t   = _frame_t(fd, fps)
         pos = _ball_norm(fd)
 
         if pos is None:
-            streak = 0
-            streak_start_t = None
+            i += 1
             continue
 
         bx_n, by_n = pos
 
-        # Zone très stricte : vraiment dans le filet
-        in_goal_zone = (bx_n < GOAL_X_STRICT or bx_n > (1 - GOAL_X_STRICT))
-        in_goal = in_goal_zone and GOAL_Y_MIN <= by_n <= GOAL_Y_MAX
-
-        if in_goal:
-            if streak == 0:
-                streak_start_t = t
-            streak += 1
-        else:
-            streak = 0
-            streak_start_t = None
+        # Filtre hauteur : doit être dans la zone filet
+        if not (GOAL_Y_MIN <= by_n <= GOAL_Y_MAX):
+            i += 1
             continue
 
-        if streak >= 2:
-            if _cooldown_ok(last_t, "goal", streak_start_t):
-                last_t["goal"] = streak_start_t
-                mm = int(streak_start_t // 60); ss = int(streak_start_t % 60)
-                print(f"  [TERMINAL] goal à {mm:02d}:{ss:02d} "
-                      f"| bx={bx_n:.2f} by={by_n:.2f} streak={streak}f conf=0.88")
-                events.append({
-                    "type":       "goal",
-                    "time":       streak_start_t,
-                    "confidence": 0.88,
-                })
-            streak = 0
-            streak_start_t = None
+        pos_prev = _ball_norm(frames[i - 1])
+        if pos_prev is None:
+            i += 1
+            continue
+
+        bx_prev = pos_prev[0]
+
+        # CROSSING : ballon franchit la ligne de but
+        cross_left  = (bx_prev > GOAL_X_LINE + LINE_MARGIN and bx_n <= GOAL_X_LINE)
+        cross_right = (bx_prev < (1 - GOAL_X_LINE - LINE_MARGIN) and bx_n >= (1 - GOAL_X_LINE))
+
+        if not (cross_left or cross_right):
+            i += 1
+            continue
+
+        # VITESSE : pic avant crossing (tir réel)
+        peak_speed = max(speeds_n[max(0, i - 8):i + 1])
+        if peak_speed < SPEED_MIN:
+            i += 1
+            continue
+
+        # STUCK : ballon reste dans zone après crossing
+        stuck = 0
+        for j in range(i, min(i + 15, len(frames))):
+            pj = _ball_norm(frames[j])
+            if pj is None:
+                break
+            in_left  = pj[0] <= GOAL_X_LINE + LINE_MARGIN
+            in_right = pj[0] >= (1 - GOAL_X_LINE - LINE_MARGIN)
+            if (cross_left and in_left) or (cross_right and in_right):
+                stuck += 1
+            else:
+                break
+
+        if stuck < STUCK_MIN:
+            i += 1
+            continue
+
+        # REBOUND : décélération brutale = filet absorbe (vs touche qui rebondit fort)
+        pre_speed  = max(speeds_n[max(0, i - 5):i])      if i > 0 else 0
+        post_speed = max(speeds_n[i:min(i + 5, len(speeds_n))])
+        rebound = (pre_speed > 1e-4 and post_speed / pre_speed < REBOUND_DROP)
+
+        # Score composite (inspiré goal_posthoc)
+        score = 3.0
+        if stuck >= 6: score += 2.0
+        elif stuck >= 4: score += 1.0
+        if rebound: score += 1.5
+        if peak_speed > SPEED_MIN * 2: score += 0.5
+
+        if score < 4.5:
+            i += 1
+            continue
+
+        if _cooldown_ok(last_t, "goal", t):
+            last_t["goal"] = t
+            conf = min(0.70 + score * 0.04, 0.90)
+            mm = int(t // 60); ss = int(t % 60)
+            side = "gauche" if cross_left else "droite"
+            print(f"  [TERMINAL] goal à {mm:02d}:{ss:02d} "
+                  f"| {side} bx={bx_n:.2f} by={by_n:.2f} "
+                  f"stuck={stuck}f peak={peak_speed:.3f} rebound={rebound} conf={conf:.2f}")
+            events.append({
+                "type":       "goal",
+                "time":       t,
+                "confidence": conf,
+            })
+            i += max(stuck, 8)
+        else:
+            i += 1
 
     return events
 
