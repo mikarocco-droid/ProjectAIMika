@@ -491,7 +491,11 @@ def _stub(*args, **kwargs):
 _DETECTORS = {
     # _detect_celebration retiré : trop de FP (regroupements normaux en zone but)
     # La célébration reste détectée par Gemini (score +4) qui est visuel et précis
-    "football":   [_detect_goal, _detect_gk_possession, _detect_corner_goalkick, _detect_clearance],
+    # corner_or_goalkick retiré comme source de candidats Gemini :
+    # 20/26 coins détectés sont déjà couverts par goal_posthoc ±20s
+    # et aucun ne capture les vrais buts que posthoc rate
+    # Les corners restent utiles comme CONTEXTE mais pas comme déclencheurs
+    "football":   [_detect_goal, _detect_gk_possession, _detect_clearance],
     "basketball": [_stub],
     "handball":   [_stub],
     "hockey":     [_stub],
