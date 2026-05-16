@@ -73,7 +73,7 @@ BALL_METHOD     = os.getenv("BALL_METHOD",     "hybrid")
 # En prod RunPod RTX 4090 → YOLO_BATCH_SIZE=4  FRAME_SKIP_EVERY=4  YOLO_IMGSZ=960
 YOLO_BATCH_SIZE  = int(os.getenv("YOLO_BATCH_SIZE",  4))
 FRAME_SKIP_EVERY = int(os.getenv("FRAME_SKIP_EVERY", 4))
-YOLO_IMGSZ       = int(os.getenv("YOLO_IMGSZ",       640))  # défaut 640 (Kaggle T4) ; RunPod RTX4090 → env YOLO_IMGSZ=960
+YOLO_IMGSZ       = int(os.getenv("YOLO_IMGSZ",       512))  # défaut 512 (Kaggle T4, safe) ; RunPod RTX4090 → env YOLO_IMGSZ=640
 
 # ─────────────────────────────────────────
 # TRACKING
