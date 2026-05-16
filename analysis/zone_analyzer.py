@@ -3,60 +3,52 @@ zone_analyzer.py — Analyse dense des zones détectées par terminal_events
 
 Principe :
   1. terminal_events détecte ~9 zones dangereuses sur 15 min
-  2. On relit la vidéo en skip=1 UNIQUEMENT sur ces zones (~94s / 900s)
-  3. On applique une détection physique précise (crossing + stuck + fast_disappear)
-  4. On retourne des candidats haute confiance pour Gemini
+  2. On calcule dynamiquement la fenêtre de chaque zone depuis frames_data
+     (pas de durées fixes — on remonte jusqu'au ballon hors zone dangereuse)
+  3. On relit la vidéo en skip=1 UNIQUEMENT sur ces zones
+  4. On applique une détection physique précise sur données 4× plus denses
+  5. On retourne des candidats haute confiance pour Gemini
 
-Avantages vs posthoc global :
-  - 4× plus de frames par zone (skip=1 vs skip=2)
-  - Pas de bruit du reste du match
-  - Trajectoires ballon plus propres → moins de FP
-  - GPU : ~2.5 min supplémentaires seulement
-
-Usage :
-    from zone_analyzer import analyze_dense_zones
-
-    dense_candidates = analyze_dense_zones(
-        video_path       = video_path,
-        terminal_events  = terminal_events,   # [{type, time, confidence}]
-        fps              = fps,
-        sport            = "football",
-    )
+Fenêtres dynamiques :
+  - Début : on remonte dans frames_data jusqu'à trouver le ballon
+    hors de la zone dangereuse (bx > DANGER_ZONE_X), plafond MAX_REWIND
+  - Fin   : on avance jusqu'à la prochaine pause de jeu ou MAX_FORWARD
+  - Résultat : fenêtres adaptées à chaque action (3s pour contre-attaque,
+    12s pour corner, etc.)
 """
 
 from __future__ import annotations
 import cv2
-from typing import List, Dict, Any
+from typing import List, Dict, Optional
 
 # ─────────────────────────────────────────────────────────────
-# Fenêtres de relecture par type d'événement (secondes)
+# Paramètres fenêtres dynamiques
 # ─────────────────────────────────────────────────────────────
-ZONE_REWIND = {
-    "goal":             8,   # rewind 8s avant le signal → capture le tir
-    "goalkeeper_save":  6,
-    "clearance":        5,
-}
-ZONE_FORWARD = {
-    "goal":             6,
-    "goalkeeper_save":  4,
-    "clearance":        4,
-}
+DANGER_ZONE_X  = 0.30   # bx < 0.30 ou > 0.70 = zone dangereuse
+MAX_REWIND     = 15.0   # plafond rewind (s) — évite fenêtres infinies
+MAX_FORWARD    =  6.0   # plafond forward (s) après l'événement terminal
+MIN_REWIND     =  3.0   # rewind minimum même si ballon déjà loin
 
 # ─────────────────────────────────────────────────────────────
 # Paramètres détection physique (coordonnées normalisées 0-1)
 # ─────────────────────────────────────────────────────────────
-GOAL_X_LINE    = 0.05   # ligne de but = 5% depuis chaque bord
+GOAL_X_LINE    = 0.05
 LINE_MARGIN    = 0.02
 GOAL_Y_MIN     = 0.45
 GOAL_Y_MAX     = 0.85
-STUCK_MIN      = 4      # frames minimum dans zone but (tir lent)
-FAST_SHOT_SPD  = 0.08   # vitesse normalisée = tir puissant
-SPEED_MIN      = 0.04   # vitesse minimum pour valider crossing
-REBOUND_DROP   = 0.4    # chute de vitesse = filet absorbe
-SCORE_MIN      = 4.5    # score composite minimum pour candidat
+STUCK_MIN      = 4
+FAST_SHOT_SPD  = 0.08
+SPEED_MIN      = 0.04
+REBOUND_DROP   = 0.4
+SCORE_MIN      = 4.5
+COOLDOWN       = 20.0
 
 
-def _ball_pos(fd: Dict) -> tuple | None:
+# ─────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────
+
+def _ball_pos(fd: Dict) -> Optional[tuple]:
     """Retourne (bx, by) normalisés depuis un frame_data, ou None."""
     ball = fd.get("ball")
     if not ball:
@@ -70,37 +62,153 @@ def _ball_pos(fd: Dict) -> tuple | None:
     return (float(x) / fw, float(y) / fh)
 
 
+def _frame_time(fd: Dict, fps: float) -> float:
+    """Retourne le timestamp en secondes d'un frame_data."""
+    t = fd.get("time")
+    if t is not None:
+        return float(t)
+    return float(fd.get("frame", 0)) / fps if fps > 0 else 0.0
+
+
+def _is_in_danger_zone(bx: float) -> bool:
+    """Ballon dans la zone dangereuse (proche d'un but)."""
+    return bx < DANGER_ZONE_X or bx > (1.0 - DANGER_ZONE_X)
+
+
+# ─────────────────────────────────────────────────────────────
+# Calcul dynamique des fenêtres
+# ─────────────────────────────────────────────────────────────
+
+def compute_dynamic_window(
+    event_t:     float,
+    frames_data: List[Dict],
+    fps:         float,
+    next_event_t: Optional[float] = None,
+) -> tuple:
+    """
+    Calcule (t_start, t_end) dynamiquement depuis frames_data.
+
+    Début : remonte depuis event_t jusqu'à trouver le ballon
+    hors zone dangereuse (bx entre 0.30 et 0.70), plafond MAX_REWIND.
+
+    Fin : avance jusqu'à la prochaine pause de jeu (ballon absent
+    plusieurs frames consécutives) ou jusqu'au prochain event terminal,
+    plafond MAX_FORWARD.
+    """
+    if not frames_data:
+        return (max(0.0, event_t - MAX_REWIND), event_t + MAX_FORWARD)
+
+    # Indexer les frames par timestamp
+    frames_near = [
+        fd for fd in frames_data
+        if abs(_frame_time(fd, fps) - event_t) <= MAX_REWIND + MAX_FORWARD
+    ]
+    frames_near.sort(key=lambda fd: _frame_time(fd, fps))
+
+    # ── Calcul du début dynamique ──────────────────────────
+    # On remonte depuis event_t : on cherche le premier moment
+    # où le ballon quitte la zone dangereuse en allant vers l'arrière
+    frames_before = [
+        fd for fd in frames_near
+        if _frame_time(fd, fps) <= event_t
+    ]
+    frames_before.sort(key=lambda fd: _frame_time(fd, fps), reverse=True)
+
+    t_start = max(0.0, event_t - MAX_REWIND)  # fallback
+    consecutive_safe = 0
+
+    for fd in frames_before:
+        t = _frame_time(fd, fps)
+        if event_t - t > MAX_REWIND:
+            break
+
+        pos = _ball_pos(fd)
+        if pos is None:
+            consecutive_safe += 1
+            if consecutive_safe >= 3:
+                # Ballon absent 3+ frames = pause = début d'action
+                t_start = max(0.0, t - 0.5)
+                break
+            continue
+
+        consecutive_safe = 0
+        bx, _ = pos
+
+        if not _is_in_danger_zone(bx):
+            # Ballon hors zone dangereuse → c'est le début de l'action
+            t_start = max(0.0, t - 0.5)  # -0.5s de marge
+            break
+
+    # Garantir rewind minimum
+    t_start = min(t_start, event_t - MIN_REWIND)
+    t_start = max(0.0, t_start)
+
+    # ── Calcul de la fin dynamique ─────────────────────────
+    # On avance depuis event_t : fin = prochaine pause de jeu
+    # (ballon absent 4+ frames consécutives) ou prochain event terminal
+    frames_after = [
+        fd for fd in frames_near
+        if _frame_time(fd, fps) >= event_t
+    ]
+    frames_after.sort(key=lambda fd: _frame_time(fd, fps))
+
+    t_end = event_t + MAX_FORWARD  # fallback
+    absent_streak = 0
+
+    for fd in frames_after:
+        t = _frame_time(fd, fps)
+        if t - event_t > MAX_FORWARD:
+            break
+
+        # Stopper au prochain event terminal si proche
+        if next_event_t is not None and t >= next_event_t - 1.0:
+            t_end = t
+            break
+
+        pos = _ball_pos(fd)
+        if pos is None:
+            absent_streak += 1
+            if absent_streak >= 4:
+                # Pause de jeu → fin de l'action
+                t_end = t
+                break
+        else:
+            absent_streak = 0
+
+    duration = t_end - t_start
+    return (t_start, t_end, duration)
+
+
+# ─────────────────────────────────────────────────────────────
+# Relecture dense d'une zone
+# ─────────────────────────────────────────────────────────────
+
 def _read_zone_frames(
-    video_path: str,
-    t_start: float,
-    t_end: float,
-    fps: float,
+    video_path:  str,
+    t_start:     float,
+    t_end:       float,
+    fps:         float,
     detector,
-    tracker,
     ball_tracker,
-    frame_w: int = 960,
-    frame_h: int = 540,
+    frame_w:     int = 960,
+    frame_h:     int = 540,
 ) -> List[Dict]:
     """
     Relit la vidéo entre t_start et t_end en skip=1 (toutes les frames).
-    Retourne une liste de frame_data avec positions ballon et joueurs.
     """
-    import numpy as np
-
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return []
 
-    # Seeking direct ffmpeg-style via OpenCV
     cap.set(cv2.CAP_PROP_POS_MSEC, t_start * 1000)
 
-    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    scale_x = orig_w / frame_w
-    scale_y = orig_h / frame_h
+    orig_w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    scale_x  = orig_w / frame_w
+    scale_y  = orig_h / frame_h
+    frame_id = int(t_start * fps)
 
     frames_data = []
-    frame_id    = int(t_start * fps)
 
     while True:
         ret, frame = cap.read()
@@ -111,51 +219,39 @@ def _read_zone_frames(
         if current_t > t_end:
             break
 
-        # Resize pour traitement
         small = cv2.resize(frame, (frame_w, frame_h))
 
         # Détection YOLO
-        try:
-            results = detector.model(
-                small, imgsz=640, conf=0.25, verbose=False
-            )
-        except Exception:
-            frame_id += 1
-            continue
-
-        ball   = None
+        ball    = None
         players = []
+        try:
+            results = detector.model(small, imgsz=640, conf=0.25, verbose=False)
+            for r in results:
+                for box in r.boxes:
+                    cls  = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    cx = (x1 + x2) / 2
+                    cy = (y1 + y2) / 2
+                    if cls == detector.ball_cls and conf > 0.20:
+                        ball = {
+                            "x": cx * scale_x, "y": cy * scale_y,
+                            "cx": cx, "cy": cy, "conf": conf,
+                        }
+                    elif cls == detector.player_cls and conf > 0.30:
+                        players.append({
+                            "cx": cx, "cy": cy,
+                            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                        })
+        except Exception:
+            pass
 
-        for r in results:
-            for box in r.boxes:
-                cls  = int(box.cls[0])
-                conf = float(box.conf[0])
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                cx = (x1 + x2) / 2
-                cy = (y1 + y2) / 2
-
-                if cls == detector.ball_cls and conf > 0.20:
-                    # Rescale vers résolution originale
-                    ball = {
-                        "x": cx * scale_x, "y": cy * scale_y,
-                        "cx": cx, "cy": cy,
-                        "conf": conf,
-                    }
-                elif cls == detector.player_cls and conf > 0.30:
-                    players.append({
-                        "cx": cx, "cy": cy,
-                        "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                        "conf": conf,
-                    })
-
-        # BallTracker pour lisser les détections
+        # BallTracker
         if ball_tracker is not None:
             try:
-                tracked_ball = ball_tracker.update(
-                    ball, small, frame_id
-                )
-                if tracked_ball:
-                    ball = tracked_ball
+                tracked = ball_tracker.update(ball, small, frame_id)
+                if tracked:
+                    ball = tracked
             except Exception:
                 pass
 
@@ -173,15 +269,19 @@ def _read_zone_frames(
     return frames_data
 
 
+# ─────────────────────────────────────────────────────────────
+# Détection physique sur frames denses
+# ─────────────────────────────────────────────────────────────
+
 def _detect_goals_in_frames(
-    frames: List[Dict],
-    fps: float,
-    zone_t: float,
+    frames:    List[Dict],
+    fps:       float,
+    zone_t:    float,
     zone_type: str,
 ) -> List[Dict]:
     """
     Détection physique précise sur frames denses (skip=1).
-    Même logique que terminal_events._detect_goal + fast_disappear.
+    Crossing + stuck + fast_disappear.
     """
     if len(frames) < 5:
         return []
@@ -193,15 +293,11 @@ def _detect_goals_in_frames(
     for k in range(1, len(frames)):
         p1 = _ball_pos(frames[k])
         p0 = _ball_pos(frames[k - 1])
-        if p1 and p0:
-            speeds.append(abs(p1[0] - p0[0]))
-        else:
-            speeds.append(0.0)
+        speeds.append(abs(p1[0] - p0[0]) if p1 and p0 else 0.0)
 
     last_goal_t = -999.0
-    COOLDOWN    = 20.0
-
     i = 5
+
     while i < len(frames) - 5:
         fd  = frames[i]
         t   = fd.get("time", 0)
@@ -213,7 +309,6 @@ def _detect_goals_in_frames(
 
         bx, by = pos
 
-        # Filtre hauteur filet
         if not (GOAL_Y_MIN <= by <= GOAL_Y_MAX):
             i += 1
             continue
@@ -226,22 +321,20 @@ def _detect_goals_in_frames(
         bx_prev = pos_prev[0]
 
         # CROSSING
-        cross_left  = (bx_prev > GOAL_X_LINE + LINE_MARGIN
-                       and bx <= GOAL_X_LINE)
-        cross_right = (bx_prev < (1 - GOAL_X_LINE - LINE_MARGIN)
-                       and bx >= (1 - GOAL_X_LINE))
+        cross_left  = bx_prev > GOAL_X_LINE + LINE_MARGIN and bx <= GOAL_X_LINE
+        cross_right = bx_prev < (1 - GOAL_X_LINE - LINE_MARGIN) and bx >= (1 - GOAL_X_LINE)
 
         if not (cross_left or cross_right):
             i += 1
             continue
 
-        # VITESSE pic avant crossing
+        # PIC DE VITESSE
         peak_speed = max(speeds[max(0, i - 8):i + 1])
         if peak_speed < SPEED_MIN:
             i += 1
             continue
 
-        # STUCK : ballon reste dans zone
+        # STUCK
         stuck = 0
         for j in range(i, min(i + 15, len(frames))):
             pj = _ball_pos(frames[j])
@@ -259,12 +352,8 @@ def _detect_goals_in_frames(
             1 for j in range(i + 1, min(i + 4, len(frames)))
             if _ball_pos(frames[j]) is None
         )
-        fast_disappear = (
-            peak_speed >= FAST_SHOT_SPD
-            and next_none >= 2
-            and stuck <= 2
-        )
-        stuck_min_eff = 2 if fast_disappear else STUCK_MIN
+        fast_disappear    = peak_speed >= FAST_SHOT_SPD and next_none >= 2 and stuck <= 2
+        stuck_min_eff     = 2 if fast_disappear else STUCK_MIN
 
         if stuck < stuck_min_eff:
             i += 1
@@ -273,21 +362,20 @@ def _detect_goals_in_frames(
         # REBOUND
         pre_spd  = max(speeds[max(0, i - 5):i]) if i > 0 else 0
         post_spd = max(speeds[i:min(i + 5, len(speeds))])
-        rebound  = (pre_spd > 1e-4 and post_spd / pre_spd < REBOUND_DROP)
+        rebound  = pre_spd > 1e-4 and post_spd / pre_spd < REBOUND_DROP
 
-        # SCORE COMPOSITE
+        # SCORE
         score = 3.0
-        if stuck >= 6:   score += 2.0
-        elif stuck >= 4: score += 1.0
-        if rebound:      score += 1.5
+        if stuck >= 6:          score += 2.0
+        elif stuck >= 4:        score += 1.0
+        if rebound:             score += 1.5
         if peak_speed > SPEED_MIN * 2: score += 0.5
-        if fast_disappear: score += 2.0
+        if fast_disappear:      score += 2.0
 
         if score < SCORE_MIN:
             i += 1
             continue
 
-        # Cooldown
         if t - last_goal_t < COOLDOWN:
             i += 1
             continue
@@ -297,55 +385,56 @@ def _detect_goals_in_frames(
         side = "gauche" if cross_left else "droite"
         mm, ss = int(t // 60), int(t % 60)
 
-        print(f"  [DENSE] goal à {mm:02d}:{ss:02d} "
-              f"| {side} bx={bx:.2f} by={by:.2f} "
-              f"stuck={stuck}f peak={peak_speed:.3f} "
+        print(f"  [DENSE] goal à {mm:02d}:{ss:02d} | {side} "
+              f"bx={bx:.2f} stuck={stuck}f peak={peak_speed:.3f} "
               f"fast={fast_disappear} score={score:.1f} conf={conf:.2f} "
-              f"(zone terminal={zone_type} @{zone_t:.0f}s)")
+              f"(zone={zone_type} @{zone_t:.0f}s)")
 
         events.append({
-            "type":            "goal",
-            "time":            t,
-            "frame":           int(t * fps),
-            "confidence":      conf,
-            "source":          "zone_analyzer",
-            "detected_from":   "zone_analyzer_dense",
-            "score":           score,
-            "stuck":           stuck,
-            "rebound":         rebound,
-            "fast_disappear":  fast_disappear,
-            "zone_type":       zone_type,
+            "type":           "goal",
+            "time":           t,
+            "frame":          int(t * fps),
+            "confidence":     conf,
+            "source":         "zone_analyzer",
+            "detected_from":  "zone_analyzer_dense",
+            "score":          score,
+            "stuck":          stuck,
+            "rebound":        rebound,
+            "fast_disappear": fast_disappear,
+            "zone_type":      zone_type,
         })
-
         i += max(stuck, 8)
 
     return events
 
 
+# ─────────────────────────────────────────────────────────────
+# Point d'entrée principal
+# ─────────────────────────────────────────────────────────────
+
 def analyze_dense_zones(
     video_path:      str,
     terminal_events: List[Dict],
     fps:             float,
+    frames_data:     Optional[List[Dict]] = None,
     sport:           str = "football",
     frame_w:         int = 960,
     frame_h:         int = 540,
 ) -> List[Dict]:
     """
-    Point d'entrée principal.
     Relit la vidéo en skip=1 sur les zones terminal_events.
+    Les fenêtres sont calculées dynamiquement depuis frames_data du pass 1.
     Retourne des candidats buts haute confiance.
     """
     if not terminal_events:
         return []
 
-    # Import des détecteurs (même stack que process_video)
+    # Init détecteurs
     try:
         from vision.detector import Detector
-        from vision.tracker import Tracker
-        detector     = Detector(sport=sport)
-        tracker      = Tracker()
+        detector = Detector(sport=sport)
     except Exception as e:
-        print(f"  [ZONE ANALYZER] Erreur init détecteurs : {e}")
+        print(f"  [ZONE ANALYZER] Erreur init détecteur : {e}")
         return []
 
     ball_tracker = None
@@ -355,59 +444,77 @@ def analyze_dense_zones(
     except Exception:
         pass
 
-    # Fusionner les fenêtres qui se chevauchent
+    # ── Calcul des fenêtres dynamiques ────────────────────────────────────
+    events_sorted = sorted(terminal_events, key=lambda e: e.get("time", 0))
     windows = []
-    for ev in terminal_events:
+
+    for idx, ev in enumerate(events_sorted):
         ev_type = ev.get("type", "goal")
         t       = float(ev.get("time", 0))
-        rewind  = ZONE_REWIND.get(ev_type, 6)
-        forward = ZONE_FORWARD.get(ev_type, 4)
-        t0 = max(0.0, t - rewind)
-        t1 = t + forward
-        windows.append((t0, t1, ev_type, t))
 
-    # Tri et fusion des fenêtres qui se chevauchent
+        # Prochain event terminal (pour borner la fin)
+        next_t = float(events_sorted[idx + 1]["time"]) if idx + 1 < len(events_sorted) else None
+
+        if frames_data:
+            t0, t1, dur = compute_dynamic_window(
+                event_t      = t,
+                frames_data  = frames_data,
+                fps          = fps,
+                next_event_t = next_t,
+            )
+        else:
+            # Fallback si frames_data absent
+            t0, t1, dur = max(0.0, t - 8.0), t + 5.0, 13.0
+
+        windows.append((t0, t1, ev_type, t, dur))
+        mm0, ss0 = int(t0 // 60), int(t0 % 60)
+        mm1, ss1 = int(t1 // 60), int(t1 % 60)
+        print(f"  [ZONE] {mm0:02d}:{ss0:02d}–{mm1:02d}:{ss1:02d} "
+              f"({dur:.1f}s dynamique) type={ev_type}")
+
+    # ── Fusion des fenêtres qui se chevauchent ────────────────────────────
     windows.sort(key=lambda w: w[0])
     merged = []
     for w in windows:
         if merged and w[0] <= merged[-1][1]:
-            # Fusion : étendre la fenêtre existante
             prev = merged[-1]
-            merged[-1] = (prev[0], max(prev[1], w[1]), prev[2], prev[3])
+            merged[-1] = (prev[0], max(prev[1], w[1]), prev[2], prev[3],
+                          max(prev[1], w[1]) - prev[0])
         else:
             merged.append(list(w))
 
-    total_duration = sum(w[1] - w[0] for w in merged)
-    print(f"\n[ZONE ANALYZER] {len(merged)} zone(s) dense(s) "
-          f"| durée totale = {total_duration:.0f}s "
-          f"({total_duration / (fps * 900) * fps * 100:.1f}% du match)")
+    total_dur = sum(w[1] - w[0] for w in merged)
+    video_dur = (frames_data[-1].get("time", 900) if frames_data else 900)
+    print(f"\n[ZONE ANALYZER] {len(merged)} zone(s) | "
+          f"durée totale = {total_dur:.0f}s "
+          f"({total_dur / video_dur * 100:.1f}% du match)")
 
+    # ── Analyse dense zone par zone ───────────────────────────────────────
     all_candidates = []
 
     for w in merged:
-        t0, t1, zone_type, zone_t = w
+        t0, t1, zone_type, zone_t = w[0], w[1], w[2], w[3]
         mm0, ss0 = int(t0 // 60), int(t0 % 60)
         mm1, ss1 = int(t1 // 60), int(t1 % 60)
-        print(f"  → Zone {mm0:02d}:{ss0:02d}–{mm1:02d}:{ss1:02d} "
-              f"({t1-t0:.0f}s) type={zone_type}")
+        print(f"\n  → Lecture dense {mm0:02d}:{ss0:02d}–{mm1:02d}:{ss1:02d} "
+              f"({t1-t0:.1f}s)")
 
         frames = _read_zone_frames(
-            video_path  = video_path,
-            t_start     = t0,
-            t_end       = t1,
-            fps         = fps,
-            detector    = detector,
-            tracker     = tracker,
-            ball_tracker= ball_tracker,
-            frame_w     = frame_w,
-            frame_h     = frame_h,
+            video_path   = video_path,
+            t_start      = t0,
+            t_end        = t1,
+            fps          = fps,
+            detector     = detector,
+            ball_tracker = ball_tracker,
+            frame_w      = frame_w,
+            frame_h      = frame_h,
         )
 
         if not frames:
-            print(f"    ⚠️  Aucune frame lue pour cette zone")
+            print(f"    ⚠️  Aucune frame lue")
             continue
 
-        print(f"    {len(frames)} frames lues (skip=1)")
+        print(f"    {len(frames)} frames (skip=1 vs ~{int((t1-t0)*fps/2)} en skip=2)")
 
         candidates = _detect_goals_in_frames(
             frames    = frames,
@@ -417,7 +524,7 @@ def analyze_dense_zones(
         )
         all_candidates.extend(candidates)
 
-    # Déduplication finale ±5s
+    # ── Déduplication finale ±5s ──────────────────────────────────────────
     all_candidates.sort(key=lambda e: e["time"])
     deduped = []
     for c in all_candidates:
