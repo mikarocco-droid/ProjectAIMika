@@ -697,6 +697,38 @@ def run_pipeline(
                         print(f"  [DEBUG CLIP] {os.path.basename(_out)}")
         # ────────────────────────────────────────────────────────────
 
+        # ── Filtre posthoc par proximité terminal ─────────────────────────────
+        # Ne garder les candidats posthoc que s'ils sont proches d'un event
+        # terminal ±20s — terminal_events identifie les vraies actions dangereuses
+        # Les candidats terminal passent toujours (source != posthoc)
+        _terminal_times_filter = [
+            float(ev.get("time", 0)) for ev in (_terminal_evts or [])
+        ]
+        _POSTHOC_TERMINAL_WINDOW = 20.0  # secondes
+
+        def _is_posthoc(e):
+            src = str(e.get("detected_from", e.get("source", "")))
+            return "posthoc" in src
+
+        def _near_terminal(e):
+            if not _terminal_times_filter:
+                return True  # pas de terminal → garder tout
+            t = float(e.get("time", 0))
+            return any(abs(t - tt) <= _POSTHOC_TERMINAL_WINDOW
+                       for tt in _terminal_times_filter)
+
+        _n_before = sum(1 for e in events_for_gemini if e.get("type") == "goal")
+        events_for_gemini = [
+            e for e in events_for_gemini
+            if e.get("type") != "goal"           # non-buts : inchangés
+            or not _is_posthoc(e)                # terminal : toujours gardés
+            or _near_terminal(e)                 # posthoc proche terminal : gardés
+        ]
+        _n_after = sum(1 for e in events_for_gemini if e.get("type") == "goal")
+        if _n_before != _n_after:
+            print(f"  [FILTRE POSTHOC] {_n_before} → {_n_after} candidats "
+                  f"({_n_before - _n_after} posthoc éloignés de tout terminal supprimés)")
+
         # Buts cross_line → confiance physique élevée → bypass Gemini
         cross_line_goals = [
             e for e in events_for_gemini
