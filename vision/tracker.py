@@ -4,9 +4,13 @@
 import numpy as np
 
 try:
-    from boxmot import ByteTrack
+    # boxmot >= 10.x a restructuré ses imports
+    try:
+        from boxmot import ByteTrack
+    except ImportError:
+        from boxmot.trackers.bytetrack.val import ByteTrack
     BOXMOT_AVAILABLE = True
-except ImportError:
+except Exception:
     BOXMOT_AVAILABLE = False
     print("boxmot non installe — fallback DeepSort")
 
