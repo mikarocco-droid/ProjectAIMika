@@ -130,8 +130,8 @@ def _dist(p1, p2) -> float:
     return ((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2) ** 0.5
 
 
-def _cooldown_ok(last_t: Dict, etype: str, t: float) -> bool:
-    return t - last_t.get(etype, -999) > COOLDOWN_SEC
+def _cooldown_ok(last_t: Dict, etype: str, t: float, cooldown: float = None) -> bool:
+    return t - last_t.get(etype, -999) > (cooldown if cooldown is not None else COOLDOWN_SEC)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -408,6 +408,74 @@ def _detect_goal(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict]:
 
     return events
 
+
+def _detect_celebration(frames: List[Dict], fps: float, last_t: Dict) -> List[Dict]:
+    """
+    Célébration : signal visuel indirect détecté via les joueurs.
+
+    Sur caméra latérale, après un but les joueurs :
+    1. Se REGROUPENT dans la zone but (cluster de joueurs en bx < 20% ou > 80%)
+    2. Sont NOMBREUX dans cette zone (≥ 3 joueurs)
+    3. RESTENT dans cette zone plusieurs secondes (pas un pressing normal)
+
+    Ce signal est distinct du jeu normal car en phase de jeu,
+    les joueurs ne se regroupent pas 5+ secondes dans la zone but adverse.
+    Le rewind est plus long (8-15s) car la célébration survient APRÈS le but.
+    """
+    events = []
+
+    CELEB_ZONE_X  = 0.20   # zone but = 20% depuis chaque bord
+    CELEB_PLAYERS = 3      # nb minimum de joueurs dans la zone
+    CELEB_FRAMES  = 8      # frames consécutives de regroupement (≈ 0.5s à 25fps/skip2)
+    CELEB_COOLDOWN = 20.0  # cooldown célébration (distinct du cooldown goal)
+
+    streak = 0
+    streak_start_t = None
+
+    for fd in frames:
+        t       = _frame_t(fd, fps)
+        players = fd.get("players", [])
+
+        if not players:
+            streak = 0
+            streak_start_t = None
+            continue
+
+        # Compter joueurs dans zone but gauche ou droite
+        frame_w = fd.get("frame_w", 1920)
+        in_left  = sum(1 for p in players
+                       if p.get("center") and p["center"][0] / frame_w < CELEB_ZONE_X)
+        in_right = sum(1 for p in players
+                       if p.get("center") and p["center"][0] / frame_w > (1 - CELEB_ZONE_X))
+
+        in_zone = max(in_left, in_right) >= CELEB_PLAYERS
+
+        if in_zone:
+            if streak == 0:
+                streak_start_t = t
+            streak += 1
+        else:
+            streak = 0
+            streak_start_t = None
+            continue
+
+        if streak >= CELEB_FRAMES:
+            if _cooldown_ok(last_t, "celebration", streak_start_t, cooldown=CELEB_COOLDOWN):
+                last_t["celebration"] = streak_start_t
+                mm = int(streak_start_t // 60); ss = int(streak_start_t % 60)
+                side = "gauche" if in_left >= CELEB_PLAYERS else "droite"
+                print(f"  [TERMINAL] celebration à {mm:02d}:{ss:02d} "
+                      f"| {side} players={max(in_left,in_right)} streak={streak}f conf=0.75")
+                events.append({
+                    "type":       "celebration",
+                    "time":       streak_start_t,
+                    "confidence": 0.75,
+                })
+            streak = 0
+            streak_start_t = None
+
+    return events
+
 # ─────────────────────────────────────────────────────────────
 # Stubs autres sports (à implémenter)
 # ─────────────────────────────────────────────────────────────
@@ -421,7 +489,7 @@ def _stub(*args, **kwargs):
 # ─────────────────────────────────────────────────────────────
 
 _DETECTORS = {
-    "football":   [_detect_goal, _detect_gk_possession, _detect_corner_goalkick, _detect_clearance],
+    "football":   [_detect_goal, _detect_celebration, _detect_gk_possession, _detect_corner_goalkick, _detect_clearance],
     "basketball": [_stub],
     "handball":   [_stub],
     "hockey":     [_stub],
@@ -551,6 +619,7 @@ def detect_action_start_for_event(frames_data, terminal_event, fps) -> float:
     """Wrapper avec limites par type d'événement."""
     LIMITS = {
         "goal":              (5.0, 20.0),
+        "celebration":       (8.0, 18.0),  # rewind plus long : célébration après le but
         "goalkeeper_save":   (5.0, 12.0),
         "ball_caught":       (5.0, 20.0),
         "clearance":         (5.0, 18.0),
