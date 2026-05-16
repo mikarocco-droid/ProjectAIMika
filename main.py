@@ -1,3 +1,4 @@
+import os
 # main.py
 # -*- coding: utf-8 -*-
 
@@ -120,7 +121,7 @@ def process_batch(
         small_frames,
         conf    = config.YOLO_CONFIDENCE,
         verbose = False,
-        imgsz   = effective_batch * 240
+        imgsz   = int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))
     )
 
     batch_data = []
@@ -283,7 +284,7 @@ def process_video(
     print(f"  Sport : {sport}")
     print(f"  Frame skip  : adaptatif skip{SKIP_CREUSE}(creuse)/skip{SKIP_ACTIVE}(active) "
           f"| base={analyzed_count * 100 // total_frames}%")
-    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={b_size * 240}")
+    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))}")
 
     if shot_zones:
         hi = shot_zones.get("threshold_hi", 0.85)
