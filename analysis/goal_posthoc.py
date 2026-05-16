@@ -208,7 +208,7 @@ def detect_fast_goals_from_ball(
     speed_base = sorted(speeds)[int(len(speeds) * 0.5)]
     # Clamp speed_base entre 3 et 5 pour éviter les dérives de calibration
     # (skip variable, résolutions différentes, etc.)
-    speed_base = max(3.0, min(speed_base, 5.0))
+    speed_base = max(3.0, min(speed_base, 4.5))  # 4.5 max pour réduire les FP
     SPEED_THRESHOLD = speed_base * 2.0   # seuil standard
 
     print(f"[goal_posthoc_v9.6] speed_base={speed_base:.2f}")
