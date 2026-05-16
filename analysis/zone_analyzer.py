@@ -26,8 +26,8 @@ from typing import List, Dict, Optional
 # ─────────────────────────────────────────────────────────────
 DANGER_ZONE_X  = 0.30   # bx < 0.30 ou > 0.70 = zone dangereuse
 MAX_REWIND     = 15.0   # plafond rewind (s) — évite fenêtres infinies
-MAX_FORWARD    =  6.0   # plafond forward (s) après l'événement terminal
-MIN_REWIND     =  3.0   # rewind minimum même si ballon déjà loin
+MAX_FORWARD    =  8.0   # plafond forward (s) — plus de marge pour capturer kickoff après but
+MIN_REWIND     =  8.0   # rewind minimum — garantit 8s avant l'event pour capturer l'action
 
 # ─────────────────────────────────────────────────────────────
 # Paramètres détection physique (coordonnées normalisées 0-1)
