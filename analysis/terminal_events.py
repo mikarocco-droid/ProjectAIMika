@@ -50,7 +50,7 @@ MISSING_FRAMES_CORNER = 5  # nb frames sans ballon pour déclencher corner/6m
 CLEARANCE_ZONE_IN  = 0.25  # ballon vient de la zone < 25% du bord
 CLEARANCE_ZONE_OUT = 0.40  # ballon va vers le centre > 40%
 
-COOLDOWN_SEC     = 8.0
+COOLDOWN_SEC     = 12.0  # 12s minimum entre deux événements du même type
 REWIND_SEC       = 15.0
 WINDOW_END_SEC   = 2.0
 
@@ -589,10 +589,29 @@ def build_candidate_windows(
 
     windows.sort(key=lambda w: w["time"])
 
-    print(f"  [CANDIDATE WINDOWS] total={len(windows)}")
+    # ── Fusion des fenêtres proches (±8s) ──────────────────────────────
+    # Une même action produit souvent save + corner + clearance en cascade
+    # On fusionne en gardant la fenêtre de plus haute confiance
+    MERGE_RADIUS = 8.0
+    merged = []
     for w in windows:
+        if merged and abs(w["time"] - merged[-1]["time"]) <= MERGE_RADIUS:
+            # Fusionner : garder la meilleure confiance, étendre la fenêtre
+            prev = merged[-1]
+            if w["confidence"] > prev["confidence"]:
+                prev["confidence"]   = w["confidence"]
+                prev["source"]       = w["source"]
+                prev["terminal_type"] = w.get("terminal_type", prev.get("terminal_type"))
+            prev["window_start"] = min(prev["window_start"], w["window_start"])
+            prev["window_end"]   = max(prev["window_end"],   w["window_end"])
+            prev["rewind_sec"]   = prev["time"] - prev["window_start"]
+        else:
+            merged.append(dict(w))
+
+    print(f"  [CANDIDATE WINDOWS] {len(windows)} → fusionnées={len(merged)}")
+    for w in merged:
         mm = int(w["time"]//60); ss = int(w["time"]%60)
         print(f"    {mm:02d}:{ss:02d}  {w['source']:35} "
               f"conf={w['confidence']:.2f}  rewind={w['rewind_sec']:.0f}s")
 
-    return windows
+    return merged
