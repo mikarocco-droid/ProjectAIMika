@@ -32,9 +32,9 @@ class Tracker:
             print("  Tracker : ByteTrack (buffer=150)")
         else:
             from deep_sort_realtime.deepsort_tracker import DeepSort
-            self.tracker = DeepSort(max_age=90)
+            self.tracker = DeepSort(max_age=90, embedder=None)  # embedder=None → IoU+Kalman pur, pas de MobileNetV2
             self.mode    = "deepsort"
-            print("  Tracker : DeepSort (fallback)")
+            print("  Tracker : DeepSort IoU (embedder=None — pas de réseau par crop)")
 
         # ── ReID hybride (position + couleur + embedding) ──
         self.reid = PlayerReID(fps=config.FPS)
