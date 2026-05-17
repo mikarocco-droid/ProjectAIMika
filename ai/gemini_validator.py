@@ -1286,13 +1286,15 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
         print(f"  Gemini jersey error : {e}")
         return {}
 
-def read_goal_scorers(video_path, goal_events, fps=25):
+def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
     """
-    Pour chaque but confirmé, demande à Gemini :
-    - le numéro du buteur
-    - le numéro du passeur décisif (assist)
-    En envoyant la frame du but + quelques frames avant.
-    Bien plus fiable que des crops de joueurs inconnus.
+    Pour chaque but confirmé, demande à Gemini le numéro du buteur et du passeur.
+    
+    Si highlight_clips est fourni (dict {event_time: clip_path}),
+    utilise les clips Full HD (1920×1080) pour une meilleure lisibilité des numéros.
+    Sinon fallback sur la source vidéo.
+    
+    highlight_clips : dict {goal_time_float: clip_path_str}
     """
     if not GEMINI_AVAILABLE or not goal_events:
         return {}
@@ -1314,33 +1316,66 @@ def read_goal_scorers(video_path, goal_events, fps=25):
             continue
 
         try:
-            # 3 frames : -3s, moment du but, +1s
             frames = []
-            cap = cv2.VideoCapture(video_path)
-            for offset_s in [-3, 0, 1]:
-                fid = max(0, frame_g + int(offset_s * fps))
-                cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
-                ret, fr = cap.read()
-                if ret:
-                    frames.append(fr)
-            cap.release()
+            t_mm = f"{int(goal_t//60):02d}:{int(goal_t%60):02d}"
+
+            # Priorité : clip highlight Full HD si disponible
+            clip_path = None
+            if highlight_clips:
+                # Trouver le clip le plus proche temporellement
+                best_match = min(
+                    highlight_clips.items(),
+                    key=lambda x: abs(float(x[0]) - goal_t),
+                    default=(None, None)
+                )
+                if best_match[1] and abs(float(best_match[0]) - goal_t) < 60:
+                    clip_path = best_match[1]
+
+            if clip_path and os.path.exists(clip_path):
+                # Lire 3 frames dans le clip Full HD autour du moment du but
+                # time_start du clip = goal_t - 25s (context_before)
+                # → offset dans le clip = goal_t - (goal_t - 25) = 25s
+                clip_offset = 25.0  # secondes depuis le début du clip
+                cap = cv2.VideoCapture(clip_path)
+                clip_fps = cap.get(cv2.CAP_PROP_FPS) or fps
+                for offset_s in [-2, 0, 2]:
+                    fid = max(0, int((clip_offset + offset_s) * clip_fps))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
+                    ret, fr = cap.read()
+                    if ret:
+                        frames.append(fr)
+                cap.release()
+                source_label = "clip HD"
+            else:
+                # Fallback : source vidéo originale
+                cap = cv2.VideoCapture(video_path)
+                for offset_s in [-3, 0, 1]:
+                    fid = max(0, frame_g + int(offset_s * fps))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
+                    ret, fr = cap.read()
+                    if ret:
+                        frames.append(fr)
+                cap.release()
+                source_label = "source"
 
             if not frames:
                 continue
 
-            t_mm = f"{int(goal_t//60):02d}:{int(goal_t%60):02d}"
             parts = [text_to_part(
-                f"But marqué à {t_mm}. Voici 3 frames autour du but.\n"
+                f"But marqué à {t_mm} (frames depuis le {source_label}). "
+                f"Voici 3 frames autour du moment du but.\n"
                 f"Réponds UNIQUEMENT en JSON sans markdown :\n"
                 f'{{"buteur": <numero entier ou null>, "passeur": <numero entier ou null>}}\n'
-                f"- buteur : numéro de maillot du joueur qui marque (lisible sur son dos/poitrine)\n"
+                f"- buteur : numéro de maillot du joueur qui marque\n"
                 f"- passeur : numéro du joueur qui fait la dernière passe décisive (null si inconnu)\n"
                 f"Mets null si le numéro n'est pas clairement lisible."
             )]
             for fr in frames:
-                # Envoyer la frame pleine taille (réduite pour limiter tokens)
-                fr_small = cv2.resize(fr, (640, 360))
-                parts.append(frame_to_part(fr_small))
+                # Clip HD : envoyer à taille native, source : réduire
+                if source_label == "clip HD":
+                    parts.append(frame_to_part(fr))  # pleine résolution
+                else:
+                    parts.append(frame_to_part(cv2.resize(fr, (640, 360))))
 
             response = _call_gemini(client, parts)
             if response is None:
