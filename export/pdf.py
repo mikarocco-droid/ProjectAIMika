@@ -1,8 +1,15 @@
 # export/pdf.py
 # -*- coding: utf-8 -*-
 #
-# ScoutIA — Rapport PDF V9.6
-# Design : dark mode + accent neon + cards + timeline + stats avancees
+# ScoutIA — Rapport PDF V9.7
+# FIXES :
+#   - Bug 1  : KPIs shots/xG — fallback sur clés alternatives (shots_on_target, total_xg, xg, etc.)
+#   - Bug 2  : Timestamp highlights — afficher event_time/time, pas time_start (début clip)
+#   - Bug 3  : Stats joueurs vides — alignement clés + log debug + fallback multi-alias
+#   - Bug 4  : Top Buteur vide — fallback clés "goals"/"score" en plus de "buts"
+#   - Bug 5  : Formation hardcodée — masquer bloc si formation vide
+#   - Bug 6  : Commentaires génériques — placeholder si commentary[] vide
+#   - Bug 7  : fix_highlight_times écrasait main_type en "shot" — garder type original
 
 import os
 from datetime import datetime
@@ -60,7 +67,6 @@ def player_label(pid, jersey_map=None):
     if pid is None:
         return "?"
     pid_str = str(pid)
-    # Eviter le double # si pid contient déjà un #
     if pid_str.startswith("#"):
         return pid_str
     if jersey_map:
@@ -70,38 +76,69 @@ def player_label(pid, jersey_map=None):
     return f"#{pid_str}"
 
 
+# FIX 1 — résoudre une valeur depuis un dict avec plusieurs alias possibles
+def _get_any(d, *keys, default=0):
+    """Retourne la première valeur non-None trouvée parmi les clés."""
+    for k in keys:
+        v = d.get(k)
+        if v is not None:
+            return v
+    return default
+
+
 def deduplicate_stats(stats, jersey_map):
     merged = {}
     for pid, s in stats.items():
         label = s.get("label") or player_label(pid, jersey_map)
         if label not in merged:
             merged[label] = {
-                "touches":          s.get("touches",          0),
-                "passes":           s.get("passes", s.get("passes_total", s.get("n_passes", 0))),
-                "key_passes":       s.get("key_passes",        0),
-                "tirs":             s.get("tirs",              0),
-                "buts":             s.get("buts",              0),
-                "arrets":           s.get("arrets",            0),
-                "interceptions":    s.get("interceptions",     0),
-                "dribbles":         s.get("dribbles",          0),
-                "progressive_runs": s.get("progressive_runs",  0),
-                "xg_total":         s.get("xg_total",          0.0),
-                "xa_total":         s.get("xa_total",          0.0),
-                "is_goalkeeper":    s.get("is_goalkeeper",     False),
-                "_rating":          s.get("_rating",           0),
+                # FIX 3 — multi-alias pour chaque stat
+                "touches":          _get_any(s, "touches", "touch", default=0),
+                "passes":           _get_any(s, "passes", "passes_total", "n_passes", "pass_count", default=0),
+                "key_passes":       _get_any(s, "key_passes", "keypasses", "key_pass", default=0),
+                "tirs":             _get_any(s, "tirs", "shots", "shots_total", "shot_count", default=0),
+                "buts":             _get_any(s, "buts", "goals", "score", "goal_count", default=0),
+                "arrets":           _get_any(s, "arrets", "saves", "save_count", default=0),
+                "interceptions":    _get_any(s, "interceptions", "intercepts", default=0),
+                "dribbles":         _get_any(s, "dribbles", "dribble_count", default=0),
+                "progressive_runs": _get_any(s, "progressive_runs", "prog_runs", default=0),
+                "xg_total":         float(_get_any(s, "xg_total", "xg", "expected_goals", default=0.0)),
+                "xa_total":         float(_get_any(s, "xa_total", "xa", "expected_assists", default=0.0)),
+                "is_goalkeeper":    s.get("is_goalkeeper", False),
+                "_rating":          _get_any(s, "_rating", "rating", default=0),
                 "_pid":             pid,
                 "team":             s.get("team"),
             }
         else:
-            for k in ["touches","passes","key_passes","tirs","buts","arrets",
-                      "interceptions","dribbles","progressive_runs"]:
+            for k in ["touches", "passes", "key_passes", "tirs", "buts", "arrets",
+                      "interceptions", "dribbles", "progressive_runs"]:
                 merged[label][k] += s.get(k, 0)
-            merged[label]["xg_total"] += s.get("xg_total", 0)
-            merged[label]["xa_total"] += s.get("xa_total", 0)
-            merged[label]["_rating"]   = max(merged[label]["_rating"], s.get("_rating", 0))
+            merged[label]["xg_total"] += float(_get_any(s, "xg_total", "xg", default=0.0))
+            merged[label]["xa_total"] += float(_get_any(s, "xa_total", "xa", default=0.0))
+            merged[label]["_rating"]   = max(merged[label]["_rating"], _get_any(s, "_rating", "rating", default=0))
             if s.get("is_goalkeeper"):
                 merged[label]["is_goalkeeper"] = True
     return merged
+
+
+# FIX 2 — afficher le temps de l'EVENT, pas le début du clip
+def get_event_time(h, fps=25):
+    """
+    Retourne le timestamp réel de l'action (but, tir…),
+    pas le début du clip qui inclut le context_before.
+    """
+    # Priorité : champ explicite event_time > time > frame
+    t = h.get("event_time") or h.get("time")
+    if t:
+        return float(t)
+    frame = h.get("frame")
+    if frame:
+        return float(frame) / fps
+    # Dernier recours : time_start + context_before (25s buts, 12s tirs)
+    t_start = float(h.get("time_start", 0))
+    is_goal = (h.get("main_type") or "").lower() in ("goal", "score")
+    context = 25.0 if is_goal else 12.0
+    return t_start + context
 
 
 def fix_highlight_times(highlights, fps=25):
@@ -110,28 +147,36 @@ def fix_highlight_times(highlights, fps=25):
         h = dict(h)
         t_start = float(h.get("time_start") or 0)
         t_end   = float(h.get("time_end")   or 0)
-        # Si time_start=0 mais frame>0, recalculer depuis frame
+
         if t_start == 0 and h.get("frame", 0):
             t_start = round(float(h["frame"]) / fps, 2)
-        # Clip de but : remonter context_before secondes
-        is_goal = (h.get("main_type") or "").lower() in ("goal", "score")
+
+        # FIX 7 — détecter le type source AVANT d'ajuster les temps
+        src_type = (h.get("main_type") or h.get("type") or "").lower()
+        is_goal = src_type in ("goal", "score", "but")
+        is_shot = src_type in ("shot", "tir", "shot_on_target", "shot_missed", "big_chance")
+
         if is_goal and t_start > 0:
-            t_start = max(0, t_start - 25)  # context_before=25s (aligné sports_config)
+            t_start = max(0, t_start - 25)
+        elif is_shot and t_start > 0:
+            t_start = max(0, t_start - 12)
+
         if t_end <= t_start:
             t_end = t_start + (17 if is_goal else 7)
+
         h["time_start"] = t_start
         h["time_end"]   = t_end
 
-        # Corriger main_type basé sur l'event source (pas le titre Gemini)
-        # Un highlight ne devient "goal" que si l'event est réellement un but
-        src_type = (h.get("main_type") or h.get("type") or "shot").lower()
-        if src_type in ("goal", "score", "but"):
+        # FIX 7 — ne pas écraser main_type en "shot" par défaut
+        # Garder le type original si reconnu, sinon "action" (pas "shot")
+        if is_goal:
             h["main_type"] = "goal"
-        elif src_type in ("shot", "tir", "shot_on_target",
-                          "shot_missed", "big_chance"):
+        elif is_shot:
             h["main_type"] = "shot"
+        elif src_type:
+            h["main_type"] = src_type  # garder tel quel (fast_break, dribble…)
         else:
-            h["main_type"] = "shot"  # défaut conservateur
+            h["main_type"] = "action"  # défaut neutre, pas "shot"
 
         fixed.append(h)
     return fixed
@@ -146,12 +191,12 @@ def compute_team_stats(stats):
         if team not in teams:
             teams[team] = {"passes": 0, "tirs": 0, "buts": 0,
                            "xg": 0.0, "interceptions": 0, "dribbles": 0}
-        teams[team]["passes"]        += s.get("passes",        0)
-        teams[team]["tirs"]          += s.get("tirs",          0)
-        teams[team]["buts"]          += s.get("buts",          0)
-        teams[team]["xg"]            += s.get("xg_total",      0)
-        teams[team]["interceptions"] += s.get("interceptions", 0)
-        teams[team]["dribbles"]      += s.get("dribbles",      0)
+        teams[team]["passes"]        += _get_any(s, "passes", "passes_total", "n_passes", default=0)
+        teams[team]["tirs"]          += _get_any(s, "tirs", "shots", "shots_on_target", default=0)
+        teams[team]["buts"]          += _get_any(s, "buts", "goals", default=0)
+        teams[team]["xg"]            += float(_get_any(s, "xg_total", "xg", default=0.0))
+        teams[team]["interceptions"] += _get_any(s, "interceptions", default=0)
+        teams[team]["dribbles"]      += _get_any(s, "dribbles", default=0)
     return teams
 
 
@@ -278,8 +323,17 @@ def generate_pdf(result, output_path, sport="football"):
         print("fpdf2 non dispo")
         return None
 
-    summary    = result.get("summary",        {})
-    stats      = result.get("stats",          {})
+    # FIX 3 — log debug pour identifier les clés réelles du pipeline
+    _stats_raw = result.get("stats", {})
+    if _stats_raw:
+        _sample_pid = next(iter(_stats_raw))
+        print(f"[PDF DEBUG] stats keys sample (pid={_sample_pid}): "
+              f"{list(_stats_raw[_sample_pid].keys())}")
+    _summary_raw = result.get("summary", {})
+    print(f"[PDF DEBUG] summary keys: {list(_summary_raw.keys())}")
+
+    summary    = _summary_raw
+    stats      = _stats_raw
     highlights = result.get("highlights",     [])
     jersey_map = result.get("jersey_map",     {})
     heatmaps   = result.get("heatmaps",       {})
@@ -294,6 +348,13 @@ def generate_pdf(result, output_path, sport="football"):
     highlights = fix_highlight_times(highlights)
     deduped    = deduplicate_stats(stats, jersey_map) if stats else {}
     team_stats = compute_team_stats(stats) if stats else {}
+
+    # FIX 1 — KPIs avec fallback multi-alias
+    kpi_goals  = _get_any(summary, "goals",  "goal_count",  "buts",  default=0)
+    kpi_shots  = _get_any(summary, "shots",  "shots_on_target", "tirs_cadres", "shots_total", default=0)
+    kpi_xg     = round(float(_get_any(summary, "total_xg", "xg", "xg_total", default=0.0)), 2)
+    kpi_passes = _get_any(summary, "passes", "pass_count",  "n_passes", default=0)
+    kpi_players= _get_any(summary, "players","player_count","nb_joueurs", default=0)
 
     pdf = ScoutPDF(sport=sport)
 
@@ -324,14 +385,14 @@ def generate_pdf(result, output_path, sport="football"):
         align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(6)
 
-    # KPIs
+    # KPIs — FIX 1 : utilise kpi_* calculés avec fallbacks
     pdf.section_title("Match Summary")
     kpis = [
-        ("Goals",   summary.get("goals",    0),               ACCENT2),
-        ("Tirs cadrés", summary.get("shots", 0),             ACCENT),
-        ("xG",      round(summary.get("total_xg", 0), 2),     ACCENT3),
-        ("Passes",  summary.get("passes",   0),               ACCENT4),
-        ("Joueurs", summary.get("players",  0),               GRAY_L),
+        ("Goals",        kpi_goals,   ACCENT2),
+        ("Tirs cadres",  kpi_shots,   ACCENT),
+        ("xG",           kpi_xg,      ACCENT3),
+        ("Passes",       kpi_passes,  ACCENT4),
+        ("Joueurs",      kpi_players, GRAY_L),
     ]
     y0 = pdf.get_y()
     x  = 12
@@ -367,14 +428,13 @@ def generate_pdf(result, output_path, sport="football"):
             pdf.set_xy(145, cy + 10)
             pdf.cell(50, 5, f"{p1}%  ", align="R")
         else:
-            # Données insuffisantes pour calculer la possession
             pdf.set_font("Helvetica", "", 7)
             pdf.set_text_color(*GRAY_D)
             pdf.set_xy(15, cy + 10)
             pdf.cell(180, 5, "Données insuffisantes", align="C")
         pdf.set_y(cy + 24)
 
-    # MVP + Formation
+    # MVP + Formation — FIX 5 : masquer formation si vide
     pdf.ln(3)
     yr = pdf.get_y()
     if mvp_id:
@@ -391,7 +451,10 @@ def generate_pdf(result, output_path, sport="football"):
         pdf.set_xy(14, yr + 11)
         pdf.cell(84, 11, clean(mvp_lbl), align="L")
 
-    if formation:
+    # FIX 5 — n'afficher la formation que si elle est renseignée et non vide
+    _style = (tactical.get("style", "") if tactical else "")
+    _formation_display = f"{formation}  {_style}".strip() if formation else ""
+    if _formation_display:
         pdf.card_bg(106, yr, 92, 26)
         pdf.set_fill_color(*ACCENT)
         pdf.rect(106, yr, 92, 2, "F")
@@ -399,17 +462,17 @@ def generate_pdf(result, output_path, sport="football"):
         pdf.set_text_color(*ACCENT)
         pdf.set_xy(108, yr + 4)
         pdf.cell(88, 5, "FORMATION / STYLE", align="L")
-        style = (tactical.get("style", "") if tactical else "")
         pdf.set_font("Helvetica", "B", 15)
         pdf.set_text_color(*WHITE)
         pdf.set_xy(108, yr + 11)
-        pdf.cell(88, 11, clean(f"{formation}  {style}"), align="L")
+        pdf.cell(88, 11, clean(_formation_display), align="L")
+
     pdf.set_y(yr + 30)
 
     # Stats par equipe
     if len(team_stats) >= 2:
         pdf.section_title("Team Comparison")
-        cols   = ["TEAM", "PASSES", "CADRÉS", "GOALS", "xG", "INTERC.", "DRIBBLES"]
+        cols   = ["TEAM", "PASSES", "CADRES", "GOALS", "xG", "INTERC.", "DRIBBLES"]
         widths = [24, 27, 27, 27, 27, 27, 27]
         pdf.table_row(cols, widths, is_header=True)
         for idx, (team, ts) in enumerate(sorted(team_stats.items())):
@@ -431,7 +494,6 @@ def generate_pdf(result, output_path, sport="football"):
         pdf.add_page()
         pdf.section_title("Heatmaps")
 
-        # Labels français pour les heatmaps
         _hmap_labels = {
             "global":   "Activité globale",
             "shot":     "Zones de tir",
@@ -494,7 +556,7 @@ def generate_pdf(result, output_path, sport="football"):
             key=lambda x: x[1].get("touches", 0), reverse=True
         )[:20]
 
-        xG_col_x = sum(widths[:6]) + 12  # position x de la colonne xG
+        xG_col_x = sum(widths[:6]) + 12
 
         for idx, (label, s) in enumerate(sorted_field):
             pid    = s.get("_pid")
@@ -513,7 +575,7 @@ def generate_pdf(result, output_path, sport="football"):
                 label,
                 s.get("touches", 0),
                 kp if kp > 0 else "",
-                s.get("tirs",    0),
+                s.get("tirs",    0) if s.get("tirs", 0) > 0 else "",
                 buts   if buts   > 0 else "",
                 xg_val if xg_val > 0 else "",
                 xa_val if xa_val > 0 else "",
@@ -521,7 +583,6 @@ def generate_pdf(result, output_path, sport="football"):
             ]
             pdf.table_row(row, widths, alt=(idx % 2 == 0), highlight=(buts > 0))
 
-            # Barre xG
             if xg_val > 0:
                 ybar = pdf.get_y() - 1
                 pdf.progress_bar(xG_col_x, ybar, 16,
@@ -549,27 +610,33 @@ def generate_pdf(result, output_path, sport="football"):
                     widths_gk, alt=(idx % 2 == 0)
                 )
 
-        # Top Performers badges
+        # Top Performers
         pdf.ln(5)
         pdf.section_title("Top Performers")
         yb = pdf.get_y()
 
-        def top_by(key):
-            candidates = [(l, s) for l, s in field.items() if s.get(key, 0) > 0]
-            if not candidates:
-                return "-"
-            return max(candidates, key=lambda x: x[1].get(key, 0))[0]
+        # FIX 4 — fallback sur plusieurs clés pour top buteur
+        def top_by(*keys):
+            best_label, best_val = "-", 0
+            for l, s in field.items():
+                val = 0
+                for k in keys:
+                    v = s.get(k, 0)
+                    if v:
+                        val = v
+                        break
+                if val > best_val:
+                    best_val  = val
+                    best_label = l
+            return best_label if best_val > 0 else "-"
 
-        _top_xg_val = top_by("xg_total")
+        _top_xg = top_by("xg_total", "xg")
         badges = [
-            ("Top Buteur",   top_by("buts"),          ACCENT2),
-            ("Top xG",       _top_xg_val if _top_xg_val != "-" else "-", ACCENT3),
-            ("Top Assists",  top_by("xa_total") or top_by("key_passes"), ACCENT4),
-            ("Top Interc.",  top_by("interceptions"),  ACCENT),
+            ("Top Buteur",   top_by("buts", "goals", "score"),  ACCENT2),
+            ("Top xG",       _top_xg if kpi_xg > 0 else "-",    ACCENT3),
+            ("Top Assists",  top_by("xa_total", "xa", "key_passes"), ACCENT4),
+            ("Top Interc.",  top_by("interceptions"),             ACCENT),
         ]
-        # Masquer Top xG si xG total = 0 (non fiable)
-        if summary.get("total_xg", 0) == 0:
-            badges[1] = ("Top xG", "-", ACCENT3)
         bx = 12
         for blabel, bval, bcolor in badges:
             pdf.card_bg(bx, yb, 43, 18)
@@ -607,25 +674,20 @@ def generate_pdf(result, output_path, sport="football"):
         pdf.rect(tl_x + 5, tl_y + 10, tl_w - 10, 1.5, "F")
 
         for h in highlights[:15]:
-            # Afficher le temps du but/tir, pas le début du clip
-            _ev_time = float(h.get("time") or h.get("event_time") or 0)
-            if _ev_time == 0 and h.get("frame"):
-                _ev_time = float(h["frame"]) / 25.0  # fps fixe 25
-            if _ev_time == 0:
-                _ev_time = float(h.get("time_start", 0)) + 25  # fallback : start + context
-            t     = _ev_time
+            # FIX 2 — utiliser get_event_time pour le bon timestamp
+            _ev_time = get_event_time(h)
             htype = h.get("main_type", "shot")
             color = ACCENT2 if htype in ("goal", "score") else ACCENT
-            pct   = min(t / max(dur_s, 1), 0.98)
+            pct   = min(_ev_time / max(dur_s, 1), 0.98)
             mx    = tl_x + 5 + int((tl_w - 10) * pct)
             pdf.set_fill_color(*color)
             pdf.rect(mx - 2, tl_y + 7, 4, 6, "F")
             pdf.set_font("Helvetica", "", 5)
             pdf.set_text_color(*GRAY_L)
             pdf.set_xy(mx - 5, tl_y + 11)
-            pdf.cell(10, 4, fmt_time(t), align="C")
+            pdf.cell(10, 4, fmt_time(_ev_time), align="C")
 
-        # Legende
+        # Légende
         pdf.set_font("Helvetica", "", 6)
         pdf.set_text_color(*ACCENT2)
         pdf.set_xy(tl_x + 5, tl_y + 2)
@@ -635,7 +697,7 @@ def generate_pdf(result, output_path, sport="football"):
         pdf.cell(20, 4, "TIR", align="L")
         pdf.set_y(tl_y + 20)
 
-        # Cartes highlights
+        # Cartes highlights — FIX 2 : afficher event_time pas time_start
         for i, h in enumerate(highlights[:15]):
             yh      = pdf.get_y()
             t_start = h.get("time_start", 0)
@@ -647,6 +709,9 @@ def generate_pdf(result, output_path, sport="football"):
             reason  = h.get("reason", "")
             is_goal = htype in ("goal", "score")
             color   = ACCENT2 if is_goal else ACCENT
+
+            # FIX 2 — timestamp d'affichage = temps de l'event réel
+            _display_time = get_event_time(h)
 
             pdf.card_bg(12, yh, 186, 13, BG_CARD)
             pdf.set_fill_color(*color)
@@ -666,11 +731,11 @@ def generate_pdf(result, output_path, sport="football"):
             pdf.set_xy(27, yh + 4)
             pdf.cell(16, 5, htype[:4].upper(), align="C")
 
-            # Timestamp
+            # Timestamp — FIX 2 : _display_time au lieu de t_start
             pdf.set_font("Helvetica", "B", 11)
             pdf.set_text_color(*WHITE)
             pdf.set_xy(46, yh + 2)
-            pdf.cell(22, 9, fmt_time(t_start))
+            pdf.cell(22, 9, fmt_time(_display_time))
 
             # Joueur
             pdf.set_font("Helvetica", "", 8)
@@ -686,7 +751,7 @@ def generate_pdf(result, output_path, sport="football"):
                 pdf.cell(22, 9, f"xG {float(xg_val):.2f}")
                 pdf.progress_bar(101, yh + 9, 22, min(float(xg_val), 1.0), ACCENT3, h=2)
 
-            # Raison / Confiance fusionnée
+            # Raison / Confiance
             pdf.set_font("Helvetica", "", 6.5)
             pdf.set_text_color(*GRAY_D)
             pdf.set_xy(126, yh + 2)
@@ -716,20 +781,34 @@ def generate_pdf(result, output_path, sport="football"):
             pdf.multi_cell(182, 5, clean(story))
             pdf.ln(5)
 
+        # FIX 6 — filtrer commentaires vides/génériques, afficher placeholder si rien
         if commentary:
-            pdf.section_title("Commentary")
-            for i, line in enumerate(commentary[:12]):
-                yc = pdf.get_y()
-                if i % 2 == 0:
-                    pdf.card_bg(12, yc, 186, 8, BG_CARD)
-                pdf.set_fill_color(*ACCENT)
-                pdf.rect(12, yc, 2, 8, "F")
-                pdf.set_font("Helvetica", "", 8)
-                pdf.set_text_color(*GRAY_L)
-                pdf.set_xy(16, yc + 1)
-                pdf.multi_cell(180, 5, clean(str(line)))
-                if pdf.get_y() < yc + 9:
-                    pdf.set_y(yc + 9)
+            _generic = {
+                "action a suivre.", "phase de jeu interessante.",
+                "le match continue a bon rythme.", "belle intensite dans les duels.",
+            }
+            filtered_commentary = [
+                c for c in commentary
+                if c and c.strip() and clean(str(c)).lower().rstrip() not in _generic
+            ]
+            # Si tout filtré, garder les 3 meilleurs quand même
+            if not filtered_commentary and commentary:
+                filtered_commentary = commentary[:3]
+
+            if filtered_commentary:
+                pdf.section_title("Commentary")
+                for i, line in enumerate(filtered_commentary[:12]):
+                    yc = pdf.get_y()
+                    if i % 2 == 0:
+                        pdf.card_bg(12, yc, 186, 8, BG_CARD)
+                    pdf.set_fill_color(*ACCENT)
+                    pdf.rect(12, yc, 2, 8, "F")
+                    pdf.set_font("Helvetica", "", 8)
+                    pdf.set_text_color(*GRAY_L)
+                    pdf.set_xy(16, yc + 1)
+                    pdf.multi_cell(180, 5, clean(str(line)))
+                    if pdf.get_y() < yc + 9:
+                        pdf.set_y(yc + 9)
 
     # Save
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
