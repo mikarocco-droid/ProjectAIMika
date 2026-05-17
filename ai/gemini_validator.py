@@ -293,7 +293,8 @@ _AV_LOCK        = _threading.Lock()
 # ─────────────────────────────────────────────────────────────────────────────
 
 def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
-                         frame_w=1920, frame_h=1080):
+                         frame_w=1920, frame_h=1080,
+                         confirmed_goal_times=None):
     """
     Analyse la fenêtre [shot_time, shot_time+window] après un tir détecté.
     Envoie des frames espacées à Gemini avec la question :
@@ -595,6 +596,34 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
         confidence = float(parsed.get("confidence", 0.0))
         evidence   = parsed.get("evidence", "")
         goal_score = int(parsed.get("goal_score", 0))
+
+        # FIX kickoff fantôme — si le signal est UNIQUEMENT un kickoff (+5)
+        # et qu'un but déjà confirmé existe dans les 200s précédentes,
+        # ce kickoff appartient probablement à ce but antérieur → rejeter
+        if is_goal and confirmed_goal_times:
+            _kickoff_only = (
+                goal_score <= 7          # signal faible = kickoff seul
+                and "+5" in evidence     # kickoff détecté
+                and "+3" not in evidence # pas de ballon dans filet
+                and "+4" not in evidence # pas de célébration
+            )
+            if _kickoff_only:
+                _recent_goal = any(
+                    0 < shot_time - gt < 200  # but confirmé dans les 200s avant ce tir
+                    for gt in confirmed_goal_times
+                )
+                if _recent_goal:
+                    print(f"  [SHOT→GOAL] ❌ Kickoff fantôme rejeté t={int(shot_time//60):02d}:{int(shot_time%60):02d} "
+                          f"— kickoff appartient à un but antérieur (score={goal_score})")
+                    return {
+                        "is_goal":    False,
+                        "timestamp":  None,
+                        "confidence": 0.0,
+                        "desc":       f"kickoff fantôme rejeté (but antérieur dans fenêtre 200s)",
+                        "goal_votes": 0,
+                        "goal_score": 0,
+                    }
+
         # Convertir goal_score en goal_votes pour la logique pipeline
         # score >= 5 = 2 votes (fiable), score 3-4 = 1 vote (borderline)
         goal_votes = 2 if goal_score >= 6 else (1 if goal_score >= 4 else 0)  # seuils montés pour réduire FP
@@ -1340,13 +1369,15 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
                     clip_path = best_match[1]
 
             if clip_path and os.path.exists(clip_path):
-                # Lire 3 frames dans le clip Full HD autour du moment du but
+                # Lire 5 frames dans le clip Full HD autour du moment du but
                 # time_start du clip = goal_t - 25s (context_before)
-                # → offset dans le clip = goal_t - (goal_t - 25) = 25s
-                clip_offset = 25.0  # secondes depuis le début du clip
+                # → offset dans le clip = 25s
+                clip_offset = 25.0
                 cap = cv2.VideoCapture(clip_path)
                 clip_fps = cap.get(cv2.CAP_PROP_FPS) or fps
-                for offset_s in [-2, 0, 2]:
+                # FIX buteur : frames centrées sur le moment du tir (légèrement avant)
+                # Le buteur est visible au moment du tir, pas forcément après
+                for offset_s in [-4, -2, 0, 2, 4]:
                     fid = max(0, int((clip_offset + offset_s) * clip_fps))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
                     ret, fr = cap.read()
@@ -1355,9 +1386,9 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
                 cap.release()
                 source_label = "clip HD"
             else:
-                # Fallback : source vidéo originale
+                # Fallback : source vidéo originale — plus de frames, fenêtre centrée sur le tir
                 cap = cv2.VideoCapture(video_path)
-                for offset_s in [-3, 0, 1]:
+                for offset_s in [-4, -2, -1, 0, 1]:
                     fid = max(0, frame_g + int(offset_s * fps))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
                     ret, fr = cap.read()
@@ -1371,19 +1402,24 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
 
             parts = [text_to_part(
                 f"But marqué à {t_mm} (frames depuis le {source_label}). "
-                f"Voici 3 frames autour du moment du but.\n"
+                f"Voici {len(frames)} frames couvrant les 4 secondes avant et après le but.\n"
                 f"Réponds UNIQUEMENT en JSON sans markdown :\n"
                 f'{{"buteur": <numero entier ou null>, "passeur": <numero entier ou null>}}\n'
-                f"- buteur : numéro de maillot du joueur qui marque\n"
+                f"- buteur : numéro de maillot du DERNIER joueur qui frappe/tire le ballon vers le but\n"
+                f"  → c'est le joueur dont le pied ou la tête touche le ballon en dernier avant qu'il entre\n"
+                f"  → cherche le joueur en mouvement de frappe dans les frames AVANT le but\n"
+                f"  → ignore le gardien et les défenseurs\n"
                 f"- passeur : numéro du joueur qui fait la dernière passe décisive (null si inconnu)\n"
-                f"Mets null si le numéro n'est pas clairement lisible."
+                f"Mets null si le numéro n'est pas clairement lisible sur le maillot.\n"
+                f"IMPORTANT : lis le numéro directement sur le maillot, ne devine pas."
             )]
             for fr in frames:
-                # Clip HD : envoyer à taille native, source : réduire
+                # Clip HD : envoyer à taille native (1920×1080 pour lire les numéros)
+                # Source : réduire mais garder lisible (960×540 au lieu de 640×360)
                 if source_label == "clip HD":
                     parts.append(frame_to_part(fr))  # pleine résolution
                 else:
-                    parts.append(frame_to_part(cv2.resize(fr, (640, 360))))
+                    parts.append(frame_to_part(cv2.resize(fr, (960, 540))))
 
             response = _call_gemini(client, parts)
             if response is None:
