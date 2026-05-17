@@ -655,7 +655,7 @@ def run_pipeline(
 
     print("Step 1b : Validation Gemini...")
     try:
-        from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers
+        from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers, read_goal_scorers
 
         # Filtrer les events éco AVANT Gemini — réduit ~30% des appels
         events_for_gemini = [e for e in events if not e.get("_eco")]
@@ -1035,6 +1035,26 @@ def run_pipeline(
             jersey_map.update(gemini_jerseys)
             print(f"  Gemini jerseys : {len(gemini_jerseys)} numéros lus "
                   f"(buts+tirs 3 frames + {len(seen_general)} généraux)")
+
+        # Lecture ciblée buteurs + passeurs sur frames de buts confirmés
+        # Bien plus fiable que les crops génériques
+        try:
+            confirmed_goals = [
+                e for e in events_validated
+                if e.get("type") in ("goal", "score")
+                and e.get("gemini_validated", False)
+            ]
+            if confirmed_goals:
+                from ai.gemini_validator import read_goal_scorers
+                goal_jerseys = read_goal_scorers(
+                    video_path  = video_path,
+                    goal_events = confirmed_goals,
+                    fps         = fps,
+                )
+                jersey_map.update(goal_jerseys)
+                print(f"  Gemini goal scorers : {len(goal_jerseys)} buteur(s)/passeur(s) identifié(s)")
+        except Exception as _ej:
+            print(f"  Goal scorers ignoré : {_ej}")
 
     except Exception as e:
         print(f"  Gemini validation ignoree : {e}")
