@@ -24,7 +24,7 @@ except ImportError:
 # ─────────────────────────────────────────
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
 # ─────────────────────────────────────────
-OFFSETS_POSTHOC = [-3, 0, +3]  # 3 offsets serrés — SHOT→GOAL gère la précision
+OFFSETS_POSTHOC = [0, -5, 5]   # 3 offsets : 0 (instant), -5s (célébration avant), +5s (kickoff après)
 OFFSETS_EVENTS  = [-1, 0, 2]
 
 _METRICS = {
@@ -589,7 +589,7 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
         goal_score = int(parsed.get("goal_score", 0))
         # Convertir goal_score en goal_votes pour la logique pipeline
         # score >= 5 = 2 votes (fiable), score 3-4 = 1 vote (borderline)
-        goal_votes = 2 if goal_score >= 5 else (1 if goal_score >= 3 else 0)
+        goal_votes = 2 if goal_score >= 6 else (1 if goal_score >= 4 else 0)  # seuils montés pour réduire FP
 
         # Valider le timestamp dans la fenêtre
         if is_goal and timestamp is not None:
@@ -956,11 +956,7 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
     offsets_s = sorted(offsets_s, key=lambda x: abs(x))
 
     _t_event = event.get('time', 0)
-    # Zone cible : enrichir les offsets avec +1s et +2s (couvre la fenêtre critique juste après le tir)
-    # +2 appels Gemini seulement pour ces candidats
-    if 100 <= _t_event <= 160 or 570 <= _t_event <= 600:
-        offsets_s = sorted(set(offsets_s) | {1, 2}, key=lambda x: abs(x))
-        print(f"  [DEBUG ZONE] Candidat dans zone cible — offsets enrichis: {offsets_s}")
+    # Note : offsets enrichis {1, 2} retirés — coût +2 appels Gemini sans gain prouvé
 
     print(f"  [PRE-GEMINI] t={_t_event:.2f}s "
           f"source={source} offsets={offsets_s} conf={tracker_conf:.2f}")
@@ -1152,8 +1148,11 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
         # 🎯 DECISION FINALE
         # ─────────────────────────────
         final_score = goal_score - neg_score
+        # Si Gemini a vu un but (goal_votes >= 1), ne pas laisser neg_score l'annuler
+        # Une touche/corner avant un but est normal (corner → but, remise → but)
+        final_score_no_neg = goal_score if goal_votes >= 1 else final_score
 
-        print(f"  [FINAL SCORE] goal={goal_score:.2f} neg={neg_score:.2f} total={final_score:.2f}")
+        print(f"  [FINAL SCORE] goal={goal_score:.2f} neg={neg_score:.2f} total={final_score:.2f} (no_neg={final_score_no_neg:.2f})")
         print(
             f"[DEBUG FINAL] goal_votes={goal_votes} "
             f"shot_votes={shot_votes} "
@@ -1167,7 +1166,18 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
                 "_shot_votes": shot_votes,
             }
 
-        if goal_votes >= 1 and goal_score >= 0.5:
+        # Si Gemini a vu un but ET que le score positif est suffisant, ignorer les pénalités
+        if goal_votes >= 1 and final_score_no_neg >= 0.20:  # 0.20 = seuil bas mais raisonnable
+            print(f"  [GOAL OVERRIDES NEG] goal_votes={goal_votes} → but confirmé malgré neg_score={neg_score:.2f}")
+            return {{
+                "type": "goal",
+                "confiance": min(best_conf, 0.70),
+                "description": best_result.get("description", "") if best_result else "",
+                "_goal_votes": goal_votes,
+                "_shot_votes": shot_votes,
+            }}
+
+        if goal_votes >= 1 and goal_score >= 0.25:  # 1 vote / 3 offsets = 0.33 > 0.25 ✓
             return {
                 "type": "goal",
                 "confiance": min(best_conf, 0.7),
