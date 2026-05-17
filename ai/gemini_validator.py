@@ -1169,13 +1169,13 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
         # Si Gemini a vu un but ET que le score positif est suffisant, ignorer les pénalités
         if goal_votes >= 1 and final_score_no_neg >= 0.20:  # 0.20 = seuil bas mais raisonnable
             print(f"  [GOAL OVERRIDES NEG] goal_votes={goal_votes} → but confirmé malgré neg_score={neg_score:.2f}")
-            return {{
+            return {
                 "type": "goal",
                 "confiance": min(best_conf, 0.70),
                 "description": best_result.get("description", "") if best_result else "",
                 "_goal_votes": goal_votes,
                 "_shot_votes": shot_votes,
-            }}
+            }
 
         if goal_votes >= 1 and goal_score >= 0.25:  # 1 vote / 3 offsets = 0.33 > 0.25 ✓
             return {
