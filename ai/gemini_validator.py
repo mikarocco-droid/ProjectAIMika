@@ -398,8 +398,10 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
 Question: Is the ball clearly INSIDE the goal (behind the goal line, inside the net)?
 
 Rules — read carefully:
-- YES: ball is fully past the goal line, inside the net, net is visibly deformed by the ball
+- YES: ball is fully past the goal line, inside the net, net is VISIBLY BULGING/DEFORMED by the ball (net pushed inward)
 - YES: goalkeeper is retrieving the ball from INSIDE the net (body inside goal area)
+- NO: ball is near the net or in front of it but net is flat/undisturbed → answer NO
+- NO: ball is beside the post or outside the goal frame → answer NO
 - NO: goalkeeper holding/catching the ball in his hands or arms (even if inside the goal area)
 - NO: goalkeeper picking up the ball while standing upright
 - NO: ball in front of the goal or on the goal line
@@ -529,7 +531,7 @@ SCORING SYSTEM — assign a score based on ALL frames combined:
 POSITIVE signals (accumulate across frames):
 +5 : center kickoff clearly visible (ball at center spot, both teams on opposite halves, static formation)
 +4 : unambiguous multi-player celebration (multiple players running toward each other, arms wide, hugging)
-+3 : ball clearly visible INSIDE the net (net deformed or ball unmistakably behind line)
++3 : ball unmistakably INSIDE the net — net is visibly BULGING/DEFORMED by the ball, AND ball is clearly behind the goal line between the posts. NOT just near the net.
 +3 : attacking players walking/jogging back toward center circle after action
 +1 : ball near goal line but position unclear
 
@@ -538,11 +540,17 @@ NEGATIVE signals (subtract immediately):
 -4 : ball clearly kicked/headed away from goal (defensive clearance)
 -4 : corner kick or throw-in visible immediately after
 -3 : goalkeeper standing upright with ball (not diving, not retrieving from inside net)
+-3 : ball visible beside/around the post or outside the frame of the goal (not between the posts)
 -2 : ball visible outside the net after the action
+
+CRITICAL RULE — avoid false positives on amateur pitches:
+The net is always visible in the background. A ball NEAR the net or in front of it is NOT a goal.
+Only award +3 if the net is clearly DEFORMED (pushed inward) by the ball, proving it crossed the line.
+If the net appears flat/undisturbed and the ball is near it → score 0 for that signal, not +3.
 
 DECISION:
 - total_score >= 5 → is_goal=true
-- total_score 3-4 → is_goal=true ONLY if ball in net clearly confirmed (+3 signal present)
+- total_score 3-4 → is_goal=true ONLY if net deformation clearly confirmed (+3 signal present)
 - total_score <= 2 → is_goal=false
 - goalkeeper holding ball detected (-5) → is_goal=false immediately, no exception
 
