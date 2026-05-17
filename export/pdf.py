@@ -116,7 +116,7 @@ def fix_highlight_times(highlights, fps=25):
         # Clip de but : remonter context_before secondes
         is_goal = (h.get("main_type") or "").lower() in ("goal", "score")
         if is_goal and t_start > 0:
-            t_start = max(0, t_start - 12)  # context_before=12s
+            t_start = max(0, t_start - 25)  # context_before=25s (aligné sports_config)
         if t_end <= t_start:
             t_end = t_start + (17 if is_goal else 7)
         h["time_start"] = t_start
@@ -485,8 +485,8 @@ def generate_pdf(result, output_path, sport="football"):
         gks   = {l: s for l, s in deduped.items() if s.get("is_goalkeeper")}
         max_xg = max((s.get("xg_total", 0) for s in field.values()), default=1) or 1
 
-        headers = ["Joueur", "Touch.", "Passes", "K.Pass", "Tirs", "Buts", "xG", "xA", "Note"]
-        widths  = [28, 18, 18, 16, 14, 14, 16, 16, 16]
+        headers = ["Joueur", "Touch.", "K.Pass", "Tirs", "Buts", "xG", "xA", "Note"]
+        widths  = [28, 18, 16, 14, 14, 16, 16, 16]
         pdf.table_row(headers, widths, is_header=True)
 
         sorted_field = sorted(
@@ -512,7 +512,6 @@ def generate_pdf(result, output_path, sport="football"):
             row = [
                 label,
                 s.get("touches", 0),
-                s.get("passes",  0),
                 kp if kp > 0 else "",
                 s.get("tirs",    0),
                 buts   if buts   > 0 else "",
@@ -565,7 +564,7 @@ def generate_pdf(result, output_path, sport="football"):
         badges = [
             ("Top Buteur",   top_by("buts"),          ACCENT2),
             ("Top xG",       _top_xg_val if _top_xg_val != "-" else "-", ACCENT3),
-            ("Top Passeur",  top_by("passes"),         ACCENT4),
+            ("Top Assists",  top_by("xa_total") or top_by("key_passes"), ACCENT4),
             ("Top Interc.",  top_by("interceptions"),  ACCENT),
         ]
         # Masquer Top xG si xG total = 0 (non fiable)
@@ -608,7 +607,13 @@ def generate_pdf(result, output_path, sport="football"):
         pdf.rect(tl_x + 5, tl_y + 10, tl_w - 10, 1.5, "F")
 
         for h in highlights[:15]:
-            t     = float(h.get("time_start", 0))
+            # Afficher le temps du but/tir, pas le début du clip
+            _ev_time = float(h.get("time") or h.get("event_time") or 0)
+            if _ev_time == 0 and h.get("frame"):
+                _ev_time = float(h["frame"]) / fps
+            if _ev_time == 0:
+                _ev_time = float(h.get("time_start", 0)) + 25  # fallback : start + context
+            t     = _ev_time
             htype = h.get("main_type", "shot")
             color = ACCENT2 if htype in ("goal", "score") else ACCENT
             pct   = min(t / max(dur_s, 1), 0.98)
