@@ -920,6 +920,7 @@ def run_pipeline(
                             and _gv_stg >= 2):
                         goal_t = result["timestamp"]
                         too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
+                        _kickoff_fp = False  # filtre retiré : rejetait de vraies actions
                         # Exiger un signal physique posthoc dans la fenêtre tir→but
                         # Évite de valider un kickoff initial confondu avec un kickoff après but
                         # Utiliser les posthoc BRUTS (avant filtrage Gemini)
@@ -935,7 +936,7 @@ def run_pipeline(
                         _has_physical = any(abs(pt - goal_t) <= 30 for pt in _posthoc_times)
                         if not _has_physical:
                             print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±30s")
-                        if not too_close and _has_physical:
+                        if not too_close and _has_physical and not _kickoff_fp:
                             new_goal = {
                                 "type":             "goal",
                                 "time":             goal_t,
@@ -1049,7 +1050,7 @@ def run_pipeline(
                 # Construire le dict {goal_time: clip_path} depuis les highlights
                 # pour que read_goal_scorers utilise les clips Full HD
                 _hl_clips = {}
-                for _hl in (highlights or []):
+                for _hl in []:
                     _hl_t = float(_hl.get("time") or _hl.get("event_time") or 0)
                     _hl_f = _hl.get("file", "")
                     if _hl_t > 0 and _hl_f:
