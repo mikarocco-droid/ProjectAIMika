@@ -610,7 +610,7 @@ def generate_pdf(result, output_path, sport="football"):
             # Afficher le temps du but/tir, pas le début du clip
             _ev_time = float(h.get("time") or h.get("event_time") or 0)
             if _ev_time == 0 and h.get("frame"):
-                _ev_time = float(h["frame"]) / fps
+                _ev_time = float(h["frame"]) / 25.0  # fps fixe 25
             if _ev_time == 0:
                 _ev_time = float(h.get("time_start", 0)) + 25  # fallback : start + context
             t     = _ev_time
