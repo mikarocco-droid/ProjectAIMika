@@ -17,9 +17,9 @@ SPORT_CONFIG = {
         },
         "goal_cooldown":   3750,
         "shot_cooldown":   75,
-        "context_before":  12,
+        "context_before":  25,   # remonté 12→25 : couvre la phase de jeu avant le tir
         "context_after":   4,
-        "context_goal":    5,
+        "context_goal":    8,    # remonté 5→8 : voir la célébration complète
         "goal_width_m":    7.32,
         "pitch_length_m":  105.0,
         "pitch_width_m":   68.0,
