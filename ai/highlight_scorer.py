@@ -121,10 +121,7 @@ def score_highlight(video_path, highlight, sport="football"):
             f"- Gardien qui tient ou porte le ballon → type_reel = 'goalkeeper_action'\n"
             f"- Relance à la main ou au pied du gardien → type_reel = 'goalkeeper_action'\n"
             f"- Dégagement de tête d'un défenseur → type_reel = 'defensive_clearance'\n"
-            f"- Dégagement du poing du gardien → type_reel = 'goalkeeper_action'\n"
-            f"- Passe latérale ou longue balle qui sort en touche sans danger → type_reel = 'touche', score <= 2\n"
-            f"- Balle qui sort en touche depuis le milieu du terrain → type_reel = 'touche', score <= 2\n"
-            f"- Action sans danger réel hors de la surface adverse → score <= 3"
+            f"- Dégagement du poing du gardien → type_reel = 'goalkeeper_action'"
         )]
 
         for i, frame in enumerate(frames):
@@ -213,10 +210,18 @@ def score_all_highlights(
             continue
 
         # FIX position — filtrer goalkeeper_action, defensive_clearance
-        if result["type_reel"] in [
+        # Exception : les buts Gemini-validés ne sont JAMAIS filtrés
+        _is_confirmed_goal = (h.get("main_type") == "goal"
+                               and h.get("gemini_scored_input", {}).get("gemini_validated")
+                               or h.get("events", [{}])[0].get("gemini_validated", False)
+                               if h.get("events") else False)
+        # Plus simple : vérifier directement le type original
+        _is_goal_highlight = h.get("main_type") == "goal"
+        if (result["type_reel"] in [
             "goalkeeper_action", "defensive_clearance",
             "touche", "corner", "none"
-        ] and result["score"] < 5:
+        ] and result["score"] < 4
+                and not _is_goal_highlight):
             filtered += 1
             continue
 
