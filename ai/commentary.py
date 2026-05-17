@@ -338,22 +338,44 @@ def generate_commentary(
         pool   = _COMMENTARY.get(etype, _DEFAULT)
         player = _format_player(e, jersey_map)
 
-        # Choisir le commentaire le moins utilisé globalement
-        comment = _learner.get_least_used(etype, pool)
+        # Utiliser la description Gemini si disponible et suffisamment riche
+        # Gemini fournit une description contextualisée bien meilleure que les pools
+        _gemini_desc = (e.get("description") or e.get("desc") or "").strip()
+        _gemini_titre = (e.get("titre") or "").strip()
+        _use_gemini = (
+            _gemini_desc
+            and len(_gemini_desc) >= 20
+            and etype in ("goal", "score", "shot")
+        )
 
-        # Éviter les répétitions consécutives (fenêtre 3)
-        attempts = 0
-        while comment in used_recent[-3:] and attempts < len(pool):
-            comment  = random.choice(pool)
-            attempts += 1
+        if _use_gemini:
+            # Priorité au titre Gemini (court, percutant) + desc si dispo
+            if _gemini_titre and len(_gemini_titre) >= 10:
+                comment = _gemini_titre
+                if player and etype in ["goal", "shot"]:
+                    comment = comment.rstrip("!.") + f" — {player} !"
+            else:
+                # Utiliser directement la description Gemini complète
+                comment = _gemini_desc
+                if player and etype in ["goal", "shot"]:
+                    comment = comment.rstrip("!.") + f" — {player} !"
+        else:
+            # Fallback : pool prédéfini
+            comment = _learner.get_least_used(etype, pool)
 
-        # Ajouter le numéro de joueur si disponible
-        if player and etype in ["goal", "shot", "dribble"]:
-            comment = comment.rstrip("!.") + f"{player} !"
+            # Éviter les répétitions consécutives (fenêtre 3)
+            attempts = 0
+            while comment in used_recent[-3:] and attempts < len(pool):
+                comment  = random.choice(pool)
+                attempts += 1
+
+            # Ajouter le numéro de joueur si disponible
+            if player and etype in ["goal", "shot", "dribble"]:
+                comment = comment.rstrip("!.") + f"{player} !"
 
         # Ajouter un suffixe contextuel si pertinent
         suffix = _get_context_suffix(e, context, i, total)
-        if suffix:
+        if suffix and not _use_gemini:
             comment = f"{comment} {suffix}"
 
         lines.append(comment)
