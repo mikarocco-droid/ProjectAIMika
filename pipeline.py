@@ -1295,6 +1295,33 @@ def run_pipeline(
         )
         highlights = normalize_highlights(highlights, mode=mode)
 
+        # FIX B — propager event_time depuis l'event source dans chaque highlight
+        # Permet à pdf.py d'afficher le vrai timestamp de l'action (pas time_start clip)
+        _event_by_time = {}
+        for _e in events:
+            _t = round(float(_e.get("time", 0)), 1)
+            if _e.get("type") in ("goal", "score", "shot"):
+                _event_by_time[_t] = _e
+        for _h in highlights:
+            if "event_time" not in _h or not _h.get("event_time"):
+                # Chercher l'event source par time_start (clip = event - context_before)
+                _ts = float(_h.get("time_start", 0))
+                _htype = _h.get("main_type", "")
+                _context = 25.0 if _htype in ("goal", "score") else 12.0
+                _approx_event_t = round(_ts + _context, 1)
+                # Chercher dans ±3s
+                _best = None
+                for _et, _ev in _event_by_time.items():
+                    if abs(_et - _approx_event_t) < 3.0:
+                        if _best is None or abs(_et - _approx_event_t) < abs(_best - _approx_event_t):
+                            _best = _et
+                if _best is not None:
+                    _h["event_time"] = _best
+                    _h["time"]       = _best  # alias utilisé par pdf.py
+                elif _h.get("time") is None:
+                    _h["event_time"] = _approx_event_t
+                    _h["time"]       = _approx_event_t
+
         try:
             from ai.highlight_scorer import score_all_highlights
             highlights = score_all_highlights(
@@ -1343,8 +1370,32 @@ def run_pipeline(
         mvp               = get_mvp(ratings)
         mvp_label         = resolve_mvp_label(mvp, stats, jersey_map)
 
+        # FIX C — enrichir les events commentés avec les descriptions Gemini des highlights
+        # Les highlights scorés ont titre/description Gemini — les injecter dans les events
+        _hl_by_time = {}
+        for _h in highlights:
+            _t = round(float(_h.get("event_time") or _h.get("time") or _h.get("time_start", 0)), 1)
+            _hl_by_time[_t] = _h
+        _events_for_commentary = []
+        for _e in ranked_highlights[:10]:
+            _e = dict(_e)
+            _t = round(float(_e.get("time", 0)), 1)
+            # Chercher le highlight correspondant dans ±2s
+            _matching_hl = None
+            for _ht, _hv in _hl_by_time.items():
+                if abs(_ht - _t) < 2.0:
+                    _matching_hl = _hv
+                    break
+            if _matching_hl:
+                # Injecter titre/description Gemini si disponibles
+                if _matching_hl.get("titre") and not _e.get("titre"):
+                    _e["titre"] = _matching_hl["titre"]
+                if _matching_hl.get("description") and not _e.get("description"):
+                    _e["description"] = _matching_hl["description"]
+            _events_for_commentary.append(_e)
+
         commentary = generate_commentary(
-            ranked_highlights[:10],
+            _events_for_commentary,
             jersey_map = jersey_map,
             sport      = sport,
             formation  = formation,
@@ -1411,37 +1462,54 @@ def run_pipeline(
     summary["is_summary"]    = is_summary
     summary["context_stats"] = ctx_stats
 
-    # V9.7+ — shots/xG/goals depuis events_clean (tirs validés par highlights)
-    n_highlight_shots = sum(1 for h in highlights if h.get("main_type") == "shot")
-    n_highlight_goals = sum(1 for h in highlights if h.get("main_type") in ("goal", "score"))
-    # Buts = depuis events_validated (source de vérité) — pas depuis highlights
-    # Les highlights peuvent inclure des SHOT→GOAL faux positifs
+    # V9.8 — shots/xG/goals recalculés depuis highlights + events_validated
+    # ─────────────────────────────────────────────────────────────────────
+    # FIX A.1 — buts depuis events_validated (source de vérité)
     n_validated_goals = sum(1 for e in events_validated if e.get("type") in ("goal", "score"))
     summary["goals"] = n_validated_goals
 
-    # V9.7 — recalculer stats joueurs (tirs + xG) depuis highlights filtrés
-    # Les stats brutes de compute_stats incluent tous les faux tirs
-    highlight_times = {round(h.get("time_start", 0)): h for h in highlights}
+    # FIX A.2 — shots = highlights shots + highlights goals (car SHOT→GOAL compte)
+    n_highlight_shots = sum(1 for h in highlights if h.get("main_type") == "shot")
+    n_highlight_goals = sum(1 for h in highlights if h.get("main_type") in ("goal", "score"))
+    summary["shots"]  = n_highlight_shots  # tirs cadrés affichés = highlights shots seulement
+
+    # FIX A.3 — xG total = somme xG de TOUS les highlights (shots + goals)
+    _total_xg = 0.0
+    for h in highlights:
+        _total_xg += float(h.get("xg", 0) or 0)
+    summary["total_xg"] = round(_total_xg, 2)
+
+    # V9.8 — recalculer stats joueurs depuis highlights (shots ET goals)
+    # Réinitialiser d'abord
     for pid in stats:
         stats[pid]["tirs"]     = 0
         stats[pid]["xg_total"] = 0.0
+        stats[pid]["buts"]     = 0
+
     for h in highlights:
-        if h.get("main_type") != "shot":
+        htype = h.get("main_type", "")
+        pid   = str(h.get("player", ""))
+        if not pid:
             continue
-        pid = str(h.get("player", ""))
-        if pid and pid in stats:
+
+        # Créer l'entrée joueur dans stats si absente (buteur hors top-touches)
+        if pid not in stats:
+            _label = get_player_label(pid, jersey_map)
+            stats[pid] = {
+                "touches": 0, "passes": 0, "key_passes": 0,
+                "tirs": 0, "buts": 0, "arrets": 0,
+                "interceptions": 0, "dribbles": 0,
+                "progressive_runs": 0, "xg_total": 0.0, "xa_total": 0.0,
+                "danger_total": 0, "is_goalkeeper": False,
+                "jersey": jersey_map.get(pid), "label": _label, "team": None,
+            }
+
+        if htype == "shot":
             stats[pid]["tirs"]     += 1
             stats[pid]["xg_total"] += float(h.get("xg", 0) or 0)
-        elif pid:
-            # joueur pas encore dans stats (edge case) → ignorer
-            pass
-    # Recalculer aussi les buts depuis highlights
-    for h in highlights:
-        if h.get("main_type") not in ("goal", "score"):
-            continue
-        pid = str(h.get("player", ""))
-        if pid and pid in stats:
-            stats[pid]["buts"] = stats[pid].get("buts", 0) + 1
+        elif htype in ("goal", "score"):
+            stats[pid]["buts"]     += 1
+            stats[pid]["xg_total"] += float(h.get("xg", 0) or 0)
 
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
           f"xG={summary['total_xg']} | joueurs={summary['players']}")
