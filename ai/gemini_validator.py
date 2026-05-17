@@ -540,7 +540,7 @@ NEGATIVE signals (subtract immediately):
 -4 : ball clearly kicked/headed away from goal (defensive clearance)
 -4 : corner kick or throw-in visible immediately after
 -3 : goalkeeper standing upright with ball (not diving, not retrieving from inside net)
--3 : ball visible beside/around the post or outside the frame of the goal (not between the posts)
+-1 : ball visible beside/around the post or outside the frame of the goal (not between the posts) — weak signal, overridden by ball-in-net evidence
 -2 : ball visible outside the net after the action
 
 CRITICAL RULE — avoid false positives on amateur pitches:
