@@ -704,23 +704,39 @@ def run_pipeline(
                         print(f"  [DEBUG CLIP] {os.path.basename(_out)}")
         # ────────────────────────────────────────────────────────────
 
-        # ── Filtre posthoc par proximité terminal ─────────────────────────────
-        # Ne garder les candidats posthoc que s'ils sont proches d'un event
-        # terminal ±20s — terminal_events identifie les vraies actions dangereuses
-        # Les candidats terminal passent toujours (source != posthoc)
+        # ── Filtre posthoc : déclencheurs offensifs seulement ────────────────
+        # Un posthoc n'est conservé que si proche d'un terminal OFFENSIF.
+        # goalkeeper_save / clearance / possession_recovery = contextes défensifs
+        # → ils déclenchent des posthoc non-buts qui polluent Gemini
+        #
+        # Déclencheurs OFFENSIFS retenus : goal, shot_on_target, rebound_attack
+        # Déclencheurs DÉFENSIFS rejetés : goalkeeper_save, clearance, corner_or_goalkick
+        #
+        # Exception : clearance/save à ±5s d'un posthoc fort (score ≥ 8)
+        # → ballon dans filet visible juste après un dégagement = rebond rentré
+
+        _OFFENSIVE_TYPES = {"goal", "shot_on_target", "rebound_attack",
+                             "shot", "blocked_shot", "loose_ball"}
+        _DEFENSIVE_TYPES = {"goalkeeper_save", "clearance",
+                             "corner_or_goalkick", "possession_recovery"}
+
         _terminal_times_filter = [
             float(ev.get("time", 0)) for ev in (_terminal_evts or [])
         ]
-        # Fenêtres différenciées par type de terminal :
-        # terminal_goal → ±20s (action directement liée)
-        # goalkeeper_save / clearance → ±10s (proxy moins direct)
         _terminal_goals_times = [
             float(ev.get("time", 0)) for ev in (_terminal_evts or [])
             if ev.get("terminal_type") in ("goal",)
         ]
-        _terminal_other_times = [
+        # Terminaux offensifs (hors goal pur — déjà couvert)
+        _terminal_offensive_times = [
             float(ev.get("time", 0)) for ev in (_terminal_evts or [])
-            if ev.get("terminal_type") not in ("goal",)
+            if ev.get("terminal_type") in _OFFENSIVE_TYPES
+            and ev.get("terminal_type") != "goal"
+        ]
+        # Terminaux défensifs — fenêtre très réduite (±5s uniquement)
+        _terminal_defensive_times = [
+            float(ev.get("time", 0)) for ev in (_terminal_evts or [])
+            if ev.get("terminal_type") in _DEFENSIVE_TYPES
         ]
 
         def _is_posthoc(e):
@@ -731,12 +747,18 @@ def run_pipeline(
             if not _terminal_times_filter:
                 return True  # pas de terminal → garder tout
             t = float(e.get("time", 0))
-            # ±20s pour les terminal_goal (action directement liée au but)
+            # ±20s pour terminal_goal
             if any(abs(t - tt) <= 20.0 for tt in _terminal_goals_times):
                 return True
-            # ±10s pour goalkeeper_save / clearance (proxy moins direct)
-            if any(abs(t - tt) <= 10.0 for tt in _terminal_other_times):
+            # ±15s pour terminal offensif (shot, rebound...)
+            if any(abs(t - tt) <= 15.0 for tt in _terminal_offensive_times):
                 return True
+            # ±5s pour terminal défensif UNIQUEMENT si score posthoc très fort
+            # (rebond rentré juste après un dégagement)
+            posthoc_score = float(e.get("score", e.get("danger", 0)))
+            if posthoc_score >= 8.0:
+                if any(abs(t - tt) <= 5.0 for tt in _terminal_defensive_times):
+                    return True
             return False
 
         _n_before = sum(1 for e in events_for_gemini if e.get("type") == "goal")
