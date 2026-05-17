@@ -889,12 +889,13 @@ def run_pipeline(
                 def _analyze_shot(args):
                     shot, st, window = args
                     return shot, st, find_goal_after_shot(
-                        video_path = video_path,
-                        shot_time  = st,
-                        window     = window,
-                        fps        = fps,
-                        frame_w    = _frame_w,
-                        frame_h    = _frame_h,
+                        video_path           = video_path,
+                        shot_time            = st,
+                        window               = window,
+                        fps                  = fps,
+                        frame_w              = _frame_w,
+                        frame_h              = _frame_h,
+                        confirmed_goal_times = existing_goal_times,  # FIX kickoff fantôme
                     )
 
                 shot_goal_candidates = []
@@ -911,7 +912,9 @@ def run_pipeline(
 
                 for shot, st, window in shots_to_analyze:
                     result = results_map.get(st, (shot, None))[1]
-                    already_covered = any(abs(gt - st) < 35 for gt in detected_goal_times)
+                    # FIX : already_covered élargi à 200s — un kickoff peut rester visible
+                    # longtemps après un but (remise en jeu lente, caméra large)
+                    already_covered = any(abs(gt - st) < 200 for gt in detected_goal_times)
                     if already_covered:
                         continue
                     _gv_stg = result.get("goal_votes", 1) if result else 0
