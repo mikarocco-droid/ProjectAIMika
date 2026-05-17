@@ -1046,10 +1046,19 @@ def run_pipeline(
             ]
             if confirmed_goals:
                 from ai.gemini_validator import read_goal_scorers
+                # Construire le dict {goal_time: clip_path} depuis les highlights
+                # pour que read_goal_scorers utilise les clips Full HD
+                _hl_clips = {}
+                for _hl in (highlights or []):
+                    _hl_t = float(_hl.get("time") or _hl.get("event_time") or 0)
+                    _hl_f = _hl.get("file", "")
+                    if _hl_t > 0 and _hl_f:
+                        _hl_clips[_hl_t] = _hl_f
                 goal_jerseys = read_goal_scorers(
-                    video_path  = video_path,
-                    goal_events = confirmed_goals,
-                    fps         = fps,
+                    video_path      = video_path,
+                    goal_events     = confirmed_goals,
+                    fps             = fps,
+                    highlight_clips = _hl_clips or None,
                 )
                 jersey_map.update(goal_jerseys)
                 print(f"  Gemini goal scorers : {len(goal_jerseys)} buteur(s)/passeur(s) identifié(s)")
