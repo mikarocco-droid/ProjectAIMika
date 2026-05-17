@@ -711,7 +711,17 @@ def run_pipeline(
         _terminal_times_filter = [
             float(ev.get("time", 0)) for ev in (_terminal_evts or [])
         ]
-        _POSTHOC_TERMINAL_WINDOW = 20.0  # secondes
+        # Fenêtres différenciées par type de terminal :
+        # terminal_goal → ±20s (action directement liée)
+        # goalkeeper_save / clearance → ±10s (proxy moins direct)
+        _terminal_goals_times = [
+            float(ev.get("time", 0)) for ev in (_terminal_evts or [])
+            if ev.get("terminal_type") in ("goal",)
+        ]
+        _terminal_other_times = [
+            float(ev.get("time", 0)) for ev in (_terminal_evts or [])
+            if ev.get("terminal_type") not in ("goal",)
+        ]
 
         def _is_posthoc(e):
             src = str(e.get("detected_from", e.get("source", "")))
@@ -721,8 +731,13 @@ def run_pipeline(
             if not _terminal_times_filter:
                 return True  # pas de terminal → garder tout
             t = float(e.get("time", 0))
-            return any(abs(t - tt) <= _POSTHOC_TERMINAL_WINDOW
-                       for tt in _terminal_times_filter)
+            # ±20s pour les terminal_goal (action directement liée au but)
+            if any(abs(t - tt) <= 20.0 for tt in _terminal_goals_times):
+                return True
+            # ±10s pour goalkeeper_save / clearance (proxy moins direct)
+            if any(abs(t - tt) <= 10.0 for tt in _terminal_other_times):
+                return True
+            return False
 
         _n_before = sum(1 for e in events_for_gemini if e.get("type") == "goal")
         events_for_gemini = [
