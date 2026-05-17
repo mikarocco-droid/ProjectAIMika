@@ -1285,6 +1285,94 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
     except Exception as e:
         print(f"  Gemini jersey error : {e}")
         return {}
+
+def read_goal_scorers(video_path, goal_events, fps=25):
+    """
+    Pour chaque but confirmé, demande à Gemini :
+    - le numéro du buteur
+    - le numéro du passeur décisif (assist)
+    En envoyant la frame du but + quelques frames avant.
+    Bien plus fiable que des crops de joueurs inconnus.
+    """
+    if not GEMINI_AVAILABLE or not goal_events:
+        return {}
+
+    jersey_map = {}
+
+    try:
+        client = get_client()
+    except Exception:
+        return {}
+
+    for ev in goal_events:
+        goal_t  = float(ev.get("time", 0))
+        frame_g = int(ev.get("frame", goal_t * fps))
+        pid     = str(ev.get("player", ""))
+
+        # Déjà identifié
+        if pid and pid in jersey_map:
+            continue
+
+        try:
+            # 3 frames : -3s, moment du but, +1s
+            frames = []
+            cap = cv2.VideoCapture(video_path)
+            for offset_s in [-3, 0, 1]:
+                fid = max(0, frame_g + int(offset_s * fps))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
+                ret, fr = cap.read()
+                if ret:
+                    frames.append(fr)
+            cap.release()
+
+            if not frames:
+                continue
+
+            t_mm = f"{int(goal_t//60):02d}:{int(goal_t%60):02d}"
+            parts = [text_to_part(
+                f"But marqué à {t_mm}. Voici 3 frames autour du but.\n"
+                f"Réponds UNIQUEMENT en JSON sans markdown :\n"
+                f'{{"buteur": <numero entier ou null>, "passeur": <numero entier ou null>}}\n'
+                f"- buteur : numéro de maillot du joueur qui marque (lisible sur son dos/poitrine)\n"
+                f"- passeur : numéro du joueur qui fait la dernière passe décisive (null si inconnu)\n"
+                f"Mets null si le numéro n'est pas clairement lisible."
+            )]
+            for fr in frames:
+                # Envoyer la frame pleine taille (réduite pour limiter tokens)
+                fr_small = cv2.resize(fr, (640, 360))
+                parts.append(frame_to_part(fr_small))
+
+            response = _call_gemini(client, parts)
+            if response is None:
+                continue
+
+            text = extract_response_text(response)
+            if not text:
+                continue
+
+            text = re.sub(r"```json|```", "", text).strip()
+            data = json.loads(text)
+
+            buteur  = data.get("buteur")
+            passeur = data.get("passeur")
+
+            if buteur is not None and 1 <= int(buteur) <= 99:
+                # Associer au player_id si connu, sinon créer entrée temporelle
+                key = pid if pid else f"goal_{t_mm}"
+                jersey_map[key] = int(buteur)
+                ev["player_jersey"] = int(buteur)
+                print(f"  [JERSEY GOAL] {t_mm} → buteur=#{buteur}"
+                      f"{f' passeur=#{passeur}' if passeur else ''}")
+
+            if passeur is not None and 1 <= int(passeur) <= 99:
+                ev["assist_jersey"] = int(passeur)
+
+        except Exception as e:
+            print(f"  [JERSEY GOAL] erreur {t_mm} : {e}")
+            continue
+
+    return jersey_map
+
 # ------------------------------------------
 # RECUPERER RESOLUTION VIDEO
 # ------------------------------------------
@@ -1461,6 +1549,10 @@ def validate_events_with_gemini(
         event["gemini_validated"] = True
         event["gemini_type"]      = gemini_type
         event["gemini_conf"]      = confiance
+        # Stocker la description complète pour le commentary
+        _full_desc = result.get("description", "")
+        if _full_desc:
+            event["description"] = _full_desc
 
     events = [e for e in events if not e.get("_remove", False)]
     print(f"  Gemini : {validated} validés | {corrected} corrigés | {removed} supprimés")
