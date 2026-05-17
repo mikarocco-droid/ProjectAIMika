@@ -238,7 +238,10 @@ def create_highlights(
         frame      = e.get("frame", 0)
         t          = frame_to_time(frame, fps)
         is_goal    = e.get("type") in ["goal", "score"]
-        time_start = max(0, t - context_before)
+        # Les buts utilisent context_before plein (couvre la phase de jeu)
+        # Les tirs utilisent la moitié (pas besoin de remonter aussi loin)
+        _before    = context_before if is_goal else max(context_before // 2, 8)
+        time_start = max(0, t - _before)
         time_end   = t + (context_goal if is_goal else context_after)
 
         filename    = f"highlight_{i+1}_{e.get('type','shot')}.mp4"
