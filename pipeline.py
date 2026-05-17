@@ -481,7 +481,8 @@ def run_pipeline(
             print(f"  Filtre xG=0 : {n_goals_raw - n_goals_filtered} faux but(s) supprimés")
 
         # ── Étape 2 : goal_posthoc ────────────────────────────────────────────
-        _raw_posthoc_times = []  # init avant try — préservé pour SHOT→GOAL
+        _raw_posthoc_times  = []  # init avant try — préservé pour SHOT→GOAL
+        _raw_posthoc_scored = []  # idem avec scores — stratégie 3
         try:
             fast_goals = detect_fast_goals_from_ball(
                 frames_data = frames_data,
@@ -499,6 +500,12 @@ def run_pipeline(
             # Utilisé plus tard par SHOT→GOAL pour valider la présence d'un signal physique
             _raw_posthoc_times = [
                 e.get("time", 0) for e in (fast_goals or [])
+                if isinstance(e, dict)
+            ]
+            # Stratégie 3 — sauvegarder aussi les scores posthoc pour confirmation hybride
+            _raw_posthoc_scored = [
+                {"time": e.get("time", 0), "score": float(e.get("score", e.get("danger", 0)))}
+                for e in (fast_goals or [])
                 if isinstance(e, dict)
             ]
         except Exception as eg:
@@ -917,51 +924,98 @@ def run_pipeline(
                     already_covered = any(abs(gt - st) < 200 for gt in detected_goal_times)
                     if already_covered:
                         continue
-                    _gv_stg = result.get("goal_votes", 1) if result else 0
-                    if (result and result.get("is_goal")
-                            and result.get("confidence", 0) >= 0.80  # abaissé 0.92→0.80 : kickoff visible = signal fort
-                            and _gv_stg >= 2):
-                        goal_t = result["timestamp"]
-                        too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
-                        _kickoff_fp = False  # filtre retiré : rejetait de vraies actions
-                        # Exiger un signal physique posthoc dans la fenêtre tir→but
-                        # Évite de valider un kickoff initial confondu avec un kickoff après but
-                        # Utiliser les posthoc BRUTS (avant filtrage Gemini)
-                        # pour ne pas rater les buts dont le posthoc a été supprimé
-                        # Posthoc BRUTS (avant filtrage Gemini) — évite de rejeter
-                        # des buts dont le candidat posthoc a été supprimé en amont
-                        _posthoc_times = _raw_posthoc_times if _raw_posthoc_times else [
-                            e.get("time", 0) for e in events
-                            if isinstance(e, dict)
-                            and e.get("type") in ("goal", "score")
-                            and e.get("source", "").startswith("goal_posthoc")
-                        ]
-                        _has_physical = any(abs(pt - goal_t) <= 30 for pt in _posthoc_times)
-                        if not _has_physical:
-                            print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±30s")
-                        if not too_close and _has_physical and not _kickoff_fp:
-                            new_goal = {
-                                "type":             "goal",
-                                "time":             goal_t,
-                                "source":           "shot_to_goal_gemini",
-                                "detected_from":    "shot_to_goal_gemini",
-                                "confidence":       result["confidence"],
-                                "gemini_validated": True,
-                                "gemini_type":      "goal",
-                                "gemini_conf":      result["confidence"],
-                                "xg":               shot.get("xg", 0.5),
-                                "desc":             result.get("desc", ""),
-                                "player":           shot.get("player"),
-                                "team":             shot.get("team"),
-                                "x":                shot.get("x", _frame_w * 0.85),
-                                "y":                shot.get("y", _frame_h * 0.5),
-                                "frame":            int(goal_t * fps),
-                                "shot_linked":      True,
-                            }
-                            shot_goal_candidates.append(new_goal)
-                            existing_goal_times.append(goal_t)
-                            detected_goal_times.append(goal_t)
-                            print(f"  [SHOT→GOAL] ✅ BUT détecté à {int(goal_t//60):02d}:{int(goal_t%60):02d} conf={result['confidence']:.2f}")
+
+                    _gv_stg = result.get("goal_votes", 0) if result else 0
+                    _gs_stg = result.get("goal_score", 0) if result else 0
+                    _conf_stg = result.get("confidence", 0) if result else 0
+
+                    # ── Voie 1 : Gemini confiant (inchangé) ──────────────────────
+                    _gemini_confirms = (
+                        result
+                        and result.get("is_goal")
+                        and _conf_stg >= 0.80
+                        and _gv_stg >= 2
+                    )
+
+                    # ── Voie 2 : Stratégie 3 — confirmation hybride ──────────────
+                    # Gemini voit un signal partiel (score 1-4, ou is_goal=False mais score>0)
+                    # + posthoc fort (score ≥ 8) dans ±20s du tir → valider
+                    _posthoc_strong = max(
+                        (p["score"] for p in _raw_posthoc_scored
+                         if abs(p["time"] - st) <= 20),
+                        default=0
+                    )
+                    _gemini_partial = (
+                        result is not None
+                        and _gs_stg >= 1          # Gemini a vu au moins un signal positif
+                        and not (                  # mais pas un kickoff fantôme pur
+                            "+5" in result.get("desc", "")
+                            and _gs_stg <= 5
+                            and "+3" not in result.get("desc", "")
+                        )
+                    )
+                    _hybrid_confirms = (
+                        _gemini_partial
+                        and _posthoc_strong >= 8.0  # posthoc très confiant
+                        and not already_covered
+                    )
+
+                    if not (_gemini_confirms or _hybrid_confirms):
+                        continue
+
+                    # Déterminer le timestamp du but
+                    if _gemini_confirms:
+                        goal_t    = result["timestamp"]
+                        goal_conf = _conf_stg
+                        goal_src  = "shot_to_goal_gemini"
+                    else:
+                        # Hybride : utiliser le temps du posthoc fort comme timestamp
+                        _best_posthoc = max(
+                            (p for p in _raw_posthoc_scored if abs(p["time"] - st) <= 20),
+                            key=lambda p: p["score"],
+                            default=None
+                        )
+                        goal_t    = _best_posthoc["time"] if _best_posthoc else st + 5
+                        goal_conf = min(0.85, 0.70 + _posthoc_strong / 100)
+                        goal_src  = "shot_to_goal_hybrid"
+                        print(f"  [SHOT→GOAL HYBRID] tir={int(st//60):02d}:{int(st%60):02d} "
+                              f"posthoc_score={_posthoc_strong:.1f} gemini_score={_gs_stg} "
+                              f"→ but à {int(goal_t//60):02d}:{int(goal_t%60):02d}")
+
+                    too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
+                    _posthoc_times = _raw_posthoc_times if _raw_posthoc_times else [
+                        e.get("time", 0) for e in events
+                        if isinstance(e, dict)
+                        and e.get("type") in ("goal", "score")
+                        and e.get("source", "").startswith("goal_posthoc")
+                    ]
+                    _has_physical = any(abs(pt - goal_t) <= 30 for pt in _posthoc_times)
+                    if not _has_physical:
+                        print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±30s")
+                    if not too_close and _has_physical:
+                        new_goal = {
+                            "type":             "goal",
+                            "time":             goal_t,
+                            "source":           goal_src,
+                            "detected_from":    goal_src,
+                            "confidence":       goal_conf,
+                            "gemini_validated": True,
+                            "gemini_type":      "goal",
+                            "gemini_conf":      goal_conf,
+                            "xg":               shot.get("xg", 0.5),
+                            "desc":             result.get("desc", "") if result else "",
+                            "player":           shot.get("player"),
+                            "team":             shot.get("team"),
+                            "x":                shot.get("x", _frame_w * 0.85),
+                            "y":                shot.get("y", _frame_h * 0.5),
+                            "frame":            int(goal_t * fps),
+                            "shot_linked":      True,
+                        }
+                        shot_goal_candidates.append(new_goal)
+                        existing_goal_times.append(goal_t)
+                        detected_goal_times.append(goal_t)
+                        print(f"  [SHOT→GOAL] ✅ BUT détecté à {int(goal_t//60):02d}:{int(goal_t%60):02d} "
+                              f"conf={goal_conf:.2f} src={goal_src}")
 
                 if shot_goal_candidates:
                     events_validated = events_validated + shot_goal_candidates
