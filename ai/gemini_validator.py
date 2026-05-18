@@ -598,23 +598,30 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
         goal_score = int(parsed.get("goal_score", 0))
 
         # FIX kickoff fantôme — si le signal est UNIQUEMENT un kickoff (+5)
-        # et qu'un but déjà confirmé existe dans les 200s précédentes,
-        # ce kickoff appartient probablement à ce but antérieur → rejeter
+        # SANS aucun signal physique (ballon dans filet, gardien qui récupère)
+        # et qu'un but déjà confirmé existe dans les 200s précédentes → rejeter
         if is_goal and confirmed_goal_times:
+            _evidence_lower = evidence.lower()
+            _has_physical_signal = (
+                "+3" in evidence           # ball in net OU players walking back
+                and any(kw in _evidence_lower for kw in [
+                    "inside the net", "inside net", "net deform",
+                    "goalkeeper", "retrieving", "ball unmistakably",
+                    "ball clearly inside", "bulg"
+                ])
+            )
             _kickoff_only = (
-                goal_score <= 7          # signal faible = kickoff seul
-                and "+5" in evidence     # kickoff détecté
-                and "+3" not in evidence # pas de ballon dans filet
-                and "+4" not in evidence # pas de célébration
+                "+5" in evidence           # kickoff détecté
+                and not _has_physical_signal  # aucun signal physique de but
             )
             if _kickoff_only:
                 _recent_goal = any(
-                    0 < shot_time - gt < 200  # but confirmé dans les 200s avant ce tir
+                    0 < shot_time - gt < 200
                     for gt in confirmed_goal_times
                 )
                 if _recent_goal:
                     print(f"  [SHOT→GOAL] ❌ Kickoff fantôme rejeté t={int(shot_time//60):02d}:{int(shot_time%60):02d} "
-                          f"— kickoff appartient à un but antérieur (score={goal_score})")
+                          f"— kickoff sans signal physique, but antérieur dans 200s (score={goal_score})")
                     return {
                         "is_goal":    False,
                         "timestamp":  None,
@@ -1375,9 +1382,9 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
                 clip_offset = 25.0
                 cap = cv2.VideoCapture(clip_path)
                 clip_fps = cap.get(cv2.CAP_PROP_FPS) or fps
-                # FIX buteur : frames centrées sur le moment du tir (légèrement avant)
-                # Le buteur est visible au moment du tir, pas forcément après
-                for offset_s in [-4, -2, 0, 2, 4]:
+                # Fix buteur : le tireur est visible AVANT que le ballon entre dans le filet
+                # Densifier les frames dans les 4s précédant le but, éviter le post-but
+                for offset_s in [-5, -3, -2, -1, 0]:
                     fid = max(0, int((clip_offset + offset_s) * clip_fps))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
                     ret, fr = cap.read()
@@ -1386,9 +1393,8 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
                 cap.release()
                 source_label = "clip HD"
             else:
-                # Fallback : source vidéo originale — plus de frames, fenêtre centrée sur le tir
                 cap = cv2.VideoCapture(video_path)
-                for offset_s in [-4, -2, -1, 0, 1]:
+                for offset_s in [-5, -3, -2, -1, 0]:
                     fid = max(0, frame_g + int(offset_s * fps))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
                     ret, fr = cap.read()
@@ -1401,17 +1407,18 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
                 continue
 
             parts = [text_to_part(
-                f"But marqué à {t_mm} (frames depuis le {source_label}). "
-                f"Voici {len(frames)} frames couvrant les 4 secondes avant et après le but.\n"
+                f"But marqué à {t_mm}. Voici {len(frames)} frames prises dans les 5 secondes "
+                f"AVANT le but (depuis le {source_label}, pleine résolution).\n"
                 f"Réponds UNIQUEMENT en JSON sans markdown :\n"
                 f'{{"buteur": <numero entier ou null>, "passeur": <numero entier ou null>}}\n'
-                f"- buteur : numéro de maillot du DERNIER joueur qui frappe/tire le ballon vers le but\n"
-                f"  → c'est le joueur dont le pied ou la tête touche le ballon en dernier avant qu'il entre\n"
-                f"  → cherche le joueur en mouvement de frappe dans les frames AVANT le but\n"
-                f"  → ignore le gardien et les défenseurs\n"
+                f"- buteur : numéro de maillot du joueur qui TIRE le ballon vers le but\n"
+                f"  → cherche le joueur dont la jambe est en extension vers le ballon (geste de frappe)\n"
+                f"  → c'est souvent le joueur le plus proche du but avec le ballon au pied\n"
+                f"  → lis le numéro sur le dos ou la poitrine du maillot\n"
+                f"  → le gardien porte un maillot de couleur différente (gardien = pas le buteur)\n"
+                f"  → si plusieurs candidats, prends celui dont le pied est le plus proche du ballon\n"
                 f"- passeur : numéro du joueur qui fait la dernière passe décisive (null si inconnu)\n"
-                f"Mets null si le numéro n'est pas clairement lisible sur le maillot.\n"
-                f"IMPORTANT : lis le numéro directement sur le maillot, ne devine pas."
+                f"Réponds null si le numéro n'est vraiment pas lisible. Ne devine pas un numéro au hasard."
             )]
             for fr in frames:
                 # Clip HD : envoyer à taille native (1920×1080 pour lire les numéros)
