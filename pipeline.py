@@ -1115,9 +1115,20 @@ def run_pipeline(
                                  or float(goal_event.get("time", 0)) * fps)
                 goal_team  = goal_event.get("team")
 
-                # Fenêtre [-2s, 0s] avant le but : 50 frames à 25fps
-                window_frames = int(fps * 2)
-                best_pid, best_dist = None, float("inf")
+                # Résolution de traitement (960×540) vs pipeline (1920×1080)
+                # Seuil 120px en 1920p → 60px en 960p
+                # Mais les coordonnées players sont en résolution de traitement
+                proc_w = int(frames_data[0].get("frame_w", 960)) if frames_data else 960
+                _scale = proc_w / 1920.0
+                MAX_DIST = 120 * _scale  # ~60px en 960×540
+
+                # Fenêtre [-1.5s, 0s] — ne garder que juste avant le tir
+                # Plus la frame est proche du but, plus elle est fiable
+                window_frames = int(fps * 1.5)
+
+                # Accumuler un score par pid plutôt que prendre la dist min globale
+                # score = somme de (1/dist * poids_temporel) par pid
+                pid_scores = {}
 
                 for fid in range(max(0, goal_frame - window_frames), goal_frame + 1):
                     if fid >= len(frames_data):
@@ -1134,30 +1145,41 @@ def run_pipeline(
 
                     bx, by = float(ball_center[0]), float(ball_center[1])
 
+                    # Poids temporel : frames récentes valent plus
+                    # frame 0 (but) → poids 1.0 | frame -1.5s → poids 0.1
+                    frames_from_goal = goal_frame - fid
+                    temporal_weight  = max(0.1, 1.0 - frames_from_goal / window_frames)
+
                     for p in frame_data.get("players", []):
-                        # Filtrer par équipe si connue
                         p_team = p.get("team")
                         if goal_team is not None and p_team is not None:
                             if p_team != goal_team:
                                 continue
 
-                        # Ignorer le gardien (position x extrême)
                         p_center = p.get("center", [])
                         if not p_center or len(p_center) < 2:
                             continue
                         px, py = float(p_center[0]), float(p_center[1])
 
                         dist = ((px - bx) ** 2 + (py - by) ** 2) ** 0.5
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_pid  = p.get("id")
+                        if dist < MAX_DIST:
+                            pid = p.get("id")
+                            score = temporal_weight / max(dist, 1.0)
+                            pid_scores[pid] = pid_scores.get(pid, 0) + score
 
-                if best_pid is None or best_dist > 120:  # >120px = trop loin
+                if not pid_scores:
                     return None, None
+
+                # Joueur avec le meilleur score cumulé
+                best_pid = max(pid_scores, key=lambda k: pid_scores[k])
 
                 # Résoudre le maillot depuis jersey_map
                 pid_str = str(best_pid)
                 jersey  = jersey_map.get(pid_str) or jersey_map.get(best_pid)
+                _t = float(goal_event.get("time", 0))
+                print(f"  [SCORER SPATIAL DEBUG] {int(_t//60):02d}:{int(_t%60):02d} "
+                      f"top pids: {sorted(pid_scores.items(), key=lambda x: -x[1])[:3]} "
+                      f"→ best={best_pid} jersey={jersey} scale={_scale:.2f}")
                 return pid_str, jersey
 
             _spatial_scorers = {}
