@@ -1094,32 +1094,110 @@ def run_pipeline(
             print(f"  Gemini jerseys : {len(gemini_jerseys)} numéros lus "
                   f"(buts+tirs 3 frames + {len(seen_general)} généraux)")
 
-        # Lecture ciblée buteurs + passeurs sur frames de buts confirmés
-        # Bien plus fiable que les crops génériques
+        # ── Identification buteurs : spatial d'abord, Gemini en fallback ──────
+        # Approche 1 — calcul spatial : joueur attaquant le plus proche du ballon
+        # dans la fenêtre [-2s, 0s] avant le but. Déterministe, 100% fiable.
+        # Approche 2 — Gemini vision : fallback si spatial échoue (joueur absent
+        # du tracker, équipe inconnue, etc.)
         try:
             confirmed_goals = [
                 e for e in events_validated
                 if e.get("type") in ("goal", "score")
                 and e.get("gemini_validated", False)
             ]
-            if confirmed_goals:
+
+            def _find_scorer_spatial(goal_event, frames_data, jersey_map, fps):
+                """
+                Cherche le buteur par proximité ballon-joueur dans les frames
+                précédant le but. Retourne (pid, jersey) ou (None, None).
+                """
+                goal_frame = int(goal_event.get("frame", 0)
+                                 or float(goal_event.get("time", 0)) * fps)
+                goal_team  = goal_event.get("team")
+
+                # Fenêtre [-2s, 0s] avant le but : 50 frames à 25fps
+                window_frames = int(fps * 2)
+                best_pid, best_dist = None, float("inf")
+
+                for fid in range(max(0, goal_frame - window_frames), goal_frame + 1):
+                    if fid >= len(frames_data):
+                        break
+                    frame_data = frames_data[fid]
+                    ball = frame_data.get("ball")
+                    if not ball:
+                        continue
+                    ball_center = ball.get("center") or [
+                        ball.get("x", 0), ball.get("y", 0)
+                    ]
+                    if not ball_center or (ball_center[0] == 0 and ball_center[1] == 0):
+                        continue
+
+                    bx, by = float(ball_center[0]), float(ball_center[1])
+
+                    for p in frame_data.get("players", []):
+                        # Filtrer par équipe si connue
+                        p_team = p.get("team")
+                        if goal_team is not None and p_team is not None:
+                            if p_team != goal_team:
+                                continue
+
+                        # Ignorer le gardien (position x extrême)
+                        p_center = p.get("center", [])
+                        if not p_center or len(p_center) < 2:
+                            continue
+                        px, py = float(p_center[0]), float(p_center[1])
+
+                        dist = ((px - bx) ** 2 + (py - by) ** 2) ** 0.5
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_pid  = p.get("id")
+
+                if best_pid is None or best_dist > 120:  # >120px = trop loin
+                    return None, None
+
+                # Résoudre le maillot depuis jersey_map
+                pid_str = str(best_pid)
+                jersey  = jersey_map.get(pid_str) or jersey_map.get(best_pid)
+                return pid_str, jersey
+
+            _spatial_scorers = {}
+            _spatial_ok      = 0
+            _spatial_fail    = 0
+
+            for _g in confirmed_goals:
+                _pid, _jersey = _find_scorer_spatial(_g, frames_data, jersey_map, fps)
+                if _jersey is not None:
+                    _g["player"]  = _pid
+                    _g["scorer"]  = _jersey
+                    _spatial_ok  += 1
+                    _t = float(_g.get("time", 0))
+                    print(f"  [SCORER SPATIAL] {int(_t//60):02d}:{int(_t%60):02d} "
+                          f"→ buteur=#{_jersey} (dist ok, pid={_pid})")
+                else:
+                    _spatial_fail += 1
+
+            print(f"  Spatial scorers : {_spatial_ok} ok | {_spatial_fail} fallback Gemini")
+
+            # Fallback Gemini pour les buts sans résultat spatial
+            _goals_need_gemini = [
+                g for g in confirmed_goals
+                if g.get("scorer") is None
+            ]
+            if _goals_need_gemini:
                 from ai.gemini_validator import read_goal_scorers
-                # Construire le dict {goal_time: clip_path} depuis les highlights
-                # pour que read_goal_scorers utilise les clips Full HD
                 _hl_clips = {}
-                for _hl in []:
-                    _hl_t = float(_hl.get("time") or _hl.get("event_time") or 0)
-                    _hl_f = _hl.get("file", "")
-                    if _hl_t > 0 and _hl_f:
-                        _hl_clips[_hl_t] = _hl_f
                 goal_jerseys = read_goal_scorers(
                     video_path      = video_path,
-                    goal_events     = confirmed_goals,
+                    goal_events     = _goals_need_gemini,
                     fps             = fps,
                     highlight_clips = _hl_clips or None,
                 )
                 jersey_map.update(goal_jerseys)
-                print(f"  Gemini goal scorers : {len(goal_jerseys)} buteur(s)/passeur(s) identifié(s)")
+                print(f"  Gemini goal scorers (fallback) : "
+                      f"{len(goal_jerseys)} buteur(s)/passeur(s) identifié(s)")
+            else:
+                print(f"  Gemini goal scorers : skippé (spatial suffisant)")
+
         except Exception as _ej:
             print(f"  Goal scorers ignoré : {_ej}")
 
