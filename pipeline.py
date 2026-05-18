@@ -1187,6 +1187,19 @@ def run_pipeline(
             _spatial_fail    = 0
 
             for _g in confirmed_goals:
+                # Priorité 1 : player hérité du tir source (shot_linked=True)
+                # C'est le joueur qui a tiré → c'est le buteur
+                _shot_pid    = _g.get("player")
+                _shot_jersey = jersey_map.get(str(_shot_pid)) or jersey_map.get(_shot_pid) if _shot_pid else None
+                if _shot_jersey is not None:
+                    _t = float(_g.get("time", 0))
+                    print(f"  [SCORER SHOT] {int(_t//60):02d}:{int(_t%60):02d} "
+                          f"→ buteur=#{_shot_jersey} (pid={_shot_pid}, hérité du tir)")
+                    _g["scorer"] = _shot_jersey
+                    _spatial_ok += 1
+                    continue
+
+                # Priorité 2 : calcul spatial si player du tir inconnu
                 _pid, _jersey = _find_scorer_spatial(_g, frames_data, jersey_map, fps)
                 if _jersey is not None:
                     _g["player"]  = _pid
