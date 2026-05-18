@@ -1382,9 +1382,9 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
                 clip_offset = 25.0
                 cap = cv2.VideoCapture(clip_path)
                 clip_fps = cap.get(cv2.CAP_PROP_FPS) or fps
-                # Fix buteur : le tireur est visible AVANT que le ballon entre dans le filet
-                # Densifier les frames dans les 4s précédant le but, éviter le post-but
-                for offset_s in [-5, -3, -2, -1, 0]:
+                # 10 frames toutes les 0.5s sur les 5s avant le but
+                # Maximise les chances de capturer le contact pied-ballon exact
+                for offset_s in [-5, -4.5, -4, -3.5, -3, -2.5, -2, -1.5, -1, -0.5]:
                     fid = max(0, int((clip_offset + offset_s) * clip_fps))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
                     ret, fr = cap.read()
@@ -1394,7 +1394,7 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
                 source_label = "clip HD"
             else:
                 cap = cv2.VideoCapture(video_path)
-                for offset_s in [-5, -3, -2, -1, 0]:
+                for offset_s in [-5, -4.5, -4, -3.5, -3, -2.5, -2, -1.5, -1, -0.5]:
                     fid = max(0, frame_g + int(offset_s * fps))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
                     ret, fr = cap.read()
@@ -1407,8 +1407,8 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
                 continue
 
             parts = [text_to_part(
-                f"But marqué à {t_mm}. Voici {len(frames)} frames prises dans les 5 secondes "
-                f"AVANT le but (depuis le {source_label}, pleine résolution).\n"
+                f"But marqué à {t_mm}. Voici {len(frames)} frames prises toutes les 0.5s "
+                f"dans les 5 secondes AVANT le but (depuis le {source_label}, pleine résolution).\n"
                 f"Réponds UNIQUEMENT en JSON sans markdown :\n"
                 f'{{"buteur": <numero entier ou null>, "passeur": <numero entier ou null>}}\n'
                 f"- buteur : numéro de maillot du joueur qui TIRE le ballon vers le but\n"
