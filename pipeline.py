@@ -1414,37 +1414,50 @@ def run_pipeline(
     summary["is_summary"]    = is_summary
     summary["context_stats"] = ctx_stats
 
-    # V9.7+ — shots/xG/goals depuis events_clean (tirs validés par highlights)
+    # V9.8 — shots/xG/goals recalculés depuis highlights + events_validated
     n_highlight_shots = sum(1 for h in highlights if h.get("main_type") == "shot")
     n_highlight_goals = sum(1 for h in highlights if h.get("main_type") in ("goal", "score"))
-    # Buts = depuis events_validated (source de vérité) — pas depuis highlights
-    # Les highlights peuvent inclure des SHOT→GOAL faux positifs
+    # Buts = depuis events_validated (source de vérité)
     n_validated_goals = sum(1 for e in events_validated if e.get("type") in ("goal", "score"))
     summary["goals"] = n_validated_goals
 
-    # V9.7 — recalculer stats joueurs (tirs + xG) depuis highlights filtrés
-    # Les stats brutes de compute_stats incluent tous les faux tirs
-    highlight_times = {round(h.get("time_start", 0)): h for h in highlights}
+    # FIX : shots = highlights shots (tirs cadrés affichés)
+    summary["shots"] = n_highlight_shots
+
+    # FIX : xG total = somme xG de TOUS les highlights (shots + goals)
+    summary["total_xg"] = round(
+        sum(float(h.get("xg", 0) or 0) for h in highlights), 2
+    )
+
+    # V9.8 — recalculer stats joueurs depuis highlights (shots ET goals)
+    # Réinitialiser d'abord
     for pid in stats:
         stats[pid]["tirs"]     = 0
         stats[pid]["xg_total"] = 0.0
+        stats[pid]["buts"]     = 0  # reset — recalculé depuis highlights
+
     for h in highlights:
-        if h.get("main_type") != "shot":
+        htype = h.get("main_type", "")
+        pid   = str(h.get("player", ""))
+        if not pid:
             continue
-        pid = str(h.get("player", ""))
-        if pid and pid in stats:
+        # Créer entrée si absente (buteur hors top-touches)
+        if pid not in stats:
+            _label = get_player_label(pid, jersey_map)
+            stats[pid] = {
+                "touches": 0, "passes": 0, "key_passes": 0,
+                "tirs": 0, "buts": 0, "arrets": 0,
+                "interceptions": 0, "dribbles": 0,
+                "progressive_runs": 0, "xg_total": 0.0, "xa_total": 0.0,
+                "danger_total": 0, "is_goalkeeper": False,
+                "jersey": jersey_map.get(pid), "label": _label, "team": None,
+            }
+        if htype == "shot":
             stats[pid]["tirs"]     += 1
             stats[pid]["xg_total"] += float(h.get("xg", 0) or 0)
-        elif pid:
-            # joueur pas encore dans stats (edge case) → ignorer
-            pass
-    # Recalculer aussi les buts depuis highlights
-    for h in highlights:
-        if h.get("main_type") not in ("goal", "score"):
-            continue
-        pid = str(h.get("player", ""))
-        if pid and pid in stats:
-            stats[pid]["buts"] = stats[pid].get("buts", 0) + 1
+        elif htype in ("goal", "score"):
+            stats[pid]["buts"]     += 1
+            stats[pid]["xg_total"] += float(h.get("xg", 0) or 0)
 
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
           f"xG={summary['total_xg']} | joueurs={summary['players']}")
