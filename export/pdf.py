@@ -153,6 +153,22 @@ def fix_highlight_times(highlights, fps=25):
 
         # FIX 7 — détecter le type source AVANT d'ajuster les temps
         src_type = (h.get("main_type") or h.get("type") or "").lower()
+
+        # Fix badge SHOT/GOAL — un highlight "shot" peut être un but confirmé
+        # si sa source contient "goal" ou si son event source est de type goal
+        _src_str = str(h.get("source", "") or h.get("detected_from", "")).lower()
+        _is_confirmed_goal = (
+            "goal" in _src_str          # shot_to_goal_gemini, shot_to_goal_hybrid…
+            or h.get("gemini_validated") is True
+            or h.get("gemini_type") == "goal"
+            or (h.get("events") and any(
+                e.get("type") in ("goal", "score") for e in h.get("events", [])
+            ))
+        )
+        if _is_confirmed_goal and src_type in ("shot", "tir", "shot_on_target",
+                                                "shot_missed", "big_chance"):
+            src_type = "goal"
+
         is_goal = src_type in ("goal", "score", "but")
         is_shot = src_type in ("shot", "tir", "shot_on_target", "shot_missed", "big_chance")
 
@@ -771,44 +787,76 @@ def generate_pdf(result, output_path, sport="football"):
     if story or commentary:
         pdf.add_page()
 
-        if story:
+        # FIX 3 — fusionner commentary dans match story
+        # Construire un résumé narratif enrichi avec les moments clés horodatés
+        _story_text = story or ""
+
+        # Ajouter les moments clés des highlights comme paragraphe narratif
+        _goal_lines = []
+        for h in highlights:
+            htype = (h.get("main_type") or "").lower()
+            if htype in ("goal", "score"):
+                _t     = get_event_time(h)
+                _pid   = h.get("player")
+                _plbl  = player_label(_pid, jersey_map) if _pid else "?"
+                _titre = h.get("titre", "")
+                _desc  = h.get("description", "")
+                _mm    = f"{int(_t // 60)}':{int(_t % 60):02d}"
+                if _titre:
+                    _goal_lines.append(f"{_mm} — {_plbl} : {_titre}.")
+                elif _desc:
+                    _goal_lines.append(f"{_mm} — {_plbl} : {_desc}.")
+                else:
+                    _goal_lines.append(f"{_mm} — But de {_plbl}.")
+
+        # Ajouter les tirs importants
+        _shot_lines = []
+        for h in highlights:
+            htype = (h.get("main_type") or "").lower()
+            if htype == "shot":
+                _t    = get_event_time(h)
+                _pid  = h.get("player")
+                _plbl = player_label(_pid, jersey_map) if _pid else "?"
+                _xg   = float(h.get("xg", 0) or 0)
+                _mm   = f"{int(_t // 60)}':{int(_t % 60):02d}"
+                if _xg >= 0.20:
+                    _shot_lines.append(f"{_mm} — Tir cadre de {_plbl} (xG {_xg:.2f}).")
+
+        # Assembler le résumé complet
+        _narrative_parts = []
+        if _story_text:
+            _narrative_parts.append(_story_text)
+        if _goal_lines:
+            _narrative_parts.append("Buts : " + "  ".join(_goal_lines))
+        if _shot_lines:
+            _narrative_parts.append("Occasions notables : " + "  ".join(_shot_lines))
+
+        # Lignes de commentary pertinentes (filtrer les génériques, garder celles avec joueur ou action spécifique)
+        _generic = {
+            "action a suivre.", "phase de jeu interessante.",
+            "le match continue a bon rythme.", "belle intensite dans les duels.",
+            "action a suivre", "phase de jeu interessante",
+        }
+        _good_lines = [
+            c for c in (commentary or [])
+            if c and len(str(c).strip()) > 20
+            and clean(str(c)).lower().rstrip(".").strip() not in _generic
+            and any(ch.isdigit() or ch == "#" for ch in str(c))  # contient un numéro de joueur
+        ]
+        if _good_lines:
+            _narrative_parts.append("Actions : " + "  ".join(_good_lines[:5]))
+
+        _full_story = "\n\n".join(_narrative_parts)
+
+        if _full_story:
             pdf.section_title("Match Story")
             pdf.card_bg(12, pdf.get_y(), 186, 4)
             pdf.ln(3)
             pdf.set_font("Helvetica", "", 8)
             pdf.set_text_color(*GRAY_L)
             pdf.set_x(14)
-            pdf.multi_cell(182, 5, clean(story))
+            pdf.multi_cell(182, 5, clean(_full_story))
             pdf.ln(5)
-
-        # FIX 6 — filtrer commentaires vides/génériques, afficher placeholder si rien
-        if commentary:
-            _generic = {
-                "action a suivre.", "phase de jeu interessante.",
-                "le match continue a bon rythme.", "belle intensite dans les duels.",
-            }
-            filtered_commentary = [
-                c for c in commentary
-                if c and c.strip() and clean(str(c)).lower().rstrip() not in _generic
-            ]
-            # Si tout filtré, garder les 3 meilleurs quand même
-            if not filtered_commentary and commentary:
-                filtered_commentary = commentary[:3]
-
-            if filtered_commentary:
-                pdf.section_title("Commentary")
-                for i, line in enumerate(filtered_commentary[:12]):
-                    yc = pdf.get_y()
-                    if i % 2 == 0:
-                        pdf.card_bg(12, yc, 186, 8, BG_CARD)
-                    pdf.set_fill_color(*ACCENT)
-                    pdf.rect(12, yc, 2, 8, "F")
-                    pdf.set_font("Helvetica", "", 8)
-                    pdf.set_text_color(*GRAY_L)
-                    pdf.set_xy(16, yc + 1)
-                    pdf.multi_cell(180, 5, clean(str(line)))
-                    if pdf.get_y() < yc + 9:
-                        pdf.set_y(yc + 9)
 
     # Save
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
