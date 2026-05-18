@@ -919,9 +919,10 @@ def run_pipeline(
 
                 for shot, st, window in shots_to_analyze:
                     result = results_map.get(st, (shot, None))[1]
-                    # FIX : already_covered élargi à 200s — un kickoff peut rester visible
-                    # longtemps après un but (remise en jeu lente, caméra large)
-                    already_covered = any(abs(gt - st) < 200 for gt in detected_goal_times)
+                    # already_covered : utiliser goal_cooldown (45s) pour les buts confirmés
+                    # La fenêtre 200s était trop large et bloquait des vrais buts proches
+                    _goal_cooldown = 45.0
+                    already_covered = any(abs(gt - st) < _goal_cooldown for gt in detected_goal_times)
                     if already_covered:
                         continue
 
@@ -938,7 +939,7 @@ def run_pipeline(
                     )
 
                     # ── Voie 2 : Stratégie 3 — confirmation hybride ──────────────
-                    # Gemini voit un signal partiel (score 1-4, ou is_goal=False mais score>0)
+                    # Gemini voit un signal partiel (score ≥ 4, pas juste +1 ambigu)
                     # + posthoc fort (score ≥ 8) dans ±20s du tir → valider
                     _posthoc_strong = max(
                         (p["score"] for p in _raw_posthoc_scored
@@ -947,8 +948,8 @@ def run_pipeline(
                     )
                     _gemini_partial = (
                         result is not None
-                        and _gs_stg >= 1          # Gemini a vu au moins un signal positif
-                        and not (                  # mais pas un kickoff fantôme pur
+                        and _gs_stg >= 4          # seuil relevé : signal Gemini significatif
+                        and not (                  # pas un kickoff fantôme pur
                             "+5" in result.get("desc", "")
                             and _gs_stg <= 5
                             and "+3" not in result.get("desc", "")
