@@ -481,8 +481,7 @@ def run_pipeline(
             print(f"  Filtre xG=0 : {n_goals_raw - n_goals_filtered} faux but(s) supprimés")
 
         # ── Étape 2 : goal_posthoc ────────────────────────────────────────────
-        _raw_posthoc_times  = []  # init avant try — préservé pour SHOT→GOAL
-        _raw_posthoc_scored = []  # idem avec scores — stratégie 3
+        _raw_posthoc_times = []  # init avant try — préservé pour SHOT→GOAL
         try:
             fast_goals = detect_fast_goals_from_ball(
                 frames_data = frames_data,
@@ -500,12 +499,6 @@ def run_pipeline(
             # Utilisé plus tard par SHOT→GOAL pour valider la présence d'un signal physique
             _raw_posthoc_times = [
                 e.get("time", 0) for e in (fast_goals or [])
-                if isinstance(e, dict)
-            ]
-            # Stratégie 3 — sauvegarder aussi les scores posthoc pour confirmation hybride
-            _raw_posthoc_scored = [
-                {"time": e.get("time", 0), "score": float(e.get("score", e.get("danger", 0)))}
-                for e in (fast_goals or [])
                 if isinstance(e, dict)
             ]
         except Exception as eg:
@@ -902,7 +895,7 @@ def run_pipeline(
                         fps                  = fps,
                         frame_w              = _frame_w,
                         frame_h              = _frame_h,
-                        confirmed_goal_times = existing_goal_times,  # FIX kickoff fantôme
+                        confirmed_goal_times = existing_goal_times,
                     )
 
                 shot_goal_candidates = []
@@ -919,104 +912,56 @@ def run_pipeline(
 
                 for shot, st, window in shots_to_analyze:
                     result = results_map.get(st, (shot, None))[1]
-                    # already_covered : utiliser goal_cooldown (45s) pour les buts confirmés
-                    # La fenêtre 200s était trop large et bloquait des vrais buts proches
-                    _goal_cooldown = 45.0
-                    already_covered = any(abs(gt - st) < _goal_cooldown for gt in detected_goal_times)
+                    # FIX : already_covered élargi à 200s — un kickoff peut rester visible
+                    # longtemps après un but (remise en jeu lente, caméra large)
+                    already_covered = any(abs(gt - st) < 200 for gt in detected_goal_times)
                     if already_covered:
                         continue
-
-                    _gv_stg = result.get("goal_votes", 0) if result else 0
-                    _gs_stg = result.get("goal_score", 0) if result else 0
-                    _conf_stg = result.get("confidence", 0) if result else 0
-
-                    # ── Voie 1 : Gemini confiant (inchangé) ──────────────────────
-                    _gemini_confirms = (
-                        result
-                        and result.get("is_goal")
-                        and _conf_stg >= 0.80
-                        and _gv_stg >= 2
-                    )
-
-                    # ── Voie 2 : Stratégie 3 — confirmation hybride ──────────────
-                    # Gemini voit un signal partiel (score ≥ 4, pas juste +1 ambigu)
-                    # + posthoc fort (score ≥ 8) dans ±20s du tir → valider
-                    _posthoc_strong = max(
-                        (p["score"] for p in _raw_posthoc_scored
-                         if abs(p["time"] - st) <= 20),
-                        default=0
-                    )
-                    _gemini_partial = (
-                        result is not None
-                        and _gs_stg >= 4          # seuil relevé : signal Gemini significatif
-                        and not (                  # pas un kickoff fantôme pur
-                            "+5" in result.get("desc", "")
-                            and _gs_stg <= 5
-                            and "+3" not in result.get("desc", "")
-                        )
-                    )
-                    _hybrid_confirms = (
-                        _gemini_partial
-                        and _posthoc_strong >= 8.0  # posthoc très confiant
-                        and not already_covered
-                    )
-
-                    if not (_gemini_confirms or _hybrid_confirms):
-                        continue
-
-                    # Déterminer le timestamp du but
-                    if _gemini_confirms:
-                        goal_t    = result["timestamp"]
-                        goal_conf = _conf_stg
-                        goal_src  = "shot_to_goal_gemini"
-                    else:
-                        # Hybride : utiliser le temps du posthoc fort comme timestamp
-                        _best_posthoc = max(
-                            (p for p in _raw_posthoc_scored if abs(p["time"] - st) <= 20),
-                            key=lambda p: p["score"],
-                            default=None
-                        )
-                        goal_t    = _best_posthoc["time"] if _best_posthoc else st + 5
-                        goal_conf = min(0.85, 0.70 + _posthoc_strong / 100)
-                        goal_src  = "shot_to_goal_hybrid"
-                        print(f"  [SHOT→GOAL HYBRID] tir={int(st//60):02d}:{int(st%60):02d} "
-                              f"posthoc_score={_posthoc_strong:.1f} gemini_score={_gs_stg} "
-                              f"→ but à {int(goal_t//60):02d}:{int(goal_t%60):02d}")
-
-                    too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
-                    _posthoc_times = _raw_posthoc_times if _raw_posthoc_times else [
-                        e.get("time", 0) for e in events
-                        if isinstance(e, dict)
-                        and e.get("type") in ("goal", "score")
-                        and e.get("source", "").startswith("goal_posthoc")
-                    ]
-                    _has_physical = any(abs(pt - goal_t) <= 30 for pt in _posthoc_times)
-                    if not _has_physical:
-                        print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±30s")
-                    if not too_close and _has_physical:
-                        new_goal = {
-                            "type":             "goal",
-                            "time":             goal_t,
-                            "source":           goal_src,
-                            "detected_from":    goal_src,
-                            "confidence":       goal_conf,
-                            "gemini_validated": True,
-                            "gemini_type":      "goal",
-                            "gemini_conf":      goal_conf,
-                            "xg":               shot.get("xg", 0.5),
-                            "desc":             result.get("desc", "") if result else "",
-                            "player":           shot.get("player"),
-                            "team":             shot.get("team"),
-                            "x":                shot.get("x", _frame_w * 0.85),
-                            "y":                shot.get("y", _frame_h * 0.5),
-                            "frame":            int(goal_t * fps),
-                            "shot_linked":      True,
-                        }
-                        shot_goal_candidates.append(new_goal)
-                        existing_goal_times.append(goal_t)
-                        detected_goal_times.append(goal_t)
-                        print(f"  [SHOT→GOAL] ✅ BUT détecté à {int(goal_t//60):02d}:{int(goal_t%60):02d} "
-                              f"conf={goal_conf:.2f} src={goal_src}")
+                    _gv_stg = result.get("goal_votes", 1) if result else 0
+                    if (result and result.get("is_goal")
+                            and result.get("confidence", 0) >= 0.80  # abaissé 0.92→0.80 : kickoff visible = signal fort
+                            and _gv_stg >= 2):
+                        goal_t = result["timestamp"]
+                        too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
+                        _kickoff_fp = False  # filtre retiré : rejetait de vraies actions
+                        # Exiger un signal physique posthoc dans la fenêtre tir→but
+                        # Évite de valider un kickoff initial confondu avec un kickoff après but
+                        # Utiliser les posthoc BRUTS (avant filtrage Gemini)
+                        # pour ne pas rater les buts dont le posthoc a été supprimé
+                        # Posthoc BRUTS (avant filtrage Gemini) — évite de rejeter
+                        # des buts dont le candidat posthoc a été supprimé en amont
+                        _posthoc_times = _raw_posthoc_times if _raw_posthoc_times else [
+                            e.get("time", 0) for e in events
+                            if isinstance(e, dict)
+                            and e.get("type") in ("goal", "score")
+                            and e.get("source", "").startswith("goal_posthoc")
+                        ]
+                        _has_physical = any(abs(pt - goal_t) <= 30 for pt in _posthoc_times)
+                        if not _has_physical:
+                            print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±30s")
+                        if not too_close and _has_physical and not _kickoff_fp:
+                            new_goal = {
+                                "type":             "goal",
+                                "time":             goal_t,
+                                "source":           "shot_to_goal_gemini",
+                                "detected_from":    "shot_to_goal_gemini",
+                                "confidence":       result["confidence"],
+                                "gemini_validated": True,
+                                "gemini_type":      "goal",
+                                "gemini_conf":      result["confidence"],
+                                "xg":               shot.get("xg", 0.5),
+                                "desc":             result.get("desc", ""),
+                                "player":           shot.get("player"),
+                                "team":             shot.get("team"),
+                                "x":                shot.get("x", _frame_w * 0.85),
+                                "y":                shot.get("y", _frame_h * 0.5),
+                                "frame":            int(goal_t * fps),
+                                "shot_linked":      True,
+                            }
+                            shot_goal_candidates.append(new_goal)
+                            existing_goal_times.append(goal_t)
+                            detected_goal_times.append(goal_t)
+                            print(f"  [SHOT→GOAL] ✅ BUT détecté à {int(goal_t//60):02d}:{int(goal_t%60):02d} conf={result['confidence']:.2f}")
 
                 if shot_goal_candidates:
                     events_validated = events_validated + shot_goal_candidates
@@ -1095,145 +1040,32 @@ def run_pipeline(
             print(f"  Gemini jerseys : {len(gemini_jerseys)} numéros lus "
                   f"(buts+tirs 3 frames + {len(seen_general)} généraux)")
 
-        # ── Identification buteurs : spatial d'abord, Gemini en fallback ──────
-        # Approche 1 — calcul spatial : joueur attaquant le plus proche du ballon
-        # dans la fenêtre [-2s, 0s] avant le but. Déterministe, 100% fiable.
-        # Approche 2 — Gemini vision : fallback si spatial échoue (joueur absent
-        # du tracker, équipe inconnue, etc.)
+        # Lecture ciblée buteurs + passeurs sur frames de buts confirmés
+        # Bien plus fiable que les crops génériques
         try:
             confirmed_goals = [
                 e for e in events_validated
                 if e.get("type") in ("goal", "score")
                 and e.get("gemini_validated", False)
             ]
-
-            def _find_scorer_spatial(goal_event, frames_data, jersey_map, fps):
-                """
-                Cherche le buteur par proximité ballon-joueur dans les frames
-                précédant le but. Retourne (pid, jersey) ou (None, None).
-                """
-                goal_frame = int(goal_event.get("frame", 0)
-                                 or float(goal_event.get("time", 0)) * fps)
-                goal_team  = goal_event.get("team")
-
-                # Résolution de traitement (960×540) vs pipeline (1920×1080)
-                # Seuil 120px en 1920p → 60px en 960p
-                # Mais les coordonnées players sont en résolution de traitement
-                proc_w = int(frames_data[0].get("frame_w", 960)) if frames_data else 960
-                _scale = proc_w / 1920.0
-                MAX_DIST = 120 * _scale  # ~60px en 960×540
-
-                # Fenêtre [-1.5s, 0s] — ne garder que juste avant le tir
-                # Plus la frame est proche du but, plus elle est fiable
-                window_frames = int(fps * 1.5)
-
-                # Accumuler un score par pid plutôt que prendre la dist min globale
-                # score = somme de (1/dist * poids_temporel) par pid
-                pid_scores = {}
-
-                for fid in range(max(0, goal_frame - window_frames), goal_frame + 1):
-                    if fid >= len(frames_data):
-                        break
-                    frame_data = frames_data[fid]
-                    ball = frame_data.get("ball")
-                    if not ball:
-                        continue
-                    ball_center = ball.get("center") or [
-                        ball.get("x", 0), ball.get("y", 0)
-                    ]
-                    if not ball_center or (ball_center[0] == 0 and ball_center[1] == 0):
-                        continue
-
-                    bx, by = float(ball_center[0]), float(ball_center[1])
-
-                    # Poids temporel : frames récentes valent plus
-                    # frame 0 (but) → poids 1.0 | frame -1.5s → poids 0.1
-                    frames_from_goal = goal_frame - fid
-                    temporal_weight  = max(0.1, 1.0 - frames_from_goal / window_frames)
-
-                    for p in frame_data.get("players", []):
-                        p_team = p.get("team")
-                        if goal_team is not None and p_team is not None:
-                            if p_team != goal_team:
-                                continue
-
-                        p_center = p.get("center", [])
-                        if not p_center or len(p_center) < 2:
-                            continue
-                        px, py = float(p_center[0]), float(p_center[1])
-
-                        dist = ((px - bx) ** 2 + (py - by) ** 2) ** 0.5
-                        if dist < MAX_DIST:
-                            pid = p.get("id")
-                            score = temporal_weight / max(dist, 1.0)
-                            pid_scores[pid] = pid_scores.get(pid, 0) + score
-
-                if not pid_scores:
-                    return None, None
-
-                # Joueur avec le meilleur score cumulé
-                best_pid = max(pid_scores, key=lambda k: pid_scores[k])
-
-                # Résoudre le maillot depuis jersey_map
-                pid_str = str(best_pid)
-                jersey  = jersey_map.get(pid_str) or jersey_map.get(best_pid)
-                _t = float(goal_event.get("time", 0))
-                print(f"  [SCORER SPATIAL DEBUG] {int(_t//60):02d}:{int(_t%60):02d} "
-                      f"top pids: {sorted(pid_scores.items(), key=lambda x: -x[1])[:3]} "
-                      f"→ best={best_pid} jersey={jersey} scale={_scale:.2f}")
-                return pid_str, jersey
-
-            _spatial_scorers = {}
-            _spatial_ok      = 0
-            _spatial_fail    = 0
-
-            for _g in confirmed_goals:
-                # Priorité 1 : player hérité du tir source (shot_linked=True)
-                # C'est le joueur qui a tiré → c'est le buteur
-                _shot_pid    = _g.get("player")
-                _shot_jersey = jersey_map.get(str(_shot_pid)) or jersey_map.get(_shot_pid) if _shot_pid else None
-                if _shot_jersey is not None:
-                    _t = float(_g.get("time", 0))
-                    print(f"  [SCORER SHOT] {int(_t//60):02d}:{int(_t%60):02d} "
-                          f"→ buteur=#{_shot_jersey} (pid={_shot_pid}, hérité du tir)")
-                    _g["scorer"] = _shot_jersey
-                    _spatial_ok += 1
-                    continue
-
-                # Priorité 2 : calcul spatial si player du tir inconnu
-                _pid, _jersey = _find_scorer_spatial(_g, frames_data, jersey_map, fps)
-                if _jersey is not None:
-                    _g["player"]  = _pid
-                    _g["scorer"]  = _jersey
-                    _spatial_ok  += 1
-                    _t = float(_g.get("time", 0))
-                    print(f"  [SCORER SPATIAL] {int(_t//60):02d}:{int(_t%60):02d} "
-                          f"→ buteur=#{_jersey} (dist ok, pid={_pid})")
-                else:
-                    _spatial_fail += 1
-
-            print(f"  Spatial scorers : {_spatial_ok} ok | {_spatial_fail} fallback Gemini")
-
-            # Fallback Gemini pour les buts sans résultat spatial
-            _goals_need_gemini = [
-                g for g in confirmed_goals
-                if g.get("scorer") is None
-            ]
-            if _goals_need_gemini:
+            if confirmed_goals:
                 from ai.gemini_validator import read_goal_scorers
+                # Construire le dict {goal_time: clip_path} depuis les highlights
+                # pour que read_goal_scorers utilise les clips Full HD
                 _hl_clips = {}
+                for _hl in []:
+                    _hl_t = float(_hl.get("time") or _hl.get("event_time") or 0)
+                    _hl_f = _hl.get("file", "")
+                    if _hl_t > 0 and _hl_f:
+                        _hl_clips[_hl_t] = _hl_f
                 goal_jerseys = read_goal_scorers(
                     video_path      = video_path,
-                    goal_events     = _goals_need_gemini,
+                    goal_events     = confirmed_goals,
                     fps             = fps,
                     highlight_clips = _hl_clips or None,
                 )
                 jersey_map.update(goal_jerseys)
-                print(f"  Gemini goal scorers (fallback) : "
-                      f"{len(goal_jerseys)} buteur(s)/passeur(s) identifié(s)")
-            else:
-                print(f"  Gemini goal scorers : skippé (spatial suffisant)")
-
+                print(f"  Gemini goal scorers : {len(goal_jerseys)} buteur(s)/passeur(s) identifié(s)")
         except Exception as _ej:
             print(f"  Goal scorers ignoré : {_ej}")
 
@@ -1466,33 +1298,6 @@ def run_pipeline(
         )
         highlights = normalize_highlights(highlights, mode=mode)
 
-        # FIX B — propager event_time depuis l'event source dans chaque highlight
-        # Permet à pdf.py d'afficher le vrai timestamp de l'action (pas time_start clip)
-        _event_by_time = {}
-        for _e in events:
-            _t = round(float(_e.get("time", 0)), 1)
-            if _e.get("type") in ("goal", "score", "shot"):
-                _event_by_time[_t] = _e
-        for _h in highlights:
-            if "event_time" not in _h or not _h.get("event_time"):
-                # Chercher l'event source par time_start (clip = event - context_before)
-                _ts = float(_h.get("time_start", 0))
-                _htype = _h.get("main_type", "")
-                _context = 25.0 if _htype in ("goal", "score") else 12.0
-                _approx_event_t = round(_ts + _context, 1)
-                # Chercher dans ±3s
-                _best = None
-                for _et, _ev in _event_by_time.items():
-                    if abs(_et - _approx_event_t) < 3.0:
-                        if _best is None or abs(_et - _approx_event_t) < abs(_best - _approx_event_t):
-                            _best = _et
-                if _best is not None:
-                    _h["event_time"] = _best
-                    _h["time"]       = _best  # alias utilisé par pdf.py
-                elif _h.get("time") is None:
-                    _h["event_time"] = _approx_event_t
-                    _h["time"]       = _approx_event_t
-
         try:
             from ai.highlight_scorer import score_all_highlights
             highlights = score_all_highlights(
@@ -1541,32 +1346,8 @@ def run_pipeline(
         mvp               = get_mvp(ratings)
         mvp_label         = resolve_mvp_label(mvp, stats, jersey_map)
 
-        # FIX C — enrichir les events commentés avec les descriptions Gemini des highlights
-        # Les highlights scorés ont titre/description Gemini — les injecter dans les events
-        _hl_by_time = {}
-        for _h in highlights:
-            _t = round(float(_h.get("event_time") or _h.get("time") or _h.get("time_start", 0)), 1)
-            _hl_by_time[_t] = _h
-        _events_for_commentary = []
-        for _e in ranked_highlights[:10]:
-            _e = dict(_e)
-            _t = round(float(_e.get("time", 0)), 1)
-            # Chercher le highlight correspondant dans ±2s
-            _matching_hl = None
-            for _ht, _hv in _hl_by_time.items():
-                if abs(_ht - _t) < 2.0:
-                    _matching_hl = _hv
-                    break
-            if _matching_hl:
-                # Injecter titre/description Gemini si disponibles
-                if _matching_hl.get("titre") and not _e.get("titre"):
-                    _e["titre"] = _matching_hl["titre"]
-                if _matching_hl.get("description") and not _e.get("description"):
-                    _e["description"] = _matching_hl["description"]
-            _events_for_commentary.append(_e)
-
         commentary = generate_commentary(
-            _events_for_commentary,
+            ranked_highlights[:10],
             jersey_map = jersey_map,
             sport      = sport,
             formation  = formation,
@@ -1633,54 +1414,37 @@ def run_pipeline(
     summary["is_summary"]    = is_summary
     summary["context_stats"] = ctx_stats
 
-    # V9.8 — shots/xG/goals recalculés depuis highlights + events_validated
-    # ─────────────────────────────────────────────────────────────────────
-    # FIX A.1 — buts depuis events_validated (source de vérité)
+    # V9.7+ — shots/xG/goals depuis events_clean (tirs validés par highlights)
+    n_highlight_shots = sum(1 for h in highlights if h.get("main_type") == "shot")
+    n_highlight_goals = sum(1 for h in highlights if h.get("main_type") in ("goal", "score"))
+    # Buts = depuis events_validated (source de vérité) — pas depuis highlights
+    # Les highlights peuvent inclure des SHOT→GOAL faux positifs
     n_validated_goals = sum(1 for e in events_validated if e.get("type") in ("goal", "score"))
     summary["goals"] = n_validated_goals
 
-    # FIX A.2 — shots = highlights shots + highlights goals (car SHOT→GOAL compte)
-    n_highlight_shots = sum(1 for h in highlights if h.get("main_type") == "shot")
-    n_highlight_goals = sum(1 for h in highlights if h.get("main_type") in ("goal", "score"))
-    summary["shots"]  = n_highlight_shots  # tirs cadrés affichés = highlights shots seulement
-
-    # FIX A.3 — xG total = somme xG de TOUS les highlights (shots + goals)
-    _total_xg = 0.0
-    for h in highlights:
-        _total_xg += float(h.get("xg", 0) or 0)
-    summary["total_xg"] = round(_total_xg, 2)
-
-    # V9.8 — recalculer stats joueurs depuis highlights (shots ET goals)
-    # Réinitialiser d'abord
+    # V9.7 — recalculer stats joueurs (tirs + xG) depuis highlights filtrés
+    # Les stats brutes de compute_stats incluent tous les faux tirs
+    highlight_times = {round(h.get("time_start", 0)): h for h in highlights}
     for pid in stats:
         stats[pid]["tirs"]     = 0
         stats[pid]["xg_total"] = 0.0
-        stats[pid]["buts"]     = 0
-
     for h in highlights:
-        htype = h.get("main_type", "")
-        pid   = str(h.get("player", ""))
-        if not pid:
+        if h.get("main_type") != "shot":
             continue
-
-        # Créer l'entrée joueur dans stats si absente (buteur hors top-touches)
-        if pid not in stats:
-            _label = get_player_label(pid, jersey_map)
-            stats[pid] = {
-                "touches": 0, "passes": 0, "key_passes": 0,
-                "tirs": 0, "buts": 0, "arrets": 0,
-                "interceptions": 0, "dribbles": 0,
-                "progressive_runs": 0, "xg_total": 0.0, "xa_total": 0.0,
-                "danger_total": 0, "is_goalkeeper": False,
-                "jersey": jersey_map.get(pid), "label": _label, "team": None,
-            }
-
-        if htype == "shot":
+        pid = str(h.get("player", ""))
+        if pid and pid in stats:
             stats[pid]["tirs"]     += 1
             stats[pid]["xg_total"] += float(h.get("xg", 0) or 0)
-        elif htype in ("goal", "score"):
-            stats[pid]["buts"]     += 1
-            stats[pid]["xg_total"] += float(h.get("xg", 0) or 0)
+        elif pid:
+            # joueur pas encore dans stats (edge case) → ignorer
+            pass
+    # Recalculer aussi les buts depuis highlights
+    for h in highlights:
+        if h.get("main_type") not in ("goal", "score"):
+            continue
+        pid = str(h.get("player", ""))
+        if pid and pid in stats:
+            stats[pid]["buts"] = stats[pid].get("buts", 0) + 1
 
     print(f"  buts={summary['goals']} | tirs={summary['shots']} | "
           f"xG={summary['total_xg']} | joueurs={summary['players']}")
