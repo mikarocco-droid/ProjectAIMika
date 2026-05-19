@@ -1319,6 +1319,28 @@ def run_pipeline(
         )
         highlights = normalize_highlights(highlights, mode=mode)
 
+        # Propager team depuis les events vers les highlights
+        # Chaque highlight a un time_start / time → on cherche l'event le plus proche
+        _events_with_team = [e for e in events if e.get("team") is not None]
+        for _h in highlights:
+            if _h.get("team") is not None:
+                continue  # déjà renseigné
+            _h_time = float(_h.get("time_start") or _h.get("time") or 0)
+            _pid    = str(_h.get("player") or "")
+            # Chercher l'event du même joueur au même moment (±10s)
+            _best, _best_dist = None, float("inf")
+            for _e in _events_with_team:
+                _et = float(_e.get("time") or _e.get("frame", 0) / fps)
+                _dist = abs(_et - _h_time)
+                if _dist < _best_dist:
+                    # Bonus si même joueur
+                    if _pid and str(_e.get("player", "")) == _pid:
+                        _dist *= 0.1
+                    _best_dist = _dist
+                    _best = _e
+            if _best and _best_dist < 15:
+                _h["team"] = _best["team"]
+
         try:
             from ai.highlight_scorer import score_all_highlights
             highlights = score_all_highlights(
