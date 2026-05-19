@@ -42,6 +42,60 @@ HEADER_BG = (8,   12,  20)
 
 
 # ─────────────────────────────────────────
+# COULEURS ÉQUIPES
+# ─────────────────────────────────────────
+# Palette BGR → (nom_fr, couleur_RGB_pour_PDF)
+_BGR_PALETTE = [
+    ((0,   0,   180), "Rouge",        (220, 50,  50)),
+    ((0,   0,   220), "Rouge vif",    (255, 60,  60)),
+    ((180, 0,   0),   "Bleu",         (50,  100, 220)),
+    ((220, 0,   0),   "Bleu vif",     (30,  80,  255)),
+    ((0,   180, 0),   "Vert",         (50,  180, 80)),
+    ((0,   220, 0),   "Vert vif",     (40,  210, 70)),
+    ((0,   180, 180), "Jaune",        (220, 200, 50)),
+    ((180, 0,   180), "Magenta",      (200, 60,  200)),
+    ((180, 180, 0),   "Cyan",         (60,  200, 220)),
+    ((255, 255, 255), "Blanc",        (230, 230, 230)),
+    ((30,  30,  30),  "Noir",         (60,  60,  60)),
+    ((100, 60,  160), "Violet",       (160, 80,  220)),
+    ((60,  100, 200), "Bleu marine",  (40,  70,  180)),
+    ((80,  150, 200), "Bleu ciel",    (80,  160, 220)),
+    ((0,   120, 255), "Orange",       (240, 130, 30)),
+    ((40,  80,  150), "Bleu foncé",   (40,  80,  160)),
+    ((60,  60,  120), "Indigo",       (80,  80,  180)),
+    ((50,  50,  100), "Violet foncé", (100, 70,  160)),
+]
+
+def bgr_to_name(bgr):
+    """Convertit un tuple BGR en (nom_couleur, (R,G,B) pour PDF)."""
+    if not bgr:
+        return "Équipe", (150, 150, 150)
+    if isinstance(bgr, (list, tuple)) and len(bgr) == 3:
+        b, g, r = int(bgr[0]), int(bgr[1]), int(bgr[2])
+    else:
+        return "Équipe", (150, 150, 150)
+    best_name, best_rgb, best_dist = "Équipe", (150, 150, 150), float("inf")
+    for (pb, pg, pr), name, rgb in _BGR_PALETTE:
+        dist = (b - pb)**2 + (g - pg)**2 + (r - pr)**2
+        if dist < best_dist:
+            best_dist = dist
+            best_name = name
+            best_rgb  = rgb
+    return best_name, best_rgb
+
+
+def team_display(team_id, teams_data):
+    """
+    Retourne (label_court, nom_couleur, (R,G,B)) pour une équipe.
+    Ex: ("Équipe bleue", "Bleu", (50,100,220))
+    """
+    tdata = teams_data.get(str(team_id)) or teams_data.get(team_id) or {}
+    bgr   = tdata.get("color_bgr")
+    name, rgb = bgr_to_name(bgr)
+    return f"Eq. {name}", name, rgb
+
+
+# ─────────────────────────────────────────
 # UTILS
 # ─────────────────────────────────────────
 def clean(text):
@@ -359,6 +413,7 @@ def generate_pdf(result, output_path, sport="football"):
     formation  = result.get("formation",      "")
     tactical   = result.get("tactical",       {})
     possession = result.get("possession",     summary.get("possession", {}))
+    teams_data = result.get("teams",          {})
     commentary = result.get("commentary",     [])
 
     highlights = fix_highlight_times(highlights)
@@ -467,33 +522,60 @@ def generate_pdf(result, output_path, sport="football"):
         pdf.set_xy(14, yr + 11)
         pdf.cell(84, 11, clean(mvp_lbl), align="L")
 
-    # FIX 5 — n'afficher la formation que si elle est renseignée et non vide
+    # FORMATIONS PAR ÉQUIPE avec couleur maillot
     _style = (tactical.get("style", "") if tactical else "")
-    _formation_display = f"{formation}  {_style}".strip() if formation else ""
+    _formation_display = formation if formation and formation != "?" else ""
     if _formation_display:
-        pdf.card_bg(106, yr, 92, 26)
-        pdf.set_fill_color(*ACCENT)
-        pdf.rect(106, yr, 92, 2, "F")
-        pdf.set_font("Helvetica", "B", 7)
-        pdf.set_text_color(*ACCENT)
-        pdf.set_xy(108, yr + 4)
-        pdf.cell(88, 5, "FORMATION / STYLE", align="L")
-        pdf.set_font("Helvetica", "B", 15)
-        pdf.set_text_color(*WHITE)
-        pdf.set_xy(108, yr + 11)
-        pdf.cell(88, 11, clean(_formation_display), align="L")
+        # Récupérer les 2 équipes triées
+        _sorted_teams = sorted(teams_data.keys()) if teams_data else []
+        if len(_sorted_teams) >= 2:
+            # 2 équipes → 2 blocs côte à côte
+            for _ti, _tid in enumerate(_sorted_teams[:2]):
+                _lbl, _cname, _crgb = team_display(_tid, teams_data)
+                _fx = 106 + _ti * 47
+                _fw = 44
+                pdf.card_bg(_fx, yr, _fw, 26)
+                pdf.set_fill_color(*_crgb)
+                pdf.rect(_fx, yr, _fw, 2, "F")
+                pdf.set_font("Helvetica", "B", 6)
+                pdf.set_text_color(*_crgb)
+                pdf.set_xy(_fx + 2, yr + 4)
+                pdf.cell(_fw - 4, 4, clean(_cname.upper()), align="L")
+                pdf.set_font("Helvetica", "B", 13)
+                pdf.set_text_color(*WHITE)
+                pdf.set_xy(_fx + 2, yr + 10)
+                pdf.cell(_fw - 4, 8, clean(_formation_display), align="L")
+                if _style and _ti == 0:
+                    pdf.set_font("Helvetica", "", 6)
+                    pdf.set_text_color(*GRAY_L)
+                    pdf.set_xy(_fx + 2, yr + 20)
+                    pdf.cell(_fw - 4, 4, clean(_style), align="L")
+        else:
+            # 1 équipe ou aucune info → bloc simple
+            pdf.card_bg(106, yr, 92, 26)
+            pdf.set_fill_color(*ACCENT)
+            pdf.rect(106, yr, 92, 2, "F")
+            pdf.set_font("Helvetica", "B", 7)
+            pdf.set_text_color(*ACCENT)
+            pdf.set_xy(108, yr + 4)
+            pdf.cell(88, 5, "FORMATION / STYLE", align="L")
+            pdf.set_font("Helvetica", "B", 15)
+            pdf.set_text_color(*WHITE)
+            pdf.set_xy(108, yr + 11)
+            pdf.cell(88, 11, clean(f"{_formation_display}  {_style}".strip()), align="L")
 
     pdf.set_y(yr + 30)
 
     # Stats par equipe
     if len(team_stats) >= 2:
         pdf.section_title("Team Comparison")
-        cols   = ["TEAM", "PASSES", "CADRES", "GOALS", "xG", "INTERC.", "DRIBBLES"]
-        widths = [24, 27, 27, 27, 27, 27, 27]
+        cols   = ["ÉQUIPE", "PASSES", "CADRES", "GOALS", "xG", "INTERC.", "DRIBBLES"]
+        widths = [30, 24, 24, 24, 24, 24, 26]
         pdf.table_row(cols, widths, is_header=True)
         for idx, (team, ts) in enumerate(sorted(team_stats.items())):
+            _lbl, _cname, _crgb = team_display(team, teams_data)
             row = [
-                f"Team {team}",
+                _lbl,
                 ts.get("passes", 0),
                 ts.get("tirs",   0),
                 ts.get("buts",   0),
@@ -561,48 +643,79 @@ def generate_pdf(result, output_path, sport="football"):
 
         field = {l: s for l, s in deduped.items() if not s.get("is_goalkeeper")}
         gks   = {l: s for l, s in deduped.items() if s.get("is_goalkeeper")}
-        max_xg = max((s.get("xg_total", 0) for s in field.values()), default=1) or 1
 
-        headers = ["Joueur", "Touch.", "K.Pass", "Tirs", "Buts", "xG", "xA", "Note"]
-        widths  = [28, 18, 16, 14, 14, 16, 16, 16]
-        pdf.table_row(headers, widths, is_header=True)
-
-        sorted_field = sorted(
-            field.items(),
-            key=lambda x: x[1].get("touches", 0), reverse=True
-        )[:20]
-
+        headers  = ["Joueur", "Touch.", "K.Pass", "Tirs", "Buts", "xG", "xA", "Note"]
+        widths   = [28, 18, 16, 14, 14, 16, 16, 16]
         xG_col_x = sum(widths[:6]) + 12
 
-        for idx, (label, s) in enumerate(sorted_field):
-            pid    = s.get("_pid")
-            rating = "-"
-            if pid:
-                r = ratings.get(str(pid), {}) or ratings.get(pid, {})
-                if r and r.get("rating"):
-                    rating = round(float(r["rating"]), 1)
+        def _render_team_table(players_dict, team_label, team_rgb):
+            if not players_dict:
+                return
+            max_xg_t = max((s.get("xg_total", 0) for s in players_dict.values()), default=1) or 1
 
-            xg_val = round(s.get("xg_total", 0), 2)
-            xa_val = round(s.get("xa_total", 0), 2)
-            buts   = s.get("buts", 0)
-            kp     = s.get("key_passes", 0)
+            # Titre équipe avec couleur maillot
+            pdf.ln(3)
+            _ty = pdf.get_y()
+            pdf.set_fill_color(*team_rgb)
+            pdf.rect(12, _ty, 5, 7, "F")
+            pdf.set_font("Helvetica", "B", 8)
+            pdf.set_text_color(*team_rgb)
+            pdf.set_xy(19, _ty)
+            pdf.cell(0, 7, clean(team_label.upper()))
+            pdf.set_text_color(*WHITE)
+            pdf.ln(8)
 
-            row = [
-                label,
-                s.get("touches", 0),
-                kp if kp > 0 else "",
-                s.get("tirs",    0) if s.get("tirs", 0) > 0 else "",
-                buts   if buts   > 0 else "",
-                xg_val if xg_val > 0 else "",
-                xa_val if xa_val > 0 else "",
-                rating,
-            ]
-            pdf.table_row(row, widths, alt=(idx % 2 == 0), highlight=(buts > 0))
+            pdf.table_row(headers, widths, is_header=True)
 
-            if xg_val > 0:
-                ybar = pdf.get_y() - 1
-                pdf.progress_bar(xG_col_x, ybar, 16,
-                                 xg_val / float(max_xg), ACCENT3, h=2)
+            sorted_players = sorted(
+                players_dict.items(),
+                key=lambda x: x[1].get("touches", 0), reverse=True
+            )[:15]
+
+            for idx, (label, s) in enumerate(sorted_players):
+                pid    = s.get("_pid")
+                rating = "-"
+                if pid:
+                    r = ratings.get(str(pid), {}) or ratings.get(pid, {})
+                    if r and r.get("rating"):
+                        rating = round(float(r["rating"]), 1)
+
+                xg_val = round(s.get("xg_total", 0), 2)
+                xa_val = round(s.get("xa_total", 0), 2)
+                buts   = s.get("buts", 0)
+                kp     = s.get("key_passes", 0)
+
+                row = [
+                    label,
+                    s.get("touches", 0),
+                    kp     if kp     > 0 else "",
+                    s.get("tirs", 0) if s.get("tirs", 0) > 0 else "",
+                    buts   if buts   > 0 else "",
+                    xg_val if xg_val > 0 else "",
+                    xa_val if xa_val > 0 else "",
+                    rating,
+                ]
+                pdf.table_row(row, widths, alt=(idx % 2 == 0), highlight=(buts > 0))
+
+                if xg_val > 0:
+                    ybar = pdf.get_y() - 1
+                    pdf.progress_bar(xG_col_x, ybar, 16,
+                                     xg_val / float(max_xg_t), ACCENT3, h=2)
+
+        # Séparer par équipe
+        _teams_in_field = sorted(set(
+            s.get("team") for s in field.values() if s.get("team") is not None
+        ))
+
+        if len(_teams_in_field) >= 2:
+            for _tid in _teams_in_field:
+                _team_players = {l: s for l, s in field.items() if s.get("team") == _tid}
+                _lbl, _cname, _crgb = team_display(_tid, teams_data)
+                _render_team_table(_team_players, f"Équipe {_cname}", _crgb)
+        else:
+            # Pas de distinction d'équipe — tableau unique
+            _lbl_def, _cname_def, _crgb_def = "Joueurs de champ", "Équipe", (80, 160, 220)
+            _render_team_table(field, _lbl_def, _crgb_def)
 
         # Gardiens
         if gks:
@@ -802,12 +915,19 @@ def generate_pdf(result, output_path, sport="football"):
                 _titre = h.get("titre", "")
                 _desc  = h.get("description", "")
                 _mm    = f"{int(_t // 60)}':{int(_t % 60):02d}"
-                if _titre:
-                    _goal_lines.append(f"{_mm} — {_plbl} : {_titre}.")
-                elif _desc:
-                    _goal_lines.append(f"{_mm} — {_plbl} : {_desc}.")
+                # Préfixe équipe
+                _h_team = h.get("team")
+                if _h_team is not None:
+                    _, _h_cname, _ = team_display(_h_team, teams_data)
+                    _team_prefix = f"[{_h_cname}] "
                 else:
-                    _goal_lines.append(f"{_mm} — But de {_plbl}.")
+                    _team_prefix = ""
+                if _titre:
+                    _goal_lines.append(f"{_team_prefix}{_mm} - But de {_plbl} : {_titre}.")
+                elif _desc:
+                    _goal_lines.append(f"{_team_prefix}{_mm} - But de {_plbl} : {_desc}.")
+                else:
+                    _goal_lines.append(f"{_team_prefix}{_mm} - But de {_plbl}.")
 
         # Ajouter les tirs importants
         _shot_lines = []
@@ -819,8 +939,15 @@ def generate_pdf(result, output_path, sport="football"):
                 _plbl = player_label(_pid, jersey_map) if _pid else "?"
                 _xg   = float(h.get("xg", 0) or 0)
                 _mm   = f"{int(_t // 60)}':{int(_t % 60):02d}"
+                # Préfixe équipe
+                _h_team = h.get("team")
+                if _h_team is not None:
+                    _, _h_cname, _ = team_display(_h_team, teams_data)
+                    _team_prefix = f"[{_h_cname}] "
+                else:
+                    _team_prefix = ""
                 if _xg >= 0.20:
-                    _shot_lines.append(f"{_mm} — Tir cadre de {_plbl} (xG {_xg:.2f}).")
+                    _shot_lines.append(f"{_team_prefix}{_mm} - Tir cadre de {_plbl} (xG {_xg:.2f}).")
 
         # Assembler le résumé complet
         _narrative_parts = []
