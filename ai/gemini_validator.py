@@ -1330,7 +1330,220 @@ def read_jersey_numbers(video_path, players_with_frames, fps=25, max_players=20)
         print(f"  Gemini jersey error : {e}")
         return {}
 
-def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
+def _visual_match_score(v1, v2):
+    """
+    Score de similarité entre 2 descriptions visuelles (0.0 → 1.0).
+    Comparaison par champ texte — local au match, pas de ML.
+    Pondération : boots et socks sont les plus discriminants.
+    """
+    if not v1 or not v2:
+        return 0.0
+
+    WEIGHTS = {
+        "boots":       0.30,   # très discriminant (couleur unique par joueur)
+        "socks":       0.25,   # très discriminant (position + couleur)
+        "hair":        0.20,   # discriminant si coupe distinctive
+        "skin":        0.10,   # utile mais moins unique
+        "body":        0.08,   # morphologie — variable selon angle caméra
+        "role":        0.07,   # utile si rôle stable dans le match
+    }
+
+    total_weight = 0.0
+    total_score  = 0.0
+
+    for field, weight in WEIGHTS.items():
+        a = (v1.get(field) or "").lower().strip()
+        b = (v2.get(field) or "").lower().strip()
+
+        if not a or not b:
+            continue  # champ absent → ne pénalise pas
+
+        # Similarité mot-clé : cherche des mots communs
+        words_a = set(a.split())
+        words_b = set(b.split())
+        if not words_a or not words_b:
+            continue
+
+        common  = words_a & words_b
+        union   = words_a | words_b
+        jaccard = len(common) / len(union)
+
+        # Bonus si correspondance exacte sur un mot fort
+        # (ex: "rouge" dans les 2, ou "rasé" dans les 2)
+        strong_keywords = {
+            "rouge", "bleu", "noir", "blanc", "vert", "jaune", "orange",
+            "rasé", "long", "court", "bouclé", "tressé", "chauve",
+            "haut", "bas", "mi-mollet",
+            "grand", "petit", "svelte", "trapu",
+            "gauche", "droit", "ailier", "attaquant", "milieu",
+        }
+        bonus = 0.1 if (common & strong_keywords) else 0.0
+
+        field_score = min(1.0, jaccard + bonus)
+        total_score  += field_score * weight
+        total_weight += weight
+
+    if total_weight == 0:
+        return 0.0
+
+    return round(total_score / total_weight, 3)
+
+
+def read_highlight_visuals(video_path, highlight_events, fps=25, highlight_clips=None):
+    """
+    Pour chaque highlight (tir, action dangereuse, but), demande à Gemini
+    de décrire visuellement le joueur principal.
+
+    Enrichit chaque event avec :
+      event["scorer_visual"]  — description visuelle structurée
+      event["player_jersey"]  — numéro si lisible (ne remplace pas si déjà connu)
+
+    Retourne un pool de référence visuelle :
+      { jersey_num: [visual_dict, ...] }  — tous les visuels par numéro connu
+    """
+    if not GEMINI_AVAILABLE or not highlight_events:
+        return {}
+
+    visual_pool = {}   # { jersey_num: [visual_dict, ...] }
+
+    try:
+        client = get_client()
+    except Exception:
+        return {}
+
+    for ev in highlight_events:
+        ev_time  = float(ev.get("time") or ev.get("time_start") or 0)
+        frame_ev = int(ev.get("frame", ev_time * fps))
+        ev_type  = (ev.get("main_type") or ev.get("type") or "action").lower()
+        pid      = str(ev.get("player", ""))
+        t_mm     = f"{int(ev_time//60):02d}:{int(ev_time%60):02d}"
+
+        # Skip si déjà une description visuelle
+        if ev.get("scorer_visual"):
+            # Alimenter quand même le pool si jersey connu
+            _j = ev.get("player_jersey") or ev.get("player_jersey")
+            if _j and ev.get("scorer_visual"):
+                visual_pool.setdefault(int(_j), []).append(ev["scorer_visual"])
+            continue
+
+        try:
+            frames = []
+            clip_path = None
+
+            if highlight_clips:
+                best_match = min(
+                    highlight_clips.items(),
+                    key=lambda x: abs(float(x[0]) - ev_time),
+                    default=(None, None)
+                )
+                if best_match[1] and abs(float(best_match[0]) - ev_time) < 60:
+                    clip_path = best_match[1]
+
+            if clip_path and os.path.exists(clip_path):
+                clip_offset = 12.0 if ev_type == "shot" else 25.0
+                cap = cv2.VideoCapture(clip_path)
+                clip_fps = cap.get(cv2.CAP_PROP_FPS) or fps
+                for offset_s in [-3, -2, -1, 0]:
+                    fid = max(0, int((clip_offset + offset_s) * clip_fps))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
+                    ret, fr = cap.read()
+                    if ret:
+                        frames.append(fr)
+                cap.release()
+                source_label = "clip HD"
+            else:
+                cap = cv2.VideoCapture(video_path)
+                for offset_s in [-3, -2, -1, 0]:
+                    fid = max(0, frame_ev + int(offset_s * fps))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
+                    ret, fr = cap.read()
+                    if ret:
+                        frames.append(fr)
+                cap.release()
+                source_label = "source"
+
+            if not frames:
+                continue
+
+            parts = [text_to_part(
+                f"Action de type '{ev_type}' à {t_mm}. "
+                f"Voici {len(frames)} frames prises dans les 3 secondes AVANT l'action.\n"
+                f"Réponds UNIQUEMENT en JSON sans markdown :\n"
+                f'{{\n'
+                f'  "jersey": <numero entier ou null>,\n'
+                f'  "visual": {{\n'
+                f'    "hair": "<coupe et couleur, ex: cheveux noirs rasés, chauve>",\n'
+                f'    "boots": "<couleur et marque si visible, ex: chaussures rouges Nike>",\n'
+                f'    "socks": "<position et couleur, ex: chaussettes blanches basses>",\n'
+                f'    "body": "<morphologie, ex: grand svelte, petit trapu>",\n'
+                f'    "sleeves": "<manches longues ou courtes>",\n'
+                f'    "skin": "<teinte peau, ex: peau claire, peau foncée>",\n'
+                f'    "role": "<rôle apparent, ex: ailier gauche, attaquant axial>",\n'
+                f'    "accessories": "<bandeaux, gants, genouillères ou null>",\n'
+                f'    "confidence": "<high | medium | low>"\n'
+                f'  }}\n'
+                f'}}\n'
+                f"- jersey : numéro de maillot du joueur principal de l'action (null si illisible)\n"
+                f"- visual : décris le joueur principal de l'action\n"
+                f"- ne devine pas un numéro au hasard"
+            )]
+            for fr in frames:
+                if source_label == "clip HD":
+                    parts.append(frame_to_part(fr))
+                else:
+                    parts.append(frame_to_part(cv2.resize(fr, (960, 540))))
+
+            response = _call_gemini(client, parts)
+            if response is None:
+                continue
+
+            text = extract_response_text(response)
+            if not text:
+                continue
+
+            text = re.sub(r"```json|```", "", text).strip()
+            data = json.loads(text)
+
+            jersey = data.get("jersey")
+            visual = data.get("visual") or {}
+
+            if visual and isinstance(visual, dict):
+                ev["scorer_visual"] = {
+                    "hair":        visual.get("hair"),
+                    "boots":       visual.get("boots"),
+                    "socks":       visual.get("socks"),
+                    "body":        visual.get("body"),
+                    "sleeves":     visual.get("sleeves"),
+                    "skin":        visual.get("skin"),
+                    "role":        visual.get("role"),
+                    "accessories": visual.get("accessories"),
+                    "confidence":  visual.get("confidence", "low"),
+                    "_source":     source_label,
+                    "_event_time": t_mm,
+                    "_event_type": ev_type,
+                }
+
+            if jersey is not None and 1 <= int(jersey) <= 99:
+                jersey_num = int(jersey)
+                if not ev.get("player_jersey"):
+                    ev["player_jersey"] = jersey_num
+                # Alimenter le pool de référence visuelle
+                if visual:
+                    visual_pool.setdefault(jersey_num, []).append(ev["scorer_visual"])
+                print(f"  [HIGHLIGHT VIS] {t_mm} ({ev_type}) → #{jersey_num}")
+            else:
+                print(f"  [HIGHLIGHT VIS] {t_mm} ({ev_type}) → numéro illisible — visual stocké")
+
+        except Exception as e:
+            print(f"  [HIGHLIGHT VIS] erreur {t_mm} : {e}")
+            continue
+
+    print(f"  [HIGHLIGHT VIS] Pool local : {len(visual_pool)} joueurs référencés "
+          f"({sum(len(v) for v in visual_pool.values())} descriptions)")
+    return visual_pool
+
+
+def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, visual_pool=None):
     """
     Pour chaque but confirmé, demande à Gemini le numéro du buteur et du passeur.
     
@@ -1382,9 +1595,9 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
                 clip_offset = 25.0
                 cap = cv2.VideoCapture(clip_path)
                 clip_fps = cap.get(cv2.CAP_PROP_FPS) or fps
-                # 10 frames toutes les 0.5s sur les 5s avant le but
-                # Maximise les chances de capturer le contact pied-ballon exact
-                for offset_s in [-5, -4.5, -4, -3.5, -3, -2.5, -2, -1.5, -1, -0.5]:
+                # Fix buteur : le tireur est visible AVANT que le ballon entre dans le filet
+                # Densifier les frames dans les 4s précédant le but, éviter le post-but
+                for offset_s in [-5, -3, -2, -1, 0]:
                     fid = max(0, int((clip_offset + offset_s) * clip_fps))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
                     ret, fr = cap.read()
@@ -1394,7 +1607,7 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
                 source_label = "clip HD"
             else:
                 cap = cv2.VideoCapture(video_path)
-                for offset_s in [-5, -4.5, -4, -3.5, -3, -2.5, -2, -1.5, -1, -0.5]:
+                for offset_s in [-5, -3, -2, -1, 0]:
                     fid = max(0, frame_g + int(offset_s * fps))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
                     ret, fr = cap.read()
@@ -1407,18 +1620,34 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
                 continue
 
             parts = [text_to_part(
-                f"But marqué à {t_mm}. Voici {len(frames)} frames prises toutes les 0.5s "
-                f"dans les 5 secondes AVANT le but (depuis le {source_label}, pleine résolution).\n"
-                f"Réponds UNIQUEMENT en JSON sans markdown :\n"
-                f'{{"buteur": <numero entier ou null>, "passeur": <numero entier ou null>}}\n'
-                f"- buteur : numéro de maillot du joueur qui TIRE le ballon vers le but\n"
-                f"  → cherche le joueur dont la jambe est en extension vers le ballon (geste de frappe)\n"
-                f"  → c'est souvent le joueur le plus proche du but avec le ballon au pied\n"
-                f"  → lis le numéro sur le dos ou la poitrine du maillot\n"
-                f"  → le gardien porte un maillot de couleur différente (gardien = pas le buteur)\n"
-                f"  → si plusieurs candidats, prends celui dont le pied est le plus proche du ballon\n"
+                f"But marqué à {t_mm}. Voici {len(frames)} frames prises dans les 5 secondes "
+                f"AVANT le but (depuis le {source_label}, pleine résolution).\n"
+                f"Réponds UNIQUEMENT en JSON sans markdown, format exact :\n"
+                f'{{\n'
+                f'  "buteur": <numero entier ou null>,\n'
+                f'  "passeur": <numero entier ou null>,\n'
+                f'  "visual": {{\n'
+                f'    "hair": "<coupe et couleur de cheveux, ex: cheveux noirs rasés, chauve, cheveux blonds courts>",\n'
+                f'    "boots": "<couleur et marque si visible, ex: chaussures rouges Nike, chaussures noires>",\n'
+                f'    "socks": "<position et couleur, ex: chaussettes blanches basses, chaussettes bleues hautes>",\n'
+                f'    "body": "<morphologie, ex: grand svelte, petit trapu, taille moyenne>",\n'
+                f'    "sleeves": "<manches longues ou courtes>",\n'
+                f'    "skin": "<teinte peau, ex: peau claire, peau foncée, peau mate>",\n'
+                f'    "role": "<rôle apparent, ex: ailier gauche, attaquant axial, milieu>",\n'
+                f'    "accessories": "<bandeaux, gants, protège-tibia visible, genouillères, etc. ou null>",\n'
+                f'    "confidence": "<high | medium | low — ta confiance sur cette description>"\n'
+                f'  }}\n'
+                f'}}\n'
+                f"Règles pour buteur :\n"
+                f"- cherche le joueur dont la jambe est en extension vers le ballon (geste de frappe)\n"
+                f"- c'est souvent le joueur le plus proche du but avec le ballon au pied\n"
+                f"- lis le numéro sur le dos ou la poitrine du maillot\n"
+                f"- le gardien porte un maillot de couleur différente (gardien = pas le buteur)\n"
+                f"- si plusieurs candidats, prends celui dont le pied est le plus proche du ballon\n"
                 f"- passeur : numéro du joueur qui fait la dernière passe décisive (null si inconnu)\n"
-                f"Réponds null si le numéro n'est vraiment pas lisible. Ne devine pas un numéro au hasard."
+                f"- buteur null si numéro illisible — ne devine pas un numéro au hasard\n"
+                f"- pour visual : décris le buteur identifié, ou le tireur le plus probable si numéro illisible\n"
+                f"- si aucun joueur identifiable, mets null pour tous les champs visual"
             )]
             for fr in frames:
                 # Clip HD : envoyer à taille native (1920×1080 pour lire les numéros)
@@ -1441,14 +1670,42 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
 
             buteur  = data.get("buteur")
             passeur = data.get("passeur")
+            visual  = data.get("visual") or {}
+
+            # Stocker la signature visuelle dans l'event quoi qu'il arrive
+            # (même si le numéro est inconnu, la description est précieuse)
+            if visual and isinstance(visual, dict):
+                ev["scorer_visual"] = {
+                    "hair":        visual.get("hair"),
+                    "boots":       visual.get("boots"),
+                    "socks":       visual.get("socks"),
+                    "body":        visual.get("body"),
+                    "sleeves":     visual.get("sleeves"),
+                    "skin":        visual.get("skin"),
+                    "role":        visual.get("role"),
+                    "accessories": visual.get("accessories"),
+                    "confidence":  visual.get("confidence", "low"),
+                    "_source":     source_label,
+                    "_goal_time":  t_mm,
+                }
+                _vis_conf = visual.get("confidence", "?")
+                _vis_log  = (
+                    f"hair={visual.get('hair','?')} | "
+                    f"boots={visual.get('boots','?')} | "
+                    f"socks={visual.get('socks','?')} | "
+                    f"role={visual.get('role','?')} | "
+                    f"conf={_vis_conf}"
+                )
+                print(f"  [VISUAL] {t_mm} → {_vis_log}")
 
             if buteur is not None and 1 <= int(buteur) <= 99:
-                # Associer au player_id si connu, sinon créer entrée temporelle
                 key = pid if pid else f"goal_{t_mm}"
                 jersey_map[key] = int(buteur)
                 ev["player_jersey"] = int(buteur)
                 print(f"  [JERSEY GOAL] {t_mm} → buteur=#{buteur}"
                       f"{f' passeur=#{passeur}' if passeur else ''}")
+            else:
+                print(f"  [JERSEY GOAL] {t_mm} → numéro illisible — description visuelle stockée")
 
             if passeur is not None and 1 <= int(passeur) <= 99:
                 ev["assist_jersey"] = int(passeur)
@@ -1456,6 +1713,56 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None):
         except Exception as e:
             print(f"  [JERSEY GOAL] erreur {t_mm} : {e}")
             continue
+
+    # ── FALLBACK VISUEL LOCAL AU MATCH ──────────────────────────────────────
+    # Pool de référence : buts avec jersey confirmé + tous les highlights
+    _ref_pool = []  # [(jersey_num, scorer_visual_dict)]
+
+    # 1. Depuis les buts eux-mêmes (jersey confirmé par OCR dans ce run)
+    for ev in goal_events:
+        _j = ev.get("player_jersey")
+        _v = ev.get("scorer_visual")
+        if _j and _v and ev.get("player_jersey_source") != "visual_match":
+            _ref_pool.append((_j, _v))
+
+    # 2. Depuis le pool externe des highlights (tirs + actions dangereuses)
+    if visual_pool:
+        for jersey_num, visuals in visual_pool.items():
+            for _v in visuals:
+                _ref_pool.append((jersey_num, _v))
+
+    if _ref_pool:
+        print(f"  [VISUAL MATCH] Pool disponible : {len(_ref_pool)} références "
+              f"({len(set(j for j,_ in _ref_pool))} joueurs distincts)")
+        for ev in goal_events:
+            if ev.get("player_jersey") and ev.get("player_jersey_source") != "visual_match":
+                continue  # déjà résolu par OCR → ne pas écraser
+            _v = ev.get("scorer_visual")
+            if not _v:
+                continue
+
+            best_jersey, best_score = None, 0
+            for ref_jersey, ref_visual in _ref_pool:
+                sc = _visual_match_score(_v, ref_visual)
+                if sc > best_score:
+                    best_score = sc
+                    best_jersey = ref_jersey
+
+            _t_mm = _v.get("_goal_time", "??:??")
+            if best_jersey and best_score >= 0.5:
+                ev["player_jersey"]        = best_jersey
+                ev["player_jersey_source"] = "visual_match"
+                ev["player_jersey_conf"]   = round(best_score, 2)
+                pid = str(ev.get("player", ""))
+                key = pid if pid else f"goal_{_t_mm}"
+                jersey_map[key] = best_jersey
+                print(f"  [VISUAL MATCH] {_t_mm} → #{best_jersey} "
+                      f"(score={best_score:.2f})")
+            else:
+                print(f"  [VISUAL MATCH] {_t_mm} → aucune correspondance "
+                      f"(meilleur={best_score:.2f}) → buteur=inconnu")
+    else:
+        print("  [VISUAL MATCH] Pool vide — pas de fallback possible")
 
     return jersey_map
 
