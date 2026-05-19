@@ -404,6 +404,8 @@ Rules — read carefully:
 - NO: ball is near the net or in front of it but net is flat/undisturbed → answer NO
 - NO: ball is beside the post or outside the goal frame → answer NO
 - NO: goalkeeper holding/catching the ball in his hands or arms (even if inside the goal area)
+- NO: ball is BEHIND the goal (outside the net, on the other side of the goal frame) → this is a corner kick or goal kick, NOT a goal
+- NO: ball visible behind the goal structure from outside → corner kick situation
 - NO: goalkeeper picking up the ball while standing upright
 - NO: ball in front of the goal or on the goal line
 - NO: goalkeeper holding/catching ball in front of the goal
@@ -521,6 +523,10 @@ DO NOT interpret as a goal:
 - DEFENSIVE CLEARANCE: ball kicked or headed away from goal by a defender = NOT a goal
 - CROSS OR CENTER: ball played from wing into penalty area but cleared by defender = NOT a goal
 - BALL HIT POST: ball bouncing off post or crossbar without clearly entering the net = NOT a goal
+- BALL BEHIND THE GOAL (OUTSIDE): ball visible behind the goal structure from outside the net — this means corner kick or goal kick, NOT a goal. The ball must be INSIDE the net between the posts, not behind the goal frame from the exterior.
+- DEFENSIVE FREE KICK NEAR GOAL: player about to kick a stationary ball near the penalty area, others standing around = NOT a goal, NOT a kickoff
+- BALL CAUGHT BY GOALKEEPER THEN CLEARED: goalkeeper catches ball and punts/throws it = NOT a goal, even if ball was near goal line
+- LONG BALL INTO GOALKEEPER: ball played toward goal that goalkeeper catches or holds comfortably = NOT a goal (no danger)
 
 For celebrations to count as evidence they must be UNAMBIGUOUS:
 - Multiple players from SAME team running toward each other with arms wide open
@@ -540,7 +546,9 @@ NEGATIVE signals (subtract immediately):
 -5 : goalkeeper holding/catching/securing ball in hands or arms → is_goal=false, override ALL positives
 -4 : ball clearly kicked/headed away from goal (defensive clearance)
 -4 : corner kick or throw-in visible immediately after
+-4 : ball visible BEHIND the goal from outside (behind the goal frame/net exterior) → corner kick or goal kick situation
 -3 : goalkeeper standing upright with ball (not diving, not retrieving from inside net)
+-3 : defensive free kick near goal area (stationary ball, players standing around)
 -1 : ball visible beside/around the post or outside the frame of the goal (not between the posts) — weak signal, overridden by ball-in-net evidence
 -2 : ball visible outside the net after the action
 
