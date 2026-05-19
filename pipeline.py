@@ -1049,20 +1049,42 @@ def run_pipeline(
                 and e.get("gemini_validated", False)
             ]
             if confirmed_goals:
-                from ai.gemini_validator import read_goal_scorers
+                from ai.gemini_validator import read_goal_scorers, read_highlight_visuals
+
                 # Construire le dict {goal_time: clip_path} depuis les highlights
-                # pour que read_goal_scorers utilise les clips Full HD
                 _hl_clips = {}
                 for _hl in []:
                     _hl_t = float(_hl.get("time") or _hl.get("event_time") or 0)
                     _hl_f = _hl.get("file", "")
                     if _hl_t > 0 and _hl_f:
                         _hl_clips[_hl_t] = _hl_f
+
+                # ── Phase 1 élargie : description visuelle sur tous les highlights ──
+                # Tirs + actions dangereuses → pool de référence visuelle local au match
+                _highlight_events = [
+                    e for e in events
+                    if e.get("type") in ("shot", "goal", "score", "big_chance", "key_pass")
+                    and e.get("gemini_validated", False) or e.get("type") in ("shot",)
+                ]
+                _visual_pool = {}
+                try:
+                    _visual_pool = read_highlight_visuals(
+                        video_path       = video_path,
+                        highlight_events = _highlight_events,
+                        fps              = fps,
+                        highlight_clips  = _hl_clips or None,
+                    )
+                    print(f"  Highlight visuals : {len(_visual_pool)} joueurs dans le pool")
+                except Exception as _ev:
+                    print(f"  Highlight visuals ignoré : {_ev}")
+
+                # ── Scorers des buts avec fallback visuel enrichi ──
                 goal_jerseys = read_goal_scorers(
                     video_path      = video_path,
                     goal_events     = confirmed_goals,
                     fps             = fps,
                     highlight_clips = _hl_clips or None,
+                    visual_pool     = _visual_pool,
                 )
                 jersey_map.update(goal_jerseys)
                 print(f"  Gemini goal scorers : {len(goal_jerseys)} buteur(s)/passeur(s) identifié(s)")
