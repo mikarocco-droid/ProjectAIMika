@@ -1726,7 +1726,33 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
                 ev["scorer_id_confidence"]   = buteur_confiance
                 print(f"  [COULEUR BUTEUR] {t_mm} → maillot={buteur_couleur} confiance_id={buteur_confiance}")
 
-            if buteur is not None and 1 <= int(buteur) <= 99:
+            # ── VALIDATION CROISÉE COULEUR ─────────────────────────────────────
+            # Compare la couleur Gemini avec la couleur de l'équipe du tir.
+            # Si l'event a un team associé et une couleur connue → validation possible.
+            # Si discordance forte → numéro peu fiable → forcer fallback visuel.
+            _known_colors = ev.get("_team_colors", {})   # dict {team_id: "bleu"|"rouge"|...}
+            _color_valid  = True
+            if buteur_couleur and _known_colors:
+                # Récupérer la couleur de l'équipe qui a tiré (pas toutes les équipes)
+                _shooter_team = ev.get("team")
+                if _shooter_team is not None and _shooter_team in _known_colors:
+                    _expected_color = _known_colors[_shooter_team]
+                    # Correspondance souple : "bleu foncé" contient "bleu"
+                    _color_match = (
+                        buteur_couleur in _expected_color
+                        or _expected_color in buteur_couleur
+                    )
+                    if not _color_match:
+                        print(f"  [COULEUR CROSS] {t_mm} → Gemini='{buteur_couleur}' "
+                              f"≠ équipe tireur='{_expected_color}' (team={_shooter_team}) "
+                              f"→ numéro invalidé, fallback visuel")
+                        _color_valid = False
+                        buteur = None   # invalider → fallback visuel prend le relais
+                    else:
+                        print(f"  [COULEUR CROSS] {t_mm} → '{buteur_couleur}' "
+                              f"✓ correspond équipe {_shooter_team}='{_expected_color}'")
+
+            if buteur is not None and _color_valid and 1 <= int(buteur) <= 99:
                 key = pid if pid else f"goal_{t_mm}"
                 jersey_map[key] = int(buteur)
                 ev["player_jersey"] = int(buteur)
