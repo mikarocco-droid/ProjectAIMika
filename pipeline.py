@@ -1091,6 +1091,37 @@ def run_pipeline(
                     print(f"  Highlight visuals ignoré : {_ev}")
 
                 # ── Scorers des buts avec fallback visuel enrichi ──
+                # Récupérer les couleurs équipes dès maintenant pour validation croisée
+                _colors_for_scorer = {}
+                try:
+                    from analysis.player_reid import get_team_colors as _gtc
+                    _raw_colors = _gtc()
+                    # Convertir BGR → nom couleur approximatif pour comparaison
+                    _BGR_TO_NAME = {
+                        "bleu": lambda b,g,r: b > 100 and b > r and b > g,
+                        "rouge": lambda b,g,r: r > 100 and r > b and r > g,
+                        "vert": lambda b,g,r: g > 100 and g > b and g > r,
+                        "blanc": lambda b,g,r: b > 180 and g > 180 and r > 180,
+                        "noir": lambda b,g,r: b < 60 and g < 60 and r < 60,
+                        "jaune": lambda b,g,r: g > 150 and r > 150 and b < 100,
+                    }
+                    for _tid, _bgr in _raw_colors.items():
+                        if isinstance(_bgr, (list, tuple)) and len(_bgr) == 3:
+                            _b, _g, _r = int(_bgr[0]), int(_bgr[1]), int(_bgr[2])
+                            for _name, _fn in _BGR_TO_NAME.items():
+                                if _fn(_b, _g, _r):
+                                    _colors_for_scorer[_tid] = _name
+                                    break
+                            else:
+                                _colors_for_scorer[_tid] = "inconnu"
+                except Exception:
+                    pass
+
+                # Injecter _team_colors dans chaque but pour validation croisée
+                for _eg in confirmed_goals:
+                    if _colors_for_scorer:
+                        _eg["_team_colors"] = _colors_for_scorer
+
                 goal_jerseys = read_goal_scorers(
                     video_path      = video_path,
                     goal_events     = confirmed_goals,
