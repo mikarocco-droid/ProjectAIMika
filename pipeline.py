@@ -1495,12 +1495,33 @@ def run_pipeline(
         print(f"  Story error : {_e}")
 
     # ─────────────────────────────────────────
-    # Step 7b : Heatmaps (sur events_clean)
+    # Step 7b : Heatmaps (sur events_clean + tirs highlights)
     # ─────────────────────────────────────────
     print("Step 7b : Heatmaps (events filtrés)...")
     try:
+        # Injecter tirs highlights dans events_clean (events_clean a 0 tirs)
+        _shot_events_from_hl = []
+        for _h in highlights:
+            if _h.get("main_type") == "shot":
+                _t_hl = float(_h.get("time_start") or _h.get("time") or 0)
+                _best = next(
+                    (_e for _e in events
+                     if _e.get("type") == "shot" and abs(_e.get("time", 0) - _t_hl) < 2.0),
+                    None
+                )
+                if _best:
+                    _shot_events_from_hl.append(_best)
+                else:
+                    _shot_events_from_hl.append({
+                        "type": "shot", "time": _t_hl,
+                        "x": _h.get("x", _frame_w * 0.8),
+                        "y": _h.get("y", _frame_h * 0.5),
+                        "xg": _h.get("xg", 0),
+                        "team": _h.get("team"), "player": _h.get("player"),
+                    })
+        events_for_heatmap = events_clean + _shot_events_from_hl
         heatmaps = generate_all_heatmaps(
-            events     = events_clean,
+            events     = events_for_heatmap,
             output_dir = os.path.join(output_dir, "heatmaps"),
             width      = config.FRAME_WIDTH,
             height     = config.FRAME_HEIGHT,
@@ -1509,7 +1530,7 @@ def run_pipeline(
         heatmap_path  = heatmaps.get("global")
         heatmap_paths = heatmaps
         print(f"  OK {len(heatmaps)} heatmaps "
-              f"({n_shots_clean} tirs filtrés / {n_shots_raw} bruts)")
+              f"({len(_shot_events_from_hl)} tirs highlights / {n_shots_raw} bruts)")
     except Exception as e:
         print(f"  Heatmaps error : {e}")
 
