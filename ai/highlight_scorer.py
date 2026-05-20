@@ -184,39 +184,37 @@ def score_all_highlights(
         result = score_highlight(video_path, h, sport)
 
         if result is None:
-            # FIX 4 — Gemini indisponible → score fallback conservateur
             gemini_unavailable_count += 1
             h["score"]              = fallback_score(h)
             h["gemini_scored"]      = False
             h["gemini_unavailable"] = True
 
-            # FIX position — même en fallback, on vérifie la position
-            # Un goal dont la position x est loin des buts est dégradé
+            # Buts toujours conservés même en fallback
+            if h.get("main_type") in ("goal", "score"):
+                scored.append(h)
+                continue
+
+            # FIX position — dégagement loin du but en fallback
             if h.get("main_type") == "goal":
-                # Récupère x depuis les events du highlight si disponible
                 events = h.get("events", [])
                 xs = [e.get("x", 0) for e in events if e.get("x")]
                 if xs:
                     x_mean = sum(xs) / len(xs)
                     if not _is_near_goal(x_mean, frame_w):
-                        h["score"] = 1.0  # dégagement → score minimal
+                        h["score"] = 1.0
                         h["main_type"] = "defensive_clearance"
                         filtered += 1
-                        print(f"  FIX position : highlight goal dégradé "
-                              f"(x_mean={x_mean:.0f}, loin du but)")
                         continue
 
             scored.append(h)
             continue
 
+        # Sauvegarder le type ORIGINAL avant toute modification
+        original_type      = h.get("main_type", "shot")
+        _is_goal_highlight = original_type in ("goal", "score")
+
         # FIX position — filtrer goalkeeper_action, defensive_clearance
-        # Exception : les buts Gemini-validés ne sont JAMAIS filtrés
-        _is_confirmed_goal = (h.get("main_type") == "goal"
-                               and h.get("gemini_scored_input", {}).get("gemini_validated")
-                               or h.get("events", [{}])[0].get("gemini_validated", False)
-                               if h.get("events") else False)
-        # Plus simple : vérifier directement le type original
-        _is_goal_highlight = h.get("main_type") == "goal"
+        # Les buts (main_type=goal/score) ne sont JAMAIS filtrés peu importe le scorer
         if (result["type_reel"] in [
             "goalkeeper_action", "defensive_clearance",
             "touche", "corner", "none"
@@ -226,11 +224,12 @@ def score_all_highlights(
             continue
 
         h["score"]         = result["score"]
-        # V9.7 — ne jamais promouvoir un shot en goal via le scorer
-        original_type = h.get("main_type", "shot")
-        scored_type   = result["type_reel"]
-        if original_type == "shot" and scored_type == "goal":
-            h["main_type"] = "shot"   # on garde le type original
+        # V9.7 — ne jamais promouvoir un shot en goal, ne jamais dégrader un goal
+        scored_type = result["type_reel"]
+        if _is_goal_highlight:
+            h["main_type"] = original_type   # but = toujours but
+        elif original_type == "shot" and scored_type == "goal":
+            h["main_type"] = "shot"          # shot ne devient pas goal
         else:
             h["main_type"] = scored_type
         h["spectaculaire"] = result["spectaculaire"]
