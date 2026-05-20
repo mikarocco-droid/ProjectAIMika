@@ -1499,6 +1499,12 @@ def run_pipeline(
     n_validated_goals = sum(1 for e in events_validated if e.get("type") in ("goal", "score"))
     summary["goals"] = n_validated_goals
 
+    # FIX V9.8 — shots et xG depuis highlights (pas depuis events_clean qui a 0 tirs)
+    summary["shots"]    = n_highlight_shots
+    summary["total_xg"] = round(
+        sum(float(h.get("xg", 0) or 0) for h in highlights), 2
+    )
+
     # V9.7 — recalculer stats joueurs (tirs + xG) depuis highlights filtrés
     # Les stats brutes de compute_stats incluent tous les faux tirs
     highlight_times = {round(h.get("time_start", 0)): h for h in highlights}
