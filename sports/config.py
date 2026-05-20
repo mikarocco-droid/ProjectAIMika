@@ -355,3 +355,284 @@ def compute_xa(xg_of_shot, pass_quality=1.0):
     pass_quality = max(0.0, min(1.0, float(pass_quality)))
     xa = xg_of_shot * pass_quality
     return round(max(0.0, min(0.99, xa)), 3)
+
+
+# ═══════════════════════════════════════════════════════════════
+# PLAYER_IDENTITY_CONFIG
+#
+# Centralise les champs visuels et leurs poids par sport.
+# Utilisé par :
+#   - gemini_validator.py  → prompt read_goal_scorers
+#   - player_entity.py     → _visual_match_score + owner attribution
+#   - pdf.py               → descriptions visuelles
+#
+# Structure par sport :
+#   visual_fields          : champs à demander à Gemini (dans l'ordre)
+#   match_weights          : poids pour _visual_match_score (somme = 1.0)
+#   min_match_score        : seuil minimum pour accepter un match visuel
+#   ocr_override_threshold : score visuel pour écraser un OCR high-conf
+#   owner_confidence_min   : mode player — seuil attribution event
+#   gemini_prompt_fields   : champs dans le prompt Gemini (peut différer)
+# ═══════════════════════════════════════════════════════════════
+PLAYER_IDENTITY_CONFIG = {
+
+    # ──────────────────────────────────────────────────────────
+    # FOOTBALL
+    # Discriminants : boots (colorées, stables), socks (hauteur+couleur),
+    # hair, role (ailier vs attaquant axial), skin
+    # ──────────────────────────────────────────────────────────
+    "football": {
+        "visual_fields": [
+            "boots",        # chaussures — très discriminant (couleurs vives)
+            "socks",        # chaussettes — position haute/basse + couleur
+            "hair",         # coupe + couleur
+            "body",         # morphologie générale
+            "role",         # ailier, attaquant axial, milieu...
+            "skin",         # teinte peau
+            "sleeves",      # manches longues / courtes
+            "accessories",  # bandeaux, gants, genouillères
+        ],
+        "match_weights": {
+            "boots":        0.30,
+            "socks":        0.25,
+            "hair":         0.20,
+            "skin":         0.10,
+            "body":         0.08,
+            "role":         0.07,
+            "sleeves":      0.00,
+            "accessories":  0.00,
+        },
+        "min_match_score":        0.50,
+        "ocr_override_threshold": 0.85,
+        "owner_confidence_min":   0.85,
+        "gemini_prompt_fields": [
+            "boots", "socks", "hair", "body", "role", "skin",
+            "sleeves", "accessories",
+        ],
+    },
+
+    # ──────────────────────────────────────────────────────────
+    # BASKETBALL
+    # Discriminants : jersey_color (dominant + numéro lisible),
+    # taille/morphologie très variable (pivot vs meneur), skin, hair
+    # Pas de boots/socks visibles à la caméra standard
+    # ──────────────────────────────────────────────────────────
+    "basketball": {
+        "visual_fields": [
+            "jersey_color",  # couleur maillot — très visible
+            "body",          # hauteur + morphologie (pivot ~2.10m)
+            "skin",          # discriminant sur terrain intérieur bien éclairé
+            "hair",          # coupe + couleur
+            "role",          # meneur, ailier, pivot, arrière
+            "accessories",   # bandeau, genouillères, manchon de bras
+            "shoes",         # chaussures de basket (couleur visible)
+        ],
+        "match_weights": {
+            "jersey_color":  0.35,
+            "body":          0.30,
+            "skin":          0.15,
+            "hair":          0.10,
+            "role":          0.05,
+            "accessories":   0.03,
+            "shoes":         0.02,
+        },
+        "min_match_score":        0.55,
+        "ocr_override_threshold": 0.80,
+        "owner_confidence_min":   0.80,
+        "gemini_prompt_fields": [
+            "jersey_color", "body", "skin", "hair", "role",
+            "accessories", "shoes",
+        ],
+    },
+
+    # ──────────────────────────────────────────────────────────
+    # HANDBALL
+    # Discriminants : jersey_color (clair et lisible), role
+    # (gardien très distinct), morphologie, hair
+    # ──────────────────────────────────────────────────────────
+    "handball": {
+        "visual_fields": [
+            "jersey_color",  # couleur maillot
+            "body",          # morphologie (gardien souvent plus grand)
+            "role",          # gardien très distinct visuellement
+            "hair",
+            "skin",
+            "accessories",   # gants de gardien, bandeau
+        ],
+        "match_weights": {
+            "jersey_color":  0.35,
+            "body":          0.25,
+            "role":          0.20,   # gardien = rôle très discriminant
+            "hair":          0.10,
+            "skin":          0.07,
+            "accessories":   0.03,
+        },
+        "min_match_score":        0.50,
+        "ocr_override_threshold": 0.82,
+        "owner_confidence_min":   0.82,
+        "gemini_prompt_fields": [
+            "jersey_color", "body", "role", "hair", "skin", "accessories",
+        ],
+    },
+
+    # ──────────────────────────────────────────────────────────
+    # RUGBY
+    # Discriminants : morphologie très marquée (pilier vs ailier),
+    # jersey_color, accessories (protège-dents, casque de mêlée)
+    # Numéros 1-15 = position fixe → info très précieuse
+    # ──────────────────────────────────────────────────────────
+    "rugby": {
+        "visual_fields": [
+            "body",          # morphologie très discriminante (pilier ~130kg vs ailier ~85kg)
+            "jersey_color",
+            "role",          # pilier, talonneur, numéro 8, ailier...
+            "accessories",   # casque de mêlée, protège-épaules, strapping
+            "hair",
+            "skin",
+        ],
+        "match_weights": {
+            "body":          0.35,   # dominant en rugby
+            "jersey_color":  0.25,
+            "role":          0.20,   # numéro = position fixe
+            "accessories":   0.10,
+            "hair":          0.07,
+            "skin":          0.03,
+        },
+        "min_match_score":        0.50,
+        "ocr_override_threshold": 0.80,
+        "owner_confidence_min":   0.80,
+        "gemini_prompt_fields": [
+            "body", "jersey_color", "role", "accessories", "hair", "skin",
+        ],
+    },
+
+    # ──────────────────────────────────────────────────────────
+    # HOCKEY SUR GLACE
+    # Discriminants : couleur casque + maillot (très visible), numéro lisible,
+    # position stick (gaucher/droitier), morphologie
+    # ──────────────────────────────────────────────────────────
+    "hockey sur glace": {
+        "visual_fields": [
+            "helmet_color",  # couleur casque — très visible
+            "jersey_color",
+            "stick_hand",    # gaucher ou droitier
+            "body",
+            "role",          # gardien très distinct (équipement complet)
+            "accessories",   # protège-bras, jambières gardien
+        ],
+        "match_weights": {
+            "helmet_color":  0.30,
+            "jersey_color":  0.25,
+            "stick_hand":    0.20,   # stable et facile à lire
+            "body":          0.15,
+            "role":          0.07,
+            "accessories":   0.03,
+        },
+        "min_match_score":        0.50,
+        "ocr_override_threshold": 0.80,
+        "owner_confidence_min":   0.80,
+        "gemini_prompt_fields": [
+            "helmet_color", "jersey_color", "stick_hand", "body",
+            "role", "accessories",
+        ],
+    },
+
+    # ──────────────────────────────────────────────────────────
+    # TENNIS / PADEL
+    # Discriminants : couleur tenue (haut+bas souvent assortis),
+    # morphologie, style de jeu (droitier/gaucher)
+    # Individuel → 1 seul joueur à identifier par camp
+    # ──────────────────────────────────────────────────────────
+    "tennis": {
+        "visual_fields": [
+            "outfit_color",  # couleur tenue complète
+            "body",
+            "hair",
+            "skin",
+            "play_hand",     # droitier / gaucher
+            "accessories",   # casquette, bandeau, poignets
+        ],
+        "match_weights": {
+            "outfit_color":  0.35,
+            "body":          0.25,
+            "hair":          0.15,
+            "skin":          0.12,
+            "play_hand":     0.08,
+            "accessories":   0.05,
+        },
+        "min_match_score":        0.55,
+        "ocr_override_threshold": 0.80,
+        "owner_confidence_min":   0.75,  # 1 joueur/camp → moins strict
+        "gemini_prompt_fields": [
+            "outfit_color", "body", "hair", "skin", "play_hand", "accessories",
+        ],
+    },
+
+    # Padel = même config que tennis
+    "padel": {
+        "visual_fields": [
+            "outfit_color", "body", "hair", "skin", "play_hand", "accessories",
+        ],
+        "match_weights": {
+            "outfit_color":  0.35,
+            "body":          0.25,
+            "hair":          0.15,
+            "skin":          0.12,
+            "play_hand":     0.08,
+            "accessories":   0.05,
+        },
+        "min_match_score":        0.55,
+        "ocr_override_threshold": 0.80,
+        "owner_confidence_min":   0.75,
+        "gemini_prompt_fields": [
+            "outfit_color", "body", "hair", "skin", "play_hand", "accessories",
+        ],
+    },
+
+    # Mini-foot = même config que football
+    "mini-foot": {
+        "visual_fields": [
+            "boots", "socks", "hair", "body", "role", "skin", "sleeves", "accessories",
+        ],
+        "match_weights": {
+            "boots":        0.30,
+            "socks":        0.25,
+            "hair":         0.20,
+            "skin":         0.10,
+            "body":         0.08,
+            "role":         0.07,
+            "sleeves":      0.00,
+            "accessories":  0.00,
+        },
+        "min_match_score":        0.50,
+        "ocr_override_threshold": 0.85,
+        "owner_confidence_min":   0.85,
+        "gemini_prompt_fields": [
+            "boots", "socks", "hair", "body", "role", "skin",
+            "sleeves", "accessories",
+        ],
+    },
+}
+
+
+def get_player_identity_config(sport):
+    """
+    Retourne la config d'identité joueur pour un sport.
+    Fallback sur football si sport inconnu.
+    """
+    return PLAYER_IDENTITY_CONFIG.get(sport, PLAYER_IDENTITY_CONFIG["football"])
+
+
+def get_visual_match_weights(sport):
+    """Retourne les poids de matching visuel pour un sport."""
+    return get_player_identity_config(sport).get("match_weights", {})
+
+
+def get_visual_fields(sport):
+    """Retourne les champs visuels pertinents pour un sport."""
+    return get_player_identity_config(sport).get("visual_fields", [])
+
+
+def get_owner_confidence_min(sport):
+    """Seuil minimum de confiance pour l'attribution d'un event (mode player)."""
+    return get_player_identity_config(sport).get("owner_confidence_min", 0.85)
