@@ -394,6 +394,38 @@ def run_pipeline(
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
+    # Récupérer les couleurs équipes depuis le module tracker (source la plus fiable)
+    try:
+        from vision import tracker as _tracker_mod
+        if hasattr(_tracker_mod, "_LAST_TEAM_COLORS") and _tracker_mod._LAST_TEAM_COLORS:
+            _captured_team_colors = dict(_tracker_mod._LAST_TEAM_COLORS)
+            print(f"  Couleurs equipes depuis tracker : {_captured_team_colors}")
+    except Exception:
+        pass
+
+    # Capturer les couleurs équipes depuis le tracker dès le Step 1
+    # Elles sont dans frames_data[*].players[*].color ou team_color
+    _captured_team_colors = {}
+    try:
+        _color_votes = {}  # {team_id: [bgr_tuples]}
+        for _fd in frames_data[:300]:
+            for _pp in (_fd.get("players") or []):
+                _t  = _pp.get("team")
+                _c  = _pp.get("color") or _pp.get("team_color") or _pp.get("jersey_color")
+                if _t is not None and _c is not None:
+                    if isinstance(_c, (list, tuple)) and len(_c) == 3:
+                        _color_votes.setdefault(_t, []).append(_c)
+        for _t, _cols in _color_votes.items():
+            # Moyenne des couleurs pour l'équipe
+            _b = int(sum(c[0] for c in _cols) / len(_cols))
+            _g = int(sum(c[1] for c in _cols) / len(_cols))
+            _r = int(sum(c[2] for c in _cols) / len(_cols))
+            _captured_team_colors[_t] = (_b, _g, _r)
+        if _captured_team_colors:
+            print(f"  Couleurs équipes capturées : {_captured_team_colors}")
+    except Exception as _ect:
+        pass
+
     for e in events:
         if not e.get("time"):
             frame     = e.get("frame", 0) or 0
@@ -1186,17 +1218,36 @@ def run_pipeline(
         pressing_level = detect_pressing_intensity(events)
         play_style     = detect_play_style(events)
 
-        # Extraire les couleurs équipes depuis player_reid ou events
+        # Extraire les couleurs équipes depuis player_reid ou events ou frames_data
         _team_colors = {}
         try:
             from analysis.player_reid import get_team_colors
             _team_colors = get_team_colors()
         except Exception:
+            pass
+
+        # Fallback 1 : depuis les events
+        if not _team_colors:
             for _e in events:
                 _t = _e.get("team")
                 _c = _e.get("team_color") or _e.get("color")
                 if _t is not None and _c is not None and _t not in _team_colors:
                     _team_colors[_t] = _c
+
+        # Fallback 2 : depuis la capture Step 1
+        if not _team_colors and _captured_team_colors:
+            _team_colors = _captured_team_colors
+
+        # Fallback 3 : depuis frames_data joueurs
+        if not _team_colors:
+            for _f in frames_data[:500]:
+                for _p in (_f.get("players") or []):
+                    _t = _p.get("team")
+                    _c = _p.get("color") or _p.get("team_color")
+                    if _t is not None and _c is not None and _t not in _team_colors:
+                        _team_colors[_t] = _c
+                if len(_team_colors) >= 2:
+                    break
 
         print(f"  Re-ID OK | Pressing: {pressing_level} | Style: {play_style}")
     except Exception as e:
@@ -1301,15 +1352,35 @@ def run_pipeline(
 
         # analyze_tactics Gemini supprimé V9.6 — économie ~1 appel/run
 
-        # Injecter les couleurs équipes dans teams (récupérées au step 1d)
+        # Injecter les couleurs équipes dans teams
+        # Source prioritaire : _team_colors (player_reid)
+        # Fallback : _captured_team_colors (Step 1 frames_data)
+        _colors_src = _team_colors if _team_colors else _captured_team_colors
         for _tid, _tdata in teams.items():
             _key = int(_tid) if str(_tid).isdigit() else _tid
-            if _key in _team_colors:
-                _tdata["color_bgr"] = _team_colors[_key]
-            elif _tid in _team_colors:
-                _tdata["color_bgr"] = _team_colors[_tid]
+            if _key in _colors_src:
+                _tdata["color_bgr"] = _colors_src[_key]
+            elif _tid in _colors_src:
+                _tdata["color_bgr"] = _colors_src[_tid]
 
-        print(f"  OK formation={formation} | style={tactical.get('style','?')} | colors={_team_colors}")
+        # Dernier fallback : calculer couleur dominante depuis events trackés
+        if not any("color_bgr" in td for td in teams.values()):
+            _team_color_votes = {}
+            for _fd in frames_data[:200]:
+                for _pp in (_fd.get("players") or []):
+                    _t = _pp.get("team")
+                    _c = _pp.get("color") or _pp.get("team_color") or _pp.get("jersey_color")
+                    if _t is not None and isinstance(_c, (list, tuple)) and len(_c) == 3:
+                        _team_color_votes.setdefault(str(_t), []).append(_c)
+            for _t, _cols in _team_color_votes.items():
+                if _t in teams and _cols:
+                    _b = int(sum(c[0] for c in _cols) / len(_cols))
+                    _g = int(sum(c[1] for c in _cols) / len(_cols))
+                    _r = int(sum(c[2] for c in _cols) / len(_cols))
+                    teams[_t]["color_bgr"] = (_b, _g, _r)
+
+        _colors_final = {k: v.get("color_bgr") for k, v in teams.items() if v.get("color_bgr")}
+        print(f"  OK formation={formation} | style={tactical.get('style','?')} | colors={_colors_final}")
     except Exception as e:
         print(f"  Tactical error : {e}")
 
@@ -1648,6 +1719,7 @@ def run_pipeline(
                     "commentary":     commentary,
                     "possession":     possession,
                     "context_stats":  ctx_stats,
+                    "teams":          teams,
                 },
                 output_path = os.path.join(output_dir, "rapport.pdf"),
                 sport       = sport
