@@ -1597,15 +1597,12 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
                     clip_path = best_match[1]
 
             if clip_path and os.path.exists(clip_path):
-                # Lire 5 frames dans le clip Full HD autour du moment du but
-                # time_start du clip = goal_t - 25s (context_before)
-                # → offset dans le clip = 25s
                 clip_offset = 25.0
                 cap = cv2.VideoCapture(clip_path)
                 clip_fps = cap.get(cv2.CAP_PROP_FPS) or fps
-                # Fix buteur : le tireur est visible AVANT que le ballon entre dans le filet
-                # Densifier les frames dans les 4s précédant le but, éviter le post-but
-                for offset_s in [-5, -3, -2, -1, 0]:
+                # Offsets recentrés autour de l'impact du tir
+                # Évite les frames trop en amont où un autre joueur tient le ballon
+                for offset_s in [-2.0, -1.5, -1.0, -0.5, -0.2, 0, 0.2]:
                     fid = max(0, int((clip_offset + offset_s) * clip_fps))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
                     ret, fr = cap.read()
@@ -1615,7 +1612,7 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
                 source_label = "clip HD"
             else:
                 cap = cv2.VideoCapture(video_path)
-                for offset_s in [-5, -3, -2, -1, 0]:
+                for offset_s in [-2.0, -1.5, -1.0, -0.5, -0.2, 0, 0.2]:
                     fid = max(0, frame_g + int(offset_s * fps))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
                     ret, fr = cap.read()
@@ -1628,34 +1625,50 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
                 continue
 
             parts = [text_to_part(
-                f"But marqué à {t_mm}. Voici {len(frames)} frames prises dans les 5 secondes "
-                f"AVANT le but (depuis le {source_label}, pleine résolution).\n"
+                f"But marqué à {t_mm}. Voici {len(frames)} frames centrées autour du moment du tir "
+                f"(depuis le {source_label}, pleine résolution).\n"
+                f"PROCESSUS D'IDENTIFICATION EN 3 ÉTAPES — dans cet ordre :\n"
+                f"\n"
+                f"ÉTAPE 1 — IDENTIFIER LE TIREUR PAR SON GESTE\n"
+                f"  Cherche le joueur dont la jambe est en EXTENSION ACTIVE vers le ballon.\n"
+                f"  Posture de frappe : jambe tendue, corps orienté vers le but, pied au contact du ballon.\n"
+                f"  Ignore les joueurs qui courent vers le tireur, sautent, ou lèvent les bras.\n"
+                f"\n"
+                f"ÉTAPE 2 — IDENTIFIER LA COULEUR DE SON MAILLOT\n"
+                f"  Note la couleur principale du maillot du tireur identifié à l'étape 1.\n"
+                f"  IMPORTANT : la couleur peut différer de l'équipe majoritaire dans le plan.\n"
+                f"  (ex: un attaquant en bleu entouré de défenseurs rouges — le buteur est le bleu).\n"
+                f"  Des adversaires plus proches de la caméra ne sont PAS le buteur.\n"
+                f"\n"
+                f"ÉTAPE 3 — LIRE LE NUMÉRO SUR CE JOUEUR UNIQUEMENT\n"
+                f"  Lis le numéro sur le dos ou la poitrine du maillot du tireur identifié.\n"
+                f"  Ne lis pas les numéros des autres joueurs.\n"
+                f"  Le gardien porte un maillot de couleur différente (gardien ≠ buteur).\n"
+                f"\n"
                 f"Réponds UNIQUEMENT en JSON sans markdown, format exact :\n"
                 f'{{\n'
                 f'  "buteur": <numero entier ou null>,\n'
+                f'  "buteur_couleur": "<couleur principale du maillot du tireur, ex: bleu, rouge, blanc, noir>",\n'
+                f'  "buteur_confiance": "<high | medium | low — confiance sur l\'identification>",\n'
                 f'  "passeur": <numero entier ou null>,\n'
                 f'  "visual": {{\n'
-                f'    "hair": "<coupe et couleur de cheveux, ex: cheveux noirs rasés, chauve, cheveux blonds courts>",\n'
-                f'    "boots": "<couleur et marque si visible, ex: chaussures rouges Nike, chaussures noires>",\n'
-                f'    "socks": "<position et couleur, ex: chaussettes blanches basses, chaussettes bleues hautes>",\n'
-                f'    "body": "<morphologie, ex: grand svelte, petit trapu, taille moyenne>",\n'
+                f'    "hair": "<coupe et couleur, ex: cheveux noirs rasés, chauve>",\n'
+                f'    "boots": "<couleur, ex: chaussures rouges Nike, chaussures noires>",\n'
+                f'    "socks": "<position et couleur, ex: chaussettes blanches basses>",\n'
+                f'    "body": "<morphologie, ex: grand svelte, petit trapu>",\n'
                 f'    "sleeves": "<manches longues ou courtes>",\n'
-                f'    "skin": "<teinte peau, ex: peau claire, peau foncée, peau mate>",\n'
-                f'    "role": "<rôle apparent, ex: ailier gauche, attaquant axial, milieu>",\n'
-                f'    "accessories": "<bandeaux, gants, protège-tibia visible, genouillères, etc. ou null>",\n'
-                f'    "confidence": "<high | medium | low — ta confiance sur cette description>"\n'
+                f'    "skin": "<teinte peau, ex: peau claire, peau foncée>",\n'
+                f'    "role": "<rôle apparent, ex: ailier gauche, attaquant axial>",\n'
+                f'    "accessories": "<bandeaux, gants, genouillères ou null>",\n'
+                f'    "confidence": "<high | medium | low>"\n'
                 f'  }}\n'
                 f'}}\n'
-                f"Règles pour buteur :\n"
-                f"- cherche le joueur dont la jambe est en extension vers le ballon (geste de frappe)\n"
-                f"- c'est souvent le joueur le plus proche du but avec le ballon au pied\n"
-                f"- lis le numéro sur le dos ou la poitrine du maillot\n"
-                f"- le gardien porte un maillot de couleur différente (gardien = pas le buteur)\n"
-                f"- si plusieurs candidats, prends celui dont le pied est le plus proche du ballon\n"
-                f"- passeur : numéro du joueur qui fait la dernière passe décisive (null si inconnu)\n"
+                f"Règles finales :\n"
                 f"- buteur null si numéro illisible — ne devine pas un numéro au hasard\n"
-                f"- pour visual : décris le buteur identifié, ou le tireur le plus probable si numéro illisible\n"
-                f"- si aucun joueur identifiable, mets null pour tous les champs visual"
+                f"- buteur_couleur toujours renseigné si un tireur est identifiable\n"
+                f"- passeur : numéro du joueur qui fait la dernière passe décisive (null si inconnu)\n"
+                f"- pour visual : décris le buteur identifié\n"
+                f"- si aucun joueur identifiable, mets null pour tous les champs"
             )]
             for fr in frames:
                 # Clip HD : envoyer à taille native (1920×1080 pour lire les numéros)
@@ -1676,12 +1689,13 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
             text = re.sub(r"```json|```", "", text).strip()
             data = json.loads(text)
 
-            buteur  = data.get("buteur")
-            passeur = data.get("passeur")
-            visual  = data.get("visual") or {}
+            buteur          = data.get("buteur")
+            passeur         = data.get("passeur")
+            buteur_couleur  = (data.get("buteur_couleur") or "").strip().lower()
+            buteur_confiance = data.get("buteur_confiance", "low")
+            visual          = data.get("visual") or {}
 
-            # Stocker la signature visuelle dans l'event quoi qu'il arrive
-            # (même si le numéro est inconnu, la description est précieuse)
+            # Stocker la signature visuelle + couleur équipe
             if visual and isinstance(visual, dict):
                 ev["scorer_visual"] = {
                     "hair":        visual.get("hair"),
@@ -1706,14 +1720,20 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
                 )
                 print(f"  [VISUAL] {t_mm} → {_vis_log}")
 
+            # Stocker la couleur maillot du buteur — utilisée pour validation croisée
+            if buteur_couleur:
+                ev["scorer_team_color"]      = buteur_couleur
+                ev["scorer_id_confidence"]   = buteur_confiance
+                print(f"  [COULEUR BUTEUR] {t_mm} → maillot={buteur_couleur} confiance_id={buteur_confiance}")
+
             if buteur is not None and 1 <= int(buteur) <= 99:
                 key = pid if pid else f"goal_{t_mm}"
                 jersey_map[key] = int(buteur)
                 ev["player_jersey"] = int(buteur)
-                print(f"  [JERSEY GOAL] {t_mm} → buteur=#{buteur}"
+                print(f"  [JERSEY GOAL] {t_mm} → buteur=#{buteur} ({buteur_couleur})"
                       f"{f' passeur=#{passeur}' if passeur else ''}")
             else:
-                print(f"  [JERSEY GOAL] {t_mm} → numéro illisible — description visuelle stockée")
+                print(f"  [JERSEY GOAL] {t_mm} → numéro illisible ({buteur_couleur}) — description visuelle stockée")
 
             if passeur is not None and 1 <= int(passeur) <= 99:
                 ev["assist_jersey"] = int(passeur)
