@@ -71,15 +71,30 @@ def bgr_to_name(bgr):
         b, g, r = int(bgr[0]), int(bgr[1]), int(bgr[2])
     except Exception:
         return None
-    if r > 180 and g < 80  and b < 80:  return "Rouge"
-    if b > 150 and r < 100 and g < 130: return "Bleu"
-    if g > 150 and r < 100 and b < 100: return "Vert"
-    if r > 200 and g > 200 and b < 80:  return "Jaune"
+    # Blanc / Noir
     if r > 200 and g > 200 and b > 200: return "Blanc"
     if r < 60  and g < 60  and b < 60:  return "Noir"
-    if r > 150 and g < 100 and b > 150: return "Violet"
+    # Rouge vif
+    if r > 160 and g < 80  and b < 80:  return "Rouge"
+    # Bordeaux (rouge fonce avec composante bleu)
+    if r > 100 and r > b and r > g and b > 40 and g < 80 and r < 180: return "Bordeaux"
+    # Bleu roi
+    if b > 150 and r < 100 and g < 130: return "Bleu"
+    # Bleu marine / bleu fonce (composante B dominante mais sombre)
+    if b > r and b > g and b > 60:      return "Bleu marine"
+    # Vert
+    if g > 150 and r < 100 and b < 100: return "Vert"
+    # Jaune
+    if r > 200 and g > 200 and b < 80:  return "Jaune"
+    # Violet
+    if r > 120 and g < 80  and b > 120: return "Violet"
+    # Orange
     if r > 200 and g > 100 and b < 80:  return "Orange"
-    if b > 80  and b > r   and b > g:   return "Bleu fonce"
+    # Fallback : couleur dominante
+    mx = max(r, g, b)
+    if mx == r: return "Rouge fonce"
+    if mx == b: return "Bleu fonce"
+    if mx == g: return "Vert fonce"
     return None
 
 
