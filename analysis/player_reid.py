@@ -75,7 +75,8 @@ class PlayerReID:
         if crop.size == 0:
             return np.array([0.0, 0.0, 0.0])
         h    = crop.shape[0]
-        crop = crop[int(h * 0.2):int(h * 0.6), :]
+        # Torse uniquement : 15%->45% de hauteur (evite tete et short)
+        crop = crop[int(h * 0.15):int(h * 0.45), :]
         if crop.size == 0:
             return np.array([0.0, 0.0, 0.0])
         return crop.mean(axis=(0, 1)).astype(float)
@@ -95,6 +96,10 @@ class PlayerReID:
 
         self._team_centroids         = centroids
         self._team_colors_calibrated = True
+
+        # Enregistrer l'instance globale pour que get_team_colors() fonctionne
+        global _GLOBAL_REID_INSTANCE
+        _GLOBAL_REID_INSTANCE = self
 
         c0 = centroids[0].astype(int)
         c1 = centroids[1].astype(int)
@@ -305,6 +310,30 @@ class PlayerReID:
 # ─────────────────────────────────────────
 # WRAPPER — appelé depuis pipeline.py
 # ─────────────────────────────────────────
+# ─────────────────────────────────────────
+# INSTANCE GLOBALE — permet à pipeline.py de récupérer les couleurs
+# ─────────────────────────────────────────
+_GLOBAL_REID_INSTANCE = None
+
+
+def get_team_colors():
+    """
+    Retourne les couleurs BGR des équipes détectées par KMeans.
+    Format : {0: (b, g, r), 1: (b, g, r)}
+    Disponible après la calibration (~50 frames).
+    """
+    global _GLOBAL_REID_INSTANCE
+    if _GLOBAL_REID_INSTANCE is None:
+        return {}
+    centroids = _GLOBAL_REID_INSTANCE._team_centroids
+    if centroids is None:
+        return {}
+    result = {}
+    for i, c in enumerate(centroids):
+        result[i] = (int(c[0]), int(c[1]), int(c[2]))
+    return result
+
+
 def reidentify_players(events):
     """
     Wrapper stateless pour le pipeline.
