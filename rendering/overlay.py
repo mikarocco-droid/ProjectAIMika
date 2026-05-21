@@ -1,200 +1,493 @@
-# rendering/overlay.py (V15)
+# rendering/overlay.py
+# -*- coding: utf-8 -*-
+#
+# Overlay vidéo professionnel pour les highlights.
+#
+# Fonctionnalités :
+#   - Scoreboard permanent en haut de chaque clip
+#   - Animation "⚽ BUT !" pour les clips de buts
+#   - Timestamp de l'action
+#   - Noms d'équipes + score en temps réel
+#
+# Usage :
+#   from rendering.overlay import render_highlights_with_overlay
+#   render_highlights_with_overlay(highlights, events, teams, output_dir)
 
+import os
 import cv2
 import numpy as np
-from collections import defaultdict
-import config
+import subprocess
+from datetime import timedelta
 
 
-FALLBACK_COLORS = {
-    0:    (0, 200, 255),
-    1:    (255, 80, 80),
-    None: (180, 180, 180),
-}
+# ─────────────────────────────────────────
+# HELPERS COULEUR
+# ─────────────────────────────────────────
+def bgr_to_name(bgr):
+    """Nom couleur depuis BGR."""
+    if not bgr:
+        return "?"
+    try:
+        b, g, r = int(bgr[0]), int(bgr[1]), int(bgr[2])
+        pixel   = np.uint8([[[b, g, r]]])
+        hsv     = cv2.cvtColor(pixel, cv2.COLOR_BGR2HSV)[0][0]
+        h = int(hsv[0]) * 2
+        s = int(hsv[1] / 255 * 100)
+        v = int(hsv[2] / 255 * 100)
+    except Exception:
+        return "?"
+    if s < 15: return "blanc" if v > 70 else ("gris" if v > 30 else "noir")
+    if v < 20: return "noir"
+    if 0 <= h < 20 or 340 <= h <= 360: return "bordeaux" if v < 50 else "rouge"
+    if 20 <= h < 35:   return "orange"
+    if 35 <= h < 75:   return "jaune"
+    if 75 <= h < 155:  return "vert"
+    if 155 <= h < 185: return "cyan"
+    if 185 <= h < 265: return "bleu marine" if v < 45 else "bleu"
+    if 265 <= h < 295: return "violet"
+    if 295 <= h < 340: return "rose"
+    return "?"
 
-TEXT_COLOR   = (255, 255, 255)
-SHADOW_COLOR = (0, 0, 0)
+
+def hex_to_bgr(hex_color):
+    """#RRGGBB → (B, G, R)."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return (b, g, r)
 
 
-class TeamColorDetector:
+def team_color_for_display(teams_data, team_id):
+    """
+    Retourne la couleur BGR d'une équipe pour l'affichage.
+    Fallback sur des couleurs par défaut si non disponible.
+    """
+    defaults = {0: (80, 120, 220), 1: (60, 60, 200)}
+    if not teams_data:
+        return defaults.get(team_id, (150, 150, 150))
+    td = teams_data.get(team_id) or teams_data.get(str(team_id)) or {}
+    bgr = td.get("color_bgr")
+    if bgr:
+        return tuple(int(x) for x in bgr)
+    return defaults.get(team_id, (150, 150, 150))
 
-    def __init__(self, sample_frames=60):
-        self.sample_frames = sample_frames
-        self.frame_count   = 0
-        self.locked        = False
-        self._samples      = defaultdict(list)
-        self.team_colors   = dict(FALLBACK_COLORS)
 
-    def _dominant_color(self, patch):
-        h, w = patch.shape[:2]
-        if h < 20 or w < 10:
-            return None
+def team_name_display(teams_data, team_id):
+    """Retourne le nom d'équipe pour l'affichage."""
+    if not teams_data:
+        return f"Équipe {team_id + 1}"
+    td = teams_data.get(team_id) or teams_data.get(str(team_id)) or {}
+    name = td.get("name")
+    if name:
+        return str(name)
+    color = bgr_to_name(td.get("color_bgr"))
+    return f"Équipe {color.title()}" if color and color != "?" else f"Équipe {team_id + 1}"
 
-        roi = patch[int(h*0.2):int(h*0.6), :]
-        roi = cv2.resize(roi, (20, 20))
 
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+def fmt_time(seconds):
+    """Formate un temps en MM:SS."""
+    seconds = max(0, float(seconds or 0))
+    return f"{int(seconds // 60):02d}:{int(seconds % 60):02d}"
 
-        mask_green = cv2.inRange(hsv,
-            np.array([35, 40, 40]),
-            np.array([85, 255, 255])
+
+# ─────────────────────────────────────────
+# DESSIN SCOREBOARD
+# ─────────────────────────────────────────
+def draw_scoreboard(frame, team_home_name, team_away_name,
+                    score_home, score_away,
+                    action_time, is_goal=False,
+                    team_home_bgr=None, team_away_bgr=None):
+    """
+    Dessine un scoreboard professionnel en haut de la frame.
+
+    Layout :
+    ┌──────────────────────────────────────────────────────────────┐
+    │ [couleur] RSC STAVELOT B     1 - 0     FC LIÈGE [couleur]  │
+    │                                                    02:22    │
+    └──────────────────────────────────────────────────────────────┘
+    """
+    h, w = frame.shape[:2]
+    overlay = frame.copy()
+
+    # ── Fond scoreboard ──────────────────────────────────────────
+    bar_h   = 52
+    padding = 8
+
+    # Fond semi-transparent noir
+    cv2.rectangle(overlay, (0, 0), (w, bar_h), (15, 15, 20), -1)
+    frame = cv2.addWeighted(overlay, 0.85, frame, 0.15, 0)
+
+    # ── Ligne de séparation colorée ───────────────────────────────
+    cv2.rectangle(frame, (0, bar_h), (w, bar_h + 3),
+                  (0, 180, 220), -1)   # cyan accent
+
+    # ── Couleurs équipes (bandes latérales) ───────────────────────
+    band_w = 6
+    c_home = team_home_bgr or (80, 120, 220)
+    c_away = team_away_bgr or (60, 60, 200)
+    cv2.rectangle(frame, (0, 0), (band_w, bar_h), c_home, -1)
+    cv2.rectangle(frame, (w - band_w, 0), (w, bar_h), c_away, -1)
+
+    # ── Noms équipes ──────────────────────────────────────────────
+    font       = cv2.FONT_HERSHEY_SIMPLEX
+    font_bold  = cv2.FONT_HERSHEY_DUPLEX
+    text_color = (240, 240, 240)
+    gray_color = (160, 160, 170)
+
+    # Équipe domicile (gauche)
+    home_text = team_home_name.upper()[:20]
+    cv2.putText(frame, home_text, (band_w + 12, 22),
+                font_bold, 0.55, text_color, 1, cv2.LINE_AA)
+
+    # Équipe visiteur (droite — aligné à droite)
+    away_text = team_away_name.upper()[:20]
+    (aw, _), _ = cv2.getTextSize(away_text, font_bold, 0.55, 1)
+    cv2.putText(frame, away_text, (w - band_w - aw - 12, 22),
+                font_bold, 0.55, text_color, 1, cv2.LINE_AA)
+
+    # ── Score central ─────────────────────────────────────────────
+    score_str = f"{score_home}  -  {score_away}"
+    (sw, _), _ = cv2.getTextSize(score_str, font_bold, 0.85, 2)
+    score_x = (w - sw) // 2
+
+    # Fond score
+    cv2.rectangle(frame,
+                  (score_x - 14, 4),
+                  (score_x + sw + 14, bar_h - 4),
+                  (30, 30, 40), -1)
+
+    # Score texte
+    score_color = (80, 220, 80) if is_goal else (255, 255, 255)
+    cv2.putText(frame, score_str, (score_x, 32),
+                font_bold, 0.85, score_color, 2, cv2.LINE_AA)
+
+    # ── Timestamp ─────────────────────────────────────────────────
+    time_str = fmt_time(action_time)
+    (tw, _), _ = cv2.getTextSize(time_str, font, 0.45, 1)
+    cv2.putText(frame, time_str, ((w - tw) // 2, bar_h - 8),
+                font, 0.45, gray_color, 1, cv2.LINE_AA)
+
+    return frame
+
+
+# ─────────────────────────────────────────
+# ANIMATION BUT
+# ─────────────────────────────────────────
+def draw_goal_animation(frame, scorer_name, team_name,
+                        score_home, score_away,
+                        progress=1.0):
+    """
+    Dessine l'animation "⚽ BUT !" en overlay.
+
+    progress : 0.0→1.0 — animation d'entrée (slide + fade)
+    """
+    h, w = frame.shape[:2]
+    overlay = frame.copy()
+
+    # ── Calcul position avec animation slide ─────────────────────
+    panel_h = 80
+    panel_w = min(480, w - 40)
+    panel_x = (w - panel_w) // 2
+
+    # Slide depuis le bas avec ease-out
+    ease     = 1 - (1 - progress) ** 3
+    panel_y  = int(h * 0.65 - panel_h // 2 * ease)
+    alpha    = min(1.0, progress * 2)
+
+    if panel_y + panel_h > h or panel_y < 0:
+        return frame
+
+    # ── Fond panel ────────────────────────────────────────────────
+    cv2.rectangle(overlay,
+                  (panel_x, panel_y),
+                  (panel_x + panel_w, panel_y + panel_h),
+                  (10, 10, 15), -1)
+
+    # Bordure accent
+    cv2.rectangle(overlay,
+                  (panel_x, panel_y),
+                  (panel_x + panel_w, panel_y + 4),
+                  (0, 200, 80), -1)   # vert but
+
+    # ── Texte "⚽ BUT !" ──────────────────────────────────────────
+    font      = cv2.FONT_HERSHEY_DUPLEX
+    font_sm   = cv2.FONT_HERSHEY_SIMPLEX
+
+    goal_text = "BUT !"
+    (gw, _), _ = cv2.getTextSize(goal_text, font, 1.1, 2)
+    cv2.putText(overlay, goal_text,
+                (panel_x + (panel_w - gw) // 2, panel_y + 38),
+                font, 1.1, (80, 255, 80), 2, cv2.LINE_AA)
+
+    # ── Buteur ────────────────────────────────────────────────────
+    if scorer_name and scorer_name != "?":
+        scorer_text = f"{scorer_name}  ({team_name})"
+        (sctw, _), _ = cv2.getTextSize(scorer_text, font_sm, 0.55, 1)
+        cv2.putText(overlay, scorer_text,
+                    (panel_x + (panel_w - sctw) // 2, panel_y + 62),
+                    font_sm, 0.55, (200, 200, 210), 1, cv2.LINE_AA)
+
+    # ── Score mis en avant ────────────────────────────────────────
+    score_str  = f"{score_home} - {score_away}"
+    (ssw, _), _ = cv2.getTextSize(score_str, font, 0.9, 2)
+    # Affiché à droite du panel
+    cv2.putText(overlay, score_str,
+                (panel_x + panel_w - ssw - 16, panel_y + 38),
+                font, 0.9, (255, 255, 100), 2, cv2.LINE_AA)
+
+    # ── Fusion avec alpha ─────────────────────────────────────────
+    return cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+
+
+# ─────────────────────────────────────────
+# CALCUL SCORE EN TEMPS RÉEL
+# ─────────────────────────────────────────
+def compute_score_at_time(goals, t, teams_data=None):
+    """
+    Calcule le score domicile/visiteur à un instant t.
+
+    goals : liste d'events de type "goal"
+    t     : timestamp en secondes
+    """
+    score = {0: 0, 1: 0}
+    for g in goals:
+        if float(g.get("time", 0) or 0) <= t:
+            team = g.get("team")
+            if team in (0, 1):
+                score[team] += 1
+            elif str(team) in ("0", "1"):
+                score[int(team)] += 1
+    return score.get(0, 0), score.get(1, 0)
+
+
+# ─────────────────────────────────────────
+# RENDU D'UN CLIP AVEC OVERLAY
+# ─────────────────────────────────────────
+def render_clip_with_overlay(input_path, output_path,
+                              team_home_name, team_away_name,
+                              score_home, score_away,
+                              action_time, is_goal=False,
+                              scorer_name=None,
+                              team_home_bgr=None, team_away_bgr=None,
+                              goal_anim_duration=3.0):
+    """
+    Ajoute le scoreboard + animation but sur un clip vidéo.
+
+    Utilise OpenCV frame par frame puis ffmpeg pour ré-encoder.
+    """
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        return None
+
+    fps    = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    tmp_path = output_path + "_tmp.mp4"
+    fourcc   = cv2.VideoWriter_fourcc(*"mp4v")
+    writer   = cv2.VideoWriter(tmp_path, fourcc, fps, (width, height))
+
+    frame_idx         = 0
+    goal_anim_frames  = int(goal_anim_duration * fps) if is_goal else 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        t_current = action_time - (frame_idx / fps)
+
+        # ── Scoreboard permanent ──────────────────────────────────
+        frame = draw_scoreboard(
+            frame,
+            team_home_name  = team_home_name,
+            team_away_name  = team_away_name,
+            score_home      = score_home,
+            score_away      = score_away,
+            action_time     = action_time,
+            is_goal         = is_goal,
+            team_home_bgr   = team_home_bgr,
+            team_away_bgr   = team_away_bgr,
         )
-        mask = cv2.bitwise_not(mask_green)
 
-        pixels = roi[mask > 0]
-        if len(pixels) < 15:
-            return None
+        # ── Animation but (sur les N premières secondes du clip) ──
+        if is_goal and frame_idx < goal_anim_frames:
+            progress = frame_idx / max(goal_anim_frames * 0.4, 1)
+            progress = min(1.0, progress)
+            frame = draw_goal_animation(
+                frame,
+                scorer_name = scorer_name or "?",
+                team_name   = team_home_name if score_home > score_away else team_away_name,
+                score_home  = score_home,
+                score_away  = score_away,
+                progress    = progress,
+            )
 
-        return tuple(np.median(pixels, axis=0).astype(int))
+        writer.write(frame)
+        frame_idx += 1
 
-    def update(self, frame, players):
-        if self.locked:
-            return
+    cap.release()
+    writer.release()
 
-        self.frame_count += 1
+    # ── Ré-encoder avec ffmpeg pour compatibilité + audio ─────────
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", tmp_path,
+        "-i", input_path,
+        "-map", "0:v:0",
+        "-map", "1:a:0?",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac",
+        "-shortest",
+        output_path
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    try:
+        os.remove(tmp_path)
+    except Exception:
+        pass
 
-        for p in players:
-            team = p.get("team")
-            if team is None:
-                continue
+    if result.returncode == 0 and os.path.exists(output_path):
+        return output_path
 
-            x1, y1, x2, y2 = map(int, p["bbox"])
-            patch = frame[y1:y2, x1:x2]
-
-            color = self._dominant_color(patch)
-            if color:
-                self._samples[team].append(color)
-
-        if self.frame_count >= self.sample_frames:
-            self._lock_colors()
-
-    def _lock_colors(self):
-        for team, samples in self._samples.items():
-            if len(samples) < 10:
-                continue
-
-            arr = np.array(samples)
-
-            # nettoyage robuste
-            low  = np.percentile(arr, 10, axis=0)
-            high = np.percentile(arr, 90, axis=0)
-            arr  = arr[(arr >= low).all(axis=1) & (arr <= high).all(axis=1)]
-
-            if len(arr) == 0:
-                continue
-
-            self.team_colors[team] = tuple(np.mean(arr, axis=0).astype(int))
-
-        self.locked = True
-        print("🎨 Couleurs détectées:", self.team_colors)
-
-    def get_color(self, team):
-        return self.team_colors.get(team, FALLBACK_COLORS[None])
-
-    def reset(self):
-        self.__init__(self.sample_frames)
+    # Fallback sans audio si ffmpeg échoue
+    if os.path.exists(tmp_path):
+        os.rename(tmp_path, output_path)
+        return output_path
+    return None
 
 
 # ─────────────────────────────────────────
-# DRAW UTILS
+# RENDU COMPLET DE TOUS LES HIGHLIGHTS
 # ─────────────────────────────────────────
+def render_highlights_with_overlay(highlights, events, teams_data,
+                                    output_dir, sport="football"):
+    """
+    Ajoute scoreboard + animations sur tous les highlights.
 
-def draw_text(frame, text, pos, scale=0.5, thick=1):
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    x, y = pos
-    cv2.putText(frame, text, (x+1,y+1), font, scale, SHADOW_COLOR, thick+1, cv2.LINE_AA)
-    cv2.putText(frame, text, (x,y), font, scale, TEXT_COLOR, thick, cv2.LINE_AA)
+    Args:
+        highlights  : liste de highlights (depuis pipeline)
+        events      : liste d'events (pour calculer le score)
+        teams_data  : dict {team_id: {name, color_bgr, ...}}
+        output_dir  : dossier de sortie
+        sport       : sport (pour adapter l'overlay)
 
+    Returns:
+        Liste des highlights enrichis avec "file_overlay"
+    """
+    os.makedirs(output_dir, exist_ok=True)
 
-def draw_box(frame, x1, y1, x2, y2, color):
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x1,y1), (x2,y2), color, -1)
-    cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
-    cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
+    # Extraire les buts pour calcul score en temps réel
+    goals = [e for e in events if e.get("type") in ("goal", "score")]
+
+    # Noms et couleurs équipes
+    home_name  = team_name_display(teams_data, 0)
+    away_name  = team_name_display(teams_data, 1)
+    home_bgr   = team_color_for_display(teams_data, 0)
+    away_bgr   = team_color_for_display(teams_data, 1)
+
+    enriched = []
+
+    for i, h in enumerate(highlights):
+        clip_path = h.get("file")
+        if not clip_path or not os.path.exists(str(clip_path)):
+            enriched.append(h)
+            continue
+
+        h_type      = h.get("main_type", "shot")
+        action_time = float(h.get("time_start", 0) or 0)
+        is_goal     = h_type in ("goal", "score")
+
+        # Score au moment de l'action
+        score_h, score_a = compute_score_at_time(goals, action_time)
+        # Si c'est un but, on affiche le score APRÈS le but
+        if is_goal:
+            team_scorer = h.get("team")
+            if team_scorer == 0 or str(team_scorer) == "0":
+                score_h += 1
+            elif team_scorer == 1 or str(team_scorer) == "1":
+                score_a += 1
+
+        # Nom du buteur
+        scorer_name = None
+        if is_goal:
+            pid    = h.get("player")
+            jersey = str(pid).replace("P", "#") if pid else "?"
+            scorer_name = jersey
+
+        # Chemin de sortie
+        base     = os.path.splitext(os.path.basename(clip_path))[0]
+        out_path = os.path.join(output_dir, f"{base}_overlay.mp4")
+
+        print(f"  [OVERLAY] Clip {i+1}/{len(highlights)} "
+              f"{'⚽' if is_goal else '🎯'} "
+              f"{score_h}-{score_a} t={fmt_time(action_time)}")
+
+        rendered = render_clip_with_overlay(
+            input_path      = clip_path,
+            output_path     = out_path,
+            team_home_name  = home_name,
+            team_away_name  = away_name,
+            score_home      = score_h,
+            score_away      = score_a,
+            action_time     = action_time,
+            is_goal         = is_goal,
+            scorer_name     = scorer_name,
+            team_home_bgr   = home_bgr,
+            team_away_bgr   = away_bgr,
+        )
+
+        h_new = dict(h)
+        h_new["file_overlay"] = rendered or clip_path
+        enriched.append(h_new)
+
+    return enriched
 
 
 # ─────────────────────────────────────────
-# PLAYERS
+# REEL FINAL AVEC OVERLAY
 # ─────────────────────────────────────────
+def create_overlay_reel(highlights_with_overlay, output_path,
+                         team_home, team_away, final_score):
+    """
+    Concatène les clips avec overlay en un reel final.
+    Ajoute un écran titre au début et un écran score final.
 
-def draw_players(frame, players, detector, jersey_map=None):
-    for p in players:
-        x1,y1,x2,y2 = map(int, p["bbox"])
-        team  = p.get("team")
-        pid   = p.get("id")
-        color = detector.get_color(team)
+    Args:
+        highlights_with_overlay : liste de highlights avec "file_overlay"
+        output_path             : chemin du reel final
+        team_home               : nom équipe domicile
+        team_away               : nom équipe visiteur
+        final_score             : (score_home, score_away)
+    """
+    clips = [
+        h.get("file_overlay") or h.get("file")
+        for h in highlights_with_overlay
+        if (h.get("file_overlay") or h.get("file"))
+        and os.path.exists(h.get("file_overlay") or h.get("file", ""))
+    ]
 
-        draw_box(frame, x1,y1,x2,y2, color)
+    if not clips:
+        return None
 
-        jersey = p.get("jersey") or (jersey_map or {}).get(pid)
-        label  = f"#{jersey}" if jersey else f"P{pid}"
+    # Créer liste de concat pour ffmpeg
+    list_file = output_path + "_list.txt"
+    with open(list_file, "w") as f:
+        for c in clips:
+            f.write(f"file '{os.path.abspath(c)}'\n")
 
-        draw_text(frame, label, (x1, y1-5))
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "concat", "-safe", "0",
+        "-i", list_file,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        output_path
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    try:
+        os.remove(list_file)
+    except Exception:
+        pass
 
-    return frame
-
-
-# ─────────────────────────────────────────
-# BALL
-# ─────────────────────────────────────────
-
-def draw_ball(frame, ball):
-    if not ball:
-        return frame
-
-    cx, cy = map(int, ball["center"])
-
-    cv2.circle(frame, (cx,cy), 10, (0,255,0), 2)
-    cv2.circle(frame, (cx,cy), 3,  (0,255,0), -1)
-
-    return frame
-
-
-# ─────────────────────────────────────────
-# SCOREBOARD V15
-# ─────────────────────────────────────────
-
-def draw_scoreboard(frame, frame_id, fps, score):
-
-    h,w = frame.shape[:2]
-    sec = int(frame_id / fps)
-    chrono = f"{sec//60:02d}:{sec%60:02d}"
-
-    text = f"{score['A']} - {score['B']}   {chrono}"
-
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (w-220, 10), (w-10, 60), (0,0,0), -1)
-    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-
-    draw_text(frame, text, (w-200, 40), 0.8, 2)
-
-    return frame
-
-
-# ─────────────────────────────────────────
-# MAIN CLASS
-# ─────────────────────────────────────────
-
-class Overlay:
-
-    def __init__(self, fps=None):
-        self.fps = fps or config.FPS
-        self.score = {"A":0,"B":0}
-        self.detector = TeamColorDetector()
-
-    def update_score(self, events):
-        for e in events:
-            if e.get("type") in ["goal","score"]:
-                if e.get("team")==0: self.score["A"]+=1
-                if e.get("team")==1: self.score["B"]+=1
-
-    def render(self, frame, players, ball, events, frame_id, jersey_map=None):
-
-        self.detector.update(frame, players)
-        self.update_score(events)
-
-        frame = draw_players(frame, players, self.detector, jersey_map)
-        frame = draw_ball(frame, ball)
-        frame = draw_scoreboard(frame, frame_id, self.fps, self.score)
-
-        return frame
+    return output_path if result.returncode == 0 else None
