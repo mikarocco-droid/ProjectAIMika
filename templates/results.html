@@ -20,7 +20,22 @@
 
   <div class="results-header">
     <div>
-      <div class="results-title">{{ analysis.filename }}</div>
+      <div class="results-title">
+        {# Afficher noms équipes si disponibles #}
+        {% if result.teams %}
+          {% set t0 = result.teams.get('0', result.teams.get(0, {})) %}
+          {% set t1 = result.teams.get('1', result.teams.get(1, {})) %}
+          {% if t0.get('name') and t1.get('name') %}
+            {{ t0.name }}
+            <span style="color:var(--gray);margin:0 0.5rem">vs</span>
+            {{ t1.name }}
+          {% else %}
+            {{ analysis.filename }}
+          {% endif %}
+        {% else %}
+          {{ analysis.filename }}
+        {% endif %}
+      </div>
       <div class="results-meta">
         {{ analysis.sport }} · {{ analysis.created_at.strftime('%d/%m/%Y %H:%M') }}
         {% if result.summary.duration %} · {{ result.summary.duration }}{% endif %}
@@ -28,6 +43,29 @@
           · <span style="color:var(--red);font-weight:700">{{ result.summary.goals }} but{{ 's' if result.summary.goals > 1 else '' }}</span>
         {% endif %}
       </div>
+      {# Score en temps réel si buts détectés #}
+      {% if result.teams and result.summary.goals %}
+        {% set t0 = result.teams.get('0', result.teams.get(0, {})) %}
+        {% set t1 = result.teams.get('1', result.teams.get(1, {})) %}
+        {% set score0 = namespace(v=0) %}
+        {% set score1 = namespace(v=0) %}
+        {% for e in result.events %}
+          {% if e.type in ['goal','score'] %}
+            {% if e.team == 0 or e.team == '0' %}{% set score0.v = score0.v + 1 %}{% endif %}
+            {% if e.team == 1 or e.team == '1' %}{% set score1.v = score1.v + 1 %}{% endif %}
+          {% endif %}
+        {% endfor %}
+        <div style="margin-top:0.5rem;font-family:var(--font-mono);font-size:1.4rem;
+                    font-weight:700;color:var(--white)">
+          <span style="color:{% if t0.color_hex %}{{ t0.color_hex }}{% else %}var(--cyan){% endif %}">
+            {{ score0.v }}
+          </span>
+          <span style="color:var(--gray);margin:0 0.5rem">—</span>
+          <span style="color:{% if t1.color_hex %}{{ t1.color_hex }}{% else %}var(--red){% endif %}">
+            {{ score1.v }}
+          </span>
+        </div>
+      {% endif %}
     </div>
     <div class="results-actions">
       {% if result.pdf %}
@@ -113,7 +151,13 @@
     <div class="result-section-body">
       {% for team, pct in result.possession.items() | sort %}
       <div class="possession-row">
-        <div class="poss-label">Équipe {{ team }}</div>
+        <div class="poss-label">
+          {% if result.teams and (team|string) in result.teams and result.teams[team|string].name %}
+            {{ result.teams[team|string].name }}
+          {% else %}
+            Équipe {{ loop.index }}
+          {% endif %}
+        </div>
         <div class="poss-bar-outer">
           <div class="poss-bar-inner" style="width:{{ pct }}%"></div>
         </div>

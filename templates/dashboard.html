@@ -4,6 +4,34 @@
 <meta charset="UTF-8">
 <title>Dashboard — ScoutIA</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<style>
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .team-preview-card {
+    background: var(--bg2);
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    padding: 0.75rem;
+    cursor: pointer;
+    transition: border-color 0.2s, transform 0.15s;
+  }
+  .team-preview-card:hover {
+    border-color: var(--border2);
+    transform: translateY(-2px);
+  }
+  .team-preview-card.selected {
+    border-color: var(--cyan);
+    background: rgba(0,200,230,0.06);
+  }
+  .team-preview-card.selected::after {
+    content: '✓ Votre équipe';
+    display: block;
+    margin-top: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--cyan);
+    font-weight: 600;
+  }
+</style>
 </head>
 <body>
 <nav>
@@ -80,6 +108,66 @@
         </label>
       </div>
 
+      <!-- ── TEAM DETECTION PREVIEW (affiché après upload vidéo) ─────── -->
+      <div id="team-detection-banner" style="display:none;margin-bottom:1rem;
+           background:var(--surface);border:1px solid var(--border);
+           border-radius:var(--radius);padding:1rem 1.25rem">
+        <div style="font-size:0.82rem;color:var(--cyan);font-weight:600;margin-bottom:0.75rem;
+                    display:flex;align-items:center;gap:0.5rem">
+          <span id="detection-spinner" style="display:inline-block;width:14px;height:14px;
+                border:2px solid var(--border);border-top-color:var(--cyan);
+                border-radius:50%;animation:spin 0.8s linear infinite"></span>
+          Détection des équipes en cours…
+        </div>
+        <div id="team-preview-cards" style="display:none">
+          <div style="font-size:0.82rem;color:var(--white);font-weight:600;margin-bottom:0.75rem">
+            Nous avons détecté 2 équipes — laquelle est la vôtre ?
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:0.75rem">
+            <label style="cursor:pointer">
+              <input type="radio" name="user_team_id" value="0" id="team-radio-0" style="display:none">
+              <div class="team-preview-card" id="team-card-0" onclick="selectTeam(0)">
+                <img id="team-preview-img-0" style="width:100%;height:90px;object-fit:cover;
+                     border-radius:6px;display:block;margin-bottom:0.5rem">
+                <div style="display:flex;align-items:center;gap:0.5rem">
+                  <div id="team-color-dot-0" style="width:12px;height:12px;border-radius:50%;flex-shrink:0"></div>
+                  <span id="team-color-name-0" style="font-size:0.82rem;color:var(--white)">—</span>
+                </div>
+                <input type="text" name="team_name_0" id="team-name-input-0"
+                       placeholder="Nom de cette équipe"
+                       style="margin-top:0.5rem;width:100%;background:var(--bg2);
+                              border:1px solid var(--border);border-radius:6px;
+                              padding:0.4rem 0.6rem;font-size:0.82rem;color:var(--white);
+                              outline:none">
+              </div>
+            </label>
+            <label style="cursor:pointer">
+              <input type="radio" name="user_team_id" value="1" id="team-radio-1" style="display:none">
+              <div class="team-preview-card" id="team-card-1" onclick="selectTeam(1)">
+                <img id="team-preview-img-1" style="width:100%;height:90px;object-fit:cover;
+                     border-radius:6px;display:block;margin-bottom:0.5rem">
+                <div style="display:flex;align-items:center;gap:0.5rem">
+                  <div id="team-color-dot-1" style="width:12px;height:12px;border-radius:50%;flex-shrink:0"></div>
+                  <span id="team-color-name-1" style="font-size:0.white)">—</span>
+                </div>
+                <input type="text" name="team_name_1" id="team-name-input-1"
+                       placeholder="Nom de cette équipe"
+                       style="margin-top:0.5rem;width:100%;background:var(--bg2);
+                              border:1px solid var(--border);border-radius:6px;
+                              padding:0.4rem 0.6rem;font-size:0.82rem;color:var(--white);
+                              outline:none">
+              </div>
+            </label>
+          </div>
+          <div style="font-size:0.78rem;color:var(--gray);font-style:italic">
+            💡 Cliquez sur votre équipe pour la sélectionner (optionnel — améliore l'identification des joueurs)
+          </div>
+        </div>
+        <div id="detection-error" style="display:none;font-size:0.82rem;color:var(--gray)">
+          Détection automatique non disponible — vous pouvez continuer sans.
+        </div>
+      </div>
+
       <div class="joueur-options" id="joueur-options" style="display:none">
         <div class="joueur-row">
           <div id="field-numero">
@@ -88,18 +176,11 @@
                    min="1" max="99" placeholder="Ex: 9">
           </div>
           <div>
-            <label class="f-label">Couleur vareuse</label>
-            <select name="couleur_maillot" id="couleur-maillot">
+            <label class="f-label">Équipe du joueur</label>
+            <select name="team_side" id="team-side-select">
               <option value="">-- Choisir --</option>
-              <option value="blanc">⚪ Blanc</option>
-              <option value="noir">⚫ Noir</option>
-              <option value="rouge">🔴 Rouge</option>
-              <option value="bleu">🔵 Bleu</option>
-              <option value="vert">🟢 Vert</option>
-              <option value="jaune">🟡 Jaune</option>
-              <option value="orange">🟠 Orange</option>
-              <option value="bordeaux">🔴 Bordeaux</option>
-              <option value="violet">🟣 Violet</option>
+              <option value="home">🏠 Mon équipe (domicile)</option>
+              <option value="away">✈️ Équipe adverse (visiteur)</option>
             </select>
           </div>
           <div>
@@ -139,7 +220,7 @@
         </div>
 
         <div class="joueur-info" id="joueur-info-text">
-          💡 Le numéro, la couleur et la position permettent à l'IA d'identifier précisément le joueur même sans le ballon.
+          💡 Le numéro et l'équipe permettent à l'IA d'identifier précisément le joueur tout au long du match.
         </div>
       </div>
 
@@ -211,6 +292,117 @@
     </a>
   </div>
 
+<script>
+// ── Détection équipes après upload ──────────────────────────────
+let _detectionDone = false;
+
+async function runTeamDetection(uploadId) {
+  const banner = document.getElementById('team-detection-banner');
+  const spinner = document.getElementById('detection-spinner');
+  const cards = document.getElementById('team-preview-cards');
+  const errDiv = document.getElementById('detection-error');
+
+  banner.style.display = 'block';
+
+  try {
+    const resp = await fetch(`/api/detect-teams/${uploadId}`);
+    if (!resp.ok) throw new Error('API error');
+    const data = await resp.json();
+
+    if (!data.success) throw new Error(data.error || 'Détection échouée');
+
+    // Afficher les cartes équipes
+    spinner.parentElement.style.display = 'none';
+
+    for (const tid of [0, 1]) {
+      const team = data[`team_${tid}`];
+      if (!team) continue;
+
+      // Image preview
+      const img = document.getElementById(`team-preview-img-${tid}`);
+      if (team.preview_url) img.src = team.preview_url;
+      else img.style.display = 'none';
+
+      // Couleur dot
+      const dot = document.getElementById(`team-color-dot-${tid}`);
+      if (team.color_hex) dot.style.background = team.color_hex;
+
+      // Nom couleur
+      document.getElementById(`team-color-name-${tid}`).textContent =
+        team.color_name || '—';
+    }
+
+    cards.style.display = 'block';
+    _detectionDone = true;
+
+  } catch(e) {
+    spinner.parentElement.style.display = 'none';
+    errDiv.style.display = 'block';
+    console.warn('Team detection:', e);
+  }
+}
+
+function selectTeam(tid) {
+  document.getElementById(`team-radio-${tid}`).checked = true;
+  document.getElementById('team-card-0').classList.remove('selected');
+  document.getElementById('team-card-1').classList.remove('selected');
+  document.getElementById(`team-card-${tid}`).classList.add('selected');
+}
+
+// ── Déclencher la détection dès qu'un fichier est sélectionné ───
+document.addEventListener('DOMContentLoaded', () => {
+  const fileInput = document.getElementById('file-input');
+  if (!fileInput) return;
+
+  fileInput.addEventListener('change', async () => {
+    if (!fileInput.files.length) return;
+
+    // Upload préliminaire pour la détection
+    const fd = new FormData();
+    fd.append('video', fileInput.files[0]);
+
+    try {
+      const resp = await fetch('/api/upload-preview', {method:'POST', body:fd});
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.upload_id) runTeamDetection(data.upload_id);
+      }
+    } catch(e) {
+      console.warn('Preview upload:', e);
+    }
+  });
+
+  // Positions par sport
+  const positions = {
+    football: ['Gardien','Défenseur droit','Défenseur central','Défenseur gauche',
+                'Milieu défensif','Milieu central','Milieu offensif',
+                'Ailier droit','Ailier gauche','Attaquant','Avant-centre'],
+    basketball: ['Meneur','Arrière','Ailier petit','Ailier fort','Pivot'],
+    handball: ['Gardien','Ailier droit','Ailier gauche','Arrière droit',
+               'Arrière gauche','Pivot','Demi-centre'],
+    rugby: ['Pilier gauche','Talonneur','Pilier droit','Deuxième ligne',
+            'Troisième ligne aile','Troisième ligne centre','Demi de mêlée',
+            'Demi d'ouverture','Centre','Ailier','Arrière'],
+  };
+
+  function updatePositions() {
+    const sport = document.getElementById('sport-select')?.value || 'football';
+    const sel = document.getElementById('position-joueur');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">-- Choisir --</option>';
+    const opts = positions[sport] || positions.football;
+    opts.forEach(p => {
+      const o = document.createElement('option');
+      o.value = p.toLowerCase().replace(/\s+/g,'_');
+      o.textContent = p;
+      sel.appendChild(o);
+    });
+  }
+
+  document.getElementById('sport-select')?.addEventListener('change', updatePositions);
+  updatePositions();
+});
+</script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

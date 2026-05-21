@@ -326,7 +326,14 @@
   <div class="header-left">
     <div class="logo">⚡ ScoutIA</div>
     <h1>Rapport d'analyse</h1>
-    <p>{{ analysis.filename }}</p>
+    <p>
+      {% if result.teams %}
+        {% set t0n = result.teams.get('0', result.teams.get(0, {})).get('name') %}
+        {% set t1n = result.teams.get('1', result.teams.get(1, {})).get('name') %}
+        {% if t0n and t1n %}{{ t0n }} vs {{ t1n }}
+        {% else %}{{ analysis.filename }}{% endif %}
+      {% else %}{{ analysis.filename }}{% endif %}
+    </p>
   </div>
   <div class="header-right">
     <p>Généré le {{ date }}</p>
@@ -366,15 +373,44 @@
 </div>
 {% endif %}
 
-<!-- SCORE -->
-{% if result.score %}
+<!-- SCORE BANNER avec noms équipes -->
+{% set t0 = result.teams.get('0', result.teams.get(0, {})) if result.teams else {} %}
+{% set t1 = result.teams.get('1', result.teams.get(1, {})) if result.teams else {} %}
+{% set score0 = namespace(v=0) %}
+{% set score1 = namespace(v=0) %}
+{% if result.events %}
+  {% for e in result.events %}
+    {% if e.get('type') in ['goal','score'] %}
+      {% if e.get('team') in [0, '0'] %}{% set score0.v = score0.v + 1 %}{% endif %}
+      {% if e.get('team') in [1, '1'] %}{% set score1.v = score1.v + 1 %}{% endif %}
+    {% endif %}
+  {% endfor %}
+{% endif %}
+
 <div class="score-banner">
-  <div class="score">{{ result.score }}</div>
+  <div style="display:flex;align-items:center;justify-content:center;gap:1.5rem;flex-wrap:wrap">
+    <div style="text-align:right;flex:1;min-width:120px">
+      <div style="font-family:var(--head);font-size:1rem;font-weight:700;color:var(--white)">
+        {{ t0.get('name', 'Équipe A') }}
+      </div>
+      {% if t0.get('color_name') %}
+      <div style="font-size:0.72rem;color:var(--gray-dim)">{{ t0.color_name }}</div>
+      {% endif %}
+    </div>
+    <div class="score">{{ score0.v }} — {{ score1.v }}</div>
+    <div style="text-align:left;flex:1;min-width:120px">
+      <div style="font-family:var(--head);font-size:1rem;font-weight:700;color:var(--white)">
+        {{ t1.get('name', 'Équipe B') }}
+      </div>
+      {% if t1.get('color_name') %}
+      <div style="font-size:0.72rem;color:var(--gray-dim)">{{ t1.color_name }}</div>
+      {% endif %}
+    </div>
+  </div>
   <div class="match-name">
     {{ analysis.filename | replace('.mp4','') | replace('.avi','') | replace('.mov','') }}
   </div>
 </div>
-{% endif %}
 
 <!-- RÉSUMÉ -->
 {% if result.resume or result.ai_summary or result.match_story %}
