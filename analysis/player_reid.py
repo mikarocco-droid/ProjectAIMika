@@ -74,11 +74,26 @@ class PlayerReID:
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             return np.array([0.0, 0.0, 0.0])
-        h    = crop.shape[0]
-        # Torse uniquement : 15%->45% de hauteur (evite tete et short)
+        h = crop.shape[0]
+        # Torse uniquement : 15%->45% de hauteur (évite tête et short)
         crop = crop[int(h * 0.15):int(h * 0.45), :]
         if crop.size == 0:
             return np.array([0.0, 0.0, 0.0])
+
+        # HSV saturation filtering — éliminer pelouse, peau, ombres, gris
+        # Pixels à faible saturation = pelouse/peau/fond → exclus
+        # Pixels à haute saturation = maillot coloré → conservés
+        try:
+            hsv  = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+            sat  = hsv[:, :, 1]                    # canal saturation (0-255)
+            mask = sat > 60                         # seuil : saturation > 60/255 ~24%
+            if mask.sum() > 10:                     # au moins 10 pixels colorés
+                # Moyenne uniquement sur les pixels du maillot
+                return crop[mask].mean(axis=0).astype(float)
+        except Exception:
+            pass
+
+        # Fallback : moyenne brute si pas assez de pixels saturés
         return crop.mean(axis=(0, 1)).astype(float)
 
     # ─────────────────────────────────────────
