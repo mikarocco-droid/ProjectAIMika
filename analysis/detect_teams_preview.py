@@ -427,6 +427,38 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
                 labels, n0, n1 = labels2, n0_h, n1_h
                 dist = dist_real
                 print(f"  [PREVIEW] KMeans HSV retenu (meilleure séparation)")
+
+                # Si déséquilibre fort (ex: 2j vs 30j) → re-classer par distance teinte
+                ratio = min(n0_h, n1_h) / max(max(n0_h, n1_h), 1)
+                if ratio < 0.25:
+                    print(f"  [PREVIEW] Déséquilibre ({n0_h}j vs {n1_h}j) → "
+                          f"re-classification par teinte")
+                    # Recalculer teinte centroide de chaque cluster
+                    h_c0 = float(np.median(player_hues[labels2 == 0]))
+                    h_c1 = float(np.median(player_hues[labels2 == 1]))
+
+                    # Re-classer chaque joueur selon sa teinte la plus proche
+                    new_labels = np.zeros(len(player_hues), dtype=np.int32)
+                    for i, h in enumerate(player_hues):
+                        # Distance circulaire sur la teinte (0-360)
+                        d0 = min(abs(h - h_c0), 360 - abs(h - h_c0))
+                        d1 = min(abs(h - h_c1), 360 - abs(h - h_c1))
+                        new_labels[i] = 0 if d0 <= d1 else 1
+
+                    n0_new = int((new_labels == 0).sum())
+                    n1_new = int((new_labels == 1).sum())
+                    c0_new = tuple(int(x) for x in samples_bgr[new_labels==0].mean(axis=0))
+                    c1_new = tuple(int(x) for x in samples_bgr[new_labels==1].mean(axis=0))
+                    dist_new = float(np.linalg.norm(
+                        np.array(c0_new) - np.array(c1_new)
+                    ))
+                    print(f"  [PREVIEW] Après re-classification: "
+                          f"Team0:{c0_new}→{bgr_to_name(c0_new)}({n0_new}j) | "
+                          f"Team1:{c1_new}→{bgr_to_name(c1_new)}({n1_new}j) "
+                          f"dist={dist_new:.1f}")
+                    c0, c1 = c0_new, c1_new
+                    n0, n1 = n0_new, n1_new
+                    dist    = dist_new
         except Exception as _eh:
             print(f"  [PREVIEW] KMeans HSV échoué : {_eh}")
 
