@@ -491,3 +491,112 @@ def create_overlay_reel(highlights_with_overlay, output_path,
         pass
 
     return output_path if result.returncode == 0 else None
+
+
+# ─────────────────────────────────────────
+# COMPATIBILITÉ — Classes attendues par main.py
+# ─────────────────────────────────────────
+class TeamColorDetector:
+    """
+    Détecteur de couleurs d'équipes pour l'overlay vidéo.
+    Maintient le score en temps réel et les noms d'équipes.
+    """
+    def __init__(self, teams_data=None):
+        self.teams_data  = teams_data or {}
+        self.score       = {0: 0, 1: 0}
+        self._goals_seen = set()
+
+    def update_score(self, events, current_time):
+        """Met à jour le score depuis les events jusqu'à current_time."""
+        for e in events:
+            eid = id(e)
+            if eid in self._goals_seen:
+                continue
+            if e.get("type") in ("goal", "score"):
+                t = float(e.get("time", 0) or 0)
+                if t <= current_time:
+                    team = e.get("team")
+                    if team in (0, 1):
+                        self.score[team] += 1
+                    elif str(team) in ("0", "1"):
+                        self.score[int(team)] += 1
+                    self._goals_seen.add(eid)
+        return self.score[0], self.score[1]
+
+    def get_team_name(self, team_id):
+        return team_name_display(self.teams_data, team_id)
+
+    def get_team_color(self, team_id):
+        return team_color_for_display(self.teams_data, team_id)
+
+
+class Overlay:
+    """
+    Classe principale d'overlay vidéo.
+    Encapsule scoreboard + animation but pour un clip.
+    """
+    def __init__(self, teams_data=None, sport="football"):
+        self.teams_data = teams_data or {}
+        self.sport      = sport
+        self.detector   = TeamColorDetector(teams_data)
+
+    def draw_frame(self, frame, action_time, score_home=0, score_away=0,
+                   is_goal=False, scorer_name=None, goal_progress=1.0):
+        """Applique scoreboard + animation but sur une frame."""
+        home_name = self.detector.get_team_name(0)
+        away_name = self.detector.get_team_name(1)
+        home_bgr  = self.detector.get_team_color(0)
+        away_bgr  = self.detector.get_team_color(1)
+
+        frame = draw_scoreboard(
+            frame,
+            team_home_name = home_name,
+            team_away_name = away_name,
+            score_home     = score_home,
+            score_away     = score_away,
+            action_time    = action_time,
+            is_goal        = is_goal,
+            team_home_bgr  = home_bgr,
+            team_away_bgr  = away_bgr,
+        )
+
+        if is_goal and goal_progress < 1.0:
+            frame = draw_goal_animation(
+                frame,
+                scorer_name = scorer_name or "?",
+                team_name   = home_name if score_home >= score_away else away_name,
+                score_home  = score_home,
+                score_away  = score_away,
+                progress    = goal_progress,
+            )
+        return frame
+
+    def render_clip(self, input_path, output_path, action_time,
+                    events=None, is_goal=False, scorer_name=None):
+        """Render un clip avec overlay complet."""
+        score_h, score_a = 0, 0
+        if events:
+            score_h, score_a = compute_score_at_time(events, action_time)
+            if is_goal:
+                # Chercher l'équipe qui a marqué
+                for e in events:
+                    if (e.get("type") in ("goal","score")
+                            and abs(float(e.get("time",0) or 0) - action_time) < 5):
+                        team = e.get("team")
+                        if team in (0, "0"): score_h += 1
+                        elif team in (1, "1"): score_a += 1
+                        break
+
+        return render_clip_with_overlay(
+            input_path     = input_path,
+            output_path    = output_path,
+            team_home_name = self.detector.get_team_name(0),
+            team_away_name = self.detector.get_team_name(1),
+            score_home     = score_h,
+            score_away     = score_a,
+            action_time    = action_time,
+            is_goal        = is_goal,
+            scorer_name    = scorer_name,
+            team_home_bgr  = self.detector.get_team_color(0),
+            team_away_bgr  = self.detector.get_team_color(1),
+        )
