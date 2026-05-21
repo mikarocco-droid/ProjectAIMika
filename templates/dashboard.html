@@ -53,16 +53,47 @@
     {% if used < plan.videos %}
     <form action="/upload" method="POST" enctype="multipart/form-data" id="upload-form">
       <input type="file" name="video" accept="video/*" id="file-input" hidden>
+      <input type="hidden" name="preview_upload_id" id="preview-upload-id">
 
-      <div class="upload-zone" id="drop-zone">
-        <div class="upload-icon">🎬</div>
-        <div class="upload-text">
-          Glissez votre vidéo ici ou
-          <span id="browse-btn" style="color:var(--cyan);cursor:pointer;font-weight:600">parcourir</span>
+      <!-- ── ÉTAPE 1 : Upload vidéo ──────────────────────────────── -->
+      <div id="step-upload">
+        <div class="upload-zone" id="drop-zone">
+          <div class="upload-icon">🎬</div>
+          <div class="upload-text">
+            Glissez votre vidéo ici ou
+            <span id="browse-btn" style="color:var(--cyan);cursor:pointer;font-weight:600">parcourir</span>
+          </div>
+          <div class="upload-hint">MP4, AVI, MOV — jusqu'à 10 GB</div>
+          <div class="upload-filename" id="file-name"></div>
         </div>
-        <div class="upload-hint">MP4, AVI, MOV — jusqu'à 10 GB</div>
-        <div class="upload-filename" id="file-name"></div>
+
+        <!-- Progression upload -->
+        <div id="upload-progress-wrap" style="display:none;margin-top:1rem">
+          <div style="display:flex;justify-content:space-between;
+                      font-size:0.78rem;color:var(--gray);margin-bottom:0.4rem">
+            <span>📤 Téléchargement en cours…</span>
+            <span id="upload-pct">0%</span>
+          </div>
+          <div style="background:var(--bg2);border-radius:4px;height:6px;overflow:hidden">
+            <div id="upload-bar"
+                 style="height:100%;width:0%;background:var(--cyan);
+                        border-radius:4px;transition:width 0.3s ease"></div>
+          </div>
+          <div id="upload-size" style="font-size:0.72rem;color:var(--gray-dim);margin-top:0.35rem;text-align:right"></div>
+        </div>
+
+        <!-- Message après upload réussi -->
+        <div id="upload-done-msg" style="display:none;margin-top:1rem;
+             background:rgba(80,200,120,0.08);border:1px solid rgba(80,200,120,0.25);
+             border-radius:var(--radius);padding:0.75rem 1rem;
+             font-size:0.85rem;color:var(--green);display:flex;align-items:center;gap:0.5rem">
+          ✅ Vidéo reçue — complétez les informations ci-dessous
+        </div>
       </div>
+
+      <!-- ── ÉTAPE 2 : Informations (masqué jusqu'à upload terminé) ── -->
+      <div id="step-config" style="display:none;margin-top:1.25rem;
+           border-top:1px solid var(--border);padding-top:1.25rem">
 
       <div class="sport-wrapper" style="margin-top:0">
         <label>Noms des équipes <span style="color:var(--gray-dim);font-weight:400">(optionnel — utilisés partout dans le rapport)</span></label>
@@ -195,10 +226,11 @@
         </div>
       </div>
 
-      <button type="submit" class="btn-primary" id="submit-btn" disabled
-              style="width:100%;margin-top:0.75rem">
-        Lancer l'analyse →
-      </button>
+        <button type="submit" class="btn-primary" id="submit-btn" disabled
+                style="width:100%;margin-top:0.75rem">
+          Lancer l'analyse →
+        </button>
+      </div> <!-- /step-config -->
     </form>
 
     {% else %}
@@ -264,8 +296,85 @@
   </div>
 
 <script>
-// ── Détection équipes après upload ──────────────────────────────
-let _detectionDone = false;
+// ── Gestion upload en 2 étapes ──────────────────────────────────
+let _detectionDone  = false;
+let _uploadDone     = false;
+let _previewUploadId = null;
+
+// Upload avec progression XHR
+function startUploadWithProgress(file) {
+  const wrap    = document.getElementById('upload-progress-wrap');
+  const bar     = document.getElementById('upload-bar');
+  const pct     = document.getElementById('upload-pct');
+  const sizeEl  = document.getElementById('upload-size');
+  const doneMsg = document.getElementById('upload-done-msg');
+
+  wrap.style.display = 'block';
+
+  const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+  sizeEl.textContent = `${sizeMB} MB`;
+
+  // Upload préliminaire via XHR pour avoir la progression
+  const fd  = new FormData();
+  fd.append('video', file);
+  const xhr = new XMLHttpRequest();
+
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    const p = Math.round(e.loaded / e.total * 100);
+    bar.style.width  = p + '%';
+    pct.textContent  = p + '%';
+  };
+
+  xhr.onload = () => {
+    bar.style.width = '100%';
+    pct.textContent = '100%';
+
+    if (xhr.status === 200) {
+      try {
+        const data = JSON.parse(xhr.responseText);
+        _previewUploadId = data.upload_id;
+        _uploadDone = true;
+
+        // Masquer barre, afficher message succès
+        wrap.style.display = 'none';
+        doneMsg.style.display = 'flex';
+
+        // Révéler l'étape 2
+        document.getElementById('step-config').style.display = 'block';
+        document.getElementById('submit-btn').disabled = false;
+
+        // Lancer la détection d'équipes en parallèle
+        if (_previewUploadId) runTeamDetection(_previewUploadId);
+
+        // Stocker l'upload_id dans le form
+        const hiddenId = document.getElementById('preview-upload-id');
+        if (hiddenId) hiddenId.value = _previewUploadId || '';
+
+        // Scroll vers le config
+        setTimeout(() => {
+          document.getElementById('step-config').scrollIntoView(
+            {behavior:'smooth', block:'start'}
+          );
+        }, 200);
+
+      } catch(e) {
+        showUploadError();
+      }
+    } else {
+      showUploadError();
+    }
+  };
+
+  xhr.onerror = showUploadError;
+  xhr.open('POST', '/api/upload-preview');
+  xhr.send(fd);
+}
+
+function showUploadError() {
+  const wrap = document.getElementById('upload-progress-wrap');
+  wrap.innerHTML = '<div style="color:var(--red);font-size:0.82rem">❌ Erreur upload — réessayez</div>';
+}
 
 async function runTeamDetection(uploadId) {
   // Afficher le spinner dans le bloc équipes
@@ -316,22 +425,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const fileInput = document.getElementById('file-input');
   if (!fileInput) return;
 
-  fileInput.addEventListener('change', async () => {
+  fileInput.addEventListener('change', () => {
     if (!fileInput.files.length) return;
+    const file = fileInput.files[0];
 
-    // Upload préliminaire pour la détection
-    const fd = new FormData();
-    fd.append('video', fileInput.files[0]);
+    // Afficher nom fichier
+    const nameEl = document.getElementById('file-name');
+    if (nameEl) nameEl.textContent = file.name;
 
-    try {
-      const resp = await fetch('/api/upload-preview', {method:'POST', body:fd});
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.upload_id) runTeamDetection(data.upload_id);
-      }
-    } catch(e) {
-      console.warn('Preview upload:', e);
-    }
+    // Démarrer upload avec progression
+    startUploadWithProgress(file);
   });
 
   // Positions par sport
