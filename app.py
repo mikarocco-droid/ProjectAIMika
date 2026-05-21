@@ -533,12 +533,29 @@ def upload():
     player_id = request.form.get("player_id", "").strip() or None
 
     # Noms équipes saisis par l'utilisateur
-    team_name_0      = request.form.get("team_name_0", "").strip() or None
-    team_name_1      = request.form.get("team_name_1", "").strip() or None
+    team_name_0       = request.form.get("team_name_0", "").strip() or None
+    team_name_1       = request.form.get("team_name_1", "").strip() or None
     preview_upload_id = request.form.get("preview_upload_id", "").strip() or None
+    user_team_id_raw  = request.form.get("user_team_id", "").strip()
+
+    # user_team_id : 0 = équipe A est la mienne, 1 = équipe B est la mienne
+    # Si l'utilisateur a cliqué "C'est mon équipe" sur l'équipe B (tid=1),
+    # on inverse les noms pour que son équipe soit toujours team_0
+    user_team_id = None
+    try:
+        user_team_id = int(user_team_id_raw) if user_team_id_raw else None
+    except ValueError:
+        pass
+
     team_names = {}
-    if team_name_0: team_names["0"] = team_name_0
-    if team_name_1: team_names["1"] = team_name_1
+    if user_team_id == 1:
+        # L'utilisateur a sélectionné l'équipe B comme la sienne → inverser
+        if team_name_0: team_names["1"] = team_name_0
+        if team_name_1: team_names["0"] = team_name_1
+        user_team_id = 0   # après inversion, son équipe est toujours 0
+    else:
+        if team_name_0: team_names["0"] = team_name_0
+        if team_name_1: team_names["1"] = team_name_1
 
     if not f or f.filename == "":
         flash("Aucune video selectionnee")
@@ -717,11 +734,13 @@ def api_detect_teams(upload_id):
 
     try:
         from analysis.detect_teams_preview import detect_teams_preview
+        # sport depuis la session ou formulaire si disponible
+        _prev_sport = request.args.get("sport", "football")
         result = detect_teams_preview(
-            video_path        = video_path,
-            output_dir        = preview_dir,
-            n_frames          = 60,
-            analysis_duration = 120.0,
+            video_path          = video_path,
+            output_dir          = preview_dir,
+            bootstrap_duration  = 90.0,
+            sport               = _prev_sport,
         )
 
         if result.get("success"):
