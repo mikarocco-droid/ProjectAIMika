@@ -342,11 +342,26 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         return {"success": False,
                 "error": f"Pas assez de joueurs stables ({n_stable})"}
 
-    # KMeans
-    samples  = np.array(stable_colors, dtype=np.float32)
+    # ── Calcul teinte dominante par joueur ───────────────────────────────────
+    player_hues = []
+    for sc in stable_colors:
+        try:
+            px = np.uint8([[[int(sc[0]), int(sc[1]), int(sc[2])]]])
+            h  = int(cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0][0]) * 2
+            player_hues.append(h)
+        except Exception:
+            player_hues.append(0)
+    player_hues = np.array(player_hues)
+
+    # ── Séparation intelligente par teinte ───────────────────────────────────
+    # On cherche les 2 teintes dominantes dans l'ensemble des joueurs
+    # en utilisant un KMeans sur les teintes (1D) avec initialisation PP
+    samples_bgr = np.array(stable_colors, dtype=np.float32)
+
+    # KMeans sur l'espace BGR complet
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.5)
     _, labels, centroids = cv2.kmeans(
-        samples, 2, None, criteria, 15, cv2.KMEANS_PP_CENTERS
+        samples_bgr, 2, None, criteria, 15, cv2.KMEANS_PP_CENTERS
     )
     labels = labels.flatten()
     n0  = int((labels == 0).sum())
@@ -355,9 +370,65 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     c1  = tuple(int(x) for x in centroids[1])
     dist = float(np.linalg.norm(centroids[0] - centroids[1]))
 
-    print(f"  [PREVIEW] KMeans: dist={dist:.1f} | "
-          f"Team0:{c0}→{bgr_to_name(c0)}({n0}j) | "
-          f"Team1:{c1}→{bgr_to_name(c1)}({n1}j)")
+    # ── Vérification : les 2 équipes ont-elles des teintes distinctes ? ───────
+    # Calculer la teinte médiane de chaque cluster
+    h0 = np.median(player_hues[labels == 0])
+    h1 = np.median(player_hues[labels == 1])
+    print(f"  [PREVIEW] KMeans BGR: dist={dist:.1f} | "
+          f"Team0:{c0}→{bgr_to_name(c0)} H={h0:.0f} ({n0}j) | "
+          f"Team1:{c1}→{bgr_to_name(c1)} H={h1:.0f} ({n1}j)")
+
+    # Si distance < 60 → les clusters sont trop proches → essayer KMeans sur HSV
+    if dist < 60:
+        print(f"  [PREVIEW] Distance faible → KMeans sur HSV")
+        try:
+            # Convertir en HSV pour KMeans
+            hsv_colors = []
+            for sc in stable_colors:
+                px  = np.uint8([[[int(sc[0]), int(sc[1]), int(sc[2])]]])
+                hsv = cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0].astype(float)
+                # Pondérer H plus fort (plus discriminant que S et V)
+                hsv_colors.append([hsv[0] * 3, hsv[1], hsv[2]])
+            samples_hsv = np.array(hsv_colors, dtype=np.float32)
+            _, labels2, centroids2 = cv2.kmeans(
+                samples_hsv, 2, None, criteria, 15, cv2.KMEANS_PP_CENTERS
+            )
+            labels2 = labels2.flatten()
+            # Reconvertir les centroids HSV en BGR
+            c0_h = np.uint8([[[int(centroids2[0][0]/3), int(centroids2[0][1]),
+                                int(centroids2[0][2])]]])
+            c1_h = np.uint8([[[int(centroids2[1][0]/3), int(centroids2[1][1]),
+                                int(centroids2[1][2])]]])
+            c0_bgr_h = cv2.cvtColor(c0_h, cv2.COLOR_HSV2BGR)[0][0]
+            c1_bgr_h = cv2.cvtColor(c1_h, cv2.COLOR_HSV2BGR)[0][0]
+
+            # Calculer la distance en BGR
+            n0_h = int((labels2==0).sum())
+            n1_h = int((labels2==1).sum())
+            c0_t = tuple(int(x) for x in c0_bgr_h)
+            c1_t = tuple(int(x) for x in c1_bgr_h)
+            dist_h = float(np.linalg.norm(
+                np.array(centroids2[0]) - np.array(centroids2[1])
+            ))
+
+            # Recalculer les centroids BGR réels depuis les membres des clusters
+            c0_real = tuple(int(x) for x in samples_bgr[labels2==0].mean(axis=0))
+            c1_real = tuple(int(x) for x in samples_bgr[labels2==1].mean(axis=0))
+            dist_real = float(np.linalg.norm(
+                np.array(c0_real) - np.array(c1_real)
+            ))
+
+            print(f"  [PREVIEW] KMeans HSV: dist_hsv={dist_h:.1f} dist_bgr={dist_real:.1f} | "
+                  f"Team0:{c0_real}→{bgr_to_name(c0_real)}({n0_h}j) | "
+                  f"Team1:{c1_real}→{bgr_to_name(c1_real)}({n1_h}j)")
+
+            if dist_real > dist:
+                c0, c1 = c0_real, c1_real
+                labels, n0, n1 = labels2, n0_h, n1_h
+                dist = dist_real
+                print(f"  [PREVIEW] KMeans HSV retenu (meilleure séparation)")
+        except Exception as _eh:
+            print(f"  [PREVIEW] KMeans HSV échoué : {_eh}")
 
     # Preview frames
     preview_0 = preview_1 = None
