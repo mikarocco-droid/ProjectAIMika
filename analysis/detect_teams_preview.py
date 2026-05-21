@@ -88,18 +88,18 @@ def extract_jersey_color(frame, bbox):
         #   - faible saturation (peau, gris, arbitre partiel)
         #   - très sombre = noir arbitre (V<50) ou ombres (V<30)
         #   - très clair = blanc arbitre/publicités (V>230 et S<30)
-        is_grass  = (H >= 35) & (H <= 85) & (S > 40)
-        is_dull   = S < 45
-        is_dark   = V < 50    # filtre le noir de l'arbitre
-        is_white  = (V > 210) & (S < 30)   # filtre blanc/gris clair
+        is_grass  = (H >= 30) & (H <= 90) & (S > 35)  # zone verte élargie
+        is_dull   = S < 55   # saturation plus stricte
+        is_dark   = V < 50
+        is_white  = (V > 210) & (S < 30)
         mask      = ~is_grass & ~is_dull & ~is_dark & ~is_white
 
-        if mask.sum() >= 15:
+        if mask.sum() >= 10:
             return torse[mask].mean(axis=0).astype(float)
 
         # Fallback : juste filtrer le gazon
-        mask2 = ~is_grass
-        if mask2.sum() >= 10:
+        mask2 = ~is_grass & ~is_dark
+        if mask2.sum() >= 8:
             return torse[mask2].mean(axis=0).astype(float)
 
     except Exception:
@@ -288,8 +288,9 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         # Un bordeaux sombre (sat>40) est gardé même si mean<85
         if mean < 80 and sat < 40:
             continue
-        # Exclure : peu saturé quelle que soit la luminosité (gris, béton)
-        if sat < 20:
+        # Exclure : peu saturé quelle que soit la luminosité (gris, béton, mélange gazon)
+        # sat=32 pour BGR(92,107,137) = maillot rouge dilué par gazon → filtré
+        if sat < 50:
             continue
         # Exclure trop clair (blanc, gris clair)
         if (b_c + g_c + r_c) / 3 > 210 and sat < 30:
