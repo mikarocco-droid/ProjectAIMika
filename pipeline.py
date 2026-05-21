@@ -239,6 +239,8 @@ def run_pipeline(
     player_id         = None,
     goals_real        = None,
     use_coarse_scan   = False,   # V2 : scan léger avant deep analysis
+    team_names        = None,    # {"team_0": "RSC Stavelot B", "team_1": "FC Liège"}
+    user_team_id      = None,    # 0 ou 1 — équipe de l'utilisateur
 ):
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
@@ -1380,6 +1382,22 @@ def run_pipeline(
                     teams[_t]["color_bgr"] = (_b, _g, _r)
 
         _colors_final = {k: v.get("color_bgr") for k, v in teams.items() if v.get("color_bgr")}
+
+        # Injecter les noms équipes fournis par l'utilisateur
+        if team_names:
+            for _tid, _tname in team_names.items():
+                _tk = str(_tid)
+                if _tk in teams:
+                    teams[_tk]["name"] = str(_tname)
+                elif _tid in teams:
+                    teams[_tid]["name"] = str(_tname)
+
+        # Marquer l'équipe de l'utilisateur
+        if user_team_id is not None:
+            _utk = str(user_team_id)
+            if _utk in teams:
+                teams[_utk]["is_user_team"] = True
+
         print(f"  OK formation={formation} | style={tactical.get('style','?')} | colors={_colors_final}")
     except Exception as e:
         print(f"  Tactical error : {e}")
@@ -1493,8 +1511,29 @@ def run_pipeline(
 
         highlights.sort(key=lambda h: h.get("time_start", 0))
 
+        # ── Overlay scoreboard si noms équipes disponibles ────────
+        _overlay_dir = os.path.join(output_dir, "highlights_overlay")
+        _use_overlay = bool(team_names)  # overlay si noms fournis
+        if _use_overlay:
+            try:
+                from rendering.overlay import render_highlights_with_overlay
+                highlights = render_highlights_with_overlay(
+                    highlights  = highlights,
+                    events      = events,
+                    teams_data  = teams,
+                    output_dir  = _overlay_dir,
+                    sport       = sport,
+                )
+                print(f"  OK overlay scoreboard sur {len(highlights)} clips")
+            except Exception as _eov:
+                print(f"  Overlay ignoré : {_eov}")
+                _use_overlay = False
+
         reel_path = create_highlight_reel(
-            highlights  = highlights,
+            highlights  = [
+                {**h, "file": h.get("file_overlay") or h.get("file")}
+                for h in highlights
+            ] if _use_overlay else highlights,
             output_path = os.path.join(output_dir, "reel.mp4")
         )
         print(f"  OK {len(highlights)} highlights")
