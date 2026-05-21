@@ -549,6 +549,28 @@ class TeamColorDetector:
         except Exception as e:
             print(f"  [TeamColorDetector] calibration ignorée : {e}")
 
+    def _dominant_color(self, patch):
+        """
+        Retourne la couleur BGR dominante d'un crop joueur.
+        Utilisé par main.py dans assign_teams_by_color().
+        """
+        if patch is None or patch.size == 0:
+            return None
+        try:
+            h = patch.shape[0]
+            torse = patch[int(h * 0.15):int(h * 0.45), :]
+            if torse.size == 0:
+                return None
+            hsv  = cv2.cvtColor(torse, cv2.COLOR_BGR2HSV)
+            mask = hsv[:, :, 1] > 60
+            if mask.sum() >= 10:
+                color = torse[mask].mean(axis=0)
+            else:
+                color = torse.mean(axis=(0, 1))
+            return tuple(int(x) for x in color)
+        except Exception:
+            return None
+
     def get_team(self, color):
         """Retourne 0 ou 1 selon la couleur BGR la plus proche."""
         if not self._calibrated or self._centroids is None:
@@ -636,11 +658,81 @@ class Overlay:
     """
     Classe principale d'overlay vidéo.
     Encapsule scoreboard + animation but pour un clip.
+    Compatibilité main.py : Overlay(fps=fps) + overlay.render(frame, players, ball, events, frame_id)
     """
-    def __init__(self, teams_data=None, sport="football"):
-        self.teams_data = teams_data or {}
-        self.sport      = sport
-        self.detector   = TeamColorDetector(teams_data)
+    def __init__(self, teams_data=None, sport="football", fps=25, **kwargs):
+        self.teams_data  = teams_data or {}
+        self.sport       = sport
+        self.fps         = fps
+        self.detector    = TeamColorDetector(teams_data)
+        self._score      = {0: 0, 1: 0}
+        self._goals_seen = set()
+
+    def render(self, frame, players, ball, events, frame_id):
+        """
+        Appelé par main.py pour annoter chaque frame en temps réel.
+        Dessine : bboxes joueurs, scoreboard, animation but si nécessaire.
+        """
+        if frame is None:
+            return frame
+
+        # Mettre à jour le score depuis les events de cette frame
+        for e in (events or []):
+            eid = id(e)
+            if eid not in self._goals_seen and e.get("type") in ("goal", "score"):
+                team = e.get("team")
+                if team in (0, 1):
+                    self._score[team] += 1
+                elif str(team) in ("0", "1"):
+                    self._score[int(team)] += 1
+                self._goals_seen.add(eid)
+
+        is_goal     = any(e.get("type") in ("goal","score") for e in (events or []))
+        action_time = float(frame_id) / max(self.fps, 1)
+
+        # Dessiner les bboxes joueurs
+        try:
+            for p in (players or []):
+                bbox = p.get("bbox")
+                if not bbox:
+                    continue
+                x1, y1, x2, y2 = map(int, bbox)
+                team  = p.get("team")
+                color = self.detector.get_team_color(team) if team is not None else (150, 150, 150)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                # Numéro maillot si dispo
+                jersey = p.get("jersey") or p.get("jersey_number")
+                if jersey:
+                    cv2.putText(frame, f"#{jersey}", (x1, y1 - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+        except Exception:
+            pass
+
+        # Dessiner la balle
+        try:
+            if ball and ball.get("center"):
+                cx, cy = int(ball["center"][0]), int(ball["center"][1])
+                cv2.circle(frame, (cx, cy), 8, (0, 255, 255), 2)
+        except Exception:
+            pass
+
+        # Scoreboard en haut
+        try:
+            frame = draw_scoreboard(
+                frame,
+                team_home_name = self.detector.get_team_name(0),
+                team_away_name = self.detector.get_team_name(1),
+                score_home     = self._score.get(0, 0),
+                score_away     = self._score.get(1, 0),
+                action_time    = action_time,
+                is_goal        = is_goal,
+                team_home_bgr  = self.detector.get_team_color(0),
+                team_away_bgr  = self.detector.get_team_color(1),
+            )
+        except Exception:
+            pass
+
+        return frame
 
     def draw_frame(self, frame, action_time, score_home=0, score_away=0,
                    is_goal=False, scorer_name=None, goal_progress=1.0):
