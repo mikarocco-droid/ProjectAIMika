@@ -727,10 +727,17 @@ def api_detect_teams(upload_id):
         if result.get("success"):
             for tid in ["team_0", "team_1"]:
                 t = result.get(tid, {})
+                # Couleur maillot
                 bgr = t.get("color_bgr")
                 if bgr:
                     b, g, r = int(bgr[0]), int(bgr[1]), int(bgr[2])
                     t["color_hex"] = f"#{r:02x}{g:02x}{b:02x}"
+                # Couleur short
+                short_bgr = t.get("short_bgr")
+                if short_bgr:
+                    b, g, r = int(short_bgr[0]), int(short_bgr[1]), int(short_bgr[2])
+                    t["short_hex"] = f"#{r:02x}{g:02x}{b:02x}"
+                    t["short_bgr"] = list(short_bgr)
                 if t.get("preview_frame") and os.path.exists(t["preview_frame"]):
                     fname = os.path.basename(t["preview_frame"])
                     t["preview_url"] = f"/api/preview-image/{upload_id}/{fname}"
