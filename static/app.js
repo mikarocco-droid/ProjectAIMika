@@ -131,25 +131,26 @@ function startUploadWithProgress(file) {
                     stepDetecting.scrollIntoView({ behavior: "smooth", block: "start" });
                 }
 
-                // Lancer la détection puis révéler le config
-                if (uid) {
-                    runTeamDetection(uid).then(() => {
-                        if (stepDetecting) stepDetecting.style.display = "none";
-                        _uploadDone = true;
-                        if (stepConfig) {
-                            stepConfig.style.display = "block";
-                            setTimeout(() => {
-                                stepConfig.scrollIntoView({ behavior: "smooth", block: "start" });
-                            }, 150);
-                        }
-                        updateSubmitBtn();
-                    });
-                } else {
-                    // Pas d'uid → révéler directement sans détection
+                // Fonction qui révèle le dashboard quoi qu'il arrive
+                function revealConfig() {
                     if (stepDetecting) stepDetecting.style.display = "none";
                     _uploadDone = true;
-                    if (stepConfig) stepConfig.style.display = "block";
+                    if (stepConfig) {
+                        stepConfig.style.display = "block";
+                        setTimeout(() => {
+                            stepConfig.scrollIntoView({ behavior: "smooth", block: "start" });
+                        }, 150);
+                    }
                     updateSubmitBtn();
+                }
+
+                if (uid) {
+                    // Lancer détection — revealConfig() appelé dans tous les cas
+                    runTeamDetection(uid)
+                        .then(revealConfig)
+                        .catch(revealConfig);   // erreur → révéler quand même
+                } else {
+                    revealConfig();
                 }
 
             } catch (e) {
