@@ -405,11 +405,13 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         "team_0": {
             "color_bgr":     c0,
             "color_name":    c0_name,
+            "short_bgr":     c0_short,
             "preview_frame": preview_0,
         },
         "team_1": {
             "color_bgr":     c1,
             "color_name":    c1_name,
+            "short_bgr":     c1_short,
             "preview_frame": preview_1,
         },
     }
