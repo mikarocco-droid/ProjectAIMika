@@ -43,7 +43,7 @@ from analysis.player_rating import compute_player_ratings, get_mvp, tag_key_pass
 from analysis.match_story import generate_match_story
 from ai.commentary import generate_commentary
 from ai.learning import cluster_actions, learn_action_importance, detect_key_moments
-from sports.config import get_sport_config, compute_xg_sport
+from sports.config import get_sport_config, compute_xg_sport, get_owner_confidence_min
 from analysis.event_validator import detect_real_shots
 from analysis.context_engine import ContextEngine
 from analysis.player_identity import resolve_player_identities, get_player_label
@@ -1507,6 +1507,45 @@ def run_pipeline(
     print("Step 9 : Montage ignoré (désactivé)")
     montage_path = None
 
+    # ── Mode player : reel joueur spécifique ─────────────────────────────────
+    # Activé si mode="player" ET player_id fourni (ex: "11" ou "11_bleu")
+    _player_reel_path = None
+    if mode == "player" and player_id is not None and result_pe_mgr is not None:
+        try:
+            # Parser player_id : "11" ou "11_bleu" ou "11_team0"
+            _jersey    = None
+            _team_color = None
+            _pid_parts = str(player_id).split("_")
+            if _pid_parts[0].isdigit():
+                _jersey = int(_pid_parts[0])
+            if len(_pid_parts) > 1:
+                _team_color = "_".join(_pid_parts[1:])
+
+            _player_highlights = result_pe_mgr.get_player_highlights(
+                jersey      = _jersey,
+                team_color  = _team_color,
+                min_confidence = get_owner_confidence_min(sport),
+            )
+
+            if _player_highlights:
+                _player_reel_path = os.path.join(
+                    output_dir,
+                    f"reel_player_{player_id}.mp4"
+                )
+                from video_utils import create_highlight_reel
+                create_highlight_reel(
+                    highlights  = _player_highlights,
+                    output_path = _player_reel_path,
+                )
+                print(f"  [MODE PLAYER] Reel #{_jersey} ({_team_color}) : "
+                      f"{len(_player_highlights)} clips → {_player_reel_path}")
+            else:
+                print(f"  [MODE PLAYER] Aucun highlight pour #{_jersey} "
+                      f"(min_conf={get_owner_confidence_min(sport):.2f})")
+
+        except Exception as _epr:
+            print(f"  [MODE PLAYER] Reel joueur ignoré : {_epr}")
+
     # ─────────────────────────────────────────
     # 10. RANKINGS + RATINGS + COMMENTARY
     # ─────────────────────────────────────────
@@ -1604,6 +1643,35 @@ def run_pipeline(
               f"({len(_shot_events_from_hl)} tirs highlights / {n_shots_raw} bruts)")
     except Exception as e:
         print(f"  Heatmaps error : {e}")
+
+    # ─────────────────────────────────────────
+    # 10b. PLAYER ENTITIES — identité joueur persistante
+    # ─────────────────────────────────────────
+    player_entities = None
+    try:
+        from analysis.player_entity import PlayerEntityManager
+        _pe_mgr = PlayerEntityManager(sport=sport)
+        _pe_mgr._debug = DEBUG  # logs [ENTITY MATCH] seulement en mode debug
+        _pe_result = {
+            "events":     events,
+            "highlights": highlights,
+            "jersey_map": jersey_map,
+            "teams":      teams,
+        }
+        _pe_mgr.build_from_pipeline_result(_pe_result)
+        player_entities = _pe_mgr.summary()
+
+        # Log résumé des entités high-conf
+        for _ent in _pe_mgr.get_all_entities(min_confidence=0.60, has_jersey=True):
+            print(f"  [ENTITY] #{_ent.jersey} {_ent.team_color or 'team'+str(_ent.team)} "
+                  f"conf={_ent.identity_confidence:.2f} "
+                  f"events={len(_ent.events)} highlights={len(_ent.highlights)}")
+
+        # Stocker le manager pour usage en mode player
+        result_pe_mgr = _pe_mgr
+    except Exception as _epe:
+        print(f"  Player entities ignoré : {_epe}")
+        result_pe_mgr = None
 
     # ─────────────────────────────────────────
     # 11. SUMMARY — sur events_clean (buts + tirs validés uniquement)
@@ -1767,6 +1835,8 @@ def run_pipeline(
         "learning":      learning_result,
         "possession":    possession,
         "context_stats": ctx_stats,
+        "player_entities": player_entities,
+        "player_reel":     _player_reel_path,
     }
 
     result = sanitize_for_json(result)
@@ -1780,6 +1850,13 @@ def run_pipeline(
     print(f"\nPIPELINE DONE")
     print(f"  {summary['goals']} buts | {summary['shots']} tirs | "
           f"xG: {summary['total_xg']} | {summary['players']} joueurs")
+
+    # Résumé player entities
+    if player_entities:
+        _ne = player_entities.get("n_entities", 0)
+        _nj = player_entities.get("n_with_jersey", 0)
+        _nh = player_entities.get("n_high_conf", 0)
+        print(f"  Entities: {_ne} total | {_nj} avec jersey | {_nh} high-conf")
     print(f"  Formation: {formation} | Style: {tactical.get('style','?')}")
     print(f"  MVP: {mvp_label}")
     print(f"  Possession: {possession}")
