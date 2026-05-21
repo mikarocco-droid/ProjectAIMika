@@ -735,15 +735,21 @@ def api_detect_teams(upload_id):
                 # Couleur short
                 short_bgr = t.get("short_bgr")
                 if short_bgr:
-                    b, g, r = int(short_bgr[0]), int(short_bgr[1]), int(short_bgr[2])
-                    t["short_hex"] = f"#{r:02x}{g:02x}{b:02x}"
-                    t["short_bgr"] = list(short_bgr)
+                    try:
+                        b, g, r = int(short_bgr[0]), int(short_bgr[1]), int(short_bgr[2])
+                        t["short_hex"] = f"#{r:02x}{g:02x}{b:02x}"
+                        t["short_bgr"] = [b, g, r]
+                    except Exception:
+                        t.pop("short_bgr", None)
                 if t.get("preview_frame") and os.path.exists(t["preview_frame"]):
                     fname = os.path.basename(t["preview_frame"])
                     t["preview_url"] = f"/api/preview-image/{upload_id}/{fname}"
-                # Rendre color_bgr sérialisable
+                # Rendre color_bgr sérialisable (peut être tuple ou numpy array)
                 if t.get("color_bgr"):
-                    t["color_bgr"] = list(t["color_bgr"])
+                    t["color_bgr"] = [int(x) for x in t["color_bgr"]]
+                # Purger les valeurs None non sérialisables
+                t = {k: v for k, v in t.items() if v is not None}
+                result[tid] = t
 
         return jsonify(result)
 
