@@ -562,6 +562,52 @@ class TeamColorDetector:
         except Exception:
             return None
 
+    def update(self, frame, tracked):
+        """
+        Appelé par main.py à chaque frame.
+        Collecte des samples de couleur et assigne les équipes aux joueurs trackés.
+        tracked : liste de dicts avec 'bbox' et éventuellement 'team'
+        """
+        if frame is None:
+            return
+
+        # Collecter la frame pour calibration
+        self.add_frame(frame)
+
+        if not self._calibrated:
+            return
+
+        # Assigner une équipe à chaque joueur tracké
+        try:
+            import numpy as np
+            h_f, w_f = frame.shape[:2]
+            for p in (tracked or []):
+                if p.get("team") is not None:
+                    continue
+                bbox = p.get("bbox") or p.get("box")
+                if not bbox:
+                    continue
+                x1, y1, x2, y2 = map(int, bbox)
+                x1 = max(0, x1); y1 = max(0, y1)
+                x2 = min(w_f, x2); y2 = min(h_f, y2)
+                crop = frame[y1:y2, x1:x2]
+                if crop.size == 0:
+                    continue
+                ch = crop.shape[0]
+                torse = crop[int(ch*0.15):int(ch*0.45), :]
+                if torse.size == 0:
+                    continue
+                # Filtre saturation
+                hsv = cv2.cvtColor(torse, cv2.COLOR_BGR2HSV)
+                mask = hsv[:, :, 1] > 60
+                if mask.sum() >= 10:
+                    color = torse[mask].mean(axis=0).astype(np.float32)
+                else:
+                    color = torse.mean(axis=(0, 1)).astype(np.float32)
+                p["team"] = self.get_team(color)
+        except Exception:
+            pass
+
     def update_score(self, events, current_time):
         """Met à jour le score depuis les events jusqu'à current_time."""
         for e in events:
