@@ -243,6 +243,24 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     print(f"  [PREVIEW] {len(pid_colors)} PIDs | "
           f"{n_obs_total} observations totales")
 
+    # ── Tentative 1 : récupérer les centroids depuis PlayerReID ──────────────
+    # PlayerReID._calibrate_teams() a déjà fait un KMeans robuste
+    # sur toutes les couleurs pendant le tracking — utilisons-le directement
+    try:
+        from analysis.player_reid import get_team_colors
+        reid_colors = get_team_colors()
+        if reid_colors and len(reid_colors) >= 2:
+            c0_reid = tuple(int(x) for x in reid_colors.get(0, (0,0,0)))
+            c1_reid = tuple(int(x) for x in reid_colors.get(1, (0,0,0)))
+            dist_reid = float(np.linalg.norm(
+                np.array(c0_reid) - np.array(c1_reid)
+            ))
+            print(f"  [PREVIEW] PlayerReID colors: {c0_reid}→{bgr_to_name(c0_reid)} "
+                  f"| {c1_reid}→{bgr_to_name(c1_reid)} | dist={dist_reid:.1f}")
+    except Exception as _e:
+        reid_colors = {}
+        print(f"  [PREVIEW] PlayerReID non disponible : {_e}")
+
     # ── Joueurs stables (>= 10 observations) ─────────────────────────────────
     MIN_OBS = 10
     stable_colors = []
@@ -290,6 +308,15 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
 
     c0 = tuple(int(x) for x in centroids[0])
     c1 = tuple(int(x) for x in centroids[1])
+
+    # Utiliser PlayerReID si sa distance est meilleure
+    if reid_colors and len(reid_colors) >= 2:
+        c0_r = tuple(int(x) for x in reid_colors.get(0, c0))
+        c1_r = tuple(int(x) for x in reid_colors.get(1, c1))
+        dist_r = float(np.linalg.norm(np.array(c0_r) - np.array(c1_r)))
+        if dist_r > dist:
+            print(f"  [PREVIEW] Utilisation PlayerReID (dist={dist_r:.1f} > {dist:.1f})")
+            c0, c1, dist = c0_r, c1_r, dist_r
 
     print(f"  [PREVIEW] Distance: {dist:.1f} | "
           f"Team0: {c0}→{bgr_to_name(c0)} ({n0}j) | "
