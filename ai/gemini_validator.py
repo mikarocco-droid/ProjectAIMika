@@ -1528,6 +1528,7 @@ def read_highlight_visuals(video_path, highlight_events, fps=25, highlight_clips
                     "confidence":  visual.get("confidence", "low"),
                     "_source":     source_label,
                     "_event_time": t_mm,
+                    "_event_time_s": float(ev.get("time", 0)),  # secondes pour comparaison
                     "_event_type": ev_type,
                 }
 
@@ -1565,6 +1566,30 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
         return {}
 
     jersey_map = {}
+
+    # ── Pré-remplir depuis le tir précédent (priorité maximale) ──────────────
+    # Si un tir avec jersey connu précède le but dans les 8 secondes,
+    # le tireur = buteur prioritaire. Gemini confirme mais n'écrase pas.
+    for ev in goal_events:
+        goal_t = float(ev.get("time", 0))
+        # Chercher dans visual_pool : tir à goal_t - 8s → goal_t
+        # Le jersey du tir précédent est stocké dans visual_pool
+        if visual_pool:
+            best_shot_jersey = None
+            best_shot_dt     = 999.0
+            for jersey_num, visuals in visual_pool.items():
+                for vis in visuals:
+                    shot_t = float(vis.get("_shot_time") or vis.get("_event_time_s") or -999)
+                    dt = goal_t - shot_t
+                    if 0 <= dt <= 15.0 and dt < best_shot_dt:
+                        best_shot_dt     = dt
+                        best_shot_jersey = jersey_num
+            if best_shot_jersey:
+                ev["_preceding_shot_jersey"] = best_shot_jersey
+                ev["_preceding_shot_dt"]     = round(best_shot_dt, 1)
+                print(f"  [SCORER PRE-FILL] t={int(goal_t//60):02d}:{int(goal_t%60):02d} "
+                      f"→ tir précédent #{best_shot_jersey} "
+                      f"à -{best_shot_dt:.1f}s → candidat prioritaire")
 
     try:
         client = get_client()
@@ -1751,6 +1776,25 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
                     else:
                         print(f"  [COULEUR CROSS] {t_mm} → '{buteur_couleur}' "
                               f"✓ correspond équipe {_shooter_team}='{_expected_color}'")
+
+            # Priorité : tir précédent si Gemini retourne un numéro différent
+            # avec confiance low/medium → le tireur = buteur est plus fiable
+            _preceding = ev.get("_preceding_shot_jersey")
+            if (_preceding and buteur is not None
+                    and int(buteur) != _preceding
+                    and buteur_confiance in ("low", "medium")):
+                print(f"  [SCORER OVERRIDE] {t_mm} → Gemini=#{buteur} ({buteur_confiance}) "
+                      f"remplacé par tir précédent=#{_preceding} "
+                      f"(-{ev.get('_preceding_shot_dt',0):.1f}s)")
+                buteur = _preceding
+                buteur_couleur = buteur_couleur   # garder la couleur Gemini
+
+            # Si Gemini n'a pas trouvé de numéro → utiliser tir précédent
+            if (buteur is None or not _color_valid) and _preceding:
+                print(f"  [SCORER FALLBACK] {t_mm} → numéro illisible → "
+                      f"tir précédent=#{_preceding} (-{ev.get('_preceding_shot_dt',0):.1f}s)")
+                buteur = _preceding
+                _color_valid = True   # on fait confiance au tir précédent
 
             if buteur is not None and _color_valid and 1 <= int(buteur) <= 99:
                 key = pid if pid else f"goal_{t_mm}"
