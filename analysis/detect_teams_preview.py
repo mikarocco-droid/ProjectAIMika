@@ -232,6 +232,7 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             n_obs_total += 1
 
     cap.release()
+    print(f"  [PREVIEW] Boucle terminée frame_id={frame_id} max={max_frame}")
     print(f"  [PREVIEW] Boucle terminée : {frame_id} frames | "
           f"{len(pid_colors)} PIDs | "
           f"{n_obs_total} obs valides | {n_rejected} rejetées")
@@ -258,23 +259,27 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         hues = np.array(hues, dtype=np.float32)
 
         if len(arr) >= 12:
-            # KMeans sur les teintes → trouver le cluster dominant
             try:
-                h_2d     = hues.reshape(-1, 1)
+                # Nettoyer les teintes invalides
+                valid = np.isfinite(hues) & (hues >= 0) & (hues <= 360)
+                if valid.sum() < 8:
+                    raise ValueError("Pas assez de teintes valides")
+
+                h_2d     = hues[valid].reshape(-1, 1).astype(np.float32)
+                arr_valid = arr[valid]
                 criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
                 _, labels, centers = cv2.kmeans(
                     h_2d, 2, None, criteria, 5, cv2.KMEANS_RANDOM_CENTERS
                 )
                 labels = labels.flatten()
-                n0, n1 = (labels==0).sum(), (labels==1).sum()
-                # Cluster dominant = maillot
+                n0, n1 = int((labels==0).sum()), int((labels==1).sum())
                 dom_label = 0 if n0 >= n1 else 1
                 dom_mask  = labels == dom_label
                 if dom_mask.sum() >= 4:
-                    final = np.median(arr[dom_mask], axis=0)
+                    final = np.median(arr_valid[dom_mask], axis=0)
                 else:
                     final = np.median(arr, axis=0)
-            except Exception:
+            except Exception as _ek:
                 final = np.median(arr, axis=0)
         else:
             # Peu d'obs → médiane simple avec filtre outliers
@@ -289,6 +294,29 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
 
     n_stable = len(stable_colors)
     print(f"  [PREVIEW] {n_stable} joueurs stables (>= {MIN_OBS} obs)")
+
+    # Debug : distribution des teintes dans stable_colors
+    if stable_colors:
+        import cv2 as _cv2, numpy as _np
+        all_h = []
+        for sc in stable_colors:
+            px = _np.uint8([[[int(sc[0]),int(sc[1]),int(sc[2])]]])
+            h  = int(_cv2.cvtColor(px, _cv2.COLOR_BGR2HSV)[0][0][0]) * 2
+            all_h.append(h)
+        all_h = _np.array(all_h)
+        # Afficher distribution par zone de couleur
+        zones = [
+            ("rouge/bordeaux", (0,35)),
+            ("jaune/vert clair", (35,90)),
+            ("vert", (90,165)),
+            ("bleu", (185,265)),
+            ("violet/rose", (265,360)),
+        ]
+        print(f"  [PREVIEW] Distribution teintes ({len(all_h)} joueurs):")
+        for name, (lo, hi) in zones:
+            n = int(((all_h >= lo) & (all_h < hi)).sum())
+            if n > 0:
+                print(f"    {name:20} H={lo:3d}-{hi:3d}: {n:3d} joueurs")
 
     # Fallback PlayerReID
     if n_stable < 4:
