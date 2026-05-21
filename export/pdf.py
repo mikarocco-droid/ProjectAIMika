@@ -99,14 +99,30 @@ def bgr_to_name(bgr):
 
 
 def team_display(team_id, teams_data=None):
-    """Retourne 'Equipe Rouge', 'Equipe Bleu' etc selon la couleur detctee."""
+    """
+    Retourne le nom d'equipe dans cet ordre de priorite :
+    1. Nom utilisateur (ex: "RSC Stavelot B")
+    2. Couleur detectee (ex: "Equipe Bordeaux")
+    3. Fallback generique (ex: "Equipe A")
+    """
     fallback = "Equipe A" if str(team_id) in ("0", "team_0") else "Equipe B"
     if not teams_data:
         return fallback
     tdata = teams_data.get(team_id) or teams_data.get(str(team_id)) or {}
-    bgr   = tdata.get("color_bgr")
-    name  = bgr_to_name(bgr)
-    return f"Equipe {name}" if name else fallback
+
+    # Priorite 1 — nom utilisateur fourni lors de la configuration
+    user_name = tdata.get("name")
+    if user_name and str(user_name).strip():
+        return str(user_name).strip()
+
+    # Priorite 2 — couleur detectee par KMeans
+    bgr  = tdata.get("color_bgr")
+    name = bgr_to_name(bgr)
+    if name:
+        color_label = tdata.get("color_name") or name
+        return f"Equipe {color_label}"
+
+    return fallback
 
 
 def player_label(pid, jersey_map=None):
