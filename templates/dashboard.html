@@ -64,13 +64,44 @@
         <div class="upload-filename" id="file-name"></div>
       </div>
 
-      
       <div class="sport-wrapper" style="margin-top:0">
-        <label>Nom de ton équipe <span style="color:var(--gray-dim);font-weight:400">(optionnel)</span></label>
-        <input type="text" name="team_name" placeholder="Ex: FC Montrouge U19" maxlength="60">
+        <label>Noms des équipes <span style="color:var(--gray-dim);font-weight:400">(optionnel — utilisés partout dans le rapport)</span></label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem">
+          <div>
+            <div style="font-size:0.75rem;color:var(--gray);margin-bottom:0.35rem;
+                        display:flex;align-items:center;gap:0.4rem">
+              <span id="team0-color-dot" style="width:10px;height:10px;border-radius:50%;
+                    background:var(--border);display:inline-block;flex-shrink:0"></span>
+              Équipe A
+              <span id="team0-color-label" style="color:var(--gray-dim);font-size:0.72rem"></span>
+            </div>
+            <input type="text" name="team_name_0" id="team-name-input-0"
+                   placeholder="Ex: RSC Stavelot B" maxlength="60"
+                   style="width:100%">
+          </div>
+          <div>
+            <div style="font-size:0.75rem;color:var(--gray);margin-bottom:0.35rem;
+                        display:flex;align-items:center;gap:0.4rem">
+              <span id="team1-color-dot" style="width:10px;height:10px;border-radius:50%;
+                    background:var(--border);display:inline-block;flex-shrink:0"></span>
+              Équipe B
+              <span id="team1-color-label" style="color:var(--gray-dim);font-size:0.72rem"></span>
+            </div>
+            <input type="text" name="team_name_1" id="team-name-input-1"
+                   placeholder="Ex: FC Liège" maxlength="60"
+                   style="width:100%">
+          </div>
+        </div>
+        <div id="team-detection-status" style="display:none;margin-top:0.5rem;
+             font-size:0.78rem;color:var(--gray);display:flex;align-items:center;gap:0.5rem">
+          <span id="detection-spinner-inline" style="display:inline-block;width:12px;height:12px;
+                border:2px solid var(--border);border-top-color:var(--cyan);
+                border-radius:50%;animation:spin 0.8s linear infinite"></span>
+          Détection des couleurs d'équipes en cours…
+        </div>
       </div>
 
-<div class="sport-wrapper">
+      <div class="sport-wrapper">
         <label>Sport</label>
         <select name="sport" id="sport-select">
           <optgroup label="Sports collectifs">
@@ -108,66 +139,6 @@
         </label>
       </div>
 
-      <!-- ── TEAM DETECTION PREVIEW (affiché après upload vidéo) ─────── -->
-      <div id="team-detection-banner" style="display:none;margin-bottom:1rem;
-           background:var(--surface);border:1px solid var(--border);
-           border-radius:var(--radius);padding:1rem 1.25rem">
-        <div style="font-size:0.82rem;color:var(--cyan);font-weight:600;margin-bottom:0.75rem;
-                    display:flex;align-items:center;gap:0.5rem">
-          <span id="detection-spinner" style="display:inline-block;width:14px;height:14px;
-                border:2px solid var(--border);border-top-color:var(--cyan);
-                border-radius:50%;animation:spin 0.8s linear infinite"></span>
-          Détection des équipes en cours…
-        </div>
-        <div id="team-preview-cards" style="display:none">
-          <div style="font-size:0.82rem;color:var(--white);font-weight:600;margin-bottom:0.75rem">
-            Nous avons détecté 2 équipes — laquelle est la vôtre ?
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:0.75rem">
-            <label style="cursor:pointer">
-              <input type="radio" name="user_team_id" value="0" id="team-radio-0" style="display:none">
-              <div class="team-preview-card" id="team-card-0" onclick="selectTeam(0)">
-                <img id="team-preview-img-0" style="width:100%;height:90px;object-fit:cover;
-                     border-radius:6px;display:block;margin-bottom:0.5rem">
-                <div style="display:flex;align-items:center;gap:0.5rem">
-                  <div id="team-color-dot-0" style="width:12px;height:12px;border-radius:50%;flex-shrink:0"></div>
-                  <span id="team-color-name-0" style="font-size:0.82rem;color:var(--white)">—</span>
-                </div>
-                <input type="text" name="team_name_0" id="team-name-input-0"
-                       placeholder="Nom de cette équipe"
-                       style="margin-top:0.5rem;width:100%;background:var(--bg2);
-                              border:1px solid var(--border);border-radius:6px;
-                              padding:0.4rem 0.6rem;font-size:0.82rem;color:var(--white);
-                              outline:none">
-              </div>
-            </label>
-            <label style="cursor:pointer">
-              <input type="radio" name="user_team_id" value="1" id="team-radio-1" style="display:none">
-              <div class="team-preview-card" id="team-card-1" onclick="selectTeam(1)">
-                <img id="team-preview-img-1" style="width:100%;height:90px;object-fit:cover;
-                     border-radius:6px;display:block;margin-bottom:0.5rem">
-                <div style="display:flex;align-items:center;gap:0.5rem">
-                  <div id="team-color-dot-1" style="width:12px;height:12px;border-radius:50%;flex-shrink:0"></div>
-                  <span id="team-color-name-1" style="font-size:0.white)">—</span>
-                </div>
-                <input type="text" name="team_name_1" id="team-name-input-1"
-                       placeholder="Nom de cette équipe"
-                       style="margin-top:0.5rem;width:100%;background:var(--bg2);
-                              border:1px solid var(--border);border-radius:6px;
-                              padding:0.4rem 0.6rem;font-size:0.82rem;color:var(--white);
-                              outline:none">
-              </div>
-            </label>
-          </div>
-          <div style="font-size:0.78rem;color:var(--gray);font-style:italic">
-            💡 Cliquez sur votre équipe pour la sélectionner (optionnel — améliore l'identification des joueurs)
-          </div>
-        </div>
-        <div id="detection-error" style="display:none;font-size:0.82rem;color:var(--gray)">
-          Détection automatique non disponible — vous pouvez continuer sans.
-        </div>
-      </div>
-
       <div class="joueur-options" id="joueur-options" style="display:none">
         <div class="joueur-row">
           <div id="field-numero">
@@ -179,8 +150,8 @@
             <label class="f-label">Équipe du joueur</label>
             <select name="team_side" id="team-side-select">
               <option value="">-- Choisir --</option>
-              <option value="home">🏠 Mon équipe (domicile)</option>
-              <option value="away">✈️ Équipe adverse (visiteur)</option>
+              <option value="0" id="team-side-opt-0">🏠 Équipe A</option>
+              <option value="1" id="team-side-opt-1">✈️ Équipe B</option>
             </select>
           </div>
           <div>
@@ -297,56 +268,47 @@
 let _detectionDone = false;
 
 async function runTeamDetection(uploadId) {
-  const banner = document.getElementById('team-detection-banner');
-  const spinner = document.getElementById('detection-spinner');
-  const cards = document.getElementById('team-preview-cards');
-  const errDiv = document.getElementById('detection-error');
-
-  banner.style.display = 'block';
+  // Afficher le spinner dans le bloc équipes
+  const statusDiv = document.getElementById('team-detection-status');
+  if (statusDiv) statusDiv.style.display = 'flex';
 
   try {
     const resp = await fetch(`/api/detect-teams/${uploadId}`);
     if (!resp.ok) throw new Error('API error');
     const data = await resp.json();
+    if (statusDiv) statusDiv.style.display = 'none';
+    if (!data.success) return;
 
-    if (!data.success) throw new Error(data.error || 'Détection échouée');
-
-    // Afficher les cartes équipes
-    spinner.parentElement.style.display = 'none';
-
+    // Mettre à jour les dots couleur + labels + placeholders
     for (const tid of [0, 1]) {
       const team = data[`team_${tid}`];
       if (!team) continue;
 
-      // Image preview
-      const img = document.getElementById(`team-preview-img-${tid}`);
-      if (team.preview_url) img.src = team.preview_url;
-      else img.style.display = 'none';
+      // Dot couleur
+      const dot = document.getElementById(`team${tid}-color-dot`);
+      if (dot && team.color_hex) dot.style.background = team.color_hex;
 
-      // Couleur dot
-      const dot = document.getElementById(`team-color-dot-${tid}`);
-      if (team.color_hex) dot.style.background = team.color_hex;
+      // Label couleur
+      const lbl = document.getElementById(`team${tid}-color-label`);
+      if (lbl && team.color_name) lbl.textContent = `(${team.color_name})`;
 
-      // Nom couleur
-      document.getElementById(`team-color-name-${tid}`).textContent =
-        team.color_name || '—';
+      // Placeholder du champ nom
+      const inp = document.getElementById(`team-name-input-${tid}`);
+      if (inp && team.color_name)
+        inp.placeholder = `Ex: équipe ${team.color_name}`;
+
+      // Mettre à jour le select équipe dans la section joueur
+      const opt = document.getElementById(`team-side-opt-${tid}`);
+      if (opt && team.color_name)
+        opt.textContent = `${tid === 0 ? '🏠' : '✈️'} Équipe ${team.color_name}`;
     }
 
-    cards.style.display = 'block';
     _detectionDone = true;
 
   } catch(e) {
-    spinner.parentElement.style.display = 'none';
-    errDiv.style.display = 'block';
+    if (statusDiv) statusDiv.style.display = 'none';
     console.warn('Team detection:', e);
   }
-}
-
-function selectTeam(tid) {
-  document.getElementById(`team-radio-${tid}`).checked = true;
-  document.getElementById('team-card-0').classList.remove('selected');
-  document.getElementById('team-card-1').classList.remove('selected');
-  document.getElementById(`team-card-${tid}`).classList.add('selected');
 }
 
 // ── Déclencher la détection dès qu'un fichier est sélectionné ───
@@ -401,6 +363,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('sport-select')?.addEventListener('change', updatePositions);
   updatePositions();
+
+  // Sync noms équipes → select joueur en temps réel
+  for (const tid of [0, 1]) {
+    const inp = document.getElementById(`team-name-input-${tid}`);
+    const opt = document.getElementById(`team-side-opt-${tid}`);
+    if (!inp || !opt) continue;
+    inp.addEventListener('input', () => {
+      const val = inp.value.trim();
+      const icon = tid === 0 ? '🏠' : '✈️';
+      opt.textContent = val ? `${icon} ${val}` : `${icon} Équipe ${tid === 0 ? 'A' : 'B'}`;
+    });
+  }
 });
 </script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
