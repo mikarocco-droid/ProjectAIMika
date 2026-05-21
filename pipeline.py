@@ -396,6 +396,55 @@ def run_pipeline(
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
+    # ── Alimenter le bootstrapper depuis frames_data ────────────────────────
+    if _team_bootstrapper is not None and frames_data:
+        try:
+            _bootstrap_seconds = 120.0
+            for _fd in frames_data:
+                _t = _fd.get("frame", 0) / max(fps, 1)
+                if _t > _bootstrap_seconds:
+                    break
+                _frame_orig = _fd.get("_frame_orig")
+                # frames_data n'a plus _frame_orig (supprimé après rendu)
+                # Utiliser les couleurs déjà extraites par player_reid
+                for _p in _fd.get("players", []):
+                    _pid   = _p.get("id") or _p.get("player_id")
+                    _color = _p.get("color")  # couleur extraite par PlayerReID
+                    _bbox  = _p.get("bbox")
+                    if _pid is None or _color is None or _bbox is None:
+                        continue
+                    # Injecter directement la couleur sans re-extraire
+                    _color_arr = np.array(_color, dtype=np.float32)
+                    if np.any(_color_arr > 10):
+                        pid_str = str(_pid)
+                        _team_bootstrapper._pid_colors[pid_str].append(_color_arr)
+                        if pid_str not in _team_bootstrapper._pid_first_seen:
+                            _team_bootstrapper._pid_first_seen[pid_str] = _t
+                        _team_bootstrapper._pid_last_seen[pid_str] = _t
+                        _team_bootstrapper._n_frames += 1
+        except Exception as _efb:
+            print(f"  [BOOTSTRAP] Alimentation échouée : {_efb}")
+
+    # ── Finaliser le bootstrapper d'équipes ──────────────────────────────────
+    if _team_bootstrapper is not None:
+        try:
+            _bs_summary = _team_bootstrapper.summary()
+            print(f"  [BOOTSTRAP] {_bs_summary['n_pids_total']} pids vus | "
+                  f"{_bs_summary['n_stable']} stables")
+            if _team_bootstrapper.is_ready() or _bs_summary['n_stable'] >= 4:
+                _bs_result = _team_bootstrapper.finalize()
+                if _bs_result:
+                    # Injecter dans teams (priorité sur KMeans du Step 4)
+                    for _tid, _tdata in _bs_result.items():
+                        if _tid not in teams:
+                            teams[_tid] = {}
+                        teams[_tid]["color_bgr"]    = _tdata["color_bgr"]
+                        teams[_tid]["color_name"]   = _tdata["color_name"]
+                        teams[_tid]["_bootstrap_conf"] = _tdata["confidence"]
+                    print(f"  [BOOTSTRAP] Couleurs injectées dans teams ✅")
+        except Exception as _ebs:
+            print(f"  [BOOTSTRAP] Finalisation échouée : {_ebs}")
+
     # Récupérer les couleurs équipes depuis le module tracker (source la plus fiable)
     try:
         from vision import tracker as _tracker_mod
@@ -1580,7 +1629,6 @@ def run_pipeline(
                     output_dir,
                     f"reel_player_{player_id}.mp4"
                 )
-                from video_utils import create_highlight_reel
                 create_highlight_reel(
                     highlights  = _player_highlights,
                     output_path = _player_reel_path,
@@ -1701,7 +1749,9 @@ def run_pipeline(
         _pe_mgr = PlayerEntityManager(sport=sport)
         _pe_mgr._debug = DEBUG  # logs [ENTITY MATCH] seulement en mode debug
         _pe_result = {
-            "events":     events,
+            # Utiliser events_clean (filtrés) plutôt que events bruts
+            # pour éviter 814 entités avec des pids instables
+            "events":     events_clean if events_clean else events,
             "highlights": highlights,
             "jersey_map": jersey_map,
             "teams":      teams,
@@ -1738,8 +1788,10 @@ def run_pipeline(
     n_validated_goals = sum(1 for e in events_validated if e.get("type") in ("goal", "score"))
     summary["goals"] = n_validated_goals
 
-    # FIX V9.8 — shots et xG depuis highlights (pas depuis events_clean qui a 0 tirs)
-    summary["shots"]    = n_highlight_shots
+    # V9.9 — shots = tirs dans les highlights (ce que l'utilisateur voit)
+    # n_highlight_shots = tirs, n_highlight_goals = buts
+    # Total = highlights sélectionnés = ce qui est dans le reel
+    summary["shots"]    = n_highlight_shots   # tirs cadres dans les highlights
     summary["total_xg"] = round(
         sum(float(h.get("xg", 0) or 0) for h in highlights), 2
     )
