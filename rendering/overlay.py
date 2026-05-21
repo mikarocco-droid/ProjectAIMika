@@ -500,11 +500,67 @@ class TeamColorDetector:
     """
     Détecteur de couleurs d'équipes pour l'overlay vidéo.
     Maintient le score en temps réel et les noms d'équipes.
+    Accepte tous les kwargs pour compatibilité avec main.py.
     """
-    def __init__(self, teams_data=None):
-        self.teams_data  = teams_data or {}
-        self.score       = {0: 0, 1: 0}
-        self._goals_seen = set()
+    def __init__(self, teams_data=None, sample_frames=60, **kwargs):
+        self.teams_data   = teams_data or {}
+        self.sample_frames = sample_frames
+        self.score        = {0: 0, 1: 0}
+        self._goals_seen  = set()
+        self._samples     = []      # frames collectées pour calibration
+        self._calibrated  = False
+        self._centroids   = None
+
+    def add_frame(self, frame):
+        """Collecte une frame pour la calibration des couleurs équipes."""
+        if self._calibrated or frame is None:
+            return
+        self._samples.append(frame)
+        if len(self._samples) >= self.sample_frames:
+            self._calibrate()
+
+    def _calibrate(self):
+        """KMeans sur les frames collectées pour trouver les 2 couleurs équipes."""
+        try:
+            import numpy as np
+            all_colors = []
+            for frame in self._samples:
+                h, w = frame.shape[:2]
+                # Zone centrale du terrain (évite tribunes)
+                crop = frame[int(h*0.2):int(h*0.8), int(w*0.1):int(w*0.9)]
+                # Sample aléatoire de pixels
+                pixels = crop.reshape(-1, 3).astype(np.float32)
+                idx = np.random.choice(len(pixels), min(500, len(pixels)), replace=False)
+                all_colors.extend(pixels[idx])
+
+            if len(all_colors) < 20:
+                return
+
+            samples = np.array(all_colors, dtype=np.float32)
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+            _, labels, centroids = cv2.kmeans(
+                samples, 2, None, criteria, 5, cv2.KMEANS_RANDOM_CENTERS
+            )
+            self._centroids  = centroids
+            self._calibrated = True
+            c0 = tuple(int(x) for x in centroids[0])
+            c1 = tuple(int(x) for x in centroids[1])
+            print(f"  [TeamColorDetector] calibré : team0={c0} team1={c1}")
+        except Exception as e:
+            print(f"  [TeamColorDetector] calibration ignorée : {e}")
+
+    def get_team(self, color):
+        """Retourne 0 ou 1 selon la couleur BGR la plus proche."""
+        if not self._calibrated or self._centroids is None:
+            return None
+        try:
+            import numpy as np
+            c = np.array(color, dtype=np.float32)
+            d0 = np.linalg.norm(c - self._centroids[0])
+            d1 = np.linalg.norm(c - self._centroids[1])
+            return 0 if d0 < d1 else 1
+        except Exception:
+            return None
 
     def update_score(self, events, current_time):
         """Met à jour le score depuis les events jusqu'à current_time."""
