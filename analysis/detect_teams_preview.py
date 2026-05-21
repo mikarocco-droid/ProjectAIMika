@@ -59,8 +59,8 @@ def bgr_to_name(bgr):
 # ─────────────────────────────────────────
 def extract_jersey_color(frame, bbox):
     """
-    Extrait la couleur dominante du maillot (torse uniquement).
-    Filtre le gazon vert, les pixels peu saturés (peau, ombres).
+    Extrait vecteur 6D [maillot_BGR, short_BGR].
+    Le short discrimine quand les maillots sont proches (ex: bordeaux vs rouge).
     """
     x1, y1, x2, y2 = map(int, bbox)
     x1 = max(0, x1); y1 = max(0, y1)
@@ -72,40 +72,44 @@ def extract_jersey_color(frame, bbox):
         return None
 
     h = crop.shape[0]
-    # Zone torse : 15%→45% (évite tête et short)
-    torse = crop[int(h * 0.15):int(h * 0.45), :]
-    if torse.size == 0:
+    if h < 20:
         return None
 
-    try:
-        hsv = cv2.cvtColor(torse, cv2.COLOR_BGR2HSV)
-        H   = hsv[:, :, 0].astype(int)
-        S   = hsv[:, :, 1]
-        V   = hsv[:, :, 2]
+    def zone_color(zone):
+        if zone is None or zone.size == 0:
+            return None
+        try:
+            hsv = cv2.cvtColor(zone, cv2.COLOR_BGR2HSV)
+            H = hsv[:, :, 0].astype(int)
+            S = hsv[:, :, 1]
+            V = hsv[:, :, 2]
+            is_grass = (H >= 30) & (H <= 90) & (S > 35)
+            is_dull  = S < 45
+            is_dark  = V < 40
+            is_white = (V > 210) & (S < 30)
+            mask = ~is_grass & ~is_dull & ~is_dark & ~is_white
+            if mask.sum() >= 6:
+                return zone[mask].mean(axis=0).astype(float)
+            mask2 = ~is_grass & ~is_dark
+            if mask2.sum() >= 4:
+                return zone[mask2].mean(axis=0).astype(float)
+            return zone.mean(axis=(0, 1)).astype(float)
+        except Exception:
+            return None
 
-        # Exclure :
-        #   - vert gazon (H≈35-85 OpenCV, sat>40)
-        #   - faible saturation (peau, gris, arbitre partiel)
-        #   - très sombre = noir arbitre (V<50) ou ombres (V<30)
-        #   - très clair = blanc arbitre/publicités (V>230 et S<30)
-        is_grass  = (H >= 30) & (H <= 90) & (S > 35)  # zone verte élargie
-        is_dull   = S < 55   # saturation plus stricte
-        is_dark   = V < 50
-        is_white  = (V > 210) & (S < 30)
-        mask      = ~is_grass & ~is_dull & ~is_dark & ~is_white
+    # Zone maillot : 15%→45%
+    torse = crop[int(h * 0.15):int(h * 0.45), :]
+    # Zone short  : 50%→75%
+    short = crop[int(h * 0.50):int(h * 0.75), :]
 
-        if mask.sum() >= 10:
-            return torse[mask].mean(axis=0).astype(float)
+    c_torse = zone_color(torse)
+    if c_torse is None:
+        return None
 
-        # Fallback : juste filtrer le gazon
-        mask2 = ~is_grass & ~is_dark
-        if mask2.sum() >= 8:
-            return torse[mask2].mean(axis=0).astype(float)
-
-    except Exception:
-        pass
-
-    return torse.mean(axis=(0, 1)).astype(float)
+    c_short = zone_color(short)
+    if c_short is not None:
+        return np.concatenate([c_torse, c_short])   # vecteur 6D
+    return c_torse   # fallback 3D
 
 
 # ─────────────────────────────────────────
@@ -242,24 +246,49 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
 
     print(f"  [PREVIEW] Analyse {n_frames} frames sur {analysis_duration:.0f}s...")
 
+    prev_frame = None
+
     for fid in frame_indices:
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(fid))
         ret, frame = cap.read()
         if not ret:
             continue
 
-        # Resize pour accélérer la détection
-        h, w   = frame.shape[:2]
-        scale  = min(1.0, 960 / w)
+        h, w  = frame.shape[:2]
+        scale = min(1.0, 960 / w)
         if scale < 1.0:
             frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
 
-        # Détecter les joueurs
+        # ── Masque de mouvement ───────────────────────────────────────
+        # Les pixels qui bougent = joueurs. On n'analyse que ceux-là.
+        motion_mask = None
+        if prev_frame is not None and prev_frame.shape == frame.shape:
+            try:
+                diff = cv2.absdiff(frame, prev_frame)
+                gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+                _, motion_mask = cv2.threshold(gray_diff, 20, 255, cv2.THRESH_BINARY)
+                # Dilater le masque pour couvrir tout le joueur
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+                motion_mask = cv2.dilate(motion_mask, kernel, iterations=2)
+            except Exception:
+                motion_mask = None
+
+        prev_frame = frame.copy()
+
+        # Détecter les joueurs par contours
         bboxes = detect_player_bboxes_simple(frame)
         if not bboxes:
             continue
 
-        for bbox in bboxes[:12]:   # max 12 joueurs/frame
+        for bbox in bboxes[:12]:
+            x1, y1, x2, y2 = map(int, bbox)
+
+            # Vérifier que la bbox correspond à une zone en mouvement
+            if motion_mask is not None:
+                roi_mask = motion_mask[y1:y2, x1:x2]
+                if roi_mask.size > 0 and roi_mask.mean() < 20:
+                    continue  # Pas de mouvement ici → pas un joueur actif
+
             color = extract_jersey_color(frame, bbox)
             if color is not None and np.any(color > 10):
                 all_colors.append(color)
