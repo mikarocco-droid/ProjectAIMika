@@ -131,8 +131,15 @@ function startUploadWithProgress(file) {
                     stepDetecting.scrollIntoView({ behavior: "smooth", block: "start" });
                 }
 
-                // Fonction qui révèle le dashboard quoi qu'il arrive
+                // Afficher "Analyse en cours" pendant la détection
+                const stepDetecting = document.getElementById("step-detecting");
+                if (stepDetecting) {
+                    stepDetecting.style.display = "block";
+                    stepDetecting.scrollIntoView({ behavior: "smooth", block: "start" });
+                }
+
                 function revealConfig() {
+                    // Masquer detecting, révéler config
                     if (stepDetecting) stepDetecting.style.display = "none";
                     _uploadDone = true;
                     if (stepConfig) {
@@ -145,10 +152,7 @@ function startUploadWithProgress(file) {
                 }
 
                 if (uid) {
-                    // Lancer détection — revealConfig() appelé dans tous les cas
-                    runTeamDetection(uid)
-                        .then(revealConfig)
-                        .catch(revealConfig);   // erreur → révéler quand même
+                    runTeamDetection(uid).then(revealConfig).catch(revealConfig);
                 } else {
                     revealConfig();
                 }
