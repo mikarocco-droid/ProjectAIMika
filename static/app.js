@@ -223,24 +223,46 @@ async function runTeamDetection(uploadId) {
 
         if (prog) prog.textContent = "✅ Couleurs détectées !";
 
-        // Mettre à jour les dots + labels + placeholders
+        // Mettre à jour les dots maillot + short + labels + placeholders
         for (const tid of [0, 1]) {
             const team = data["team_" + tid];
             if (!team) continue;
 
+            // Swatch maillot (grand cercle)
             const dot = document.getElementById(`team${tid}-color-dot`);
-            if (dot && team.color_hex) dot.style.background = team.color_hex;
+            if (dot && team.color_hex) {
+                dot.style.background    = team.color_hex;
+                dot.style.borderColor   = team.color_hex;
+            }
 
+            // Swatch short (petit carré en overlay)
+            const shortDot = document.getElementById(`team${tid}-short-dot`);
+            if (shortDot && team.short_hex) {
+                shortDot.style.background = team.short_hex;
+            }
+
+            // Bordure de la carte = couleur maillot
+            const card = document.getElementById(`team-card-${tid}`);
+            if (card && team.color_hex) {
+                card.style.borderColor = team.color_hex + "88"; // semi-transparent
+            }
+
+            // Label couleur
             const lbl = document.getElementById(`team${tid}-color-label`);
-            if (lbl && team.color_name) lbl.textContent = "(" + team.color_name + ")";
+            if (lbl && team.color_name) {
+                const parts = team.color_name.split("/");
+                lbl.textContent = parts[0] + (parts[1] ? " · short " + parts[1] : "");
+            }
 
+            // Placeholder champ nom
             const inp = document.getElementById(`team-name-input-${tid}`);
             if (inp && !inp.value && team.color_name)
-                inp.placeholder = "Ex: Équipe " + team.color_name;
+                inp.placeholder = "Ex: Équipe " + team.color_name.split("/")[0];
 
+            // Select équipe joueur
             const opt = document.getElementById(`team-side-opt-${tid}`);
             if (opt && team.color_name)
-                opt.textContent = (tid === 0 ? "🏠 " : "✈️ ") + "Équipe " + team.color_name;
+                opt.textContent = (tid === 0 ? "🏠 " : "✈️ ") + "Équipe " + team.color_name.split("/")[0];
         }
 
         await new Promise(r => setTimeout(r, 800));
