@@ -79,17 +79,7 @@ const SPORTS_CONFIG = {
 // ─────────────────────────────────────────
 // UPLOAD EN 2 ÉTAPES
 // ─────────────────────────────────────────
-let _uploadDone   = false;
-let _pickerLocked = false;
-
-function openFilePicker() {
-    if (_pickerLocked) return;
-    _pickerLocked = true;
-    fileInput.click();
-    // Reset après 500ms — suffisant pour bloquer le double-clic,
-    // assez court pour ne pas rester bloqué si l'user annule
-    setTimeout(() => { _pickerLocked = false; }, 500);
-}
+let _uploadDone = false;
 
 function startUploadWithProgress(file) {
     if (!file) return;
@@ -281,18 +271,16 @@ async function runTeamDetection(uploadId) {
 // FILE HANDLING — UN SEUL ENDROIT
 // ─────────────────────────────────────────
 if (dropZone) {
-    // Clic sur browse-btn → ouvrir picker (sans double-déclenchement)
+    // Clic browse-btn ou drop-zone → ouvrir explorateur
     if (browseBtn) {
         browseBtn.addEventListener("click", (e) => {
             e.stopPropagation();
-            openFilePicker();
+            fileInput.click();
         });
     }
-
-    // Clic sur la drop-zone (pas sur browse-btn)
     dropZone.addEventListener("click", (e) => {
         if (e.target === browseBtn || browseBtn?.contains(e.target)) return;
-        openFilePicker();
+        fileInput.click();
     });
 
     // Drag & drop
