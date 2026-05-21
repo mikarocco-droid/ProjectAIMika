@@ -60,7 +60,7 @@ def bgr_to_name(bgr):
 def extract_jersey_color(frame, bbox):
     """
     Extrait la couleur dominante du maillot (torse uniquement).
-    Filtre les pixels peu saturés (pelouse, peau, ombres).
+    Filtre le gazon vert, les pixels peu saturés (peau, ombres).
     """
     x1, y1, x2, y2 = map(int, bbox)
     x1 = max(0, x1); y1 = max(0, y1)
@@ -77,12 +77,29 @@ def extract_jersey_color(frame, bbox):
     if torse.size == 0:
         return None
 
-    # Filtre saturation HSV → garder pixels maillot coloré uniquement
     try:
-        hsv  = cv2.cvtColor(torse, cv2.COLOR_BGR2HSV)
-        mask = hsv[:, :, 1] > 60   # saturation > 24%
-        if mask.sum() >= 10:
+        hsv = cv2.cvtColor(torse, cv2.COLOR_BGR2HSV)
+        H   = hsv[:, :, 0].astype(int)
+        S   = hsv[:, :, 1]
+        V   = hsv[:, :, 2]
+
+        # Exclure :
+        #   - faible saturation (peau, ombres, gris)
+        #   - vert gazon (H≈35-85 en OpenCV = 70-170° réel, sat>40)
+        #   - très sombre (ombres profondes)
+        is_grass  = (H >= 35) & (H <= 85) & (S > 40)
+        is_dull   = S < 45
+        is_dark   = V < 30
+        mask      = ~is_grass & ~is_dull & ~is_dark
+
+        if mask.sum() >= 15:
             return torse[mask].mean(axis=0).astype(float)
+
+        # Fallback : juste filtrer le gazon
+        mask2 = ~is_grass
+        if mask2.sum() >= 10:
+            return torse[mask2].mean(axis=0).astype(float)
+
     except Exception:
         pass
 
@@ -104,9 +121,10 @@ def detect_player_bboxes_simple(frame, min_area=800):
     _, thresh = cv2.threshold(blurred, 0, 255,
                                cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Masquer le haut de l'image (ciel, tribunes)
+    # Masquer le haut (ciel, tribunes) et bas (publicités)
     h, w = thresh.shape
     thresh[:int(h * 0.35), :] = 0
+    thresh[int(h * 0.92):, :] = 0
 
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
                                     cv2.CHAIN_APPROX_SIMPLE)
@@ -114,7 +132,6 @@ def detect_player_bboxes_simple(frame, min_area=800):
     for cnt in contours:
         x, y, bw, bh = cv2.boundingRect(cnt)
         area = bw * bh
-        # Filtre : taille joueur typique + ratio vertical
         if area < min_area:
             continue
         aspect = bh / max(bw, 1)
