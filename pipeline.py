@@ -1364,6 +1364,15 @@ def run_pipeline(
                 _tdata["color_bgr"] = _colors_src[_key]
             elif _tid in _colors_src:
                 _tdata["color_bgr"] = _colors_src[_tid]
+            # Stocker aussi le nom couleur pour le PDF
+            if _tdata.get("color_bgr"):
+                try:
+                    from export.pdf import bgr_to_name as _btn
+                    _cn = _btn(_tdata["color_bgr"])
+                    if _cn:
+                        _tdata["color_name"] = _cn
+                except Exception:
+                    pass
 
         # Dernier fallback : calculer couleur dominante depuis events trackés
         if not any("color_bgr" in td for td in teams.values()):
