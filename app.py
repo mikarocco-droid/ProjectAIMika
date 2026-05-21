@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import uuid
 import json
 import threading
 import shutil
@@ -531,6 +532,14 @@ def upload():
     mode      = request.form.get("mode",      "match")
     player_id = request.form.get("player_id", "").strip() or None
 
+    # Noms équipes saisis par l'utilisateur
+    team_name_0      = request.form.get("team_name_0", "").strip() or None
+    team_name_1      = request.form.get("team_name_1", "").strip() or None
+    preview_upload_id = request.form.get("preview_upload_id", "").strip() or None
+    team_names = {}
+    if team_name_0: team_names["0"] = team_name_0
+    if team_name_1: team_names["1"] = team_name_1
+
     if not f or f.filename == "":
         flash("Aucune video selectionnee")
         return redirect(url_for("dashboard"))
@@ -556,7 +565,9 @@ def upload():
         sport     = sport,
         mode      = mode,
         player_id = player_id,
-        status    = "pending"
+        status    = "pending",
+        team_name_0 = team_name_0,
+        team_name_1 = team_name_1,
     )
     db.session.add(analysis)
     db.session.commit()
@@ -571,6 +582,7 @@ def upload():
                 "plan":            current_user.plan,
                 "analysis_id":     analysis.id,
                 "use_coarse_scan": True,
+                "team_names":      team_names or None,
             },
             task_id = f"analysis_{analysis.id}",
             queue   = "pipeline",
@@ -581,7 +593,8 @@ def upload():
         # Fallback : threading (mode dev sans Redis)
         thread = threading.Thread(
             target = run_analysis,
-            args   = (analysis.id, path, sport, current_user.plan, mode, player_id),
+            args   = (analysis.id, path, sport, current_user.plan,
+                      mode, player_id, None, team_names or None),
             daemon = True
         )
         thread.start()
@@ -595,7 +608,7 @@ def upload():
 # ─────────────────────────────────────────
 def run_analysis(
     analysis_id, video_path, sport, plan,
-    mode="match", player_id=None, r2_key=None
+    mode="match", player_id=None, r2_key=None, team_names=None
 ):
     with app.app_context():
         a              = db.session.get(Analysis, analysis_id)
@@ -628,7 +641,8 @@ def run_analysis(
             save_annotated = config.PLANS.get(plan, {}).get("montage", False),
             plan           = plan,
             mode           = mode,
-            player_id      = player_id
+            player_id      = player_id,
+            team_names     = team_names or None,
         )
 
         # ── Supprime la vidéo brute dès que l'analyse est terminée ──
@@ -665,6 +679,82 @@ def run_analysis(
 # ─────────────────────────────────────────
 # API
 # ─────────────────────────────────────────
+# ─────────────────────────────────────────
+# API — UPLOAD PREVIEW + DÉTECTION ÉQUIPES
+# ─────────────────────────────────────────
+import glob as _glob
+
+@app.route("/api/upload-preview", methods=["POST"])
+@login_required
+def api_upload_preview():
+    """Upload préliminaire XHR — reçoit la vidéo, retourne un upload_id."""
+    video = request.files.get("video")
+    if not video:
+        return jsonify({"error": "no video"}), 400
+
+    tmp_dir = os.path.join(config.UPLOAD_FOLDER, "previews")
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    uid      = str(uuid.uuid4())[:8]
+    ext      = os.path.splitext(secure_filename(video.filename))[1] or ".mp4"
+    tmp_path = os.path.join(tmp_dir, f"prev_{uid}{ext}")
+    video.save(tmp_path)
+
+    return jsonify({"upload_id": uid, "tmp_path": tmp_path})
+
+
+@app.route("/api/detect-teams/<upload_id>")
+@login_required
+def api_detect_teams(upload_id):
+    """Détecte les 2 équipes depuis l'upload préliminaire."""
+    tmp_dir = os.path.join(config.UPLOAD_FOLDER, "previews")
+    matches = _glob.glob(os.path.join(tmp_dir, f"prev_{upload_id}.*"))
+    if not matches:
+        return jsonify({"success": False, "error": "upload not found"}), 404
+
+    video_path  = matches[0]
+    preview_dir = os.path.join(tmp_dir, f"preview_{upload_id}")
+
+    try:
+        from analysis.detect_teams_preview import detect_teams_preview
+        result = detect_teams_preview(
+            video_path        = video_path,
+            output_dir        = preview_dir,
+            n_frames          = 60,
+            analysis_duration = 120.0,
+        )
+
+        if result.get("success"):
+            for tid in ["team_0", "team_1"]:
+                t = result.get(tid, {})
+                bgr = t.get("color_bgr")
+                if bgr:
+                    b, g, r = int(bgr[0]), int(bgr[1]), int(bgr[2])
+                    t["color_hex"] = f"#{r:02x}{g:02x}{b:02x}"
+                if t.get("preview_frame") and os.path.exists(t["preview_frame"]):
+                    fname = os.path.basename(t["preview_frame"])
+                    t["preview_url"] = f"/api/preview-image/{upload_id}/{fname}"
+                # Rendre color_bgr sérialisable
+                if t.get("color_bgr"):
+                    t["color_bgr"] = list(t["color_bgr"])
+
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/preview-image/<upload_id>/<filename>")
+@login_required
+def api_preview_image(upload_id, filename):
+    """Sert les images de preview des équipes."""
+    from flask import send_from_directory
+    preview_dir = os.path.join(
+        config.UPLOAD_FOLDER, "previews", f"preview_{upload_id}"
+    )
+    return send_from_directory(preview_dir, filename)
+
+
 @app.route("/api/status/<int:id>")
 @login_required
 def status(id):
