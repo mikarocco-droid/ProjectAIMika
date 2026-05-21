@@ -3,14 +3,14 @@
 # ════════════════════════════════════════════════════════════
 
 import sys, os
-sys.path.insert(0, '/content/ProjectAIMika')
-os.chdir('/content/ProjectAIMika')
+sys.path.insert(0, r'D:\ProjetAIMika')
+os.chdir(r'D:\ProjetAIMika')
 
 import cv2
 import numpy as np
 from collections import defaultdict
 
-VIDEO_PATH = "D:\ProjetAIMika\uploads\Resume_Bullange_-_Stavelot_B_0-1.mp4"  # ← adapter si besoin
+VIDEO_PATH = r"D:\ProjetAIMika\uploads\Resume_Bullange_-_Stavelot_B_0-1.mp4"  # ← adapter si besoin
 
 # ── 1. Tester extract_jersey_color_strict sur une frame ──────────────────────
 print("=== TEST 1 : extract_jersey_color_strict ===")
