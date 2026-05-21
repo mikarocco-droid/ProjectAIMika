@@ -84,13 +84,15 @@ def extract_jersey_color(frame, bbox):
         V   = hsv[:, :, 2]
 
         # Exclure :
-        #   - faible saturation (peau, ombres, gris)
-        #   - vert gazon (H≈35-85 en OpenCV = 70-170° réel, sat>40)
-        #   - très sombre (ombres profondes)
+        #   - vert gazon (H≈35-85 OpenCV, sat>40)
+        #   - faible saturation (peau, gris, arbitre partiel)
+        #   - très sombre = noir arbitre (V<50) ou ombres (V<30)
+        #   - très clair = blanc arbitre/publicités (V>230 et S<30)
         is_grass  = (H >= 35) & (H <= 85) & (S > 40)
         is_dull   = S < 45
-        is_dark   = V < 30
-        mask      = ~is_grass & ~is_dull & ~is_dark
+        is_dark   = V < 50    # filtre le noir de l'arbitre
+        is_white  = (V > 210) & (S < 30)   # filtre blanc/gris clair
+        mask      = ~is_grass & ~is_dull & ~is_dark & ~is_white
 
         if mask.sum() >= 15:
             return torse[mask].mean(axis=0).astype(float)
@@ -252,8 +254,30 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
 
     print(f"  [PREVIEW] {n_players_total} joueurs analysés → KMeans...")
 
+    # ── Filtrer les couleurs aberrantes avant KMeans ─────────────────────────
+    # Exclure noir (arbitre), blanc, gris peu saturé depuis les samples BGR
+    filtered_colors = []
+    for c in all_colors:
+        b_c, g_c, r_c = float(c[0]), float(c[1]), float(c[2])
+        # Exclure trop sombre (arbitre noir, ombres)
+        if (b_c + g_c + r_c) / 3 < 50:
+            continue
+        # Exclure trop clair (blanc, gris clair)
+        if (b_c + g_c + r_c) / 3 > 210 and max(b_c,g_c,r_c) - min(b_c,g_c,r_c) < 30:
+            continue
+        # Exclure vert gazon (G dominant + B et R faibles)
+        if g_c > r_c * 1.3 and g_c > b_c * 1.3 and g_c > 80:
+            continue
+        filtered_colors.append(c)
+
+    if len(filtered_colors) < 10:
+        filtered_colors = all_colors  # fallback si trop filtré
+        print(f"  [PREVIEW] Fallback : filtrage trop agressif, {len(all_colors)} samples bruts")
+    else:
+        print(f"  [PREVIEW] {len(filtered_colors)}/{len(all_colors)} samples après filtre")
+
     # ── KMeans → 2 clusters couleur équipes ──────────────────────────────────
-    samples  = np.array(all_colors, dtype=np.float32)
+    samples  = np.array(filtered_colors, dtype=np.float32)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1.0)
     _, labels, centroids = cv2.kmeans(
         samples, 2, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS
