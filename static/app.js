@@ -124,23 +124,33 @@ function startUploadWithProgress(file) {
                 // Stocker l'upload_id dans le form
                 if (previewUploadId) previewUploadId.value = uid;
 
-                _uploadDone = true;
-
-                // Message succès
-                if (uploadDoneMsg) uploadDoneMsg.style.display = "flex";
-
-                // Révéler l'étape 2
-                if (stepConfig) {
-                    stepConfig.style.display = "block";
-                    setTimeout(() => {
-                        stepConfig.scrollIntoView({ behavior: "smooth", block: "start" });
-                    }, 150);
+                // Afficher l'écran d'analyse intermédiaire
+                const stepDetecting = document.getElementById("step-detecting");
+                if (stepDetecting) {
+                    stepDetecting.style.display = "block";
+                    stepDetecting.scrollIntoView({ behavior: "smooth", block: "start" });
                 }
 
-                updateSubmitBtn();
-
-                // Lancer détection équipes en parallèle
-                if (uid) runTeamDetection(uid);
+                // Lancer la détection puis révéler le config
+                if (uid) {
+                    runTeamDetection(uid).then(() => {
+                        if (stepDetecting) stepDetecting.style.display = "none";
+                        _uploadDone = true;
+                        if (stepConfig) {
+                            stepConfig.style.display = "block";
+                            setTimeout(() => {
+                                stepConfig.scrollIntoView({ behavior: "smooth", block: "start" });
+                            }, 150);
+                        }
+                        updateSubmitBtn();
+                    });
+                } else {
+                    // Pas d'uid → révéler directement sans détection
+                    if (stepDetecting) stepDetecting.style.display = "none";
+                    _uploadDone = true;
+                    if (stepConfig) stepConfig.style.display = "block";
+                    updateSubmitBtn();
+                }
 
             } catch (e) {
                 showUploadError("Réponse inattendue du serveur");
@@ -169,16 +179,23 @@ function showUploadError(msg) {
 // DÉTECTION ÉQUIPES
 // ─────────────────────────────────────────
 async function runTeamDetection(uploadId) {
-    const statusDiv = document.getElementById("team-detection-status");
-    if (statusDiv) statusDiv.style.display = "flex";
+    // Met à jour le message de progression
+    const prog = document.getElementById("detecting-progress");
 
     try {
+        if (prog) prog.textContent = "Analyse en cours… (30-60 secondes)";
+
         const resp = await fetch(`/api/detect-teams/${uploadId}`);
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const data = await resp.json();
 
-        if (statusDiv) statusDiv.style.display = "none";
-        if (!data.success) return;
+        if (!data.success) {
+            if (prog) prog.textContent = "Détection non disponible — vous pouvez continuer manuellement.";
+            await new Promise(r => setTimeout(r, 1500));
+            return;
+        }
+
+        if (prog) prog.textContent = "Couleurs détectées !";
 
         for (const tid of [0, 1]) {
             const team = data["team_" + tid];
@@ -188,23 +205,28 @@ async function runTeamDetection(uploadId) {
             const dot = document.getElementById(`team${tid}-color-dot`);
             if (dot && team.color_hex) dot.style.background = team.color_hex;
 
-            // Label couleur
+            // Label couleur (ex: "bordeaux")
             const lbl = document.getElementById(`team${tid}-color-label`);
             if (lbl && team.color_name) lbl.textContent = "(" + team.color_name + ")";
 
-            // Placeholder champ nom
+            // Remplir automatiquement le champ nom si vide
             const inp = document.getElementById(`team-name-input-${tid}`);
-            if (inp && team.color_name && !inp.value)
-                inp.placeholder = "Ex: équipe " + team.color_name;
+            if (inp && !inp.value && team.color_name) {
+                inp.placeholder = "Ex: Équipe " + team.color_name;
+            }
 
-            // Sync select équipe joueur
+            // Sync select équipe joueur avec la couleur détectée
             const opt = document.getElementById(`team-side-opt-${tid}`);
             if (opt && team.color_name)
                 opt.textContent = (tid === 0 ? "🏠 " : "✈️ ") + "Équipe " + team.color_name;
         }
 
+        // Courte pause pour que l'user voie "Couleurs détectées !"
+        await new Promise(r => setTimeout(r, 800));
+
     } catch (e) {
-        if (statusDiv) statusDiv.style.display = "none";
+        if (prog) prog.textContent = "Détection échouée — continuez manuellement.";
+        await new Promise(r => setTimeout(r, 1200));
         console.warn("Team detection:", e);
     }
 }
