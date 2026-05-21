@@ -335,8 +335,32 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             c1 = tuple(int(x) for x in centroids[1])
             print(f"  [PREVIEW] Meilleure séparation trouvée: {dist2:.1f}")
 
-    print(f"  [PREVIEW] Team 0: BGR{c0} → {bgr_to_name(c0)}")
-    print(f"  [PREVIEW] Team 1: BGR{c1} → {bgr_to_name(c1)}")
+    # Extraire maillot (3 premiers canaux) et short (3 suivants si 6D)
+    dim = len(c0)
+    c0_bgr   = c0[:3]
+    c1_bgr   = c1[:3]
+    c0_short = tuple(int(x) for x in c0[3:]) if dim == 6 else None
+    c1_short = tuple(int(x) for x in c1[3:]) if dim == 6 else None
+
+    c0_name = bgr_to_name(c0_bgr)
+    c1_name = bgr_to_name(c1_bgr)
+
+    if c0_short:
+        try:
+            c0_name += f"/{bgr_to_name(c0_short)}"
+            c1_name += f"/{bgr_to_name(c1_short)}" if c1_short else c1_name
+        except Exception:
+            c0_short = None
+            c1_short = None
+
+    # Remplacer c0/c1 par les valeurs BGR seulement (pour preview frame)
+    c0 = c0_bgr
+    c1 = c1_bgr
+
+    print(f"  [PREVIEW] Team 0: maillot={c0} → {bgr_to_name(c0)}"
+          + (f" | short={c0_short} → {bgr_to_name(c0_short)}" if c0_short else ""))
+    print(f"  [PREVIEW] Team 1: maillot={c1} → {bgr_to_name(c1)}"
+          + (f" | short={c1_short} → {bgr_to_name(c1_short)}" if c1_short else ""))
 
     # ── Sélectionner les meilleures frames preview ────────────────────────────
     # Une frame avec beaucoup de joueurs du cluster dominant = bonne preview
