@@ -754,6 +754,8 @@ def api_detect_teams(upload_id):
         return jsonify(result)
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
 
