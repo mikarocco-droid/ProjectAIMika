@@ -178,9 +178,10 @@ async function runTeamDetection(uploadId) {
 
     // Messages de progression pendant l'attente
     const msgs = [
-        "Lecture des premières minutes de la vidéo…",
-        "Détection des joueurs en cours…",
-        "Analyse des couleurs de maillot…",
+        "Lancement du tracker vidéo…",
+        "Détection des joueurs (YOLO)…",
+        "Tracking et accumulation couleurs…",
+        "Analyse des profils joueurs stables…",
         "Calcul des clusters d'équipes…",
     ];
     let msgIdx = 0;
@@ -192,6 +193,9 @@ async function runTeamDetection(uploadId) {
 
     try {
         if (prog) prog.textContent = msgs[0];
+        // Durée estimée affichée
+        const dur = document.getElementById("detecting-duration");
+        if (dur) dur.textContent = "~1 min 30";
 
         // Fetch avec AbortController pour pouvoir annuler
         const controller = new AbortController();
@@ -221,7 +225,14 @@ async function runTeamDetection(uploadId) {
             return;
         }
 
-        if (prog) prog.textContent = "✅ Couleurs détectées !";
+        // Vérifier si les couleurs sont trop proches
+        const t0 = data["team_0"], t1 = data["team_1"];
+        const hex0 = t0?.color_hex, hex1 = t1?.color_hex;
+        const tooCLose = hex0 && hex1 && hex0 === hex1;
+
+        if (prog) prog.textContent = tooCLose
+            ? "⚠️ Couleurs similaires — saisissez les noms manuellement"
+            : "✅ Couleurs détectées !";
 
         // Mettre à jour les dots maillot + short + labels + placeholders
         for (const tid of [0, 1]) {
@@ -330,6 +341,39 @@ if (dropZone) {
         const file = fileInput.files[0];
         if (file) startUploadWithProgress(file);
     });
+}
+
+
+// ─────────────────────────────────────────
+// SÉLECTION "MON ÉQUIPE"
+// ─────────────────────────────────────────
+function selectMyTeam(tid) {
+    // Stocker dans le champ hidden
+    const hidden = document.getElementById("user-team-id");
+    if (hidden) hidden.value = tid;
+
+    // Mettre à jour les boutons
+    for (const t of [0, 1]) {
+        const btn = document.getElementById(`my-team-btn-${t}`);
+        if (!btn) continue;
+        if (t === tid) {
+            btn.textContent  = "✅ Mon équipe";
+            btn.style.color  = "var(--cyan)";
+            btn.style.borderColor = "var(--cyan)";
+            btn.style.background  = "rgba(0,200,230,0.08)";
+        } else {
+            btn.textContent  = "🏠 C'est mon équipe";
+            btn.style.color  = "var(--gray)";
+            btn.style.borderColor = "var(--border)";
+            btn.style.background  = "transparent";
+        }
+    }
+
+    // Sync select équipe joueur
+    const opt = document.getElementById(`team-side-opt-${tid}`);
+    if (opt) opt.textContent = (opt.textContent || "").replace("🏠 ", "✅ ").replace("✈️ ", "✅ ");
+    const other = document.getElementById(`team-side-opt-${1 - tid}`);
+    if (other) other.textContent = (other.textContent || "").replace("✅ ", "✈️ ");
 }
 
 
