@@ -137,9 +137,30 @@ def detect_player_bboxes_simple(frame, min_area=800):
         if area < min_area:
             continue
         aspect = bh / max(bw, 1)
-        if aspect < 1.2 or aspect > 5.0:
+        if aspect < 0.8 or aspect > 6.0:   # plus permissif
             continue
         bboxes.append((x, y, x + bw, y + bh))
+
+    # Si trop peu de détections → essayer avec seuil adaptatif
+    if len(bboxes) < 5:
+        thresh2 = cv2.adaptiveThreshold(
+            blurred, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 11, 2
+        )
+        h2, w2 = thresh2.shape
+        thresh2[:int(h2 * 0.35), :] = 0
+        thresh2[int(h2 * 0.92):, :] = 0
+        contours2, _ = cv2.findContours(thresh2, cv2.RETR_EXTERNAL,
+                                         cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in contours2:
+            x, y, bw, bh = cv2.boundingRect(cnt)
+            if bw * bh < min_area // 2:
+                continue
+            aspect = bh / max(bw, 1)
+            if aspect < 0.8 or aspect > 6.0:
+                continue
+            bboxes.append((x, y, x + bw, y + bh))
 
     return bboxes
 
@@ -259,13 +280,21 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     filtered_colors = []
     for c in all_colors:
         b_c, g_c, r_c = float(c[0]), float(c[1]), float(c[2])
-        # Exclure trop sombre (arbitre noir, ombres)
-        if (b_c + g_c + r_c) / 3 < 50:
+        # Saturation = écart entre canal max et min
+        sat = max(b_c, g_c, r_c) - min(b_c, g_c, r_c)
+        mean = (b_c + g_c + r_c) / 3
+
+        # Exclure : sombre ET peu saturé (arbitre noir, gris foncé, ombres)
+        # Un bordeaux sombre (sat>40) est gardé même si mean<85
+        if mean < 80 and sat < 40:
+            continue
+        # Exclure : peu saturé quelle que soit la luminosité (gris, béton)
+        if sat < 20:
             continue
         # Exclure trop clair (blanc, gris clair)
-        if (b_c + g_c + r_c) / 3 > 210 and max(b_c,g_c,r_c) - min(b_c,g_c,r_c) < 30:
+        if (b_c + g_c + r_c) / 3 > 210 and sat < 30:
             continue
-        # Exclure vert gazon (G dominant + B et R faibles)
+        # Exclure vert gazon (G dominant)
         if g_c > r_c * 1.3 and g_c > b_c * 1.3 and g_c > 80:
             continue
         filtered_colors.append(c)
