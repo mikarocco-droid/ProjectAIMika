@@ -71,7 +71,7 @@ def bgr_to_name(bgr):
         return "bordeaux foncé" if v < 35 else ("bordeaux" if v < 60 else "rouge")
     if 20 <= h < 35:  return "orange"
     if 35 <= h < 75:  return "jaune"
-    if 75 <= h < 155: return "vert foncé" if v < 50 else "vert"
+    if 75 <= h < 165: return "vert foncé" if v < 50 else "vert"
     if 155 <= h < 185: return "cyan"
     if 185 <= h < 265:
         return "bleu foncé" if v < 35 else ("bleu marine" if v < 55 else "bleu")
@@ -253,7 +253,18 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             continue
         arr    = np.array(colors, dtype=np.float32)
         median = np.median(arr, axis=0)
-        stable_colors.append(median)
+
+        # Filtrer outliers : garder seulement les obs proches de la médiane
+        dists  = np.linalg.norm(arr - median, axis=1)
+        thresh = np.percentile(dists, 70)   # garder 70% les plus proches
+        clean  = arr[dists <= thresh]
+
+        if len(clean) >= 3:
+            final_color = np.median(clean, axis=0)
+        else:
+            final_color = median
+
+        stable_colors.append(final_color)
         stable_pids.append(pid)
 
     n_stable = len(stable_colors)
