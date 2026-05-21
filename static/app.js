@@ -79,15 +79,16 @@ const SPORTS_CONFIG = {
 // ─────────────────────────────────────────
 // UPLOAD EN 2 ÉTAPES
 // ─────────────────────────────────────────
-let _uploadDone    = false;
-let _pickerLocked  = false;   // anti double-ouverture explorateur
+let _uploadDone   = false;
+let _pickerLocked = false;
 
 function openFilePicker() {
     if (_pickerLocked) return;
     _pickerLocked = true;
     fileInput.click();
-    // Reset si l'user ferme sans choisir
-    setTimeout(() => { _pickerLocked = false; }, 3000);
+    // Reset après 500ms — suffisant pour bloquer le double-clic,
+    // assez court pour ne pas rester bloqué si l'user annule
+    setTimeout(() => { _pickerLocked = false; }, 500);
 }
 
 function startUploadWithProgress(file) {
