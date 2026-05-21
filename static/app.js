@@ -1,39 +1,38 @@
-// static/app.js — ScoutIA V9.6
+// static/app.js — ScoutIA V9.7
 
 // ─────────────────────────────────────────
-// ELEMENTS
+// ÉLÉMENTS
 // ─────────────────────────────────────────
-const dropZone   = document.getElementById("drop-zone");
-const fileInput  = document.getElementById("file-input");
-const fileName   = document.getElementById("file-name");
-const submitBtn  = document.getElementById("submit-btn");
-const browseBtn  = document.getElementById("browse-btn");
-
+const dropZone       = document.getElementById("drop-zone");
+const fileInput      = document.getElementById("file-input");
+const fileName       = document.getElementById("file-name");
+const submitBtn      = document.getElementById("submit-btn");
+const browseBtn      = document.getElementById("browse-btn");
 const sportSelect    = document.getElementById("sport-select");
 const modeMatch      = document.getElementById("mode-match");
 const modeJoueur     = document.getElementById("mode-joueur");
-
 const joueurOpts     = document.getElementById("joueur-options");
 const numJoueur      = document.getElementById("numero-joueur");
-const couleurEl      = document.getElementById("couleur-maillot");
 const positionEl     = document.getElementById("position-joueur");
-
 const gardienSection = document.getElementById("gardien-section");
 const fieldNumero    = document.getElementById("field-numero");
-const matchIcon      = document.getElementById("mode-match-icon");
 const matchDesc      = document.getElementById("mode-match-desc");
 const joueurDesc     = document.getElementById("mode-joueur-desc");
-
+const stepConfig     = document.getElementById("step-config");
+const progressWrap   = document.getElementById("upload-progress-wrap");
+const progressBar    = document.getElementById("upload-bar");
+const progressPct    = document.getElementById("upload-pct");
+const progressSize   = document.getElementById("upload-size");
+const uploadDoneMsg  = document.getElementById("upload-done-msg");
+const previewUploadId = document.getElementById("preview-upload-id");
 
 // ─────────────────────────────────────────
 // CONFIG SPORTS
 // ─────────────────────────────────────────
 const SPORTS_CONFIG = {
     football: {
-        icon: "⚽",
-        hasGardien: true,
-        hasNumero: true,
-        matchDesc: "Highlights, rapport tactique, xG, top joueurs",
+        icon: "⚽", hasGardien: true, hasNumero: true,
+        matchDesc:  "Highlights, rapport tactique, xG, top joueurs",
         joueurDesc: "Rapport complet sur un joueur spécifique",
         positions: [
             { group: "🥅 Gardien",  opts: ["gardien|Gardien"] },
@@ -43,10 +42,8 @@ const SPORTS_CONFIG = {
         ]
     },
     "mini-foot": {
-        icon: "⚽",
-        hasGardien: true,
-        hasNumero: true,
-        matchDesc: "Analyse mini-foot / futsal",
+        icon: "⚽", hasGardien: true, hasNumero: true,
+        matchDesc:  "Analyse mini-foot / futsal",
         joueurDesc: "Rapport joueur futsal",
         positions: [
             { group: "🥅 Gardien", opts: ["gardien|Gardien"] },
@@ -54,31 +51,25 @@ const SPORTS_CONFIG = {
         ]
     },
     basketball: {
-        icon: "🏀",
-        hasGardien: false,
-        hasNumero: true,
-        matchDesc: "Stats basket, highlights, rapport",
+        icon: "🏀", hasGardien: false, hasNumero: true,
+        matchDesc:  "Stats basket, highlights, rapport",
         joueurDesc: "Rapport poste basket",
         positions: [
             { group: "🏀 Postes", opts: ["pg|Meneur (PG)", "sg|Arrière (SG)", "sf|Ailier (SF)", "pf|Ailier fort (PF)", "c|Pivot (C)"] }
         ]
     },
     handball: {
-        icon: "🤾",
-        hasGardien: true,
-        hasNumero: true,
-        matchDesc: "Analyse handball complète",
+        icon: "🤾", hasGardien: true, hasNumero: true,
+        matchDesc:  "Analyse handball complète",
         joueurDesc: "Rapport joueur handball",
         positions: [
-            { group: "🥅 Gardien",  opts: ["gardien|Gardien"] },
-            { group: "⚡ Joueurs",  opts: ["pivot|Pivot", "ailier|Ailier", "arrieredroit|Arrière droit", "arrierecentre|Demi-centre", "arrierecentreg|Arrière gauche"] },
+            { group: "🥅 Gardien", opts: ["gardien|Gardien"] },
+            { group: "⚡ Joueurs", opts: ["pivot|Pivot", "ailier|Ailier", "arrieredroit|Arrière droit", "arrierecentre|Demi-centre", "arrierecentreg|Arrière gauche"] },
         ]
     },
     tennis: {
-        icon: "🎾",
-        hasGardien: false,
-        hasNumero: false,
-        matchDesc: "Analyse tennis — stats, highlights",
+        icon: "🎾", hasGardien: false, hasNumero: false,
+        matchDesc:  "Analyse tennis — stats, highlights",
         joueurDesc: "Rapport joueur tennis",
         positions: []
     },
@@ -86,52 +77,197 @@ const SPORTS_CONFIG = {
 
 
 // ─────────────────────────────────────────
-// FILE HANDLING
+// UPLOAD EN 2 ÉTAPES
 // ─────────────────────────────────────────
-function setFile(file) {
-    if (!file) return;
-    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
-    if (fileName) {
-        fileName.textContent = `${file.name}  (${sizeMB} MB)`;
-        fileName.style.color = "var(--cyan)";
-    }
-    // Feedback visuel sur la drop zone
-    if (dropZone) {
-        dropZone.style.borderColor = "var(--cyan)";
-        dropZone.style.background  = "var(--cyan-dim, rgba(0,200,230,0.06))";
-    }
-    updateSubmitBtn();
+let _uploadDone    = false;
+let _pickerLocked  = false;   // anti double-ouverture explorateur
+
+function openFilePicker() {
+    if (_pickerLocked) return;
+    _pickerLocked = true;
+    fileInput.click();
+    // Reset si l'user ferme sans choisir
+    setTimeout(() => { _pickerLocked = false; }, 3000);
 }
 
+function startUploadWithProgress(file) {
+    if (!file) return;
+
+    // Afficher progression
+    if (progressWrap) progressWrap.style.display = "block";
+    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+    if (progressSize) progressSize.textContent = sizeMB + " MB";
+    if (fileName) {
+        fileName.textContent = file.name + "  (" + sizeMB + " MB)";
+        fileName.style.color = "var(--cyan)";
+    }
+
+    const fd  = new FormData();
+    fd.append("video", file);
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.onprogress = (e) => {
+        if (!e.lengthComputable) return;
+        const p = Math.round(e.loaded / e.total * 100);
+        if (progressBar) progressBar.style.width = p + "%";
+        if (progressPct) progressPct.textContent = p + "%";
+    };
+
+    xhr.onload = () => {
+        if (progressWrap) progressWrap.style.display = "none";
+
+        if (xhr.status === 200) {
+            try {
+                const data = JSON.parse(xhr.responseText);
+                const uid  = data.upload_id || "";
+
+                // Stocker l'upload_id dans le form
+                if (previewUploadId) previewUploadId.value = uid;
+
+                _uploadDone = true;
+
+                // Message succès
+                if (uploadDoneMsg) uploadDoneMsg.style.display = "flex";
+
+                // Révéler l'étape 2
+                if (stepConfig) {
+                    stepConfig.style.display = "block";
+                    setTimeout(() => {
+                        stepConfig.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }, 150);
+                }
+
+                updateSubmitBtn();
+
+                // Lancer détection équipes en parallèle
+                if (uid) runTeamDetection(uid);
+
+            } catch (e) {
+                showUploadError("Réponse inattendue du serveur");
+            }
+        } else {
+            showUploadError("Erreur " + xhr.status);
+        }
+    };
+
+    xhr.onerror = () => showUploadError("Erreur réseau");
+
+    xhr.open("POST", "/api/upload-preview");
+    xhr.send(fd);
+}
+
+function showUploadError(msg) {
+    if (progressWrap) {
+        progressWrap.innerHTML =
+            `<div style="color:var(--red);font-size:0.82rem">❌ ${msg} — réessayez</div>`;
+    }
+    _pickerLocked = false;
+}
+
+
+// ─────────────────────────────────────────
+// DÉTECTION ÉQUIPES
+// ─────────────────────────────────────────
+async function runTeamDetection(uploadId) {
+    const statusDiv = document.getElementById("team-detection-status");
+    if (statusDiv) statusDiv.style.display = "flex";
+
+    try {
+        const resp = await fetch(`/api/detect-teams/${uploadId}`);
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const data = await resp.json();
+
+        if (statusDiv) statusDiv.style.display = "none";
+        if (!data.success) return;
+
+        for (const tid of [0, 1]) {
+            const team = data["team_" + tid];
+            if (!team) continue;
+
+            // Dot couleur
+            const dot = document.getElementById(`team${tid}-color-dot`);
+            if (dot && team.color_hex) dot.style.background = team.color_hex;
+
+            // Label couleur
+            const lbl = document.getElementById(`team${tid}-color-label`);
+            if (lbl && team.color_name) lbl.textContent = "(" + team.color_name + ")";
+
+            // Placeholder champ nom
+            const inp = document.getElementById(`team-name-input-${tid}`);
+            if (inp && team.color_name && !inp.value)
+                inp.placeholder = "Ex: équipe " + team.color_name;
+
+            // Sync select équipe joueur
+            const opt = document.getElementById(`team-side-opt-${tid}`);
+            if (opt && team.color_name)
+                opt.textContent = (tid === 0 ? "🏠 " : "✈️ ") + "Équipe " + team.color_name;
+        }
+
+    } catch (e) {
+        if (statusDiv) statusDiv.style.display = "none";
+        console.warn("Team detection:", e);
+    }
+}
+
+
+// ─────────────────────────────────────────
+// FILE HANDLING — UN SEUL ENDROIT
+// ─────────────────────────────────────────
 if (dropZone) {
-    browseBtn?.addEventListener("click", () => fileInput?.click());
+    // Clic sur browse-btn → ouvrir picker (sans double-déclenchement)
+    if (browseBtn) {
+        browseBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            openFilePicker();
+        });
+    }
 
-    dropZone.addEventListener("click", () => fileInput?.click());
+    // Clic sur la drop-zone (pas sur browse-btn)
+    dropZone.addEventListener("click", (e) => {
+        if (e.target === browseBtn || browseBtn?.contains(e.target)) return;
+        openFilePicker();
+    });
 
-    dropZone.addEventListener("dragover", e => {
+    // Drag & drop
+    dropZone.addEventListener("dragover", (e) => {
         e.preventDefault();
         dropZone.classList.add("drag-over");
     });
-
     dropZone.addEventListener("dragleave", () => {
         dropZone.classList.remove("drag-over");
     });
-
-    dropZone.addEventListener("drop", e => {
+    dropZone.addEventListener("drop", (e) => {
         e.preventDefault();
         dropZone.classList.remove("drag-over");
         const file = e.dataTransfer.files[0];
         if (file && fileInput) {
-            // Injecter le fichier dans l'input
             const dt = new DataTransfer();
             dt.items.add(file);
             fileInput.files = dt.files;
+            startUploadWithProgress(file);
         }
-        setFile(file);
     });
 
+    // Changement fichier
     fileInput?.addEventListener("change", () => {
-        setFile(fileInput.files[0]);
+        _pickerLocked = false;
+        const file = fileInput.files[0];
+        if (file) startUploadWithProgress(file);
+    });
+}
+
+
+// ─────────────────────────────────────────
+// SYNC NOMS ÉQUIPES → SELECT JOUEUR
+// ─────────────────────────────────────────
+for (const tid of [0, 1]) {
+    const inp = document.getElementById(`team-name-input-${tid}`);
+    const opt = document.getElementById(`team-side-opt-${tid}`);
+    if (!inp || !opt) continue;
+    inp.addEventListener("input", () => {
+        const val  = inp.value.trim();
+        const icon = tid === 0 ? "🏠 " : "✈️ ";
+        opt.textContent = val ? icon + val : icon + "Équipe " + (tid === 0 ? "A" : "B");
     });
 }
 
@@ -142,20 +278,17 @@ if (dropZone) {
 function buildPositions(sport) {
     const cfg = SPORTS_CONFIG[sport];
     if (!cfg || !positionEl) return;
-
     positionEl.innerHTML = '<option value="">-- Choisir --</option>';
-
     cfg.positions.forEach(group => {
-        const optGroup = document.createElement("optgroup");
-        optGroup.label = group.group;
+        const og = document.createElement("optgroup");
+        og.label = group.group;
         group.opts.forEach(o => {
             const [val, label] = o.split("|");
             const opt = document.createElement("option");
-            opt.value = val;
-            opt.textContent = label;
-            optGroup.appendChild(opt);
+            opt.value = val; opt.textContent = label;
+            og.appendChild(opt);
         });
-        positionEl.appendChild(optGroup);
+        positionEl.appendChild(og);
     });
 }
 
@@ -166,14 +299,10 @@ function buildPositions(sport) {
 function updateSport() {
     const sport = sportSelect?.value || "football";
     const cfg   = SPORTS_CONFIG[sport] || SPORTS_CONFIG.football;
-
-    if (matchIcon) matchIcon.textContent = cfg.icon;
-    if (matchDesc) matchDesc.textContent = cfg.matchDesc;
-    if (joueurDesc) joueurDesc.textContent = cfg.joueurDesc;
-
+    if (matchDesc)      matchDesc.textContent  = cfg.matchDesc;
+    if (joueurDesc)     joueurDesc.textContent = cfg.joueurDesc;
     if (fieldNumero)    fieldNumero.style.display    = cfg.hasNumero  ? "block" : "none";
     if (gardienSection) gardienSection.style.display = cfg.hasGardien ? "block" : "none";
-
     buildPositions(sport);
     updateSubmitBtn();
 }
@@ -184,18 +313,14 @@ function updateSport() {
 // ─────────────────────────────────────────
 function toggleJoueurOptions() {
     const isJoueur = modeJoueur?.checked;
-    if (joueurOpts) {
-        joueurOpts.style.display = isJoueur ? "block" : "none";
-    }
+    if (joueurOpts) joueurOpts.style.display = isJoueur ? "block" : "none";
     updateSubmitBtn();
 }
 
-modeMatch?.addEventListener("change", toggleJoueurOptions);
+modeMatch?.addEventListener("change",  toggleJoueurOptions);
 modeJoueur?.addEventListener("change", toggleJoueurOptions);
 sportSelect?.addEventListener("change", updateSport);
-
-numJoueur?.addEventListener("input",  updateSubmitBtn);
-couleurEl?.addEventListener("change", updateSubmitBtn);
+numJoueur?.addEventListener("input",   updateSubmitBtn);
 positionEl?.addEventListener("change", updateSubmitBtn);
 
 
@@ -204,53 +329,44 @@ positionEl?.addEventListener("change", updateSubmitBtn);
 // ─────────────────────────────────────────
 function updateSubmitBtn() {
     if (!submitBtn) return;
-
     const sport    = sportSelect?.value || "football";
     const cfg      = SPORTS_CONFIG[sport] || SPORTS_CONFIG.football;
-    const hasFile  = fileInput?.files?.length > 0;
     const isJoueur = modeJoueur?.checked;
 
-    if (!hasFile) {
-        submitBtn.disabled     = true;
-        submitBtn.textContent  = "Sélectionnez une vidéo";
+    if (!_uploadDone) {
+        submitBtn.disabled    = true;
+        submitBtn.textContent = "Sélectionnez une vidéo";
         return;
     }
 
     if (isJoueur) {
         const hasNum = !cfg.hasNumero || numJoueur?.value;
         const hasPos = positionEl?.value;
-        const hasCol = couleurEl?.value;
-
-        if (!hasNum || !hasPos || !hasCol) {
+        if (!hasNum || !hasPos) {
             submitBtn.disabled    = true;
             submitBtn.textContent = "Complétez les infos joueur";
             return;
         }
-
         submitBtn.disabled    = false;
-        submitBtn.textContent = `Analyser le joueur ${cfg.icon}`;
+        submitBtn.textContent = "Analyser le joueur " + cfg.icon;
         return;
     }
 
     submitBtn.disabled    = false;
-    submitBtn.textContent = `Lancer l'analyse ${cfg.icon}`;
+    submitBtn.textContent = "Lancer l'analyse " + cfg.icon;
 }
 
 
 // ─────────────────────────────────────────
-// FORM SUBMIT UX
+// FORM SUBMIT
 // ─────────────────────────────────────────
 const uploadForm = document.getElementById("upload-form");
-
 if (uploadForm) {
     uploadForm.addEventListener("submit", () => {
         if (submitBtn) {
             submitBtn.disabled    = true;
             submitBtn.textContent = "Envoi en cours...";
             submitBtn.style.opacity = "0.6";
-        }
-        if (fileName) {
-            fileName.innerHTML = `<span style="color:var(--cyan)">Transfert vers le serveur...</span>`;
         }
     });
 }
@@ -267,7 +383,6 @@ document.querySelectorAll(".progress-container[data-id]").forEach(el => {
 
 async function poll(id, el) {
     await sleep(POLL_INTERVAL);
-
     try {
         const res  = await fetch(`/api/status/${id}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -275,18 +390,13 @@ async function poll(id, el) {
 
         const fill = el.querySelector(".progress-fill");
         const msg  = el.querySelector(".progress-msg");
+        const pct  = Math.max(0, Math.min(100, data.progress || 0));
 
-        const pct = Math.max(0, Math.min(100, data.progress || 0));
-
-        if (fill) {
-            fill.style.width      = pct + "%";
-            fill.style.transition = "width 0.5s ease";
-        }
-
+        if (fill) { fill.style.width = pct + "%"; fill.style.transition = "width 0.5s ease"; }
         if (msg) {
             if (data.status === "error") {
-                msg.textContent  = "Erreur : " + (data.progress_msg || "inconnue");
-                msg.style.color  = "var(--red)";
+                msg.textContent = "Erreur : " + (data.progress_msg || "inconnue");
+                msg.style.color = "var(--red)";
             } else {
                 msg.textContent = data.progress_msg || `Analyse en cours... ${pct}%`;
                 msg.style.color = "";
@@ -294,31 +404,20 @@ async function poll(id, el) {
         }
 
         if (data.status === "done") {
-            // Feedback visuel avant reload
-            if (fill) {
-                fill.style.width      = "100%";
-                fill.style.background = "var(--green)";
-            }
-            if (msg) {
-                msg.textContent = "Terminé !";
-                msg.style.color = "var(--green)";
-            }
+            if (fill) { fill.style.width = "100%"; fill.style.background = "var(--green)"; }
+            if (msg)  { msg.textContent = "Terminé !"; msg.style.color = "var(--green)"; }
             setTimeout(() => location.reload(), 800);
-
         } else if (data.status !== "error") {
             poll(id, el);
         }
 
     } catch (err) {
-        // Retry silencieux sur erreur réseau
-        console.warn(`Poll ${id} erreur :`, err.message);
+        console.warn(`Poll ${id}:`, err.message);
         poll(id, el);
     }
 }
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 
 // ─────────────────────────────────────────
