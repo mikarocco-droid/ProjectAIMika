@@ -115,13 +115,6 @@ function startUploadWithProgress(file) {
                 // Stocker l'upload_id dans le form
                 if (previewUploadId) previewUploadId.value = uid;
 
-                // Afficher l'écran d'analyse intermédiaire
-                const stepDetecting = document.getElementById("step-detecting");
-                if (stepDetecting) {
-                    stepDetecting.style.display = "block";
-                    stepDetecting.scrollIntoView({ behavior: "smooth", block: "start" });
-                }
-
                 // Afficher "Analyse en cours" pendant la détection
                 const stepDetecting = document.getElementById("step-detecting");
                 if (stepDetecting) {
@@ -167,7 +160,6 @@ function showUploadError(msg) {
         progressWrap.innerHTML =
             `<div style="color:var(--red);font-size:0.82rem">❌ ${msg} — réessayez</div>`;
     }
-    _pickerLocked = false;
 }
 
 
