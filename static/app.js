@@ -179,55 +179,94 @@ function showUploadError(msg) {
 // DÉTECTION ÉQUIPES
 // ─────────────────────────────────────────
 async function runTeamDetection(uploadId) {
-    // Met à jour le message de progression
     const prog = document.getElementById("detecting-progress");
 
-    try {
-        if (prog) prog.textContent = "Analyse en cours… (30-60 secondes)";
+    // Timeout de sécurité : max 90s, puis on révèle quand même le dashboard
+    const TIMEOUT_MS = 90000;
+    let   timedOut   = false;
+    const timeoutId  = setTimeout(() => {
+        timedOut = true;
+    }, TIMEOUT_MS);
 
-        const resp = await fetch(`/api/detect-teams/${uploadId}`);
+    // Messages de progression pendant l'attente
+    const msgs = [
+        "Lecture des premières minutes de la vidéo…",
+        "Détection des joueurs en cours…",
+        "Analyse des couleurs de maillot…",
+        "Calcul des clusters d'équipes…",
+    ];
+    let msgIdx = 0;
+    const msgInterval = setInterval(() => {
+        if (prog && msgIdx < msgs.length) {
+            prog.textContent = msgs[msgIdx++];
+        }
+    }, 6000);
+
+    try {
+        if (prog) prog.textContent = msgs[0];
+
+        // Fetch avec AbortController pour pouvoir annuler
+        const controller = new AbortController();
+        const fetchPromise = fetch(`/api/detect-teams/${uploadId}`,
+                                   { signal: controller.signal });
+
+        // Race entre la réponse et le timeout
+        const resp = await Promise.race([
+            fetchPromise,
+            new Promise((_, reject) =>
+                setTimeout(() => {
+                    controller.abort();
+                    reject(new Error("timeout"));
+                }, TIMEOUT_MS)
+            )
+        ]);
+
+        clearInterval(msgInterval);
+        clearTimeout(timeoutId);
+
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const data = await resp.json();
 
         if (!data.success) {
-            if (prog) prog.textContent = "Détection non disponible — vous pouvez continuer manuellement.";
+            if (prog) prog.textContent = "Détection non disponible — renseignez manuellement.";
             await new Promise(r => setTimeout(r, 1500));
             return;
         }
 
-        if (prog) prog.textContent = "Couleurs détectées !";
+        if (prog) prog.textContent = "✅ Couleurs détectées !";
 
+        // Mettre à jour les dots + labels + placeholders
         for (const tid of [0, 1]) {
             const team = data["team_" + tid];
             if (!team) continue;
 
-            // Dot couleur
             const dot = document.getElementById(`team${tid}-color-dot`);
             if (dot && team.color_hex) dot.style.background = team.color_hex;
 
-            // Label couleur (ex: "bordeaux")
             const lbl = document.getElementById(`team${tid}-color-label`);
             if (lbl && team.color_name) lbl.textContent = "(" + team.color_name + ")";
 
-            // Remplir automatiquement le champ nom si vide
             const inp = document.getElementById(`team-name-input-${tid}`);
-            if (inp && !inp.value && team.color_name) {
+            if (inp && !inp.value && team.color_name)
                 inp.placeholder = "Ex: Équipe " + team.color_name;
-            }
 
-            // Sync select équipe joueur avec la couleur détectée
             const opt = document.getElementById(`team-side-opt-${tid}`);
             if (opt && team.color_name)
                 opt.textContent = (tid === 0 ? "🏠 " : "✈️ ") + "Équipe " + team.color_name;
         }
 
-        // Courte pause pour que l'user voie "Couleurs détectées !"
         await new Promise(r => setTimeout(r, 800));
 
     } catch (e) {
-        if (prog) prog.textContent = "Détection échouée — continuez manuellement.";
-        await new Promise(r => setTimeout(r, 1200));
-        console.warn("Team detection:", e);
+        clearInterval(msgInterval);
+        clearTimeout(timeoutId);
+
+        const msg = e.message === "timeout"
+            ? "Délai dépassé — renseignez les couleurs manuellement."
+            : "Détection non disponible — continuez manuellement.";
+        if (prog) prog.textContent = msg;
+        await new Promise(r => setTimeout(r, 1500));
+        console.warn("Team detection:", e.message);
     }
 }
 
