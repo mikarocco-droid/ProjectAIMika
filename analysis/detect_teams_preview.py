@@ -316,6 +316,25 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     c0 = tuple(int(x) for x in centroids[0])
     c1 = tuple(int(x) for x in centroids[1])
 
+    # Vérifier que les deux couleurs sont suffisamment distinctes
+    # Si trop proches → relancer KMeans avec filtrage moins strict
+    color_dist = float(np.linalg.norm(centroids[0] - centroids[1]))
+    print(f"  [PREVIEW] Distance couleurs: {color_dist:.1f}")
+
+    if color_dist < 40:
+        print(f"  [PREVIEW] Couleurs trop proches ({color_dist:.1f}) → relance sans filtre strict")
+        samples2  = np.array(all_colors, dtype=np.float32)  # samples bruts
+        criteria2 = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1.0)
+        _, labels2, centroids2 = cv2.kmeans(
+            samples2, 2, None, criteria2, 10, cv2.KMEANS_PP_CENTERS
+        )
+        dist2 = float(np.linalg.norm(centroids2[0] - centroids2[1]))
+        if dist2 > color_dist:
+            centroids  = centroids2
+            c0 = tuple(int(x) for x in centroids[0])
+            c1 = tuple(int(x) for x in centroids[1])
+            print(f"  [PREVIEW] Meilleure séparation trouvée: {dist2:.1f}")
+
     print(f"  [PREVIEW] Team 0: BGR{c0} → {bgr_to_name(c0)}")
     print(f"  [PREVIEW] Team 1: BGR{c1} → {bgr_to_name(c1)}")
 
@@ -385,12 +404,12 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         "n_players_analyzed": n_players_total,
         "team_0": {
             "color_bgr":     c0,
-            "color_name":    bgr_to_name(c0),
+            "color_name":    c0_name,
             "preview_frame": preview_0,
         },
         "team_1": {
             "color_bgr":     c1,
-            "color_name":    bgr_to_name(c1),
+            "color_name":    c1_name,
             "preview_frame": preview_1,
         },
     }
