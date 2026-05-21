@@ -247,11 +247,18 @@ async function runTeamDetection(uploadId) {
                 card.style.borderColor = team.color_hex + "88"; // semi-transparent
             }
 
-            // Label couleur
+            // Label couleur — "bordeaux  · short bleu marine"
             const lbl = document.getElementById(`team${tid}-color-label`);
             if (lbl && team.color_name) {
                 const parts = team.color_name.split("/");
-                lbl.textContent = parts[0] + (parts[1] ? " · short " + parts[1] : "");
+                const maillot = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+                if (parts[1]) {
+                    lbl.innerHTML = maillot
+                        + `<span style="color:var(--gray);font-weight:400;font-size:0.78rem">
+                            &nbsp;· short ${parts[1]}</span>`;
+                } else {
+                    lbl.textContent = maillot;
+                }
             }
 
             // Placeholder champ nom
