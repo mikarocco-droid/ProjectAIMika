@@ -242,6 +242,73 @@ def bgr_to_name(bgr):
     return "inconnu"
 
 
+def lab_to_color_name(bgr, short_bgr=None):
+    """
+    Naming couleur robuste basé sur LAB A/B.
+    Priorité : canal A (vert vs rouge/bordeaux), puis HSV pour affiner.
+    Si maillot ambigu → utiliser le short comme fallback.
+    """
+    if bgr is None:
+        return "inconnu", 0.0
+
+    try:
+        b,g,r = int(bgr[0]),int(bgr[1]),int(bgr[2])
+        px  = np.uint8([[[b,g,r]]])
+        lab = cv2.cvtColor(px, cv2.COLOR_BGR2LAB)[0][0]
+        hsv = cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0]
+
+        A = (int(lab[1]) - 128) / 128.0   # -1 à +1
+        B = (int(lab[2]) - 128) / 128.0
+        L = int(lab[0]) / 255.0
+        H = int(hsv[0]) * 2
+        S = int(hsv[1]) / 255.0
+        V = int(hsv[2]) / 255.0
+        conf = abs(A)   # confiance = force du signal A
+
+        # Très sombre → noir
+        if V < 0.20:
+            return "noir", 0.8
+
+        # Très peu saturé → gris/blanc
+        if S < 0.12:
+            return "blanc" if V > 0.70 else "gris", 0.5
+
+        # LAB A discriminant principal
+        if A < -0.08:
+            name = "vert foncé" if V < 0.45 else "vert"
+            return name, conf
+
+        if A > 0.08:
+            if H < 20 or H >= 340:
+                name = "bordeaux foncé" if V < 0.35 else ("bordeaux" if V < 0.55 else "rouge")
+            elif 20 <= H < 35:
+                name = "orange"
+            elif 185 <= H < 265:
+                name = "bleu marine" if V < 0.55 else "bleu"
+            elif 265 <= H < 295:
+                name = "violet"
+            else:
+                name = "bordeaux"
+            return name, conf
+
+        # Zone ambiguë (|A| < 0.08) → utiliser short
+        if short_bgr is not None:
+            s_b,s_g,s_r = int(short_bgr[0]),int(short_bgr[1]),int(short_bgr[2])
+            px_s  = np.uint8([[[s_b,s_g,s_r]]])
+            lab_s = cv2.cvtColor(px_s, cv2.COLOR_BGR2LAB)[0][0]
+            A_s   = (int(lab_s[1]) - 128) / 128.0
+            if A_s < -0.05:
+                return "vert", abs(A_s) * 0.7
+            elif A_s > 0.05:
+                return "rouge", abs(A_s) * 0.7
+
+        # Fallback HSV
+        return bgr_to_name(bgr), 0.3
+
+    except Exception:
+        return bgr_to_name(bgr) if bgr else "inconnu", 0.1
+
+
 def save_preview_frame(frame, team_id, output_dir, color_bgr=None):
     os.makedirs(output_dir, exist_ok=True)
     preview = frame.copy()
@@ -575,19 +642,27 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     c1_j = c1_j or (50, 50, 50)
 
     def make_name(j_bgr, s_bgr):
-        j_name = bgr_to_name(j_bgr)
+        name, conf = lab_to_color_name(j_bgr, s_bgr)
         s_name = bgr_to_name(s_bgr) if s_bgr else None
-        # Si le maillot est "jaune" ou "orange" → probablement contaminé
-        # Utiliser le short comme nom principal si plus fiable
-        if j_name in ("jaune", "orange") and s_name and s_name not in ("jaune","orange","inconnu"):
-            return f"{s_name} (short)/{j_name}"
-        return j_name + (f"/{s_name}" if s_name else "")
+        # Ajouter le short au nom si utile
+        if s_name and s_name not in ("inconnu", "gris", name):
+            return f"{name}/{s_name}", conf
+        return name, conf
 
-    name0 = make_name(c0_j, c0_s)
-    name1 = make_name(c1_j, c1_s)
+    name0, conf0 = make_name(c0_j, c0_s)
+    name1, conf1 = make_name(c1_j, c1_s)
 
-    print(f"  [PREVIEW] Team0: maillot={c0_j}→{bgr_to_name(c0_j)} | short={c0_s}→{bgr_to_name(c0_s)} ({n0}j)")
-    print(f"  [PREVIEW] Team1: maillot={c1_j}→{bgr_to_name(c1_j)} | short={c1_s}→{bgr_to_name(c1_s)} ({n1}j)")
+    # Log LAB pour debug
+    def lab_a(bgr):
+        if bgr is None: return 0.0
+        try:
+            px = np.uint8([[[int(bgr[0]),int(bgr[1]),int(bgr[2])]]])
+            lab = cv2.cvtColor(px, cv2.COLOR_BGR2LAB)[0][0]
+            return round((int(lab[1])-128)/128.0, 3)
+        except: return 0.0
+
+    print(f"  [PREVIEW] Team0: {c0_j}→{name0} (A={lab_a(c0_j):+.3f} conf={conf0:.2f}) short={c0_s} ({n0}j)")
+    print(f"  [PREVIEW] Team1: {c1_j}→{name1} (A={lab_a(c1_j):+.3f} conf={conf1:.2f}) short={c1_s} ({n1}j)")
 
     # ── Preview frames ────────────────────────────────────────────────────────
     preview_0 = preview_1 = None
