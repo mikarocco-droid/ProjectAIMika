@@ -531,7 +531,7 @@ def upload():
     sport     = request.form.get("sport",     "football")
     mode      = request.form.get("mode",      "match")
     player_id        = request.form.get("player_id", "").strip() or None
-    player_position  = request.form.get("position", "").strip() or None
+    player_position  = request.form.get("position_joueur", "").strip() or None
 
     # Noms équipes saisis par l'utilisateur
     team_name_0       = request.form.get("team_name_0", "").strip() or None
