@@ -166,6 +166,33 @@ function showUploadError(msg) {
 // ─────────────────────────────────────────
 // DÉTECTION ÉQUIPES
 // ─────────────────────────────────────────
+// Mettre à jour les labels gardiens avec les noms d'équipes
+function updateGardienLabels() {
+    for (const tid of [0, 1]) {
+        const inp = document.getElementById(`team-name-input-${tid}`);
+        const lbl = document.getElementById(`gardien-team-name-${tid}`);
+        if (lbl) {
+            const name = inp?.value?.trim();
+            lbl.textContent = name || (tid === 0 ? "Équipe A" : "Équipe B");
+        }
+    }
+}
+
+// Correspondance couleur gardien → hex
+function gkColorToHex(color) {
+    const map = {
+        "jaune fluo": "#e6e600", "jaune": "#e6e600",
+        "orange fluo": "#ff8800", "orange": "#ff8800",
+        "vert fluo": "#00cc44", "vert": "#00cc44",
+        "rouge": "#cc2200",
+        "noir": "#222222",
+    };
+    for (const [k, v] of Object.entries(map)) {
+        if (color.includes(k)) return v;
+    }
+    return "#666666";
+}
+
 async function runTeamDetection(uploadId) {
     const prog = document.getElementById("detecting-progress");
 
@@ -283,6 +310,29 @@ async function runTeamDetection(uploadId) {
             const opt = document.getElementById(`team-side-opt-${tid}`);
             if (opt && team.color_name)
                 opt.textContent = (tid === 0 ? "🏠 " : "✈️ ") + "Équipe " + team.color_name.split("/")[0];
+
+            // Pré-remplir couleur gardien si détectée par Gemini
+            if (team.goalkeeper_color) {
+                const gkSel = document.getElementById(tid === 0 ? "gardien-dom" : "gardien-vis");
+                const gkDot = document.getElementById(`gardien-dot-${tid}`);
+                if (gkSel) {
+                    const gkColor = team.goalkeeper_color.toLowerCase();
+                    for (const o of gkSel.options) {
+                        if (o.value && o.value !== "" &&
+                            (gkColor.includes(o.value.toLowerCase()) ||
+                             o.value.toLowerCase().includes(gkColor.split(" ")[0]))) {
+                            gkSel.value = o.value;
+                            // Afficher le dot avec la couleur
+                            if (gkDot) {
+                                const gkHex = gkColorToHex(gkColor);
+                                gkDot.style.background = gkHex;
+                                gkDot.style.display = "inline-block";
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         await new Promise(r => setTimeout(r, 800));
