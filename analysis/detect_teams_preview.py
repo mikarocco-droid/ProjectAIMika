@@ -291,7 +291,8 @@ def lab_to_color_name(bgr, short_bgr=None):
                 name = "bordeaux"
             return name, conf
 
-        # Zone ambiguë (|A| < 0.08) → utiliser short
+        # Zone ambiguë (|A| < 0.08)
+        # 1. Essayer le short
         if short_bgr is not None:
             s_b,s_g,s_r = int(short_bgr[0]),int(short_bgr[1]),int(short_bgr[2])
             px_s  = np.uint8([[[s_b,s_g,s_r]]])
@@ -302,8 +303,17 @@ def lab_to_color_name(bgr, short_bgr=None):
             elif A_s > 0.05:
                 return "rouge", abs(A_s) * 0.7
 
+        # 2. R-B fort → rouge/chaud même si A≈0 (compression désature)
+        r_minus_b = r - b
+        if r_minus_b > 35:
+            return "rouge", min(r_minus_b / 100.0, 0.5)
+
+        # 3. B-R fort → bleu/froid
+        if b - r > 20:
+            return "bleu marine" if V < 0.55 else "bleu", min((b - r) / 100.0, 0.5)
+
         # Fallback HSV
-        return bgr_to_name(bgr), 0.3
+        return bgr_to_name(bgr), 0.2
 
     except Exception:
         return bgr_to_name(bgr) if bgr else "inconnu", 0.1
