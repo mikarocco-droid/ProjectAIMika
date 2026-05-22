@@ -21,11 +21,62 @@ from collections import defaultdict
 # ─────────────────────────────────────────
 # COULEUR DOMINANTE MAILLOT PAR BBOX
 # ─────────────────────────────────────────
+def _best_cluster_color(zone):
+    """
+    Mini-KMeans(3) sur une zone → retourne la couleur du cluster
+    le plus compact et saturé. Retourne None si qualité insuffisante.
+    """
+    if zone is None or zone.size == 0 or zone.shape[0] < 5 or zone.shape[1] < 5:
+        return None
+    try:
+        pixels = zone.reshape(-1, 3).astype(np.float32)
+        if len(pixels) < 9:
+            return None
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        _, labels, centers = cv2.kmeans(
+            pixels, 3, None, criteria, 3, cv2.KMEANS_RANDOM_CENTERS
+        )
+        labels_flat  = labels.flatten()
+        label_counts = np.bincount(labels_flat, minlength=3)
+        cluster_stds = []
+        for i in range(3):
+            mask_i = labels_flat == i
+            if mask_i.sum() < 3:
+                cluster_stds.append(999.0)
+                continue
+            cluster_stds.append(float(np.mean(np.std(pixels[mask_i], axis=0))))
+
+        best_center = None
+        best_score  = -1
+        for i, center in enumerate(centers):
+            b, g, r = int(center[0]), int(center[1]), int(center[2])
+            if (b + g + r) / 3 < 30: continue   # noir pur
+            if (b + g + r) / 3 > 240: continue  # blanc pur
+            px  = np.uint8([[[b, g, r]]])
+            sat = int(cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0][1])
+            compacity  = max(0, 50 - cluster_stds[i])
+            score      = label_counts[i] * (sat + 10) * (compacity + 1)
+            if score > best_score:
+                best_score  = score
+                best_center = center
+
+        if best_center is None:
+            return None
+        b, g, r = int(best_center[0]), int(best_center[1]), int(best_center[2])
+        px  = np.uint8([[[b, g, r]]])
+        if int(cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0][1]) < 35:
+            return None
+        return best_center.astype(float)
+    except Exception:
+        return None
+
+
 def dominant_jersey_color(frame, bbox):
     """
-    Extrait la couleur dominante du MAILLOT uniquement.
-    Zone stricte : 20%→45% hauteur, 35%→65% largeur (torse central).
-    Mini-KMeans(3) sur la zone → garde le cluster le plus saturé.
+    Extrait vecteur 6D [maillot_BGR, short_BGR].
+    Maillot : zone 20%→45% hauteur, 35%→65% largeur (torse central).
+    Short   : zone 50%→75% hauteur, 25%→75% largeur.
+    Mini-KMeans(3) par zone → cluster le plus compact et saturé.
     Retourne None si qualité insuffisante.
     """
     try:
@@ -41,7 +92,7 @@ def dominant_jersey_color(frame, bbox):
         if h < 30 or w < 12:
             return None
 
-        # Zone torse stricte : évite tête, bras, shorts, jambes
+        # Zone torse stricte
         torso = crop[int(h*0.20):int(h*0.45),
                      int(w*0.35):int(w*0.65)]
         if torso.size == 0 or torso.shape[0] < 5 or torso.shape[1] < 5:
@@ -344,7 +395,8 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         samples_clean = samples
         n_filtered    = n_players
 
-    # ── KMeans SUR joueurs (pas sur pixels) ──────────────────────────────────
+    # ── KMeans SUR joueurs (3D ou 6D selon présence du short) ───────────────
+    dim = samples_clean.shape[1]  # 3 ou 6
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.5)
     _, labels, centroids = cv2.kmeans(
         samples_clean, 2, None, criteria, 15, cv2.KMEANS_PP_CENTERS
@@ -352,13 +404,74 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     labels = labels.flatten()
     n0 = int((labels == 0).sum())
     n1 = int((labels == 1).sum())
-    c0 = tuple(int(x) for x in centroids[0])
-    c1 = tuple(int(x) for x in centroids[1])
+
+    # Extraire maillot (+ short si 6D)
+    c0_j = tuple(int(x) for x in centroids[0][:3])
+    c1_j = tuple(int(x) for x in centroids[1][:3])
+    c0_s = tuple(int(x) for x in centroids[0][3:]) if dim == 6 else None
+    c1_s = tuple(int(x) for x in centroids[1][3:]) if dim == 6 else None
+
+    # Pour le retour et la distance : utiliser le vecteur complet
+    c0 = c0_j
+    c1 = c1_j
     dist = float(np.linalg.norm(centroids[0] - centroids[1]))
 
-    print(f"  [PREVIEW] KMeans joueurs: dist={dist:.1f} | "
-          f"Team0:{c0}→{bgr_to_name(c0)}({n0}j) | "
-          f"Team1:{c1}→{bgr_to_name(c1)}({n1}j)")
+    name0 = bgr_to_name(c0_j) + (f"/{bgr_to_name(c0_s)}" if c0_s else "")
+    name1 = bgr_to_name(c1_j) + (f"/{bgr_to_name(c1_s)}" if c1_s else "")
+
+    print(f"  [PREVIEW] KMeans {dim}D: dist={dist:.1f} | "
+          f"Team0:{c0_j}→{name0}({n0}j) | "
+          f"Team1:{c1_j}→{name1}({n1}j)")
+
+    # ── Vérification cohérence : si noms trop similaires → KMeans HSV ────────
+    # Sur vecteur 6D le short discrimine déjà → pas besoin du fallback HSV
+    similar_names = False
+    if dim == 3:
+        similar_names = (bgr_to_name(c0_j) == bgr_to_name(c1_j)) or (
+            bgr_to_name(c0_j).replace(" foncé","") ==
+            bgr_to_name(c1_j).replace(" foncé","")
+        )
+
+    if dist < 80 or similar_names:
+        print(f"  [PREVIEW] Séparation faible → KMeans sin/cos (distance circulaire)")
+        try:
+            # Encoder H avec sin/cos pour respecter la circularité (0°=360°)
+            circ_colors = []
+            for sc in samples_clean:
+                px  = np.uint8([[[int(sc[0]), int(sc[1]), int(sc[2])]]])
+                hsv = cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0].astype(float)
+                h_rad = hsv[0] * 2 * np.pi / 180.0   # H OpenCV 0-180 → radians
+                s_norm = hsv[1] / 255.0
+                v_norm = hsv[2] / 255.0
+                # Feature : [sin(H)×S, cos(H)×S, V] — pondère saturation
+                circ_colors.append([
+                    np.sin(h_rad) * s_norm * 2,
+                    np.cos(h_rad) * s_norm * 2,
+                    v_norm
+                ])
+
+            samples_circ = np.array(circ_colors, dtype=np.float32)
+            _, labels_c, _ = cv2.kmeans(
+                samples_circ, 2, None, criteria, 15, cv2.KMEANS_PP_CENTERS
+            )
+            labels_c = labels_c.flatten()
+            n0_c = int((labels_c==0).sum())
+            n1_c = int((labels_c==1).sum())
+
+            # Centroids BGR réels = moyenne des membres
+            c0_c = tuple(int(x) for x in samples_clean[labels_c==0].mean(axis=0))
+            c1_c = tuple(int(x) for x in samples_clean[labels_c==1].mean(axis=0))
+            dist_c = float(np.linalg.norm(np.array(c0_c) - np.array(c1_c)))
+
+            print(f"  [PREVIEW] KMeans circ: dist={dist_c:.1f} | "
+                  f"Team0:{c0_c}→{bgr_to_name(c0_c)}({n0_c}j) | "
+                  f"Team1:{c1_c}→{bgr_to_name(c1_c)}({n1_c}j)")
+
+            if dist_c > dist or similar_names:
+                c0, c1, n0, n1, dist = c0_c, c1_c, n0_c, n1_c, dist_c
+                print(f"  [PREVIEW] KMeans circulaire retenu")
+        except Exception as _eh:
+            print(f"  [PREVIEW] KMeans circulaire échoué : {_eh}")
 
     # ── Preview frames ────────────────────────────────────────────────────────
     preview_0 = preview_1 = None
@@ -410,15 +523,15 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         "success":            True,
         "n_players_analyzed": n0 + n1,
         "team_0": {
-            "color_bgr":     list(c0),
-            "color_name":    bgr_to_name(c0),
-            "short_bgr":     None,
+            "color_bgr":     list(c0_j),
+            "color_name":    name0,
+            "short_bgr":     list(c0_s) if c0_s else None,
             "preview_frame": preview_0,
         },
         "team_1": {
-            "color_bgr":     list(c1),
-            "color_name":    bgr_to_name(c1),
-            "short_bgr":     None,
+            "color_bgr":     list(c1_j),
+            "color_name":    name1,
+            "short_bgr":     list(c1_s) if c1_s else None,
             "preview_frame": preview_1,
         },
     }
