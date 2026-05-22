@@ -71,6 +71,40 @@ def _best_cluster_color(zone):
         return None
 
 
+def _best_cluster_color_short(zone):
+    """
+    Comme _best_cluster_color mais accepte aussi les couleurs sombres/noires.
+    Le noir est une couleur valide pour un short.
+    """
+    if zone is None or zone.size == 0 or zone.shape[0] < 4 or zone.shape[1] < 4:
+        return None
+    try:
+        pixels = zone.reshape(-1, 3).astype(np.float32)
+        if len(pixels) < 6:
+            return None
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        n_clusters = min(3, len(pixels) // 3)
+        if n_clusters < 2:
+            return pixels.mean(axis=0)
+        _, labels, centers = cv2.kmeans(
+            pixels, n_clusters, None, criteria, 3, cv2.KMEANS_RANDOM_CENTERS
+        )
+        labels_flat  = labels.flatten()
+        label_counts = np.bincount(labels_flat, minlength=n_clusters)
+
+        # Cluster dominant = le plus grand (pas de contrainte saturation)
+        best_idx    = int(np.argmax(label_counts))
+        best_center = centers[best_idx]
+
+        b, g, r = int(best_center[0]), int(best_center[1]), int(best_center[2])
+        # Rejeter blanc pur (fond, ciel)
+        if (b + g + r) / 3 > 220:
+            return None
+        return best_center.astype(float)
+    except Exception:
+        return None
+
+
 def dominant_jersey_color(frame, bbox):
     """
     Extrait vecteur 6D [maillot_BGR, short_BGR].
