@@ -366,9 +366,13 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             n_obs_total += 1
 
     cap.release()
+    # Compter 3D vs 6D
+    n_3d = sum(1 for colors in pid_colors.values() for c in colors if len(c) == 3)
+    n_6d = sum(1 for colors in pid_colors.values() for c in colors if len(c) == 6)
     print(f"  [PREVIEW] Boucle terminée : {frame_id} frames | "
           f"{len(pid_colors)} PIDs | "
-          f"{n_obs_total} obs valides | {n_rejected} rejetées")
+          f"{n_obs_total} obs valides | {n_rejected} rejetées | "
+          f"3D={n_3d} 6D={n_6d}")
 
     # ── Médiane robuste par joueur ────────────────────────────────────────────
     MIN_OBS = 6
