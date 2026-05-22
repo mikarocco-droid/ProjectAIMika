@@ -268,7 +268,7 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             bw = x2 - x1
             # Seuil agressif : garder seulement les joueurs assez proches
             # → maillot et short bien visibles, peu de contamination gazon
-            if bh < PROCESS_H * 0.18: continue   # ~110px sur 612 → joueurs proches
+            if bh < PROCESS_H * 0.22: continue   # ~135px sur 612 → joueurs très proches
             if bw < PROCESS_W * 0.03: continue
             players.append({"bbox": [x1,y1,x2,y2],
                              "center": [(x1+x2)/2,(y1+y2)/2],
@@ -421,8 +421,17 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     c0_j = c0_j or (100, 100, 100)
     c1_j = c1_j or (50, 50, 50)
 
-    name0 = bgr_to_name(c0_j) + (f"/{bgr_to_name(c0_s)}" if c0_s else "")
-    name1 = bgr_to_name(c1_j) + (f"/{bgr_to_name(c1_s)}" if c1_s else "")
+    def make_name(j_bgr, s_bgr):
+        j_name = bgr_to_name(j_bgr)
+        s_name = bgr_to_name(s_bgr) if s_bgr else None
+        # Si le maillot est "jaune" ou "orange" → probablement contaminé
+        # Utiliser le short comme nom principal si plus fiable
+        if j_name in ("jaune", "orange") and s_name and s_name not in ("jaune","orange","inconnu"):
+            return f"{s_name} (short)/{j_name}"
+        return j_name + (f"/{s_name}" if s_name else "")
+
+    name0 = make_name(c0_j, c0_s)
+    name1 = make_name(c1_j, c1_s)
 
     print(f"  [PREVIEW] Team0: maillot={c0_j}→{bgr_to_name(c0_j)} | short={c0_s}→{bgr_to_name(c0_s)} ({n0}j)")
     print(f"  [PREVIEW] Team1: maillot={c1_j}→{bgr_to_name(c1_j)} | short={c1_s}→{bgr_to_name(c1_s)} ({n1}j)")
