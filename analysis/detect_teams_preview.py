@@ -307,6 +307,9 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         if not players:
             continue
 
+        # Ne garder que les 4 joueurs les plus grands (plus proches = couleurs plus propres)
+        players = sorted(players, key=lambda p: -(p["bbox"][3]-p["bbox"][1]))[:4]
+
         try:
             tracked = tracker.update(players, small)
         except Exception:
