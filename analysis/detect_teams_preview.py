@@ -276,7 +276,7 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     h_orig       = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     max_frame    = min(int(bootstrap_duration * fps), total_frames)
 
-    PROCESS_W, PROCESS_H = 960, 540
+    PROCESS_W, PROCESS_H = 1280, 720   # résolution plus haute → joueurs plus nets
     print(f"  [PREVIEW] Tracker sur {bootstrap_duration:.0f}s "
           f"({max_frame} frames) | {w_orig}x{h_orig}")
 
@@ -320,7 +320,7 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         try:
             results = detector.model(
                 [small], conf=0.4, verbose=False,
-                imgsz=int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))
+                imgsz=1280   # résolution native pour meilleure détection
             )
         except Exception:
             continue
@@ -332,8 +332,8 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             x1, y1, x2, y2 = box.xyxy[0].tolist()
             bh = y2 - y1
             bw = x2 - x1
-            if bh < PROCESS_H * 0.13: continue  # trop loin (renforcé)
-            if bw < PROCESS_W * 0.03: continue  # trop étroit
+            if bh < PROCESS_H * 0.10: continue  # trop loin (adapté 720p)
+            if bw < PROCESS_W * 0.02: continue  # trop étroit
             players.append({
                 "bbox":   [x1, y1, x2, y2],
                 "center": [(x1+x2)/2, (y1+y2)/2],
@@ -485,6 +485,20 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     print(f"  [PREVIEW] KMeans {dim}D: dist={dist:.1f} | "
           f"Team0:{c0_j}→{name0}({n0}j) | "
           f"Team1:{c1_j}→{name1}({n1}j)")
+
+    if dim == 6:
+        print(f"  [PREVIEW] Shorts → Team0:{c0_s}→{bgr_to_name(c0_s)} | "
+              f"Team1:{c1_s}→{bgr_to_name(c1_s)}")
+        # Vérifier si le short discrimine bien
+        import numpy as _np
+        short_dist = float(_np.linalg.norm(
+            _np.array(c0_s, dtype=float) - _np.array(c1_s, dtype=float)
+        ))
+        jersey_dist = float(_np.linalg.norm(
+            _np.array(c0_j, dtype=float) - _np.array(c1_j, dtype=float)
+        ))
+        print(f"  [PREVIEW] Distance maillot={jersey_dist:.1f} | "
+              f"Distance short={short_dist:.1f}")
 
     # ── Vérification cohérence : si noms trop similaires → KMeans HSV ────────
     # Sur vecteur 6D le short discrimine déjà → pas besoin du fallback HSV
