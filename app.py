@@ -739,7 +739,7 @@ def api_detect_teams(upload_id):
         result = detect_teams_preview(
             video_path          = video_path,
             output_dir          = preview_dir,
-            bootstrap_duration  = 90.0,
+            bootstrap_duration  = 60.0,
             sport               = _prev_sport,
         )
 
@@ -1172,6 +1172,7 @@ if __name__ == "__main__":
     start_cleanup_scheduler()
 
     app.run(
-        debug = config.DEBUG,
-        port  = int(os.getenv("PORT", 5000))
+        debug    = config.DEBUG,
+        port     = int(os.getenv("PORT", 5000)),
+        threaded = True   # requêtes longues (detect-teams) sans bloquer
     )
