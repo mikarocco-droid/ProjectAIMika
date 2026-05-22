@@ -166,33 +166,6 @@ function showUploadError(msg) {
 // ─────────────────────────────────────────
 // DÉTECTION ÉQUIPES
 // ─────────────────────────────────────────
-// Mettre à jour les labels gardiens avec les noms d'équipes
-function updateGardienLabels() {
-    for (const tid of [0, 1]) {
-        const inp = document.getElementById(`team-name-input-${tid}`);
-        const lbl = document.getElementById(`gardien-team-name-${tid}`);
-        if (lbl) {
-            const name = inp?.value?.trim();
-            lbl.textContent = name || (tid === 0 ? "Équipe A" : "Équipe B");
-        }
-    }
-}
-
-// Correspondance couleur gardien → hex
-function gkColorToHex(color) {
-    const map = {
-        "jaune fluo": "#e6e600", "jaune": "#e6e600",
-        "orange fluo": "#ff8800", "orange": "#ff8800",
-        "vert fluo": "#00cc44", "vert": "#00cc44",
-        "rouge": "#cc2200",
-        "noir": "#222222",
-    };
-    for (const [k, v] of Object.entries(map)) {
-        if (color.includes(k)) return v;
-    }
-    return "#666666";
-}
-
 async function runTeamDetection(uploadId) {
     const prog = document.getElementById("detecting-progress");
 
