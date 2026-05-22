@@ -445,7 +445,14 @@ modeMatch?.addEventListener("change",  toggleJoueurOptions);
 modeJoueur?.addEventListener("change", toggleJoueurOptions);
 sportSelect?.addEventListener("change", updateSport);
 numJoueur?.addEventListener("input",   updateSubmitBtn);
-positionEl?.addEventListener("change", updateSubmitBtn);
+positionEl?.addEventListener("change", () => {
+    updateSubmitBtn();
+    // Masquer/afficher numéro selon position
+    if (fieldNumero) {
+        const isGardien = positionEl?.value?.toLowerCase() === "gardien";
+        fieldNumero.style.display = isGardien ? "none" : "block";
+    }
+});
 
 
 // ─────────────────────────────────────────
@@ -464,7 +471,9 @@ function updateSubmitBtn() {
     }
 
     if (isJoueur) {
-        const hasNum = !cfg.hasNumero || numJoueur?.value;
+        const isGardien = positionEl?.value?.toLowerCase() === "gardien";
+        // Gardien : numéro non requis (identifié par couleur)
+        const hasNum = isGardien || !cfg.hasNumero || numJoueur?.value;
         const hasPos = positionEl?.value;
         if (!hasNum || !hasPos) {
             submitBtn.disabled    = true;
@@ -473,8 +482,12 @@ function updateSubmitBtn() {
         }
         submitBtn.disabled    = false;
         submitBtn.textContent = "Analyser le joueur " + cfg.icon;
+        // Masquer le champ numéro si gardien
+        if (fieldNumero) fieldNumero.style.display = isGardien ? "none" : "block";
         return;
     }
+    // Réafficher le champ numéro si on revient en mode match
+    if (fieldNumero) fieldNumero.style.display = "block";
 
     submitBtn.disabled    = false;
     submitBtn.textContent = "Lancer l'analyse " + cfg.icon;
