@@ -163,6 +163,13 @@ class PlayerReID:
         d0 = np.linalg.norm(c - self._team_centroids[0])
         d1 = np.linalg.norm(c - self._team_centroids[1])
 
+        # Couleur très éloignée des deux équipes → probable gardien
+        dist_threshold = np.linalg.norm(
+            self._team_centroids[0] - self._team_centroids[1]
+        ) * 0.6
+        if d0 > dist_threshold and d1 > dist_threshold:
+            return "gk"
+
         if abs(d0 - d1) < 15.0:
             return None
 
@@ -289,7 +296,11 @@ class PlayerReID:
             color  = self._extract_color(frame, bbox)
 
             existing_team = det.get("team")
-            team = existing_team if existing_team is not None else self._infer_team(color)
+            inferred = self._infer_team(color)
+            team = existing_team if existing_team is not None else inferred
+            # Marquer comme gardien si détecté
+            if inferred == "gk" and not existing_team:
+                det["is_goalkeeper"] = True
 
             enriched = {
                 "center":    center,
