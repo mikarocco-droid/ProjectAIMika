@@ -311,28 +311,7 @@ async function runTeamDetection(uploadId) {
             if (opt && team.color_name)
                 opt.textContent = (tid === 0 ? "🏠 " : "✈️ ") + "Équipe " + team.color_name.split("/")[0];
 
-            // Pré-remplir couleur gardien si détectée par Gemini
-            if (team.goalkeeper_color) {
-                const gkSel = document.getElementById(tid === 0 ? "gardien-dom" : "gardien-vis");
-                const gkDot = document.getElementById(`gardien-dot-${tid}`);
-                if (gkSel) {
-                    const gkColor = team.goalkeeper_color.toLowerCase();
-                    for (const o of gkSel.options) {
-                        if (o.value && o.value !== "" &&
-                            (gkColor.includes(o.value.toLowerCase()) ||
-                             o.value.toLowerCase().includes(gkColor.split(" ")[0]))) {
-                            gkSel.value = o.value;
-                            // Afficher le dot avec la couleur
-                            if (gkDot) {
-                                const gkHex = gkColorToHex(gkColor);
-                                gkDot.style.background = gkHex;
-                                gkDot.style.display = "inline-block";
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
+
         }
 
         await new Promise(r => setTimeout(r, 800));
