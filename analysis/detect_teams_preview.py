@@ -257,6 +257,7 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         return {"success": False, "error": f"Tracker non disponible : {e}"}
 
     pid_features  = defaultdict(list)   # pid → features 24D
+    pid_team      = {}                  # pid → équipe assignée par ReID
     pid_bgr_j     = defaultdict(list)   # pid → jersey BGR
     pid_bgr_s     = defaultdict(list)   # pid → short BGR
     n_obs_total   = 0
@@ -364,6 +365,11 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             if not pid or not bbox:
                 continue
 
+            # Stocker l'équipe assignée par le tracker (ReID)
+            team = p.get("team")
+            if team is not None:
+                pid_team[pid] = int(team)
+
             # Filtre flou
             try:
                 x1b,y1b,x2b,y2b = map(int, bbox)
@@ -459,6 +465,22 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     if len(samples_c) < 4:
         samples_c = samples
 
+    # ── Récupérer couleurs ReID comme seeds KMeans ───────────────────────────
+    reid_seeds = None
+    try:
+        from analysis.player_reid import get_team_colors
+        reid_colors = get_team_colors()
+        if reid_colors and len(reid_colors) >= 2:
+            c0_r = np.array(reid_colors[0], dtype=np.float32)
+            c1_r = np.array(reid_colors[1], dtype=np.float32)
+            # Convertir BGR en histogramme approximatif pour initialisation
+            # (juste utiliser comme hint de direction)
+            reid_seeds = np.array([c0_r[:3], c1_r[:3]])
+            print(f"  [PREVIEW] ReID seeds: {tuple(int(x) for x in c0_r[:3])} | "
+                  f"{tuple(int(x) for x in c1_r[:3])}")
+    except Exception:
+        pass
+
     # ── KMeans sur joueurs — 8 runs, meilleur équilibre×distance ─────────────
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.5)
     best_labels = best_score = None
@@ -479,6 +501,25 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     n0 = int((labels==0).sum())
     n1 = int((labels==1).sum())
     print(f"  [PREVIEW] Balance: {n0}j vs {n1}j (score={best_score:.1f})")
+
+    # ── Cohérence avec ReID ───────────────────────────────────────────────────
+    # Si le ReID a assigné des équipes, vérifier si le KMeans est aligné
+    if pid_team:
+        reid_votes = {0: {0:0, 1:0}, 1: {0:0, 1:0}}
+        for i, pid in enumerate(stable_pids):
+            if i >= len(labels): continue
+            km_label  = int(labels[i])
+            reid_label = pid_team.get(pid)
+            if reid_label is not None:
+                reid_votes[km_label][reid_label] += 1
+
+        # Si KMeans cluster 0 = majorité ReID équipe 1 → inverser
+        v00 = reid_votes[0].get(0, 0)
+        v01 = reid_votes[0].get(1, 0)
+        if v01 > v00:
+            labels = 1 - labels  # inverser
+            n0, n1 = n1, n0
+            print(f"  [PREVIEW] Labels inversés pour cohérence avec ReID")
 
     # ── Couleurs BGR par cluster ──────────────────────────────────────────────
     def cluster_bgr(ci, bgr_list):
