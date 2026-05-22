@@ -248,6 +248,9 @@ def run_pipeline(
 
     print(f"\nPIPELINE START - {sport.upper()} | mode={mode}")
 
+    # Initialisations globales
+    _team_bootstrapper = None
+
     # ─────────────────────────────────────────
     # INIT LEARNING MODEL
     # ─────────────────────────────────────────
