@@ -293,7 +293,7 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     h_orig       = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     max_frame    = min(int(bootstrap_duration * fps), total_frames)
 
-    PROCESS_W, PROCESS_H = 1280, 720   # résolution plus haute → joueurs plus nets
+    PROCESS_W, PROCESS_H = 1088, 612  # compromis vitesse/qualité (~3min)
     print(f"  [PREVIEW] Tracker sur {bootstrap_duration:.0f}s "
           f"({max_frame} frames) | {w_orig}x{h_orig}")
 
@@ -339,7 +339,7 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         try:
             results = detector.model(
                 [small], conf=0.4, verbose=False,
-                imgsz=1280   # résolution native pour meilleure détection
+                imgsz=int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))
             )
         except Exception:
             continue
@@ -395,11 +395,14 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             pid_colors[pid].append(color)
             n_obs_total += 1
 
-            # Stocker aussi les couleurs BGR pour l'affichage (1 fois par PID)
-            if pid not in bgr_colors_by_pid:
-                j_bgr, s_bgr = player_bgr_colors(small, bbox)
-                if j_bgr is not None:
-                    bgr_colors_by_pid[pid] = (j_bgr, s_bgr)
+            # Stocker couleurs BGR pour l'affichage (accumulation par PID)
+            j_bgr, s_bgr = player_bgr_colors(small, bbox)
+            if j_bgr is not None:
+                if pid not in bgr_colors_by_pid:
+                    bgr_colors_by_pid[pid] = ([], [])
+                bgr_colors_by_pid[pid][0].append(j_bgr)
+                if s_bgr is not None:
+                    bgr_colors_by_pid[pid][1].append(s_bgr)
 
     cap.release()
     print(f"  [PREVIEW] Boucle terminée : {frame_id} frames | "
@@ -435,6 +438,16 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
 
     n_players = len(player_colors)
     print(f"  [PREVIEW] {n_players} joueurs stables (>= {MIN_OBS} obs)")
+
+    # Calculer médiane BGR par PID
+    bgr_median_by_pid = {}
+    for pid, (j_list, s_list) in bgr_colors_by_pid.items():
+        if j_list:
+            bgr_median_by_pid[pid] = (
+                np.median(np.array(j_list), axis=0),
+                np.median(np.array(s_list), axis=0) if s_list else None
+            )
+    bgr_colors_by_pid = bgr_median_by_pid
 
     if n_players < 4:
         return {"success": False,
