@@ -196,7 +196,18 @@ def dominant_jersey_color(frame, bbox):
         if int(hsv[1]) < 35:
             return None
 
-        return best_center.astype(float)
+        c_jersey = best_center.astype(float)
+
+        # ── Extraire couleur short ────────────────────────────────────────
+        # Zone 50%→75% hauteur, 25%→75% largeur
+        short_zone = crop[int(h*0.50):int(h*0.75),
+                         int(w*0.25):int(w*0.75)]
+        c_short = _best_cluster_color_short(short_zone)
+
+        if c_short is not None:
+            return np.concatenate([c_jersey, c_short])  # vecteur 6D
+        else:
+            return c_jersey  # fallback 3D
 
     except Exception:
         return None
