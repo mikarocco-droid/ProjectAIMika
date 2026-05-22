@@ -530,7 +530,8 @@ def upload():
     f         = request.files.get("video")
     sport     = request.form.get("sport",     "football")
     mode      = request.form.get("mode",      "match")
-    player_id = request.form.get("player_id", "").strip() or None
+    player_id        = request.form.get("player_id", "").strip() or None
+    player_position  = request.form.get("position", "").strip() or None
 
     # Noms équipes saisis par l'utilisateur
     team_name_0       = request.form.get("team_name_0", "").strip() or None
@@ -612,6 +613,7 @@ def upload():
             target = run_analysis,
             args   = (analysis.id, path, sport, current_user.plan,
                       mode, player_id, None, team_names or None),
+            kwargs = {"player_position": player_position},
             daemon = True
         )
         thread.start()
@@ -625,7 +627,8 @@ def upload():
 # ─────────────────────────────────────────
 def run_analysis(
     analysis_id, video_path, sport, plan,
-    mode="match", player_id=None, r2_key=None, team_names=None
+    mode="match", player_id=None, r2_key=None, team_names=None,
+    player_position=None
 ):
     with app.app_context():
         a              = db.session.get(Analysis, analysis_id)
@@ -658,8 +661,9 @@ def run_analysis(
             save_annotated = config.PLANS.get(plan, {}).get("montage", False),
             plan           = plan,
             mode           = mode,
-            player_id      = player_id,
-            team_names     = team_names or None,
+            player_id       = player_id,
+            player_position = player_position,
+            team_names      = team_names or None,
         )
 
         # ── Supprime la vidéo brute dès que l'analyse est terminée ──

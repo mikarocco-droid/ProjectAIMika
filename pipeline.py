@@ -241,6 +241,7 @@ def run_pipeline(
     use_coarse_scan   = False,   # V2 : scan léger avant deep analysis
     team_names        = None,    # {"team_0": "RSC Stavelot B", "team_1": "FC Liège"}
     user_team_id      = None,    # 0 ou 1 — équipe de l'utilisateur
+    player_position   = None,    # "Gardien", "Attaquant", etc. — pour mode player
 ):
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
@@ -1609,20 +1610,31 @@ def run_pipeline(
     _player_reel_path = None
     if mode == "player" and player_id is not None and result_pe_mgr is not None:
         try:
-            # Parser player_id : "11" ou "11_bleu" ou "11_team0"
-            _jersey    = None
+            _jersey     = None
             _team_color = None
-            _pid_parts = str(player_id).split("_")
+            _pid_parts  = str(player_id).split("_")
             if _pid_parts[0].isdigit():
                 _jersey = int(_pid_parts[0])
             if len(_pid_parts) > 1:
                 _team_color = "_".join(_pid_parts[1:])
 
-            _player_highlights = result_pe_mgr.get_player_highlights(
-                jersey      = _jersey,
-                team_color  = _team_color,
-                min_confidence = get_owner_confidence_min(sport),
-            )
+            # Mode gardien : identifier par position et équipe
+            _is_gk = (player_position or "").lower() in ("gardien", "goalkeeper", "gk")
+            if _is_gk:
+                # Déterminer l'équipe du gardien depuis player_id ou user_team_id
+                _gk_team_id = user_team_id if user_team_id is not None else 0
+                _player_highlights = result_pe_mgr.get_goalkeeper_highlights(
+                    team_id        = _gk_team_id,
+                    min_confidence = 0.3,  # seuil plus bas pour gardien
+                )
+                print(f"  [MODE PLAYER] Gardien équipe {_gk_team_id} : "
+                      f"{len(_player_highlights)} clips")
+            else:
+                _player_highlights = result_pe_mgr.get_player_highlights(
+                    jersey         = _jersey,
+                    team_color     = _team_color,
+                    min_confidence = get_owner_confidence_min(sport),
+                )
 
             if _player_highlights:
                 _player_reel_path = os.path.join(
