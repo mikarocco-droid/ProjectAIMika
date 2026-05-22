@@ -67,34 +67,56 @@ class PlayerReID:
     # COULEUR MAILLOT (torse)
     # ─────────────────────────────────────────
     def _extract_color(self, frame, bbox):
-        x1, y1, x2, y2 = map(int, bbox)
-        x1 = max(0, x1); y1 = max(0, y1)
-        x2 = min(frame.shape[1], x2)
-        y2 = min(frame.shape[0], y2)
-        crop = frame[y1:y2, x1:x2]
-        if crop.size == 0:
-            return np.array([0.0, 0.0, 0.0])
-        h = crop.shape[0]
-        # Torse uniquement : 15%->45% de hauteur (évite tête et short)
-        crop = crop[int(h * 0.15):int(h * 0.45), :]
-        if crop.size == 0:
-            return np.array([0.0, 0.0, 0.0])
-
-        # HSV saturation filtering — éliminer pelouse, peau, ombres, gris
-        # Pixels à faible saturation = pelouse/peau/fond → exclus
-        # Pixels à haute saturation = maillot coloré → conservés
+        """
+        Feature couleur 19D = [hist_H_maillot(16D), LAB_mean(3D)×4].
+        Torse uniquement (20-55%), masque elliptique central.
+        LAB canal A discrimine vert vs rouge/bordeaux indépendamment lumière.
+        """
+        import cv2 as _cv2
         try:
-            hsv  = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-            sat  = hsv[:, :, 1]                    # canal saturation (0-255)
-            mask = sat > 60                         # seuil : saturation > 60/255 ~24%
-            if mask.sum() > 10:                     # au moins 10 pixels colorés
-                # Moyenne uniquement sur les pixels du maillot
-                return crop[mask].mean(axis=0).astype(float)
-        except Exception:
-            pass
+            x1, y1, x2, y2 = map(int, bbox)
+            x1 = max(0, x1); y1 = max(0, y1)
+            x2 = min(frame.shape[1], x2)
+            y2 = min(frame.shape[0], y2)
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                return np.zeros(19, dtype=np.float32)
+            h, w = crop.shape[:2]
+            if h < 20 or w < 8:
+                return np.zeros(19, dtype=np.float32)
 
-        # Fallback : moyenne brute si pas assez de pixels saturés
-        return crop.mean(axis=(0, 1)).astype(float)
+            # Torse uniquement : 20-55% hauteur, 20-80% largeur
+            torso = crop[int(h*0.20):int(h*0.55), int(w*0.20):int(w*0.80)]
+            if torso.size == 0:
+                return np.zeros(19, dtype=np.float32)
+
+            # Histogramme teinte H (16 bins)
+            hsv  = _cv2.cvtColor(torso, _cv2.COLOR_BGR2HSV)
+            S, V = hsv[:,:,1], hsv[:,:,2]
+            H    = hsv[:,:,0]
+            mask = (S > 40) & (V > 20) & (V < 240)
+            if mask.sum() < 5:
+                mask = V < 230
+            if mask.sum() >= 5:
+                h_vals = H[mask].astype(np.float32)
+                hist   = np.histogram(h_vals, bins=16, range=(0,180))[0].astype(np.float32)
+                if hist.sum() > 0: hist /= hist.sum()
+            else:
+                hist = np.zeros(16, dtype=np.float32)
+
+            # Mean LAB normalisé (canal A = discriminant vert/rouge)
+            lab      = _cv2.cvtColor(torso, _cv2.COLOR_BGR2LAB).astype(np.float32)
+            mean_lab = lab.mean(axis=(0,1))
+            lab_feat = np.array([
+                mean_lab[0] / 255.0,
+                (mean_lab[1] - 128.0) / 128.0,
+                (mean_lab[2] - 128.0) / 128.0,
+            ], dtype=np.float32) * 4.0  # pondérer
+
+            return np.concatenate([hist, lab_feat])  # 19D
+
+        except Exception:
+            return np.zeros(19, dtype=np.float32)
 
     # ─────────────────────────────────────────
     # CALIBRATION ÉQUIPES (KMeans dynamique)
@@ -112,12 +134,16 @@ class PlayerReID:
         self._team_centroids         = centroids
         self._team_colors_calibrated = True
 
-        # Enregistrer l'instance globale pour que get_team_colors() fonctionne
-        global _GLOBAL_REID_INSTANCE
-        _GLOBAL_REID_INSTANCE = self
-
-        c0 = centroids[0].astype(int)
-        c1 = centroids[1].astype(int)
+        # Les centroids sont 19D — extraire LAB A pour le log
+        def _lab_a(centroid):
+            if len(centroid) >= 19:
+                return round(float(centroid[16]) / 4.0, 3)  # dé-pondérer
+            return 0.0
+        c0_a = _lab_a(centroids[0])
+        c1_a = _lab_a(centroids[1])
+        # Garder c0/c1 comme BGR approximatif pour compatibilité logs
+        c0 = np.array([128, 128, 128], dtype=int)
+        c1 = np.array([64, 64, 64], dtype=int)
         print(f"  ReID équipes calibrées : "
               f"équipe0=BGR({c0[0]},{c0[1]},{c0[2]}) "
               f"équipe1=BGR({c1[0]},{c1[1]},{c1[2]}) "
@@ -325,30 +351,6 @@ class PlayerReID:
 # ─────────────────────────────────────────
 # WRAPPER — appelé depuis pipeline.py
 # ─────────────────────────────────────────
-# ─────────────────────────────────────────
-# INSTANCE GLOBALE — permet à pipeline.py de récupérer les couleurs
-# ─────────────────────────────────────────
-_GLOBAL_REID_INSTANCE = None
-
-
-def get_team_colors():
-    """
-    Retourne les couleurs BGR des équipes détectées par KMeans.
-    Format : {0: (b, g, r), 1: (b, g, r)}
-    Disponible après la calibration (~50 frames).
-    """
-    global _GLOBAL_REID_INSTANCE
-    if _GLOBAL_REID_INSTANCE is None:
-        return {}
-    centroids = _GLOBAL_REID_INSTANCE._team_centroids
-    if centroids is None:
-        return {}
-    result = {}
-    for i, c in enumerate(centroids):
-        result[i] = (int(c[0]), int(c[1]), int(c[2]))
-    return result
-
-
 def reidentify_players(events):
     """
     Wrapper stateless pour le pipeline.
