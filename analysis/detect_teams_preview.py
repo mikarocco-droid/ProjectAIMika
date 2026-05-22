@@ -97,8 +97,26 @@ def extract_player_feature(frame, bbox):
         return None
 
 
+def _is_gazon_color(bgr):
+    """Retourne True si la couleur ressemble au gazon (H=30-90, V>60)."""
+    if bgr is None: return True
+    try:
+        b,g,r = int(bgr[0]),int(bgr[1]),int(bgr[2])
+        px  = np.uint8([[[b,g,r]]])
+        hsv = cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0]
+        h = int(hsv[0])*2; s = int(hsv[1]); v = int(hsv[2])
+        if 15 <= h <= 100: return True          # jaune/vert = gazon
+        if s < 50 and v > 80: return True       # gris clair = fond/béton
+        return False
+    except Exception:
+        return True
+
+
 def extract_player_bgr(frame, bbox):
-    """Retourne (jersey_bgr, short_bgr) pour l'affichage."""
+    """
+    Retourne (jersey_bgr, short_bgr) pour l'affichage.
+    Le short n'est extrait que sur les grandes bboxes (joueurs proches).
+    """
     try:
         x1, y1, x2, y2 = map(int, bbox)
         x1 = max(0, x1); y1 = max(0, y1)
@@ -110,9 +128,20 @@ def extract_player_bgr(frame, bbox):
         h, w = crop.shape[:2]
         if h < 30 or w < 12:
             return None, None
+
         torso   = crop[int(h*0.20):int(h*0.45), int(w*0.35):int(w*0.65)]
-        short_z = crop[int(h*0.50):int(h*0.75), int(w*0.25):int(w*0.75)]
-        return _mean_bgr(torso), _mean_bgr(short_z, accept_dark=True)
+        j_bgr   = _mean_bgr(torso)
+
+        # Short : seulement sur les joueurs assez grands (h >= 80px)
+        # et vérifier que la couleur n'est pas du gazon
+        s_bgr = None
+        if h >= 80:
+            short_z = crop[int(h*0.50):int(h*0.75), int(w*0.25):int(w*0.75)]
+            s_candidate = _mean_bgr(short_z, accept_dark=True)
+            if s_candidate is not None and not _is_gazon_color(s_candidate):
+                s_bgr = s_candidate
+
+        return j_bgr, s_bgr
     except Exception:
         return None, None
 
@@ -237,8 +266,10 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             x1, y1, x2, y2 = box.xyxy[0].tolist()
             bh = y2 - y1
             bw = x2 - x1
-            if bh < PROCESS_H * 0.10: continue
-            if bw < PROCESS_W * 0.02: continue
+            # Seuil agressif : garder seulement les joueurs assez proches
+            # → maillot et short bien visibles, peu de contamination gazon
+            if bh < PROCESS_H * 0.18: continue   # ~110px sur 612 → joueurs proches
+            if bw < PROCESS_W * 0.03: continue
             players.append({"bbox": [x1,y1,x2,y2],
                              "center": [(x1+x2)/2,(y1+y2)/2],
                              "conf": float(box.conf[0])})
@@ -291,7 +322,7 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
           f"{n_obs_total} obs valides | {n_rejected} rejetées")
 
     # ── Joueurs stables ───────────────────────────────────────────────────────
-    MIN_OBS = 6
+    MIN_OBS = 4   # moins d'observations car on garde seulement les joueurs proches
     player_feats = []
     stable_pids  = []
     player_bgr_j = []   # couleur maillot par joueur stable
