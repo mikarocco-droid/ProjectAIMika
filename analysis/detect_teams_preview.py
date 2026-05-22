@@ -266,6 +266,49 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
 
     print(f"  [PREVIEW] skip={skip} (~8fps)")
 
+    # ── Trouver la meilleure fenêtre de 30s ──────────────────────────────────
+    # On cherche une fenêtre avec beaucoup de joueurs grands et statiques
+    # En scannant légèrement la vidéo (toutes les 5s sur les 5 premières minutes)
+    best_start_frame = 0
+    best_window_score = -1
+    scan_limit = min(int(fps * 120), total_frames)  # 2 min max
+
+    print(f"  [PREVIEW] Recherche meilleure fenêtre...")
+    for scan_f in range(0, scan_limit, int(fps * 5)):   # toutes les 5s
+        cap.set(cv2.CAP_PROP_POS_FRAMES, scan_f)
+        ret_s, frame_s = cap.read()
+        if not ret_s:
+            break
+        sm_s = cv2.resize(frame_s, (PROCESS_W, PROCESS_H),
+                           interpolation=cv2.INTER_LINEAR)
+        try:
+            res_s = detector.model([sm_s], conf=0.4, verbose=False,
+                                    imgsz=int(os.environ.get('YOLO_IMGSZ',
+                                             config.YOLO_IMGSZ)))
+            # Score = somme des hauteurs des grandes bboxes
+            score_s = sum(
+                float(b.xyxy[0][3] - b.xyxy[0][1])
+                for b in res_s[0].boxes
+                if int(b.cls[0]) == detector.player_cls
+                and float(b.conf[0]) >= 0.4
+                and float(b.xyxy[0][3] - b.xyxy[0][1]) >= PROCESS_H * 0.15
+            )
+            if score_s > best_window_score:
+                best_window_score = score_s
+                best_start_frame  = scan_f
+        except Exception:
+            continue
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # reset
+    max_frame = min(best_start_frame + int(bootstrap_duration * fps), total_frames)
+    print(f"  [PREVIEW] Meilleure fenêtre: t={best_start_frame/fps:.0f}s "
+          f"(score={best_window_score:.0f}) → analyse t={best_start_frame/fps:.0f}s "
+          f"à t={max_frame/fps:.0f}s")
+
+    # Repositionner la capture au bon endroit
+    cap.set(cv2.CAP_PROP_POS_FRAMES, best_start_frame)
+    frame_id = best_start_frame
+
     while frame_id < max_frame:
         ret, frame = cap.read()
         if not ret:
