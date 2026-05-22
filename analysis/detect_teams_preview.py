@@ -234,7 +234,10 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             if int(box.cls[0]) != detector.player_cls: continue
             if float(box.conf[0]) < 0.4: continue
             x1, y1, x2, y2 = box.xyxy[0].tolist()
-            if (y2 - y1) < PROCESS_H * 0.10: continue  # trop loin
+            bh = y2 - y1
+            bw = x2 - x1
+            if bh < PROCESS_H * 0.13: continue  # trop loin (renforcé)
+            if bw < PROCESS_W * 0.03: continue  # trop étroit
             players.append({
                 "bbox":   [x1, y1, x2, y2],
                 "center": [(x1+x2)/2, (y1+y2)/2],
@@ -255,6 +258,19 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             bbox = p.get("bbox")
             if not pid or not bbox:
                 continue
+
+            # Filtre flou : ignorer les crops flous (motion blur)
+            try:
+                x1b, y1b, x2b, y2b = map(int, bbox)
+                patch = small[max(0,y1b):max(0,y2b), max(0,x1b):max(0,x2b)]
+                if patch.size > 0:
+                    gray_p  = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+                    sharpness = cv2.Laplacian(gray_p, cv2.CV_64F).var()
+                    if sharpness < 30:   # crop trop flou
+                        n_rejected += 1
+                        continue
+            except Exception:
+                pass
 
             color = dominant_jersey_color(small, bbox)
             if color is None:
@@ -292,26 +308,41 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         return {"success": False,
                 "error": f"Pas assez de joueurs stables ({n_players})"}
 
-    # ── Filtrer gardiens/arbitres avant clustering ────────────────────────────
-    # Gardiens/arbitres ont souvent une couleur unique très différente
-    # On les détecte comme outliers par rapport au nuage principal
+    # ── KMeans préliminaire pour exclure gardiens/arbitres ──────────────────
+    # Principe : sur un match, 2 grandes équipes + petits clusters isolés
+    # On fait un KMeans(4) puis on ne garde que les 2 plus grands clusters
     samples = np.array(player_colors, dtype=np.float32)
 
-    # Calculer la distance médiane de chaque joueur par rapport au centre
-    center_all = np.median(samples, axis=0)
-    dists_all  = np.linalg.norm(samples - center_all, axis=1)
-    thresh_out = np.percentile(dists_all, 85)  # garder 85% des joueurs
+    n_pre_clusters = min(4, n_players // 2, n_players)
+    samples_clean  = samples
+    n_filtered     = n_players
 
-    # Ne garder que les joueurs "normaux" pour le clustering
-    mask_in    = dists_all <= thresh_out
-    n_filtered = mask_in.sum()
-    print(f"  [PREVIEW] Après filtre outliers : {n_filtered}/{n_players} joueurs")
+    if n_pre_clusters >= 3 and n_players >= 6:
+        try:
+            criteria_pre = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+            _, labels_pre, _ = cv2.kmeans(
+                samples, n_pre_clusters, None, criteria_pre, 5,
+                cv2.KMEANS_PP_CENTERS
+            )
+            labels_pre   = labels_pre.flatten()
+            counts_pre   = np.bincount(labels_pre, minlength=n_pre_clusters)
+            # Garder seulement les clusters dont la taille > 15% du total
+            threshold    = n_players * 0.15
+            big_clusters = [i for i, c in enumerate(counts_pre) if c >= threshold]
+            if len(big_clusters) >= 2:
+                mask_big   = np.isin(labels_pre, big_clusters)
+                samples_clean = samples[mask_big]
+                n_filtered    = mask_big.sum()
+                excluded = n_players - n_filtered
+                print(f"  [PREVIEW] Exclusion petits clusters : "
+                      f"{n_filtered}/{n_players} joueurs gardés "
+                      f"({excluded} gardiens/arbitres exclus)")
+        except Exception as _ep:
+            print(f"  [PREVIEW] Filtre clusters ignoré : {_ep}")
 
     if n_filtered < 4:
-        mask_in = np.ones(n_players, dtype=bool)  # fallback : garder tout
-        n_filtered = n_players
-
-    samples_clean = samples[mask_in]
+        samples_clean = samples
+        n_filtered    = n_players
 
     # ── KMeans SUR joueurs (pas sur pixels) ──────────────────────────────────
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.5)
