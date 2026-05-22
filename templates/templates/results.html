@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Résultats — ScoutIA</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<nav>
+  <div class="nav-inner">
+    <a href="/" class="logo">⚡ ScoutIA</a>
+    <div class="nav-links">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/logout">Déconnexion</a>
+    </div>
+  </div>
+</nav>
+
+<div class="results-page">
+
+  <div class="results-header">
+    <div>
+      <div class="results-title">
+        {# Afficher noms équipes si disponibles #}
+        {% if result.teams %}
+          {% set t0 = result.teams.get('0', result.teams.get(0, {})) %}
+          {% set t1 = result.teams.get('1', result.teams.get(1, {})) %}
+          {% if t0.get('name') and t1.get('name') %}
+            {{ t0.name }}
+            <span style="color:var(--gray);margin:0 0.5rem">vs</span>
+            {{ t1.name }}
+          {% else %}
+            {{ analysis.filename }}
+          {% endif %}
+        {% else %}
+          {{ analysis.filename }}
+        {% endif %}
+      </div>
+      <div class="results-meta">
+        {{ analysis.sport }} · {{ analysis.created_at.strftime('%d/%m/%Y %H:%M') }}
+        {% if result.summary.duration %} · {{ result.summary.duration }}{% endif %}
+        {% if result.summary.goals is defined %}
+          · <span style="color:var(--red);font-weight:700">{{ result.summary.goals }} but{{ 's' if result.summary.goals > 1 else '' }}</span>
+        {% endif %}
+      </div>
+      {# Score en temps réel si buts détectés #}
+      {% if result.teams and result.summary.goals %}
+        {% set t0 = result.teams.get('0', result.teams.get(0, {})) %}
+        {% set t1 = result.teams.get('1', result.teams.get(1, {})) %}
+        {% set score0 = namespace(v=0) %}
+        {% set score1 = namespace(v=0) %}
+        {% for e in result.events %}
+          {% if e.type in ['goal','score'] %}
+            {% if e.team == 0 or e.team == '0' %}{% set score0.v = score0.v + 1 %}{% endif %}
+            {% if e.team == 1 or e.team == '1' %}{% set score1.v = score1.v + 1 %}{% endif %}
+          {% endif %}
+        {% endfor %}
+        <div style="margin-top:0.5rem;font-family:var(--font-mono);font-size:1.4rem;
+                    font-weight:700;color:var(--white)">
+          <span style="color:{% if t0.color_hex %}{{ t0.color_hex }}{% else %}var(--cyan){% endif %}">
+            {{ score0.v }}
+          </span>
+          <span style="color:var(--gray);margin:0 0.5rem">—</span>
+          <span style="color:{% if t1.color_hex %}{{ t1.color_hex }}{% else %}var(--red){% endif %}">
+            {{ score1.v }}
+          </span>
+        </div>
+      {% endif %}
+    </div>
+    <div class="results-actions">
+      {% if result.pdf %}
+        <a href="/download/{{ analysis.id }}/pdf" class="btn-primary">⬇ PDF</a>
+      {% endif %}
+      {% if result.reel %}
+        <a href="/download/{{ analysis.id }}/reel" class="btn-secondary">⬇ Reel</a>
+      {% endif %}
+      <a href="/dashboard" class="btn-secondary">← Dashboard</a>
+    </div>
+  </div>
+
+  <!-- KPIs -->
+  <div class="kpi-row">
+    <div class="kpi-card">
+      <div class="kpi-value">{{ result.summary.goals }}</div>
+      <div class="kpi-label">Buts</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value">{{ result.summary.shots }}</div>
+      <div class="kpi-label">Tirs</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value">{{ result.summary.total_xg | round(2) }}</div>
+      <div class="kpi-label">xG total</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value">{{ result.summary.passes }}</div>
+      <div class="kpi-label">Passes</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value">{{ result.summary.players }}</div>
+      <div class="kpi-label">Joueurs</div>
+    </div>
+  </div>
+
+  <!-- MVP -->
+  {% if result.mvp %}
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.5rem;margin-bottom:1.5rem;display:flex;align-items:center;gap:1rem">
+    <div style="background:var(--yellow);border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0">🏆</div>
+    <div>
+      <div style="font-size:0.72rem;color:var(--gray);text-transform:uppercase;letter-spacing:0.5px;font-family:var(--font-mono)">MVP du match</div>
+      <div style="font-family:var(--font-head);font-size:1.2rem;font-weight:700;color:var(--yellow)">
+        {% if result.jersey_map and result.mvp|string in result.jersey_map %}
+          #{{ result.jersey_map[result.mvp|string] }}
+        {% else %}
+          #{{ result.mvp }}
+        {% endif %}
+      </div>
+    </div>
+    {% if result.match_story %}
+    <div style="flex:1;font-size:0.85rem;color:var(--gray);font-style:italic;border-left:2px solid var(--border);padding-left:1rem;line-height:1.6">
+      {{ result.match_story[:200] }}{% if result.match_story|length > 200 %}...{% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Reel vidéo -->
+  {% if result.reel %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">🎬</span>
+      <span class="result-section-title">Highlight Reel</span>
+    </div>
+    <div class="result-section-body" style="padding:0">
+      <div class="video-container">
+        <video controls preload="metadata">
+          <source src="/stream/{{ analysis.id }}/reel" type="video/mp4">
+        </video>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Possession -->
+  {% if result.possession %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">🎽</span>
+      <span class="result-section-title">Possession</span>
+    </div>
+    <div class="result-section-body">
+      {% for team, pct in result.possession.items() | sort %}
+      <div class="possession-row">
+        <div class="poss-label">
+          {% if result.teams and (team|string) in result.teams and result.teams[team|string].name %}
+            {{ result.teams[team|string].name }}
+          {% else %}
+            Équipe {{ loop.index }}
+          {% endif %}
+        </div>
+        <div class="poss-bar-outer">
+          <div class="poss-bar-inner" style="width:{{ pct }}%"></div>
+        </div>
+        <div class="poss-pct">{{ pct }}%</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Highlights -->
+  {% if result.highlights %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">⚡</span>
+      <span class="result-section-title">Highlights ({{ result.highlights | length }})</span>
+    </div>
+    <div class="result-section-body">
+      <div class="highlights-grid">
+        {% for h in result.highlights %}
+        {% set mins_s = (h.time_start / 60) | int %}
+        {% set secs_s = (h.time_start % 60) | int %}
+        {% set htype = h.main_type | default('shot') %}
+        <div class="highlight-item">
+          <span class="hl-num">{{ loop.index }}</span>
+          <span class="hl-badge {{ 'goal' if htype in ['goal','score'] else 'shot' if htype == 'shot' else 'other' }}">
+            {{ htype }}
+          </span>
+          <span class="hl-time">{{ "%02d:%02d" | format(mins_s, secs_s) }}</span>
+          <span class="hl-player">
+            {% if h.player %}
+              {% if result.jersey_map and h.player|string in result.jersey_map %}
+                #{{ result.jersey_map[h.player|string] }}
+              {% else %}
+                #{{ h.player }}
+              {% endif %}
+            {% else %}?{% endif %}
+          </span>
+          {% if h.xg and h.xg > 0 %}
+            <span class="hl-xg">xG {{ h.xg | round(2) }}</span>
+          {% endif %}
+          <span class="hl-score">{{ h.score | default(0) | round(1) }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Joueurs -->
+  {% if result.stats %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">👥</span>
+      <span class="result-section-title">Joueurs</span>
+    </div>
+    <div class="result-section-body" style="padding:0;overflow-x:auto">
+      <table class="players-table">
+        <thead>
+          <tr>
+            <th>Joueur</th>
+            <th>Touches</th>
+            <th>Passes</th>
+            <th>Tirs</th>
+            <th>Buts</th>
+            <th>xG</th>
+            <th>xA</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pid, s in result.stats.items() | sort(attribute='1.touches', reverse=True) %}
+          {% if s.touches >= 5 %}
+          <tr>
+            <td class="player-name-cell">
+              {% if s.label %}{{ s.label }}
+              {% elif result.jersey_map and pid in result.jersey_map %}#{{ result.jersey_map[pid] }}
+              {% else %}#{{ pid }}{% endif %}
+            </td>
+            <td>{{ s.touches }}</td>
+            <td>{{ s.passes if s.passes > 0 else '—' }}</td>
+            <td>{{ s.tirs if s.tirs > 0 else '—' }}</td>
+            <td>{% if s.buts > 0 %}<span style="color:var(--red);font-weight:700">{{ s.buts }}</span>{% else %}—{% endif %}</td>
+            <td>{% if s.xg_total > 0 %}<span style="color:var(--yellow)">{{ s.xg_total | round(2) }}</span>{% else %}—{% endif %}</td>
+            <td>{% if s.xa_total is defined and s.xa_total > 0 %}<span style="color:var(--purple)">{{ s.xa_total | round(2) }}</span>{% else %}—{% endif %}</td>
+            <td>
+              {% if result.player_ratings and pid in result.player_ratings %}
+                <span style="color:var(--cyan);font-family:var(--font-mono)">{{ result.player_ratings[pid].rating | round(1) }}</span>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Formation & Tactique -->
+  {% if result.formation or result.tactical %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">🧠</span>
+      <span class="result-section-title">Tactique</span>
+    </div>
+    <div class="result-section-body">
+      {% if result.formation %}
+      <p style="font-family:var(--font-mono);font-size:1.1rem;color:var(--cyan);margin-bottom:0.75rem">
+        Formation : {{ result.formation }}
+        {% if result.tactical and result.tactical.style %}
+          · {{ result.tactical.style }}
+        {% endif %}
+      </p>
+      {% endif %}
+      {% if result.ai_summary %}
+        <p class="story-text">{{ result.ai_summary }}</p>
+      {% elif result.match_story %}
+        <p class="story-text">{{ result.match_story }}</p>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Heatmaps -->
+  {% if result.heatmaps %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">🔥</span>
+      <span class="result-section-title">Heatmaps</span>
+    </div>
+    <div class="result-section-body">
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:1.25rem">
+        {% for name, path in result.heatmaps.items() %}
+        {% if path %}
+        <div style="background:var(--bg2);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border)">
+          <div style="padding:0.6rem 0.75rem;background:var(--surface2);border-bottom:1px solid var(--border)">
+            <span style="font-family:var(--font-mono);font-size:0.72rem;color:var(--cyan);text-transform:uppercase;letter-spacing:0.5px">{{ name }}</span>
+          </div>
+          <img src="/heatmap/{{ analysis.id }}/{{ name }}" style="width:100%;display:block">
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+
+  <!-- ═══════════════════════════════════════════
+       CTA CONVERSION — Mode Club
+  ═══════════════════════════════════════════ -->
+  <div class="result-section" style="border-color:rgba(0,200,230,0.4);background:linear-gradient(135deg,rgba(0,200,230,0.06),rgba(180,100,255,0.06))">
+    <div class="result-section-header" style="background:rgba(0,200,230,0.08)">
+      <span class="result-section-icon">🔥</span>
+      <span class="result-section-title" style="color:var(--cyan)">Ton match est prêt !</span>
+    </div>
+    <div class="result-section-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;align-items:center;flex-wrap:wrap">
+
+        <!-- Partage -->
+        <div>
+          <p style="font-family:var(--font-head);font-size:1.1rem;font-weight:700;color:var(--white);margin-bottom:0.5rem">
+            🚀 Partage tes highlights
+          </p>
+          <p style="font-size:0.88rem;color:var(--gray);margin-bottom:1rem;line-height:1.6">
+            Envoie ce rapport à ton coach, ton équipe ou tes parents.<br>
+            Plus vous êtes à utiliser ScoutIA, plus l'analyse devient puissante.
+          </p>
+          <button onclick="shareMatch()" class="btn-secondary" style="gap:0.5rem">
+            📤 Partager ce match
+          </button>
+        </div>
+
+        <!-- CTA Club -->
+        <div style="background:var(--surface);border:1px solid rgba(0,200,230,0.3);border-radius:14px;padding:1.25rem">
+          <p style="font-family:var(--font-head);font-size:0.95rem;font-weight:700;color:var(--white);margin-bottom:0.75rem">
+            👥 Tu joues en équipe ?
+          </p>
+          <ul style="list-style:none;font-size:0.85rem;color:var(--gray);line-height:1.9;margin-bottom:1rem">
+            <li>⚽ Highlights pour toute l'équipe</li>
+            <li>📊 Stats joueurs automatiques</li>
+            <li>📄 PDF prêt pour coach / recruteurs</li>
+            <li>🏆 Suivi complet de la saison</li>
+          </ul>
+          <a href="/pricing" class="btn-primary" style="width:100%;justify-content:center;background:var(--cyan);color:var(--bg)">
+            Activer le mode Club — 99€/mois →
+          </a>
+          <p style="font-size:0.72rem;color:var(--gray-dim);text-align:center;margin-top:0.5rem">
+            <a href="/pricing" style="color:var(--cyan);text-decoration:none">🎁 Invite 3 coéquipiers → 1 analyse offerte</a>
+          </p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script>
+  function shareMatch() {
+    const url = window.location.href;
+    if (navigator.share) {
+      navigator.share({ title: "Mon match analysé — ScoutIA", url });
+    } else {
+      navigator.clipboard.writeText(url).then(() => {
+        const btn = document.querySelector('[onclick="shareMatch()"]');
+        const orig = btn.textContent;
+        btn.textContent = "✓ Lien copié !";
+        btn.style.color = "var(--green)";
+        setTimeout(() => { btn.textContent = orig; btn.style.color = ""; }, 2000);
+      });
+    }
+  }
+  </script>
+
+</div>
+
+<footer>
+  <p>© 2026 ScoutIA — Propulsé par Claude AI &amp; Gemini Vision</p>
+</footer>
+</body>
+</html>

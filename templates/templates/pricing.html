@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Tarifs — ScoutIA</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<nav>
+  <div class="nav-inner">
+    <a href="/" class="logo">⚡ ScoutIA</a>
+    <div class="nav-links">
+      {% if current_user.is_authenticated %}
+        <a href="/dashboard" class="btn-nav">Dashboard →</a>
+      {% else %}
+        <a href="/login">Connexion</a>
+        <a href="/register" class="btn-nav">Essai gratuit →</a>
+      {% endif %}
+    </div>
+  </div>
+</nav>
+
+<div class="pricing-page">
+  <h1>Tarifs simples</h1>
+  <p class="pricing-subtitle">Commencez gratuitement, upgradez quand vous êtes prêt.</p>
+
+  <div class="plans-grid">
+
+    <!-- GRATUIT -->
+    <div class="plan-card">
+      <div class="plan-header">
+        <div class="plan-name">Gratuit</div>
+        <div class="plan-price">0€</div>
+        <div class="plan-desc">Pour découvrir</div>
+      </div>
+      <ul class="plan-features">
+        <li>1 vidéo</li>
+        <li>Highlights automatiques</li>
+        <li>Rapport scout PDF</li>
+        <li style="opacity:.4">Support</li>
+      </ul>
+      {% if current_user.is_authenticated %}
+        {% if current_user.plan == "free" %}
+          <div class="plan-current">Plan actuel</div>
+        {% else %}
+          <a href="/dashboard" class="btn-secondary">Dashboard</a>
+        {% endif %}
+      {% else %}
+        <a href="/register" class="btn-secondary">Commencer</a>
+      {% endif %}
+    </div>
+
+    <!-- UNIQUE -->
+    <div class="plan-card">
+      <div class="plan-header">
+        <div class="plan-name">Vidéo unique</div>
+        <div class="plan-price">4€<span>/vidéo</span></div>
+        <div class="plan-desc">Sans engagement</div>
+      </div>
+      <ul class="plan-features">
+        <li>1 vidéo analysée</li>
+        <li>Highlights automatiques</li>
+        <li>Rapport scout PDF</li>
+        <li>Paiement unique</li>
+      </ul>
+      {% if current_user.is_authenticated %}
+        <form action="/create-checkout" method="POST">
+          <input type="hidden" name="plan" value="unique">
+          <button type="submit" class="btn-secondary">Acheter 1 vidéo</button>
+        </form>
+      {% else %}
+        <a href="/register" class="btn-secondary">Commencer</a>
+      {% endif %}
+    </div>
+
+    <!-- STARTER -->
+    <div class="plan-card featured">
+      <div class="plan-badge-top">Populaire</div>
+      <div class="plan-header">
+        <div class="plan-name">Starter</div>
+        <div class="plan-price">39€<span>/mois</span></div>
+        <div class="plan-desc">1,95€ par vidéo</div>
+      </div>
+      <ul class="plan-features">
+        <li>20 vidéos / mois</li>
+        <li>Highlights automatiques</li>
+        <li>Rapport scout PDF</li>
+        <li>Support email</li>
+      </ul>
+      {% if current_user.is_authenticated %}
+        {% if current_user.plan == "starter" %}
+          <div class="plan-current">Plan actuel</div>
+        {% else %}
+          <form action="/create-checkout" method="POST">
+            <input type="hidden" name="plan" value="starter">
+            <button type="submit" class="btn-primary">Choisir Starter</button>
+          </form>
+        {% endif %}
+      {% else %}
+        <a href="/register" class="btn-primary">Commencer</a>
+      {% endif %}
+    </div>
+
+    <!-- PRO -->
+    <div class="plan-card">
+      <div class="plan-header">
+        <div class="plan-name">Pro</div>
+        <div class="plan-price">99€<span>/mois</span></div>
+        <div class="plan-desc">0,99€ par vidéo</div>
+      </div>
+      <ul class="plan-features">
+        <li>100 vidéos / mois</li>
+        <li>Highlights automatiques</li>
+        <li>Rapport scout PDF</li>
+        <li>Support prioritaire</li>
+      </ul>
+      {% if current_user.is_authenticated %}
+        {% if current_user.plan == "pro" %}
+          <div class="plan-current">Plan actuel</div>
+        {% else %}
+          <form action="/create-checkout" method="POST">
+            <input type="hidden" name="plan" value="pro">
+            <button type="submit" class="btn-primary">Choisir Pro</button>
+          </form>
+        {% endif %}
+      {% else %}
+        <a href="/register" class="btn-primary">Commencer</a>
+      {% endif %}
+    </div>
+
+  </div>
+
+  <div class="faq">
+    <h2>Questions fréquentes</h2>
+
+    <div class="faq-item">
+      <div class="faq-q">C'est quoi exactement une "analyse" ?</div>
+      <div class="faq-a">Tu uploades une vidéo de match, et ScoutIA détecte automatiquement tous les buts, tirs, dribbles et passes clés. Tu reçois un highlight reel (vidéo des moments clés), un PDF avec les stats de chaque joueur, les heatmaps et le xG (expected goals) par tir.</div>
+    </div>
+
+    <div class="faq-item">
+      <div class="faq-q">Quels formats vidéo sont acceptés ?</div>
+      <div class="faq-a">MP4, AVI, MOV, MKV — jusqu'à 10 GB par vidéo. Une caméra de smartphone suffit si l'angle couvre bien le terrain.</div>
+    </div>
+
+    <div class="faq-item">
+      <div class="faq-q">Combien de temps dure une analyse ?</div>
+      <div class="faq-a">Environ 20-30 min pour un match court (15 min de vidéo), 1h à 2h pour un match complet (90 min). Tu peux fermer l'onglet — une notification t'attend quand c'est prêt.</div>
+    </div>
+
+    <div class="faq-item">
+      <div class="faq-q">La qualité vidéo doit être parfaite ?</div>
+      <div class="faq-a">Non. ScoutIA fonctionne avec des vidéos filmées depuis les tribunes ou sur trépied. L'important est d'avoir une vue d'ensemble du terrain. Les vidéos très floues ou très zoomées donnent de moins bons résultats.</div>
+    </div>
+
+    <div class="faq-item">
+      <div class="faq-q">Qu'est-ce que le xG (expected goals) ?</div>
+      <div class="faq-a">Le xG mesure la probabilité qu'un tir finisse en but, selon la distance, l'angle et le contexte. Un xG de 0.8 signifie que ce tir aurait dû être un but 8 fois sur 10. C'est la stat utilisée par les clubs pros pour évaluer la qualité des occasions.</div>
+    </div>
+
+    <div class="faq-item">
+      <div class="faq-q">Quels sports sont supportés ?</div>
+      <div class="faq-a">Football, mini-foot / futsal, basketball, handball, tennis et padel. D'autres sports arrivent prochainement.</div>
+    </div>
+
+    <div class="faq-item">
+      <div class="faq-q">Les données des joueurs sont-elles sécurisées ?</div>
+      <div class="faq-a">Oui. Les vidéos sont stockées de façon sécurisée et supprimées automatiquement après 7 jours (plan gratuit) ou 30 à 90 jours (plans payants). Elles ne sont jamais partagées avec des tiers.</div>
+    </div>
+
+    <div class="faq-item">
+      <div class="faq-q">Puis-je annuler à tout moment ?</div>
+      <div class="faq-a">Oui, sans engagement ni frais. Tu peux annuler depuis ton dashboard en un clic. Tu conserves l'accès jusqu'à la fin de la période payée.</div>
+    </div>
+
+    <div class="faq-item">
+      <div class="faq-q">Le plan gratuit est vraiment gratuit ?</div>
+      <div class="faq-a">Oui, sans carte bancaire. 1 analyse complète offerte pour tester. Si tu es convaincu, tu passes sur un plan payant. Sinon, aucune obligation.</div>
+    </div>
+
+    <div class="faq-item">
+      <div class="faq-q">Je suis coach — c'est fait pour moi ?</div>
+      <div class="faq-a">Absolument. ScoutIA génère automatiquement les stats de chaque joueur, les heatmaps de positionnement et un PDF prêt à partager. Ce qui te prenait 2h à faire manuellement après chaque match est entièrement automatisé.</div>
+    </div>
+
+  </div>
+</div>
+
+<footer>
+  <p>© 2026 ScoutIA — Produit par Michaël Ziant</p>
+</footer>
+</body>
+</html>
