@@ -64,10 +64,35 @@ def _mean_bgr(zone, accept_dark=False):
         return zone.mean(axis=(0,1)).astype(float)
 
 
+def _trim_bbox_bottom(crop):
+    """
+    Recadre le bas de la bbox pour exclure le gazon.
+    Si les dernières lignes sont vertes → c'est du sol, pas des jambes.
+    Retourne le crop recadré.
+    """
+    h, w = crop.shape[:2]
+    if h < 20:
+        return crop
+    # Tester les 15% du bas
+    bottom = crop[int(h*0.85):, :]
+    if bottom.size == 0:
+        return crop
+    hsv = cv2.cvtColor(bottom, cv2.COLOR_BGR2HSV)
+    H, S = hsv[:,:,0]*2, hsv[:,:,1]
+    # Si >40% des pixels du bas sont du gazon (H=30-90) → recadrer
+    gazon_mask = (H >= 30) & (H <= 90) & (S > 40)
+    if gazon_mask.mean() > 0.40:
+        # Couper les 15% du bas
+        new_h = int(h * 0.85)
+        return crop[:new_h, :]
+    return crop
+
+
 def extract_player_feature(frame, bbox):
     """
     Retourne vecteur 24D = [hist_H_maillot(16D), hist_H_short(8D)].
     Retourne None si qualité insuffisante.
+    Recadre automatiquement le bas si gazon détecté.
     """
     try:
         x1, y1, x2, y2 = map(int, bbox)
@@ -79,6 +104,12 @@ def extract_player_feature(frame, bbox):
             return None
         h, w = crop.shape[:2]
         if h < 30 or w < 12:
+            return None
+
+        # Recadrer le bas si gazon
+        crop = _trim_bbox_bottom(crop)
+        h, w = crop.shape[:2]
+        if h < 30:
             return None
 
         torso   = crop[int(h*0.20):int(h*0.45), int(w*0.35):int(w*0.65)]
@@ -105,8 +136,7 @@ def _is_gazon_color(bgr):
         px  = np.uint8([[[b,g,r]]])
         hsv = cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0]
         h = int(hsv[0])*2; s = int(hsv[1]); v = int(hsv[2])
-        if 15 <= h <= 100: return True          # jaune/vert = gazon
-        if s < 50 and v > 80: return True       # gris clair = fond/béton
+        if 15 <= h <= 100: return True   # jaune/vert = gazon
         return False
     except Exception:
         return True
