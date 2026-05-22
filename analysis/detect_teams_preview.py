@@ -343,7 +343,21 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     for pid, colors in pid_colors.items():
         if len(colors) < MIN_OBS:
             continue
-        arr    = np.array(colors, dtype=np.float32)
+
+        # Harmoniser les dimensions : si >50% sont 6D → garder 6D, sinon 3D
+        dims  = [len(c) for c in colors]
+        n6d   = sum(1 for d in dims if d == 6)
+        use6d = n6d > len(dims) // 2
+
+        if use6d:
+            colors_filtered = [c for c in colors if len(c) == 6]
+        else:
+            colors_filtered = [c[:3] for c in colors]   # tronquer 6D → 3D
+
+        if len(colors_filtered) < MIN_OBS:
+            continue
+
+        arr    = np.array(colors_filtered, dtype=np.float32)
         # Filtre outliers : garder 70% proches de la médiane
         median = np.median(arr, axis=0)
         dists  = np.linalg.norm(arr - median, axis=1)
