@@ -265,9 +265,12 @@ def lab_to_color_name(bgr, short_bgr=None):
         V = int(hsv[2]) / 255.0
         conf = abs(A)   # confiance = force du signal A
 
-        # Très sombre → noir
-        if V < 0.20:
+        # Très sombre → noir (seuil plus haut pour shorts)
+        if V < 0.25:
             return "noir", 0.8
+        # Sombre mais coloré → bleu marine foncé ou bordeaux foncé
+        if V < 0.45 and S < 0.15:
+            return "noir", 0.7
 
         # Très peu saturé → gris/blanc
         if S < 0.12:
@@ -653,9 +656,13 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
 
     def make_name(j_bgr, s_bgr):
         name, conf = lab_to_color_name(j_bgr, s_bgr)
-        s_name = bgr_to_name(s_bgr) if s_bgr else None
-        # Ajouter le short au nom si utile
-        if s_name and s_name not in ("inconnu", "gris", name):
+        # Nommer le short via lab_to_color_name aussi (plus robuste que bgr_to_name)
+        if s_bgr:
+            s_name, _ = lab_to_color_name(s_bgr, None)
+        else:
+            s_name = None
+        # Toujours inclure le short — c'est le vrai discriminant
+        if s_name and s_name not in ("inconnu",):
             return f"{name}/{s_name}", conf
         return name, conf
 
