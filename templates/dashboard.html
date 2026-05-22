@@ -54,6 +54,8 @@
     <form action="/upload" method="POST" enctype="multipart/form-data" id="upload-form">
       <input type="file" name="video" accept="video/*" id="file-input" hidden>
       <input type="hidden" name="preview_upload_id" id="preview-upload-id">
+      <input type="hidden" name="user_team_id" id="user-team-id" value="">
+      <input type="hidden" name="user_team_id" id="user-team-id" value="">
 
       <!-- ── ÉTAPE 1 : Zone upload ──────────────────────────────── -->
       <div id="step-upload">
@@ -96,6 +98,7 @@
                         margin-bottom:0.25rem">Analyse des équipes en cours…</div>
             <div style="font-size:0.82rem;color:var(--gray)">
               Détection automatique des couleurs de vareuse
+              <span style="color:var(--gray-dim)"> (~&nbsp;2/3&nbsp;min)</span>
             </div>
           </div>
           <div id="detecting-progress"
@@ -123,6 +126,13 @@
             <input type="text" name="team_name_0" id="team-name-input-0"
                    placeholder="Ex: RSC Stavelot B" maxlength="60"
                    style="width:100%">
+            <button type="button" id="my-team-btn-0" onclick="selectMyTeam(0)"
+                    style="margin-top:0.5rem;width:100%;padding:0.4rem 0.75rem;
+                           background:transparent;border:1px solid var(--border);
+                           border-radius:6px;color:var(--gray);font-size:0.78rem;
+                           cursor:pointer;transition:all 0.2s;text-align:left">
+              🏠 C'est mon équipe
+            </button>
           </div>
           <div>
             <div style="font-size:0.75rem;color:var(--gray);margin-bottom:0.35rem;
@@ -135,6 +145,13 @@
             <input type="text" name="team_name_1" id="team-name-input-1"
                    placeholder="Ex: FC Liège" maxlength="60"
                    style="width:100%">
+            <button type="button" id="my-team-btn-1" onclick="selectMyTeam(1)"
+                    style="margin-top:0.5rem;width:100%;padding:0.4rem 0.75rem;
+                           background:transparent;border:1px solid var(--border);
+                           border-radius:6px;color:var(--gray);font-size:0.78rem;
+                           cursor:pointer;transition:all 0.2s;text-align:left">
+              🏠 C'est mon équipe
+            </button>
           </div>
         </div>
 
