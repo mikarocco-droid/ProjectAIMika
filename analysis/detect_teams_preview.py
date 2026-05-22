@@ -468,16 +468,30 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     n0 = int((labels == 0).sum())
     n1 = int((labels == 1).sum())
 
-    # Extraire maillot (+ short si 6D)
-    c0_j = tuple(int(x) for x in centroids[0][:3])
-    c1_j = tuple(int(x) for x in centroids[1][:3])
-    c0_s = tuple(int(x) for x in centroids[0][3:]) if dim == 6 else None
-    c1_s = tuple(int(x) for x in centroids[1][3:]) if dim == 6 else None
-
-    # Pour le retour et la distance : utiliser le vecteur complet
-    c0 = c0_j
-    c1 = c1_j
     dist = float(np.linalg.norm(centroids[0] - centroids[1]))
+
+    # Recalculer couleurs représentatives sur les joueurs les plus proches
+    # du centroid (top 40%) pour éviter les valeurs polluées
+    def pure_color(cluster_idx):
+        mask   = labels == cluster_idx
+        pts    = samples_clean[mask]
+        center = centroids[cluster_idx]
+        dists  = np.linalg.norm(pts - center, axis=1)
+        thresh = np.percentile(dists, 40)   # top 40% plus purs
+        pure   = pts[dists <= thresh]
+        if len(pure) < 2:
+            pure = pts
+        return np.median(pure, axis=0)
+
+    rep0 = pure_color(0)
+    rep1 = pure_color(1)
+
+    c0_j = tuple(int(x) for x in rep0[:3])
+    c1_j = tuple(int(x) for x in rep1[:3])
+    c0_s = tuple(int(x) for x in rep0[3:]) if dim == 6 else None
+    c1_s = tuple(int(x) for x in rep1[3:]) if dim == 6 else None
+    c0   = c0_j
+    c1   = c1_j
 
     name0 = bgr_to_name(c0_j) + (f"/{bgr_to_name(c0_s)}" if c0_s else "")
     name1 = bgr_to_name(c1_j) + (f"/{bgr_to_name(c1_s)}" if c1_s else "")
