@@ -408,7 +408,8 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
 
     # ── Médiane robuste par joueur ────────────────────────────────────────────
     MIN_OBS = 6
-    player_colors = []  # une couleur par joueur stable
+    player_colors = []  # une feature (histogramme 24D) par joueur stable
+    stable_pids   = []  # pid correspondant
 
     for pid, colors in pid_colors.items():
         if len(colors) < MIN_OBS:
@@ -430,6 +431,7 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         clean  = arr[dists <= thresh]
         final  = np.median(clean, axis=0) if len(clean) >= 3 else median
         player_colors.append(final)
+        stable_pids.append(pid)
 
     n_players = len(player_colors)
     print(f"  [PREVIEW] {n_players} joueurs stables (>= {MIN_OBS} obs)")
