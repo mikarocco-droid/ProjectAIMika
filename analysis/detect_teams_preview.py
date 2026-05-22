@@ -1,5 +1,16 @@
 # analysis/detect_teams_preview.py
 # -*- coding: utf-8 -*-
+#
+# V3 — KMeans PAR JOUEUR (pas par pixel)
+#
+# Pipeline :
+#   1. Tracker YOLO+DeepSort sur 30s (coup d'envoi)
+#   2. Par bbox : mini-KMeans(3) sur zone torse stricte
+#      → couleur dominante maillot (cluster le plus saturé)
+#   3. Accumulation par PID (20+ obs)
+#   4. Médiane robuste par joueur
+#   5. KMeans SUR joueurs (2 clusters)
+#   6. Filtrage gardiens/arbitres avant clustering
 
 import os
 import cv2
@@ -7,6 +18,108 @@ import numpy as np
 from collections import defaultdict
 
 
+# ─────────────────────────────────────────
+# COULEUR DOMINANTE MAILLOT PAR BBOX
+# ─────────────────────────────────────────
+def dominant_jersey_color(frame, bbox):
+    """
+    Extrait la couleur dominante du MAILLOT uniquement.
+    Zone stricte : 20%→45% hauteur, 35%→65% largeur (torse central).
+    Mini-KMeans(3) sur la zone → garde le cluster le plus saturé.
+    Retourne None si qualité insuffisante.
+    """
+    try:
+        x1, y1, x2, y2 = map(int, bbox)
+        x1 = max(0, x1); y1 = max(0, y1)
+        x2 = min(frame.shape[1], x2)
+        y2 = min(frame.shape[0], y2)
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            return None
+
+        h, w = crop.shape[:2]
+        if h < 30 or w < 12:
+            return None
+
+        # Zone torse stricte : évite tête, bras, shorts, jambes
+        torso = crop[int(h*0.20):int(h*0.45),
+                     int(w*0.35):int(w*0.65)]
+        if torso.size == 0 or torso.shape[0] < 5 or torso.shape[1] < 5:
+            return None
+
+        # ── Mini-KMeans(3) sur le torse ──────────────────────────────────
+        pixels = torso.reshape(-1, 3).astype(np.float32)
+        if len(pixels) < 9:
+            return None
+
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        _, labels, centers = cv2.kmeans(
+            pixels, 3, None, criteria, 3, cv2.KMEANS_RANDOM_CENTERS
+        )
+        labels_flat  = labels.flatten()
+        label_counts = np.bincount(labels_flat, minlength=3)
+
+        # ── Compacité des clusters (variance intra-cluster) ───────────────
+        # Un cluster compact = maillot uniforme
+        # Un cluster diffus  = gazon/fond mélangé
+        # On mesure l'écart-type des pixels de chaque cluster
+        cluster_stds = []
+        for i in range(3):
+            mask_i = labels_flat == i
+            if mask_i.sum() < 3:
+                cluster_stds.append(999.0)
+                continue
+            cluster_pixels = pixels[mask_i]
+            std_i = float(np.mean(np.std(cluster_pixels, axis=0)))
+            cluster_stds.append(std_i)
+
+        # ── Choisir le cluster dominant le plus compact ───────────────────
+        # Score = taille × compacité × saturation
+        # Pas de règle sur la couleur (vert maillot autorisé)
+        best_center = None
+        best_score  = -1
+
+        for i, center in enumerate(centers):
+            b, g, r = int(center[0]), int(center[1]), int(center[2])
+
+            # Rejeter noir pur / ombres profondes
+            if (b + g + r) / 3 < 30:
+                continue
+            # Rejeter blanc pur / surexposition
+            if (b + g + r) / 3 > 240:
+                continue
+
+            px  = np.uint8([[[b, g, r]]])
+            hsv = cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0]
+            sat = int(hsv[1])
+
+            n_cluster  = label_counts[i]
+            compacity  = max(0, 50 - cluster_stds[i])  # plus compact = meilleur
+            score      = n_cluster * (sat + 10) * (compacity + 1)
+
+            if score > best_score:
+                best_score  = score
+                best_center = center
+
+        if best_center is None:
+            return None
+
+        # Rejeter si trop peu saturé (gazon dilué, béton, fond gris)
+        b, g, r = int(best_center[0]), int(best_center[1]), int(best_center[2])
+        px  = np.uint8([[[b, g, r]]])
+        hsv = cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0]
+        if int(hsv[1]) < 35:
+            return None
+
+        return best_center.astype(float)
+
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────
+# NOM COULEUR
+# ─────────────────────────────────────────
 def bgr_to_name(bgr):
     if not bgr:
         return "inconnu"
@@ -34,51 +147,6 @@ def bgr_to_name(bgr):
     return "inconnu"
 
 
-def extract_jersey_color_strict(frame, bbox):
-    try:
-        x1, y1, x2, y2 = map(int, bbox)
-        x1 = max(0, x1); y1 = max(0, y1)
-        x2 = min(frame.shape[1], x2)
-        y2 = min(frame.shape[0], y2)
-        crop = frame[y1:y2, x1:x2]
-        if crop.size == 0:
-            return None
-        h, w = crop.shape[:2]
-        if h < 25 or w < 10:
-            return None
-        jersey = crop[int(h*0.18):int(h*0.42), int(w*0.25):int(w*0.75)]
-        if jersey.size == 0:
-            return None
-        hsv   = cv2.cvtColor(jersey, cv2.COLOR_BGR2HSV)
-        S     = hsv[:, :, 1]
-        V     = hsv[:, :, 2]
-        total = float(S.size)
-        mask1  = (S > 80) & (V > 40) & (V < 220)
-        ratio1 = mask1.sum() / max(total, 1)
-        if ratio1 >= 0.30 and mask1.sum() >= 8:
-            color = jersey[mask1].mean(axis=0).astype(float)
-        elif mask2.sum() >= 8 and (mask2.sum()/max(total,1)) >= 0.40:
-            color = jersey[mask2].mean(axis=0).astype(float)
-        else:
-            return None
-
-        # Vérifier que la couleur dominante n'est pas du gazon/tribune
-        # H=35-90 (jaune-vert) avec V>100 = gazon ou tribunes → rejeter
-        try:
-            px  = np.uint8([[[int(color[0]), int(color[1]), int(color[2])]]])
-            hsv_c = cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0]
-            h_c = int(hsv_c[0]) * 2
-            v_c = int(hsv_c[2])
-            if 35 <= h_c <= 90 and v_c > 100:
-                return None   # gazon clair ou tribunes jaune-vert
-        except Exception:
-            pass
-
-        return color
-    except Exception:
-        return None
-
-
 def save_preview_frame(frame, team_id, output_dir, color_bgr=None):
     os.makedirs(output_dir, exist_ok=True)
     preview = frame.copy()
@@ -94,10 +162,12 @@ def save_preview_frame(frame, team_id, output_dir, color_bgr=None):
     return path
 
 
+# ─────────────────────────────────────────
+# DÉTECTION PRINCIPALE
+# ─────────────────────────────────────────
 def detect_teams_preview(video_path, output_dir="outputs/preview",
                           bootstrap_duration=90.0, sport="football",
                           n_frames=60, analysis_duration=120.0):
-
     os.makedirs(output_dir, exist_ok=True)
 
     cap = cv2.VideoCapture(video_path)
@@ -111,7 +181,6 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     max_frame    = min(int(bootstrap_duration * fps), total_frames)
 
     PROCESS_W, PROCESS_H = 960, 540
-
     print(f"  [PREVIEW] Tracker sur {bootstrap_duration:.0f}s "
           f"({max_frame} frames) | {w_orig}x{h_orig}")
 
@@ -127,49 +196,29 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         import traceback; traceback.print_exc()
         return {"success": False, "error": f"Tracker non disponible : {e}"}
 
+    # pid → liste de couleurs dominantes maillot
     pid_colors  = defaultdict(list)
     n_obs_total = 0
     n_rejected  = 0
     frame_id    = 0
-    prev_gray   = None
     skip        = max(1, int(fps / 8))
 
-    print(f"  [PREVIEW] Analyse 1 frame / {skip} (skip={skip})")
+    print(f"  [PREVIEW] skip={skip} (~8fps)")
 
     while frame_id < max_frame:
         ret, frame = cap.read()
         if not ret:
             break
-
         frame_id += 1
         if frame_id % skip != 0:
             continue
 
-        # Log progression
         if frame_id % 300 == 0:
             print(f"  [PREVIEW] frame {frame_id}/{max_frame} | "
                   f"pids={len(pid_colors)} obs={n_obs_total}")
 
-        try:
-            small = cv2.resize(frame, (PROCESS_W, PROCESS_H),
-                               interpolation=cv2.INTER_LINEAR)
-        except Exception as e:
-            print(f"  [PREVIEW] resize error f{frame_id}: {e}")
-            continue
-
-        # Masque mouvement
-        motion = None
-        try:
-            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-            if prev_gray is not None:
-                diff = cv2.absdiff(gray, prev_gray)
-                _, motion = cv2.threshold(diff, 18, 255, cv2.THRESH_BINARY)
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (12, 12))
-                motion = cv2.dilate(motion, kernel, iterations=2)
-            prev_gray = gray
-        except Exception as e:
-            print(f"  [PREVIEW] motion error f{frame_id}: {e}")
-            prev_gray = None
+        small = cv2.resize(frame, (PROCESS_W, PROCESS_H),
+                           interpolation=cv2.INTER_LINEAR)
 
         # Détection YOLO
         try:
@@ -177,19 +226,15 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
                 [small], conf=0.4, verbose=False,
                 imgsz=int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))
             )
-        except Exception as e:
-            print(f"  [PREVIEW] YOLO error f{frame_id}: {e}")
+        except Exception:
             continue
 
         players = []
         for box in results[0].boxes:
-            if int(box.cls[0]) != detector.player_cls:
-                continue
-            if float(box.conf[0]) < 0.4:
-                continue
+            if int(box.cls[0]) != detector.player_cls: continue
+            if float(box.conf[0]) < 0.4: continue
             x1, y1, x2, y2 = box.xyxy[0].tolist()
-            if (y2 - y1) < PROCESS_H * 0.12:
-                continue
+            if (y2 - y1) < PROCESS_H * 0.10: continue  # trop loin
             players.append({
                 "bbox":   [x1, y1, x2, y2],
                 "center": [(x1+x2)/2, (y1+y2)/2],
@@ -199,31 +244,19 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         if not players:
             continue
 
-        # Tracking
         try:
             tracked = tracker.update(players, small)
         except Exception as e:
             print(f"  [PREVIEW] tracker error f{frame_id}: {e}")
-            import traceback; traceback.print_exc()
             continue
 
-        # Accumuler couleurs
         for p in tracked:
             pid  = str(p.get("id") or p.get("player_id", ""))
             bbox = p.get("bbox")
             if not pid or not bbox:
                 continue
 
-            if motion is not None:
-                try:
-                    x1, y1, x2, y2 = map(int, bbox)
-                    roi = motion[max(0,y1):max(0,y2), max(0,x1):max(0,x2)]
-                    if roi.size > 0 and roi.mean() < 15:
-                        continue
-                except Exception:
-                    pass
-
-            color = extract_jersey_color_strict(small, bbox)
+            color = dominant_jersey_color(small, bbox)
             if color is None:
                 n_rejected += 1
                 continue
@@ -232,242 +265,77 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             n_obs_total += 1
 
     cap.release()
-    print(f"  [PREVIEW] Boucle terminée frame_id={frame_id} max={max_frame}")
     print(f"  [PREVIEW] Boucle terminée : {frame_id} frames | "
           f"{len(pid_colors)} PIDs | "
           f"{n_obs_total} obs valides | {n_rejected} rejetées")
 
-    # Joueurs stables
-    MIN_OBS = 8
-    stable_colors = []
-    stable_pids   = []
+    # ── Médiane robuste par joueur ────────────────────────────────────────────
+    MIN_OBS = 6
+    player_colors = []  # une couleur par joueur stable
 
     for pid, colors in pid_colors.items():
         if len(colors) < MIN_OBS:
             continue
-        arr = np.array(colors, dtype=np.float32)
+        arr    = np.array(colors, dtype=np.float32)
+        # Filtre outliers : garder 70% proches de la médiane
+        median = np.median(arr, axis=0)
+        dists  = np.linalg.norm(arr - median, axis=1)
+        thresh = np.percentile(dists, 70)
+        clean  = arr[dists <= thresh]
+        final  = np.median(clean, axis=0) if len(clean) >= 3 else median
+        player_colors.append(final)
 
-        # Extraire les teintes H pour chaque observation
-        hues = []
-        for c in arr:
-            try:
-                px  = np.uint8([[[int(c[0]), int(c[1]), int(c[2])]]])
-                h_v = int(cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0][0]) * 2
-                hues.append(h_v)
-            except Exception:
-                hues.append(0)
-        hues = np.array(hues, dtype=np.float32)
+    n_players = len(player_colors)
+    print(f"  [PREVIEW] {n_players} joueurs stables (>= {MIN_OBS} obs)")
 
-        if len(arr) >= 12:
-            try:
-                # Nettoyer les teintes invalides
-                valid = np.isfinite(hues) & (hues >= 0) & (hues <= 360)
-                if valid.sum() < 8:
-                    raise ValueError("Pas assez de teintes valides")
-
-                h_2d     = hues[valid].reshape(-1, 1).astype(np.float32)
-                arr_valid = arr[valid]
-                criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
-                _, labels, centers = cv2.kmeans(
-                    h_2d, 2, None, criteria, 5, cv2.KMEANS_RANDOM_CENTERS
-                )
-                labels = labels.flatten()
-                n0, n1 = int((labels==0).sum()), int((labels==1).sum())
-                dom_label = 0 if n0 >= n1 else 1
-                dom_mask  = labels == dom_label
-                if dom_mask.sum() >= 4:
-                    final = np.median(arr_valid[dom_mask], axis=0)
-                else:
-                    final = np.median(arr, axis=0)
-            except Exception as _ek:
-                final = np.median(arr, axis=0)
-        else:
-            # Peu d'obs → médiane simple avec filtre outliers
-            median = np.median(arr, axis=0)
-            dists  = np.linalg.norm(arr - median, axis=1)
-            thresh = np.percentile(dists, 70)
-            clean  = arr[dists <= thresh]
-            final  = np.median(clean, axis=0) if len(clean) >= 3 else median
-
-        stable_colors.append(final)
-        stable_pids.append(pid)
-
-    n_stable = len(stable_colors)
-    print(f"  [PREVIEW] {n_stable} joueurs stables (>= {MIN_OBS} obs)")
-
-    # Debug : distribution des teintes dans stable_colors
-    if stable_colors:
-        import cv2 as _cv2, numpy as _np
-        all_h = []
-        for sc in stable_colors:
-            px = _np.uint8([[[int(sc[0]),int(sc[1]),int(sc[2])]]])
-            h  = int(_cv2.cvtColor(px, _cv2.COLOR_BGR2HSV)[0][0][0]) * 2
-            all_h.append(h)
-        all_h = _np.array(all_h)
-        # Afficher distribution par zone de couleur
-        zones = [
-            ("rouge/bordeaux", (0,35)),
-            ("jaune/vert clair", (35,90)),
-            ("vert", (90,165)),
-            ("bleu", (185,265)),
-            ("violet/rose", (265,360)),
-        ]
-        print(f"  [PREVIEW] Distribution teintes ({len(all_h)} joueurs):")
-        for name, (lo, hi) in zones:
-            n = int(((all_h >= lo) & (all_h < hi)).sum())
-            if n > 0:
-                print(f"    {name:20} H={lo:3d}-{hi:3d}: {n:3d} joueurs")
-
-    # Fallback PlayerReID
-    if n_stable < 4:
-        print(f"  [PREVIEW] Pas assez → fallback PlayerReID")
-        try:
-            from analysis.player_reid import get_team_colors
-            reid = get_team_colors()
-            if reid and len(reid) >= 2:
-                c0 = tuple(int(x) for x in reid[0])
-                c1 = tuple(int(x) for x in reid[1])
-                print(f"  [PREVIEW] PlayerReID: {c0}→{bgr_to_name(c0)} | "
-                      f"{c1}→{bgr_to_name(c1)}")
-                return {
-                    "success": True,
-                    "n_players_analyzed": 0,
-                    "team_0": {"color_bgr": list(c0), "color_name": bgr_to_name(c0),
-                               "short_bgr": None, "preview_frame": None},
-                    "team_1": {"color_bgr": list(c1), "color_name": bgr_to_name(c1),
-                               "short_bgr": None, "preview_frame": None},
-                }
-        except Exception as e:
-            print(f"  [PREVIEW] PlayerReID échoué : {e}")
+    if n_players < 4:
         return {"success": False,
-                "error": f"Pas assez de joueurs stables ({n_stable})"}
+                "error": f"Pas assez de joueurs stables ({n_players})"}
 
-    # ── Calcul teinte dominante par joueur ───────────────────────────────────
-    player_hues = []
-    for sc in stable_colors:
-        try:
-            px = np.uint8([[[int(sc[0]), int(sc[1]), int(sc[2])]]])
-            h  = int(cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0][0]) * 2
-            player_hues.append(h)
-        except Exception:
-            player_hues.append(0)
-    player_hues = np.array(player_hues)
+    # ── Filtrer gardiens/arbitres avant clustering ────────────────────────────
+    # Gardiens/arbitres ont souvent une couleur unique très différente
+    # On les détecte comme outliers par rapport au nuage principal
+    samples = np.array(player_colors, dtype=np.float32)
 
-    # ── Séparation intelligente par teinte ───────────────────────────────────
-    # On cherche les 2 teintes dominantes dans l'ensemble des joueurs
-    # en utilisant un KMeans sur les teintes (1D) avec initialisation PP
-    samples_bgr = np.array(stable_colors, dtype=np.float32)
+    # Calculer la distance médiane de chaque joueur par rapport au centre
+    center_all = np.median(samples, axis=0)
+    dists_all  = np.linalg.norm(samples - center_all, axis=1)
+    thresh_out = np.percentile(dists_all, 85)  # garder 85% des joueurs
 
-    # KMeans sur l'espace BGR complet
+    # Ne garder que les joueurs "normaux" pour le clustering
+    mask_in    = dists_all <= thresh_out
+    n_filtered = mask_in.sum()
+    print(f"  [PREVIEW] Après filtre outliers : {n_filtered}/{n_players} joueurs")
+
+    if n_filtered < 4:
+        mask_in = np.ones(n_players, dtype=bool)  # fallback : garder tout
+        n_filtered = n_players
+
+    samples_clean = samples[mask_in]
+
+    # ── KMeans SUR joueurs (pas sur pixels) ──────────────────────────────────
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.5)
     _, labels, centroids = cv2.kmeans(
-        samples_bgr, 2, None, criteria, 15, cv2.KMEANS_PP_CENTERS
+        samples_clean, 2, None, criteria, 15, cv2.KMEANS_PP_CENTERS
     )
     labels = labels.flatten()
-    n0  = int((labels == 0).sum())
-    n1  = int((labels == 1).sum())
-    c0  = tuple(int(x) for x in centroids[0])
-    c1  = tuple(int(x) for x in centroids[1])
+    n0 = int((labels == 0).sum())
+    n1 = int((labels == 1).sum())
+    c0 = tuple(int(x) for x in centroids[0])
+    c1 = tuple(int(x) for x in centroids[1])
     dist = float(np.linalg.norm(centroids[0] - centroids[1]))
 
-    # ── Vérification : les 2 équipes ont-elles des teintes distinctes ? ───────
-    # Calculer la teinte médiane de chaque cluster
-    h0 = np.median(player_hues[labels == 0])
-    h1 = np.median(player_hues[labels == 1])
-    print(f"  [PREVIEW] KMeans BGR: dist={dist:.1f} | "
-          f"Team0:{c0}→{bgr_to_name(c0)} H={h0:.0f} ({n0}j) | "
-          f"Team1:{c1}→{bgr_to_name(c1)} H={h1:.0f} ({n1}j)")
+    print(f"  [PREVIEW] KMeans joueurs: dist={dist:.1f} | "
+          f"Team0:{c0}→{bgr_to_name(c0)}({n0}j) | "
+          f"Team1:{c1}→{bgr_to_name(c1)}({n1}j)")
 
-    # Si distance < 60 → les clusters sont trop proches → essayer KMeans sur HSV
-    if dist < 60:
-        print(f"  [PREVIEW] Distance faible → KMeans sur HSV")
-        try:
-            # Convertir en HSV pour KMeans
-            hsv_colors = []
-            for sc in stable_colors:
-                px  = np.uint8([[[int(sc[0]), int(sc[1]), int(sc[2])]]])
-                hsv = cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0].astype(float)
-                # Pondérer H plus fort (plus discriminant que S et V)
-                hsv_colors.append([hsv[0] * 3, hsv[1], hsv[2]])
-            samples_hsv = np.array(hsv_colors, dtype=np.float32)
-            _, labels2, centroids2 = cv2.kmeans(
-                samples_hsv, 2, None, criteria, 15, cv2.KMEANS_PP_CENTERS
-            )
-            labels2 = labels2.flatten()
-            # Reconvertir les centroids HSV en BGR
-            c0_h = np.uint8([[[int(centroids2[0][0]/3), int(centroids2[0][1]),
-                                int(centroids2[0][2])]]])
-            c1_h = np.uint8([[[int(centroids2[1][0]/3), int(centroids2[1][1]),
-                                int(centroids2[1][2])]]])
-            c0_bgr_h = cv2.cvtColor(c0_h, cv2.COLOR_HSV2BGR)[0][0]
-            c1_bgr_h = cv2.cvtColor(c1_h, cv2.COLOR_HSV2BGR)[0][0]
-
-            # Calculer la distance en BGR
-            n0_h = int((labels2==0).sum())
-            n1_h = int((labels2==1).sum())
-            c0_t = tuple(int(x) for x in c0_bgr_h)
-            c1_t = tuple(int(x) for x in c1_bgr_h)
-            dist_h = float(np.linalg.norm(
-                np.array(centroids2[0]) - np.array(centroids2[1])
-            ))
-
-            # Recalculer les centroids BGR réels depuis les membres des clusters
-            c0_real = tuple(int(x) for x in samples_bgr[labels2==0].mean(axis=0))
-            c1_real = tuple(int(x) for x in samples_bgr[labels2==1].mean(axis=0))
-            dist_real = float(np.linalg.norm(
-                np.array(c0_real) - np.array(c1_real)
-            ))
-
-            print(f"  [PREVIEW] KMeans HSV: dist_hsv={dist_h:.1f} dist_bgr={dist_real:.1f} | "
-                  f"Team0:{c0_real}→{bgr_to_name(c0_real)}({n0_h}j) | "
-                  f"Team1:{c1_real}→{bgr_to_name(c1_real)}({n1_h}j)")
-
-            if dist_real > dist:
-                c0, c1 = c0_real, c1_real
-                labels, n0, n1 = labels2, n0_h, n1_h
-                dist = dist_real
-                print(f"  [PREVIEW] KMeans HSV retenu (meilleure séparation)")
-
-                # Si déséquilibre fort (ex: 2j vs 30j) → re-classer par distance teinte
-                ratio = min(n0_h, n1_h) / max(max(n0_h, n1_h), 1)
-                if ratio < 0.25:
-                    print(f"  [PREVIEW] Déséquilibre ({n0_h}j vs {n1_h}j) → "
-                          f"re-classification par teinte")
-                    # Recalculer teinte centroide de chaque cluster
-                    h_c0 = float(np.median(player_hues[labels2 == 0]))
-                    h_c1 = float(np.median(player_hues[labels2 == 1]))
-
-                    # Re-classer chaque joueur selon sa teinte la plus proche
-                    new_labels = np.zeros(len(player_hues), dtype=np.int32)
-                    for i, h in enumerate(player_hues):
-                        # Distance circulaire sur la teinte (0-360)
-                        d0 = min(abs(h - h_c0), 360 - abs(h - h_c0))
-                        d1 = min(abs(h - h_c1), 360 - abs(h - h_c1))
-                        new_labels[i] = 0 if d0 <= d1 else 1
-
-                    n0_new = int((new_labels == 0).sum())
-                    n1_new = int((new_labels == 1).sum())
-                    c0_new = tuple(int(x) for x in samples_bgr[new_labels==0].mean(axis=0))
-                    c1_new = tuple(int(x) for x in samples_bgr[new_labels==1].mean(axis=0))
-                    dist_new = float(np.linalg.norm(
-                        np.array(c0_new) - np.array(c1_new)
-                    ))
-                    print(f"  [PREVIEW] Après re-classification: "
-                          f"Team0:{c0_new}→{bgr_to_name(c0_new)}({n0_new}j) | "
-                          f"Team1:{c1_new}→{bgr_to_name(c1_new)}({n1_new}j) "
-                          f"dist={dist_new:.1f}")
-                    c0, c1 = c0_new, c1_new
-                    n0, n1 = n0_new, n1_new
-                    dist    = dist_new
-        except Exception as _eh:
-            print(f"  [PREVIEW] KMeans HSV échoué : {_eh}")
-
-    # Preview frames
+    # ── Preview frames ────────────────────────────────────────────────────────
     preview_0 = preview_1 = None
     try:
         cap2 = cv2.VideoCapture(video_path)
         best_f0 = best_f1 = None
         best_s0 = best_s1 = 0
+
         for fid in np.linspace(int(fps*5), max_frame, 12, dtype=int):
             cap2.set(cv2.CAP_PROP_POS_FRAMES, int(fid))
             ret, frm = cap2.read()
@@ -475,7 +343,8 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             sm = cv2.resize(frm, (PROCESS_W, PROCESS_H))
             try:
                 res = detector.model([sm], conf=0.4, verbose=False,
-                                      imgsz=int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ)))
+                                     imgsz=int(os.environ.get('YOLO_IMGSZ',
+                                              config.YOLO_IMGSZ)))
                 pls = [{"bbox": b.xyxy[0].tolist(),
                         "center": [(b.xyxy[0][0]+b.xyxy[0][2])/2,
                                    (b.xyxy[0][1]+b.xyxy[0][3])/2],
@@ -485,9 +354,10 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
                 tr2 = tracker.update(pls, sm)
             except Exception:
                 continue
+
             s0 = s1 = 0
             for p in tr2:
-                col = extract_jersey_color_strict(sm, p.get("bbox", []))
+                col = dominant_jersey_color(sm, p.get("bbox", []))
                 if col is None: continue
                 c = np.array(col, dtype=np.float32)
                 if np.linalg.norm(c-centroids[0]) < np.linalg.norm(c-centroids[1]):
@@ -496,6 +366,7 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
                     s1 += 1
             if s0 > best_s0: best_s0 = s0; best_f0 = frm.copy()
             if s1 > best_s1: best_s1 = s1; best_f1 = frm.copy()
+
         cap2.release()
         if best_f0 is not None:
             preview_0 = save_preview_frame(best_f0, 0, output_dir, c0)
