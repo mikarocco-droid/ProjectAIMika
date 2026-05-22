@@ -170,26 +170,28 @@ async function runTeamDetection(uploadId) {
     const prog = document.getElementById("detecting-progress");
 
     // Timeout de sécurité : max 90s, puis on révèle quand même le dashboard
-    const TIMEOUT_MS = 90000;
+    const TIMEOUT_MS = 240000;  // 4 minutes
     let   timedOut   = false;
     const timeoutId  = setTimeout(() => {
         timedOut = true;
     }, TIMEOUT_MS);
 
-    // Messages de progression pendant l'attente
+    // Messages de progression toutes les 20s (~10 messages sur 4 min)
     const msgs = [
         "Lancement du tracker vidéo…",
         "Détection des joueurs (YOLO)…",
         "Tracking et accumulation couleurs…",
         "Analyse des profils joueurs stables…",
         "Calcul des clusters d'équipes…",
+        "Analyse en cours, merci de patienter…",
+        "Finalisation de la détection…",
     ];
     let msgIdx = 0;
     const msgInterval = setInterval(() => {
-        if (prog && msgIdx < msgs.length) {
-            prog.textContent = msgs[msgIdx++];
+        if (prog) {
+            prog.textContent = msgs[Math.min(msgIdx++, msgs.length - 1)];
         }
-    }, 6000);
+    }, 20000);
 
     try {
         if (prog) prog.textContent = msgs[0];
@@ -209,7 +211,7 @@ async function runTeamDetection(uploadId) {
                 setTimeout(() => {
                     controller.abort();
                     reject(new Error("timeout"));
-                }, TIMEOUT_MS)
+                }, TIMEOUT_MS + 5000)   // légère marge après TIMEOUT_MS
             )
         ]);
 
