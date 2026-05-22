@@ -32,9 +32,7 @@ def _ask_gemini_colors(frame, client):
     img_b64 = _frame_to_base64(frame)
 
     prompt = """Regarde cette image d'un match de football.
-Identifie les 2 équipes distinctes visibles et pour chacune décris :
-- la couleur principale du maillot
-- la couleur du short
+Identifie les 2 équipes de joueurs de champ et les gardiens de but.
 
 Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
 {
@@ -46,11 +44,13 @@ Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
     "jersey": "couleur du maillot",
     "short": "couleur du short"
   },
+  "goalkeeper_a": "couleur du maillot du gardien de l'équipe A (souvent différente des joueurs de champ), ou null si non visible",
+  "goalkeeper_b": "couleur du maillot du gardien de l'équipe B, ou null si non visible",
   "confidence": "high/medium/low"
 }
 
 Si tu ne vois qu'une seule équipe ou si l'image est floue, réponds :
-{"confidence": "low", "team_a": null, "team_b": null}
+{"confidence": "low", "team_a": null, "team_b": null, "goalkeeper_a": null, "goalkeeper_b": null}
 """
 
     try:
@@ -226,10 +226,23 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             j_b = majority_color("team_b", "jersey")
             s_b = majority_color("team_b", "short")
 
+            # Gardiens
+            def majority_gk(key):
+                votes = [r[key].lower() for r in results
+                         if r.get(key) and isinstance(r[key], str)]
+                if not votes: return None
+                from collections import Counter
+                return Counter(votes).most_common(1)[0][0]
+
+            gk_a = majority_gk("goalkeeper_a")
+            gk_b = majority_gk("goalkeeper_b")
+
             name_a = f"{j_a}/{s_a}" if s_a and s_a != j_a else j_a
             name_b = f"{j_b}/{s_b}" if s_b and s_b != j_b else j_b
 
-            print(f"  [PREVIEW] Résultat Gemini: Team A={name_a} | Team B={name_b}")
+            gk_a_str = f" | GK A={gk_a}" if gk_a else ""
+            gk_b_str = f" | GK B={gk_b}" if gk_b else ""
+            print(f"  [PREVIEW] Résultat Gemini: Team A={name_a} | Team B={name_b}{gk_a_str}{gk_b_str}")
 
             # Couleur hex pour le dashboard
             hex_a = _color_name_to_hex(j_a)
@@ -252,16 +265,18 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
                 "n_players_analyzed": len(results),
                 "method":             "gemini",
                 "team_0": {
-                    "color_bgr":     _hex_to_bgr(hex_a),
-                    "color_name":    name_a,
-                    "short_bgr":     _hex_to_bgr(_color_name_to_hex(s_a)),
-                    "preview_frame": preview_0,
+                    "color_bgr":        _hex_to_bgr(hex_a),
+                    "color_name":       name_a,
+                    "short_bgr":        _hex_to_bgr(_color_name_to_hex(s_a)),
+                    "goalkeeper_color": gk_a,
+                    "preview_frame":    preview_0,
                 },
                 "team_1": {
-                    "color_bgr":     _hex_to_bgr(hex_b),
-                    "color_name":    name_b,
-                    "short_bgr":     _hex_to_bgr(_color_name_to_hex(s_b)),
-                    "preview_frame": preview_1,
+                    "color_bgr":        _hex_to_bgr(hex_b),
+                    "color_name":       name_b,
+                    "short_bgr":        _hex_to_bgr(_color_name_to_hex(s_b)),
+                    "goalkeeper_color": gk_b,
+                    "preview_frame":    preview_1,
                 },
             }
 
