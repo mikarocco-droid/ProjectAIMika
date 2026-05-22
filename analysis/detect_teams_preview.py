@@ -292,8 +292,10 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         import traceback; traceback.print_exc()
         return {"success": False, "error": f"Tracker non disponible : {e}"}
 
-    # pid → liste de couleurs dominantes maillot
-    pid_colors  = defaultdict(list)
+    # pid → liste de features (histogrammes 24D)
+    pid_colors       = defaultdict(list)
+    # pid → (jersey_bgr, short_bgr) pour l'affichage
+    bgr_colors_by_pid = {}
     n_obs_total = 0
     n_rejected  = 0
     frame_id    = 0
@@ -376,14 +378,16 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             pid_colors[pid].append(color)
             n_obs_total += 1
 
+            # Stocker aussi les couleurs BGR pour l'affichage (1 fois par PID)
+            if pid not in bgr_colors_by_pid:
+                j_bgr, s_bgr = player_bgr_colors(small, bbox)
+                if j_bgr is not None:
+                    bgr_colors_by_pid[pid] = (j_bgr, s_bgr)
+
     cap.release()
-    # Compter 3D vs 6D
-    n_3d = sum(1 for colors in pid_colors.values() for c in colors if len(c) == 3)
-    n_6d = sum(1 for colors in pid_colors.values() for c in colors if len(c) == 6)
     print(f"  [PREVIEW] Boucle terminée : {frame_id} frames | "
           f"{len(pid_colors)} PIDs | "
-          f"{n_obs_total} obs valides | {n_rejected} rejetées | "
-          f"3D={n_3d} 6D={n_6d}")
+          f"{n_obs_total} obs valides | {n_rejected} rejetées")
 
     # ── Médiane robuste par joueur ────────────────────────────────────────────
     MIN_OBS = 6
@@ -393,16 +397,11 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         if len(colors) < MIN_OBS:
             continue
 
-        # Harmoniser les dimensions : si >50% sont 6D → garder 6D, sinon 3D
-        dims  = [len(c) for c in colors]
-        n6d   = sum(1 for d in dims if d == 6)
-        use6d = n6d > len(dims) // 2
-
-        if use6d:
-            colors_filtered = [c for c in colors if len(c) == 6]
-        else:
-            colors_filtered = [c[:3] for c in colors]   # tronquer 6D → 3D
-
+        # Garder seulement les vecteurs 24D (histogrammes complets)
+        colors_filtered = [c for c in colors if len(c) == 24]
+        if len(colors_filtered) < MIN_OBS:
+            # Fallback : accepter aussi les partiels
+            colors_filtered = colors
         if len(colors_filtered) < MIN_OBS:
             continue
 
@@ -461,58 +460,95 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     # ── KMeans SUR joueurs (3D ou 6D selon présence du short) ───────────────
     dim = samples_clean.shape[1]  # 3 ou 6
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.5)
-    _, labels, centroids = cv2.kmeans(
-        samples_clean, 2, None, criteria, 15, cv2.KMEANS_PP_CENTERS
-    )
+
+    # Lancer KMeans plusieurs fois et garder la solution la plus équilibrée
+    # Un match = 2 équipes de taille similaire → ratio idéal proche de 50/50
+    best_labels = best_centroids = None
+    best_balance_score = -1
+
+    for _ in range(8):
+        _, lbl, ctr = cv2.kmeans(
+            samples_clean, 2, None, criteria, 1, cv2.KMEANS_PP_CENTERS
+        )
+        lbl = lbl.flatten()
+        n_a = int((lbl == 0).sum())
+        n_b = int((lbl == 1).sum())
+        total = n_a + n_b
+        # Score d'équilibre : 1.0 = parfait 50/50, 0 = tout dans un cluster
+        balance = 1.0 - abs(n_a - n_b) / max(total, 1)
+        # Score de distance : grande distance = bonne séparation
+        d = float(np.linalg.norm(ctr[0] - ctr[1]))
+        score = balance * d
+        if score > best_balance_score:
+            best_balance_score = score
+            best_labels    = lbl
+            best_centroids = ctr
+
+    labels    = best_labels
+    centroids = best_centroids
     labels = labels.flatten()
     n0 = int((labels == 0).sum())
     n1 = int((labels == 1).sum())
+    print(f"  [PREVIEW] Balance: {n0}j vs {n1}j (score={best_balance_score:.1f})")
 
     dist = float(np.linalg.norm(centroids[0] - centroids[1]))
 
     # Recalculer couleurs représentatives sur les joueurs les plus proches
     # du centroid (top 40%) pour éviter les valeurs polluées
-    def pure_color(cluster_idx):
-        mask   = labels == cluster_idx
-        pts    = samples_clean[mask]
-        center = centroids[cluster_idx]
-        dists  = np.linalg.norm(pts - center, axis=1)
-        thresh = np.percentile(dists, 40)   # top 40% plus purs
-        pure   = pts[dists <= thresh]
-        if len(pure) < 2:
-            pure = pts
-        return np.median(pure, axis=0)
+    # Les features sont des histogrammes — récupérer les vraies couleurs BGR
+    # depuis les PIDs de chaque cluster en relisant les frames
+    # Pour simplifier : utiliser les couleurs stockées dans bgr_colors_by_pid
+    c0_j = c0_s = c1_j = c1_s = None
 
-    rep0 = pure_color(0)
-    rep1 = pure_color(1)
+    pids_list = stable_pids
+    for ci, (cj_ref, cs_ref) in enumerate([(0, 0), (1, 1)]):
+        cluster_pids = [pids_list[i] for i in range(len(pids_list))
+                        if i < len(labels) and labels[i] == ci]
+        bgr_j_list = [bgr_colors_by_pid[p][0] for p in cluster_pids
+                      if p in bgr_colors_by_pid and bgr_colors_by_pid[p][0] is not None]
+        bgr_s_list = [bgr_colors_by_pid[p][1] for p in cluster_pids
+                      if p in bgr_colors_by_pid and bgr_colors_by_pid[p][1] is not None]
+        if bgr_j_list:
+            med_j = np.median(np.array(bgr_j_list), axis=0)
+            if ci == 0: c0_j = tuple(int(x) for x in med_j)
+            else:        c1_j = tuple(int(x) for x in med_j)
+        if bgr_s_list:
+            med_s = np.median(np.array(bgr_s_list), axis=0)
+            if ci == 0: c0_s = tuple(int(x) for x in med_s)
+            else:        c1_s = tuple(int(x) for x in med_s)
 
-    c0_j = tuple(int(x) for x in rep0[:3])
-    c1_j = tuple(int(x) for x in rep1[:3])
-    c0_s = tuple(int(x) for x in rep0[3:]) if dim == 6 else None
-    c1_s = tuple(int(x) for x in rep1[3:]) if dim == 6 else None
+    # Fallbacks
+    c0_j = c0_j or (128,128,128)
+    c1_j = c1_j or (64,64,64)
     c0   = c0_j
     c1   = c1_j
 
-    name0 = bgr_to_name(c0_j) + (f"/{bgr_to_name(c0_s)}" if c0_s else "")
-    name1 = bgr_to_name(c1_j) + (f"/{bgr_to_name(c1_s)}" if c1_s else "")
+    # Nommer par le short si sa couleur est plus fiable (plus saturée)
+    # Le short est souvent moins contaminé que le maillot
+    def best_name(jersey_bgr, short_bgr):
+        if short_bgr is None:
+            return bgr_to_name(jersey_bgr)
+        import numpy as _np
+        # Comparer saturation des deux
+        def sat(bgr):
+            px = _np.uint8([[[int(bgr[0]),int(bgr[1]),int(bgr[2])]]])
+            return int(cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0][0][1])
+        s_j = sat(jersey_bgr)
+        s_s = sat(short_bgr)
+        # Utiliser le plus saturé comme nom principal
+        if s_s > s_j + 20:
+            return f"{bgr_to_name(short_bgr)} (short)/{bgr_to_name(jersey_bgr)}"
+        return bgr_to_name(jersey_bgr) + f"/{bgr_to_name(short_bgr)}"
 
-    print(f"  [PREVIEW] KMeans {dim}D: dist={dist:.1f} | "
+    name0 = best_name(c0_j, c0_s)
+    name1 = best_name(c1_j, c1_s)
+
+    print(f"  [PREVIEW] KMeans hist: dist={dist:.3f} | "
           f"Team0:{c0_j}→{name0}({n0}j) | "
           f"Team1:{c1_j}→{name1}({n1}j)")
-
-    if dim == 6:
+    if c0_s:
         print(f"  [PREVIEW] Shorts → Team0:{c0_s}→{bgr_to_name(c0_s)} | "
               f"Team1:{c1_s}→{bgr_to_name(c1_s)}")
-        # Vérifier si le short discrimine bien
-        import numpy as _np
-        short_dist = float(_np.linalg.norm(
-            _np.array(c0_s, dtype=float) - _np.array(c1_s, dtype=float)
-        ))
-        jersey_dist = float(_np.linalg.norm(
-            _np.array(c0_j, dtype=float) - _np.array(c1_j, dtype=float)
-        ))
-        print(f"  [PREVIEW] Distance maillot={jersey_dist:.1f} | "
-              f"Distance short={short_dist:.1f}")
 
     # ── Vérification cohérence : si noms trop similaires → KMeans HSV ────────
     # Sur vecteur 6D le short discrimine déjà → pas besoin du fallback HSV
