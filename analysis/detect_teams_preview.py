@@ -475,10 +475,11 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
             threshold    = n_players * 0.15
             big_clusters = [i for i, c in enumerate(counts_pre) if c >= threshold]
             if len(big_clusters) >= 2:
-                mask_big   = np.isin(labels_pre, big_clusters)
+                mask_big      = np.isin(labels_pre, big_clusters)
                 samples_clean = samples[mask_big]
+                stable_pids   = [stable_pids[i] for i in range(n_players) if mask_big[i]]
                 n_filtered    = mask_big.sum()
-                excluded = n_players - n_filtered
+                excluded      = n_players - n_filtered
                 print(f"  [PREVIEW] Exclusion petits clusters : "
                       f"{n_filtered}/{n_players} joueurs gardés "
                       f"({excluded} gardiens/arbitres exclus)")
