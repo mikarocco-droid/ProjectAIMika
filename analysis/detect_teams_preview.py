@@ -393,8 +393,8 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     name0 = bgr_to_name(c0_j) + (f"/{bgr_to_name(c0_s)}" if c0_s else "")
     name1 = bgr_to_name(c1_j) + (f"/{bgr_to_name(c1_s)}" if c1_s else "")
 
-    print(f"  [PREVIEW] Team0: {c0_j}→{name0} ({n0}j)")
-    print(f"  [PREVIEW] Team1: {c1_j}→{name1} ({n1}j)")
+    print(f"  [PREVIEW] Team0: maillot={c0_j}→{bgr_to_name(c0_j)} | short={c0_s}→{bgr_to_name(c0_s)} ({n0}j)")
+    print(f"  [PREVIEW] Team1: maillot={c1_j}→{bgr_to_name(c1_j)} | short={c1_s}→{bgr_to_name(c1_s)} ({n1}j)")
 
     # ── Preview frames ────────────────────────────────────────────────────────
     preview_0 = preview_1 = None
