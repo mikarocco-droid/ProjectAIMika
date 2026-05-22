@@ -145,22 +145,20 @@ def extract_player_feature(frame, bbox):
         if h < 30:
             return None
 
-        # Zone torse : centre horizontal strict (25-75% largeur)
-        torso   = crop[int(h*0.18):int(h*0.44), int(w*0.25):int(w*0.75)]
-        short_z = crop[int(h*0.50):int(h*0.75), int(w*0.25):int(w*0.75)]
+        # Zone torse uniquement : 20%→55%, centre horizontal 20%→80%
+        # PAS de short → élimine contamination jambes/gazon
+        torso = crop[int(h*0.20):int(h*0.55), int(w*0.20):int(w*0.80)]
 
-        h_jersey = _h_histogram(torso,   bins=_H_BINS_JERSEY)
-        h_short  = _h_histogram(short_z, bins=_H_BINS_SHORT)
+        h_jersey = _h_histogram(torso, bins=_H_BINS_JERSEY)
         lab_feat = _lab_feature(torso)
 
         if h_jersey is None:
             return None
 
-        short_part = h_short  if h_short  is not None else np.zeros(_H_BINS_SHORT, dtype=np.float32)
-        lab_part   = lab_feat if lab_feat  is not None else np.zeros(3,             dtype=np.float32)
+        lab_part = lab_feat if lab_feat is not None else np.zeros(3, dtype=np.float32)
 
-        # Pondérer LAB × 3 pour qu'il ait plus de poids dans le clustering
-        return np.concatenate([h_jersey, short_part, lab_part * 3.0])  # 27D
+        # LAB × 4 : discriminant principal (A sépare vert vs rouge/bordeaux)
+        return np.concatenate([h_jersey, lab_part * 4.0])  # 19D
 
     except Exception:
         return None
