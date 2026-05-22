@@ -55,7 +55,7 @@ Si tu ne vois qu'une seule équipe ou si l'image est floue, réponds :
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=[
                 {
                     "parts": [
@@ -270,7 +270,7 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
     # ── Fallback : méthode YOLO+LAB ───────────────────────────────────────────
     print(f"  [PREVIEW] Fallback méthode YOLO+LAB...")
     try:
-        from analysis.detect_teams_preview_yolo import detect_teams_preview as _yolo_detect
+        from analysis.detect_teams_yolo import detect_teams_preview as _yolo_detect
         return _yolo_detect(video_path, output_dir, bootstrap_duration, sport)
     except Exception as e:
         print(f"  [PREVIEW] Fallback échoué : {e}")
