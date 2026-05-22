@@ -261,6 +261,23 @@ def save_preview_frame(frame, team_id, output_dir, color_bgr=None):
 # ─────────────────────────────────────────
 # DÉTECTION PRINCIPALE
 # ─────────────────────────────────────────
+def player_bgr_colors(frame, bbox):
+    """Retourne (jersey_bgr, short_bgr) pour l'affichage — séparé du clustering."""
+    try:
+        x1, y1, x2, y2 = map(int, bbox)
+        x1=max(0,x1); y1=max(0,y1)
+        x2=min(frame.shape[1],x2); y2=min(frame.shape[0],y2)
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0: return None, None
+        h, w = crop.shape[:2]
+        if h < 30 or w < 12: return None, None
+        torso   = crop[int(h*0.20):int(h*0.45), int(w*0.35):int(w*0.65)]
+        short_z = crop[int(h*0.50):int(h*0.75), int(w*0.25):int(w*0.75)]
+        return _mean_bgr(torso), _mean_bgr(short_z, accept_dark=True)
+    except Exception:
+        return None, None
+
+
 def detect_teams_preview(video_path, output_dir="outputs/preview",
                           bootstrap_duration=90.0, sport="football",
                           n_frames=60, analysis_duration=120.0):
