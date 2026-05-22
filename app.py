@@ -739,7 +739,7 @@ def api_detect_teams(upload_id):
         result = detect_teams_preview(
             video_path          = video_path,
             output_dir          = preview_dir,
-            bootstrap_duration  = 60.0,
+            bootstrap_duration  = 30.0,
             sport               = _prev_sport,
         )
 
