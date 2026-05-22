@@ -17,7 +17,7 @@ from collections import defaultdict
 
 
 # ─────────────────────────────────────────
-# HISTOGRAMME HSV
+# FEATURES COULEUR : HSV hist + LAB mean
 # ─────────────────────────────────────────
 _H_BINS_JERSEY = 16
 _H_BINS_SHORT  = 8
@@ -42,6 +42,40 @@ def _h_histogram(zone, bins):
         if total > 0:
             hist /= total
         return hist
+    except Exception:
+        return None
+
+
+def _ellipse_mask(zone):
+    """Masque elliptique central — garde uniquement le cœur du maillot."""
+    h, w = zone.shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cx, cy = w // 2, h // 2
+    rx = max(1, int(w * 0.35))   # rayon horizontal 35% largeur
+    ry = max(1, int(h * 0.45))   # rayon vertical 45% hauteur
+    cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 255, -1)
+    return mask > 0
+
+
+def _lab_feature(zone):
+    """
+    Mean LAB normalisé sur le cœur du maillot (masque elliptique).
+    LAB est plus stable que HSV sous mauvaise lumière.
+    """
+    if zone is None or zone.size == 0 or zone.shape[0] < 6 or zone.shape[1] < 6:
+        return None
+    try:
+        lab  = cv2.cvtColor(zone, cv2.COLOR_BGR2LAB).astype(np.float32)
+        mask = _ellipse_mask(zone)
+        if mask.sum() < 5:
+            return None
+        mean_lab = lab[mask].mean(axis=0)  # [L, A, B]
+        # Normaliser : L→0-1, A→-1-1, B→-1-1
+        return np.array([
+            mean_lab[0] / 255.0,
+            (mean_lab[1] - 128.0) / 128.0,
+            (mean_lab[2] - 128.0) / 128.0,
+        ], dtype=np.float32)
     except Exception:
         return None
 
@@ -90,9 +124,9 @@ def _trim_bbox_bottom(crop):
 
 def extract_player_feature(frame, bbox):
     """
-    Retourne vecteur 24D = [hist_H_maillot(16D), hist_H_short(8D)].
-    Retourne None si qualité insuffisante.
-    Recadre automatiquement le bas si gazon détecté.
+    Retourne vecteur 27D = [hist_H_maillot(16D), hist_H_short(8D), LAB_maillot(3D)].
+    - Masque elliptique sur le torse central → élimine bras/fond
+    - LAB pour robustesse sous mauvaise lumière
     """
     try:
         x1, y1, x2, y2 = map(int, bbox)
@@ -106,23 +140,27 @@ def extract_player_feature(frame, bbox):
         if h < 30 or w < 12:
             return None
 
-        # Recadrer le bas si gazon
         crop = _trim_bbox_bottom(crop)
         h, w = crop.shape[:2]
         if h < 30:
             return None
 
-        torso   = crop[int(h*0.20):int(h*0.45), int(w*0.35):int(w*0.65)]
+        # Zone torse : centre horizontal strict (25-75% largeur)
+        torso   = crop[int(h*0.18):int(h*0.44), int(w*0.25):int(w*0.75)]
         short_z = crop[int(h*0.50):int(h*0.75), int(w*0.25):int(w*0.75)]
 
         h_jersey = _h_histogram(torso,   bins=_H_BINS_JERSEY)
         h_short  = _h_histogram(short_z, bins=_H_BINS_SHORT)
+        lab_feat = _lab_feature(torso)
 
         if h_jersey is None:
             return None
 
-        short_part = h_short if h_short is not None else np.zeros(_H_BINS_SHORT, dtype=np.float32)
-        return np.concatenate([h_jersey, short_part])  # 24D
+        short_part = h_short  if h_short  is not None else np.zeros(_H_BINS_SHORT, dtype=np.float32)
+        lab_part   = lab_feat if lab_feat  is not None else np.zeros(3,             dtype=np.float32)
+
+        # Pondérer LAB × 3 pour qu'il ait plus de poids dans le clustering
+        return np.concatenate([h_jersey, short_part, lab_part * 3.0])  # 27D
 
     except Exception:
         return None
