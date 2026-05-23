@@ -481,6 +481,7 @@ EVIDENCE A — BALL IN NET (most reliable):
 - The goalkeeper must be CROUCHING or DIVING to pick up the ball — NOT simply standing in goal waiting
 - FAST GOALS: in amateur football the ball can enter and exit the net in under 1 second (net deforms briefly then returns to normal). If the net shows a brief deformation in frame 1 or 2 even if the ball is no longer visible inside → this counts as ball-in-net evidence (+3).
 - If the net appears BRIEFLY DEFORMED in an early frame but flat in subsequent frames, this is consistent with a fast goal where the ball rebounded out — do NOT discount this as a negative signal.
+- CRITICAL DISTINCTION — PENALTY BOX vs GOAL NET: The penalty area is flat WHITE LINES painted on the GROUND (a rectangle on the grass). The goal net is a 3D structure BEHIND the goal line, elevated, attached to posts. Do NOT confuse flat ground lines with a net. If what you see is a rectangle of white lines on the grass with players standing inside it → this is the penalty box, NOT a goal net. Score 0 for ball-in-net if the "net" is actually the penalty area markings.
 
 AMBIGUITY RULE (very important):
 If the ball position is unclear, partially hidden, or you are not 100% certain it crossed the line:
@@ -529,6 +530,9 @@ DO NOT interpret as a goal:
 - DEFENSIVE FREE KICK NEAR GOAL: player about to kick a stationary ball near the penalty area, others standing around = NOT a goal, NOT a kickoff
 - BALL CAUGHT BY GOALKEEPER THEN CLEARED: goalkeeper catches ball and punts/throws it = NOT a goal, even if ball was near goal line
 - LONG BALL INTO GOALKEEPER: ball played toward goal that goalkeeper catches or holds comfortably = NOT a goal (no danger)
+- REFEREE ON PITCH NEAR PLAYERS: if the referee (black or yellow kit) is visibly active on the pitch standing near a group of players → this indicates a stoppage (injury, foul, incident), NOT a goal. Players grouping around the referee = stoppage, not celebration.
+- INJURY STOPPAGE: players gathering around a player on the ground, referee nearby, ball out of play near the touchline or penalty area = injury stoppage, NOT a goal. Score -5 immediately.
+- PENALTY BOX LINES MISREAD AS NET: if the "deformation" or "rectangle" visible is flat on the ground with white lines → it is the penalty box painted on grass, NOT the goal net. Do not award +3 for this.
 
 For celebrations to count as evidence they must be UNAMBIGUOUS:
 - Multiple players from SAME team running toward each other with arms wide open
@@ -548,6 +552,8 @@ POSITIVE signals (accumulate across frames):
 
 NEGATIVE signals (subtract immediately):
 -5 : goalkeeper holding/catching/securing ball in hands or arms → is_goal=false, override ALL positives
+-5 : referee visible and active on pitch near players (injury stoppage, foul stoppage) → is_goal=false, override ALL positives
+-3 : players gathered around a player lying on the ground (injury) = NOT a celebration
 -4 : ball clearly kicked/headed away from goal (defensive clearance)
 -4 : corner kick or throw-in visible immediately after
 -4 : ball visible BEHIND the goal from outside (behind the goal frame/net exterior) → corner kick or goal kick situation
