@@ -479,6 +479,8 @@ EVIDENCE A — BALL IN NET (most reliable):
 - The net must be visibly deformed or ball clearly behind the line
 - The goalkeeper's position INSIDE the goal area confirms the ball went in
 - The goalkeeper must be CROUCHING or DIVING to pick up the ball — NOT simply standing in goal waiting
+- FAST GOALS: in amateur football the ball can enter and exit the net in under 1 second (net deforms briefly then returns to normal). If the net shows a brief deformation in frame 1 or 2 even if the ball is no longer visible inside → this counts as ball-in-net evidence (+3).
+- If the net appears BRIEFLY DEFORMED in an early frame but flat in subsequent frames, this is consistent with a fast goal where the ball rebounded out — do NOT discount this as a negative signal.
 
 AMBIGUITY RULE (very important):
 If the ball position is unclear, partially hidden, or you are not 100% certain it crossed the line:
@@ -539,7 +541,9 @@ POSITIVE signals (accumulate across frames):
 +5 : center kickoff clearly visible (ball at center spot, both teams on opposite halves, static formation)
 +4 : unambiguous multi-player celebration (multiple players running toward each other, arms wide, hugging)
 +3 : ball unmistakably INSIDE the net — net is visibly BULGING/DEFORMED by the ball, AND ball is clearly behind the goal line between the posts. NOT just near the net.
++3 : net clearly deformed/bulging in an early frame even if ball is no longer visible inside (fast goal, ball rebounded out)
 +3 : attacking players walking/jogging back toward center circle after action
++2 : players from scoring team showing clear joy reactions (arms up, jumping, turning to teammates) even if full group celebration not yet formed
 +1 : ball near goal line but position unclear
 
 NEGATIVE signals (subtract immediately):
@@ -559,7 +563,8 @@ If the net appears flat/undisturbed and the ball is near it → score 0 for that
 
 DECISION:
 - total_score >= 5 → is_goal=true
-- total_score 3-4 → is_goal=true ONLY if net deformation clearly confirmed (+3 signal present)
+- total_score == 4 → is_goal=true if celebration (+4) OR net deformation (+3) is present
+- total_score 3 → is_goal=true ONLY if net deformation clearly confirmed (+3 signal present)
 - total_score <= 2 → is_goal=false
 - goalkeeper holding ball detected (-5) → is_goal=false immediately, no exception
 
@@ -567,7 +572,8 @@ Confidence mapping:
 - score >= 8 → confidence=0.95
 - score 6-7 → confidence=0.90
 - score 5 → confidence=0.85
-- score 3-4 with ball in net → confidence=0.80
+- score 4 with celebration or net deformation → confidence=0.80
+- score 3 with net deformation → confidence=0.80
 - score <= 2 → is_goal=false, confidence=0.0
 
 Return ONLY valid JSON, no markdown:
@@ -1528,7 +1534,6 @@ def read_highlight_visuals(video_path, highlight_events, fps=25, highlight_clips
                     "confidence":  visual.get("confidence", "low"),
                     "_source":     source_label,
                     "_event_time": t_mm,
-                    "_event_time_s": float(ev.get("time", 0)),  # secondes pour comparaison
                     "_event_type": ev_type,
                 }
 
@@ -1566,30 +1571,6 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
         return {}
 
     jersey_map = {}
-
-    # ── Pré-remplir depuis le tir précédent (priorité maximale) ──────────────
-    # Si un tir avec jersey connu précède le but dans les 8 secondes,
-    # le tireur = buteur prioritaire. Gemini confirme mais n'écrase pas.
-    for ev in goal_events:
-        goal_t = float(ev.get("time", 0))
-        # Chercher dans visual_pool : tir à goal_t - 8s → goal_t
-        # Le jersey du tir précédent est stocké dans visual_pool
-        if visual_pool:
-            best_shot_jersey = None
-            best_shot_dt     = 999.0
-            for jersey_num, visuals in visual_pool.items():
-                for vis in visuals:
-                    shot_t = float(vis.get("_shot_time") or vis.get("_event_time_s") or -999)
-                    dt = goal_t - shot_t
-                    if 0 <= dt <= 15.0 and dt < best_shot_dt:
-                        best_shot_dt     = dt
-                        best_shot_jersey = jersey_num
-            if best_shot_jersey:
-                ev["_preceding_shot_jersey"] = best_shot_jersey
-                ev["_preceding_shot_dt"]     = round(best_shot_dt, 1)
-                print(f"  [SCORER PRE-FILL] t={int(goal_t//60):02d}:{int(goal_t%60):02d} "
-                      f"→ tir précédent #{best_shot_jersey} "
-                      f"à -{best_shot_dt:.1f}s → candidat prioritaire")
 
     try:
         client = get_client()
@@ -1777,25 +1758,6 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
                         print(f"  [COULEUR CROSS] {t_mm} → '{buteur_couleur}' "
                               f"✓ correspond équipe {_shooter_team}='{_expected_color}'")
 
-            # Priorité : tir précédent si Gemini retourne un numéro différent
-            # avec confiance low/medium → le tireur = buteur est plus fiable
-            _preceding = ev.get("_preceding_shot_jersey")
-            if (_preceding and buteur is not None
-                    and int(buteur) != _preceding
-                    and buteur_confiance in ("low", "medium")):
-                print(f"  [SCORER OVERRIDE] {t_mm} → Gemini=#{buteur} ({buteur_confiance}) "
-                      f"remplacé par tir précédent=#{_preceding} "
-                      f"(-{ev.get('_preceding_shot_dt',0):.1f}s)")
-                buteur = _preceding
-                buteur_couleur = buteur_couleur   # garder la couleur Gemini
-
-            # Si Gemini n'a pas trouvé de numéro → utiliser tir précédent
-            if (buteur is None or not _color_valid) and _preceding:
-                print(f"  [SCORER FALLBACK] {t_mm} → numéro illisible → "
-                      f"tir précédent=#{_preceding} (-{ev.get('_preceding_shot_dt',0):.1f}s)")
-                buteur = _preceding
-                _color_valid = True   # on fait confiance au tir précédent
-
             if buteur is not None and _color_valid and 1 <= int(buteur) <= 99:
                 key = pid if pid else f"goal_{t_mm}"
                 jersey_map[key] = int(buteur)
@@ -1833,8 +1795,12 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
         print(f"  [VISUAL MATCH] Pool disponible : {len(_ref_pool)} références "
               f"({len(set(j for j,_ in _ref_pool))} joueurs distincts)")
         for ev in goal_events:
-            if ev.get("player_jersey") and ev.get("player_jersey_source") != "visual_match":
-                continue  # déjà résolu par OCR → ne pas écraser
+            _ocr_jersey  = ev.get("player_jersey")
+            _ocr_source  = ev.get("player_jersey_source", "ocr")
+            _ocr_conf    = ev.get("scorer_id_confidence", "low")
+            if _ocr_source == "visual_match":
+                continue  # déjà traité
+
             _v = ev.get("scorer_visual")
             if not _v:
                 continue
@@ -1848,14 +1814,25 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
 
             _t_mm = _v.get("_goal_time", "??:??")
             if best_jersey and best_score >= 0.5:
-                ev["player_jersey"]        = best_jersey
-                ev["player_jersey_source"] = "visual_match"
-                ev["player_jersey_conf"]   = round(best_score, 2)
-                pid = str(ev.get("player", ""))
-                key = pid if pid else f"goal_{_t_mm}"
-                jersey_map[key] = best_jersey
-                print(f"  [VISUAL MATCH] {_t_mm} → #{best_jersey} "
-                      f"(score={best_score:.2f})")
+                # Seuil selon confiance OCR — low/medium peuvent être écrasés
+                _threshold = 0.50 if not _ocr_jersey else (
+                    0.60 if _ocr_conf == "low" else
+                    0.75 if _ocr_conf == "medium" else
+                    0.85  # high — seuil strict
+                )
+                if best_score >= _threshold:
+                    _prev = f"#{_ocr_jersey}" if _ocr_jersey else "inconnu"
+                    ev["player_jersey"]        = best_jersey
+                    ev["player_jersey_source"] = "visual_match"
+                    ev["player_jersey_conf"]   = round(best_score, 2)
+                    pid = str(ev.get("player", ""))
+                    key = pid if pid else f"goal_{_t_mm}"
+                    jersey_map[key] = best_jersey
+                    print(f"  [VISUAL MATCH] {_t_mm} → #{best_jersey} "
+                          f"(score={best_score:.2f}, remplace {_prev} conf={_ocr_conf})")
+                else:
+                    print(f"  [VISUAL MATCH] {_t_mm} → #{best_jersey} score={best_score:.2f} "
+                          f"< seuil {_threshold:.2f} (OCR=#{_ocr_jersey} conf={_ocr_conf}) → OCR conservé")
             else:
                 print(f"  [VISUAL MATCH] {_t_mm} → aucune correspondance "
                       f"(meilleur={best_score:.2f}) → buteur=inconnu")
