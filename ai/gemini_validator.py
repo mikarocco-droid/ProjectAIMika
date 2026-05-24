@@ -619,15 +619,19 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
 
         # FIX kickoff fantôme — si le signal est UNIQUEMENT un kickoff (+5)
         # SANS aucun signal physique (ballon dans filet, gardien qui récupère)
-        # et qu'un but déjà confirmé existe dans les 200s précédentes → rejeter
+        # et qu'un but déjà confirmé existe dans les 90s précédentes → rejeter
+        # 90s = assez large pour la remise en jeu (~45s) sans bloquer un but 3 min plus tard
         if is_goal and confirmed_goal_times:
             _evidence_lower = evidence.lower()
+            # PATCH v2 : "walking back toward center" = signal physique valide
+            # (joueurs retournent au centre après un vrai but)
             _has_physical_signal = (
-                "+3" in evidence           # ball in net OU players walking back
-                and any(kw in _evidence_lower for kw in [
+                any(kw in _evidence_lower for kw in [
                     "inside the net", "inside net", "net deform",
                     "goalkeeper", "retrieving", "ball unmistakably",
-                    "ball clearly inside", "bulg"
+                    "ball clearly inside", "bulg",
+                    "walking back", "walking/jogging back", "jogging back",
+                    "toward center circle", "back toward center",
                 ])
             )
             _kickoff_only = (
@@ -636,17 +640,17 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
             )
             if _kickoff_only:
                 _recent_goal = any(
-                    0 < shot_time - gt < 200
+                    0 < shot_time - gt < 90   # PATCH v2 : 200s → 90s
                     for gt in confirmed_goal_times
                 )
                 if _recent_goal:
                     print(f"  [SHOT→GOAL] ❌ Kickoff fantôme rejeté t={int(shot_time//60):02d}:{int(shot_time%60):02d} "
-                          f"— kickoff sans signal physique, but antérieur dans 200s (score={goal_score})")
+                          f"— kickoff sans signal physique, but confirmé dans 90s (score={goal_score})")
                     return {
                         "is_goal":    False,
                         "timestamp":  None,
                         "confidence": 0.0,
-                        "desc":       f"kickoff fantôme rejeté (but antérieur dans fenêtre 200s)",
+                        "desc":       f"kickoff fantôme rejeté (but confirmé dans 90s)",
                         "goal_votes": 0,
                         "goal_score": 0,
                     }
