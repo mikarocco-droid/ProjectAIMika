@@ -425,6 +425,20 @@ def detect_kickoff_offset(
             if consecutive >= KICKOFF_CONSECUTIVE:
                 kickoff_frame = candidates[-consecutive][0]
                 kickoff_time  = kickoff_frame / video_fps
+
+                # PATCH : si le coup d'envoi est dans les 60 premières secondes,
+                # c'est soit un vrai coup d'envoi sans pré-match (offset inutile),
+                # soit un faux positif (but → kickoff d'après-but).
+                # Dans les deux cas, offset=0 est la bonne réponse.
+                if kickoff_time < 60.0:
+                    if verbose:
+                        mm = int(kickoff_time // 60)
+                        ss = int(kickoff_time % 60)
+                        print(f"  [KICKOFF] ⚡ Kickoff à {mm:02d}:{ss:02d} < 60s "
+                              f"→ match commence dès le début → offset=0s")
+                    cap.release()
+                    return 0.0, 0.0
+
                 confidence    = min(1.0, best_score / 6.0)
 
                 if verbose:
