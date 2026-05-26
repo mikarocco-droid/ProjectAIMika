@@ -187,6 +187,12 @@ def process_batch(
         else:
             ball = yolo_ball
 
+        # PATCH : injecter le frame courant dans ball pour que detect_events
+        # puisse calculer current_time = frame / fps correctement
+        # Sans ça, ball.get("frame", 0) retourne 0 → tous les logs t=0.0s
+        if ball is not None:
+            ball["frame"] = analyzed
+
         frame_events, events_state = detect_events(
             players    = tracked,
             ball       = ball,
