@@ -135,6 +135,13 @@ def player_label(pid, jersey_map=None):
         jersey = jersey_map.get(pid_str) or jersey_map.get(pid)
         if jersey:
             return f"#{jersey}"
+    # PIDs DeepSort non résolus (grands entiers genre 2910, 3053...) → "?"
+    # Un vrai numéro de maillot est ≤ 99, un PID DeepSort est souvent > 200
+    try:
+        if int(pid_str) > 200:
+            return "?"
+    except (ValueError, TypeError):
+        pass
     return f"#{pid_str}"
 
 
@@ -429,7 +436,13 @@ def generate_pdf(result, output_path, sport="football"):
     team_stats = compute_team_stats(stats) if stats else {}
 
     # FIX 1 — KPIs avec fallback multi-alias
-    kpi_goals  = _get_any(summary, "goals",  "goal_count",  "buts",  default=0)
+    # PATCH : kpi_goals depuis les highlights validés (buts affichés)
+    # évite de compter les FP que Gemini a validés mais qui sont filtrés ensuite
+    _highlights_goals = [
+        h for h in highlights
+        if (h.get("main_type") or "").lower() in ("goal", "score")
+    ]
+    kpi_goals  = len(_highlights_goals) if _highlights_goals else _get_any(summary, "goals", "goal_count", "buts", default=0)
     kpi_shots  = _get_any(summary, "shots",  "shots_on_target", "tirs_cadres", "shots_total", default=0)
     kpi_xg     = round(float(_get_any(summary, "total_xg", "xg", "xg_total", default=0.0)), 2)
     kpi_passes = _get_any(summary, "passes", "pass_count",  "n_passes", default=0)
@@ -549,8 +562,18 @@ def generate_pdf(result, output_path, sport="football"):
             _tname = team_display(_tid, teams_data)
             _lines.append(f"{clean(_tname)}: {_f}")
         _formation_display = " | ".join(_lines)
+    elif formation:
+        # PATCH : une seule formation → afficher les deux équipes avec couleur
+        # "Equipe Bleu 4-3-3 | Equipe Rouge 4-3-3"
+        _team0 = team_display(0, teams_data)
+        _team1 = team_display(1, teams_data)
+        _style_str = f"  {_style}".rstrip() if _style else ""
+        if _team0 != "Equipe A" or _team1 != "Equipe B":
+            _formation_display = f"{clean(_team0)}: {formation} | {clean(_team1)}: {formation}{_style_str}"
+        else:
+            _formation_display = f"{formation}{_style_str}".strip()
     else:
-        _formation_display = f"{formation}  {_style}".strip() if formation else ""
+        _formation_display = ""
     if _formation_display:
         pdf.card_bg(106, yr, 92, 26)
         pdf.set_fill_color(*ACCENT)
