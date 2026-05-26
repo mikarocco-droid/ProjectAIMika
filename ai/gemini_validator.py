@@ -618,21 +618,29 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
         goal_score = int(parsed.get("goal_score", 0))
 
         # FIX kickoff fantôme — si le signal est UNIQUEMENT un kickoff (+5)
-        # SANS aucun signal physique (ballon dans filet, gardien qui récupère)
-        # et qu'un but déjà confirmé existe dans les 90s précédentes → rejeter
-        # 90s = assez large pour la remise en jeu (~45s) sans bloquer un but 3 min plus tard
+        # SANS aucun signal physique direct (ballon dans filet, gardien qui récupère)
+        # et qu'un but déjà confirmé existe dans les 60s précédentes → rejeter
+        #
+        # PATCH v3 :
+        # - "walking back" SEUL sans signal filet/gardien = traité comme kickoff (pas physique)
+        # - fenêtre 200s → 60s (assez pour couvrir la remise en jeu ~45s)
         if is_goal and confirmed_goal_times:
             _evidence_lower = evidence.lower()
-            # PATCH v2 : "walking back toward center" = signal physique valide
-            # (joueurs retournent au centre après un vrai but)
+            # Signal physique FORT = ballon dedans ou gardien qui récupère dans le filet
+            _has_net_signal = any(kw in _evidence_lower for kw in [
+                "inside the net", "inside net", "net deform",
+                "goalkeeper", "retrieving", "ball unmistakably",
+                "ball clearly inside", "bulg",
+            ])
+            # Walking back = signal contexte (peut être vrai but) mais PAS physique seul
+            _has_walking_back = any(kw in _evidence_lower for kw in [
+                "walking back", "walking/jogging back", "jogging back",
+                "toward center circle", "back toward center",
+            ])
+            # Signal physique = filet/gardien OU walking back + kickoff ensemble
             _has_physical_signal = (
-                any(kw in _evidence_lower for kw in [
-                    "inside the net", "inside net", "net deform",
-                    "goalkeeper", "retrieving", "ball unmistakably",
-                    "ball clearly inside", "bulg",
-                    "walking back", "walking/jogging back", "jogging back",
-                    "toward center circle", "back toward center",
-                ])
+                _has_net_signal
+                or (_has_walking_back and "+5" in evidence and "+3" in evidence)
             )
             _kickoff_only = (
                 "+5" in evidence           # kickoff détecté
@@ -640,17 +648,17 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
             )
             if _kickoff_only:
                 _recent_goal = any(
-                    0 < shot_time - gt < 90   # PATCH v2 : 200s → 90s
+                    0 < shot_time - gt < 60   # PATCH v3 : 200s → 60s
                     for gt in confirmed_goal_times
                 )
                 if _recent_goal:
                     print(f"  [SHOT→GOAL] ❌ Kickoff fantôme rejeté t={int(shot_time//60):02d}:{int(shot_time%60):02d} "
-                          f"— kickoff sans signal physique, but confirmé dans 90s (score={goal_score})")
+                          f"— kickoff sans signal physique, but confirmé dans 60s (score={goal_score})")
                     return {
                         "is_goal":    False,
                         "timestamp":  None,
                         "confidence": 0.0,
-                        "desc":       f"kickoff fantôme rejeté (but confirmé dans 90s)",
+                        "desc":       f"kickoff fantôme rejeté (but confirmé dans 60s)",
                         "goal_votes": 0,
                         "goal_score": 0,
                     }
@@ -1020,7 +1028,15 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
         }
 
     # Offsets triés (plus proches d'abord)
-    offsets_s = OFFSETS_POSTHOC if "posthoc" in str(source) else OFFSETS_EVENTS  # 3 offsets posthoc
+    # PATCH v3 : terminal_goal reçoit des offsets élargis pour voir
+    # le filet juste avant (offset -3s) et le kickoff après (offset +5s, +20s)
+    # Sur match complet les offsets courts [-1, 0, +2] ratent souvent le signal
+    if "terminal_goal" in str(source):
+        offsets_s = [-3, 0, 5, 20]   # filet avant + kickoff après
+    elif "posthoc" in str(source):
+        offsets_s = OFFSETS_POSTHOC
+    else:
+        offsets_s = OFFSETS_EVENTS
     offsets_s = sorted(offsets_s, key=lambda x: abs(x))
 
     _t_event = event.get('time', 0)
@@ -1139,7 +1155,10 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
                 if off_s == 0:
                     checked_core = True
 
-            if checked_core and neg_score > 1.5:
+            # PATCH v3 : terminal_goal avec offsets élargis → ne pas couper sur neg_score
+            # car les offsets +5s et +20s peuvent voir des situations normales
+            # avant de voir le kickoff qui confirme le but
+            if checked_core and neg_score > 1.5 and "terminal_goal" not in str(source):
                 break
 
         # ─────────────────────────────
