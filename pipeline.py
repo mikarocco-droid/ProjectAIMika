@@ -49,6 +49,7 @@ from analysis.context_engine import ContextEngine
 from analysis.player_identity import resolve_player_identities, get_player_label
 from analysis.goal_posthoc    import detect_fast_goals_from_ball
 from analysis.terminal_events import detect_terminal_events, build_candidate_windows
+from analysis.kickoff_detector import detect_kickoff_offset, apply_kickoff_offset, apply_kickoff_offset_frames
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTE ZONE DE BUT — source unique
@@ -313,6 +314,23 @@ def run_pipeline(
         print(f"  [GOAL_BOX] Non disponible : {_e}")
 
     # ─────────────────────────────────────────
+    # STEP 0c — DÉTECTION COUP D'ENVOI
+    # ─────────────────────────────────────────
+    # Cherche le premier coup d'envoi dans les 10 premières minutes
+    # pour corriger les timestamps (vidéo lancée avant le match)
+    _kickoff_offset   = 0.0
+    _kickoff_conf     = 0.0
+    try:
+        _kickoff_offset, _kickoff_conf = detect_kickoff_offset(
+            video_path      = video_path,
+            fps             = 25.0,
+            search_window_s = 600,
+            verbose         = True,
+        )
+    except Exception as _e:
+        print(f"  [KICKOFF] Erreur détection : {_e} — offset=0s")
+
+    # ─────────────────────────────────────────
     # 1. TRACKING + EVENTS
     # ─────────────────────────────────────────
     # ─────────────────────────────────────────
@@ -399,6 +417,18 @@ def run_pipeline(
             return_frames     = True,
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
+
+    # ── Appliquer l'offset coup d'envoi ──────────────────────────────────────
+    if _kickoff_offset > 0:
+        print(f"  [KICKOFF] Application offset={_kickoff_offset:.1f}s "
+              f"(conf={_kickoff_conf:.2f}) sur events et frames_data")
+        events, _n_removed = apply_kickoff_offset(
+            events, _kickoff_offset, fps=fps
+        )
+        frames_data = apply_kickoff_offset_frames(
+            frames_data, _kickoff_offset, fps=fps
+        )
+        print(f"  [KICKOFF] {len(events)} events après correction")
 
     # ── Alimenter le bootstrapper depuis frames_data ────────────────────────
     if _team_bootstrapper is not None and frames_data:
@@ -834,9 +864,8 @@ def run_pipeline(
             if not _terminal_times_filter:
                 return True  # pas de terminal → garder tout
             t = float(e.get("time", 0))
-            # PATCH v3 : terminal_goal → fenêtre élargie ±25s (était 20s)
-            # Sur match complet les posthoc peuvent être légèrement décalés
-            if any(abs(t - tt) <= 25.0 for tt in _terminal_goals_times):
+            # ±20s pour terminal_goal
+            if any(abs(t - tt) <= 20.0 for tt in _terminal_goals_times):
                 return True
             # ±15s pour terminal offensif (shot, rebound...)
             if any(abs(t - tt) <= 15.0 for tt in _terminal_offensive_times):
@@ -855,9 +884,6 @@ def run_pipeline(
             if e.get("type") != "goal"           # non-buts : inchangés
             or not _is_posthoc(e)                # terminal : toujours gardés
             or _near_terminal(e)                 # posthoc proche terminal : gardés
-            # PATCH v3 : terminal_goal conf>=0.85 → jamais supprimé même sans posthoc proche
-            or (str(e.get("detected_from", e.get("source", ""))).startswith("terminal_goal")
-                and float(e.get("confidence", 0)) >= 0.85)
         ]
         _n_after = sum(1 for e in events_for_gemini if e.get("type") == "goal")
         if _n_before != _n_after:
@@ -975,16 +1001,10 @@ def run_pipeline(
                     window = max(25, min(45, next_shot_t - st - 5))
                     shots_to_analyze.append((shot, st, window))
 
-                # PATCH v3 : confirmed_goal_times mis à jour en temps réel (séquentiel)
-                # Le ThreadPoolExecutor ne permet pas la mise à jour temps réel
-                # → on passe existing_goal_times par snapshot au moment de l'appel
-                # mais on met à jour existing_goal_times après chaque résultat confirmé
-                # pour que les tirs suivants bénéficient du filtre kickoff fantôme
-
                 from concurrent.futures import ThreadPoolExecutor, as_completed
 
                 def _analyze_shot(args):
-                    shot, st, window, goal_times_snapshot = args
+                    shot, st, window = args
                     return shot, st, find_goal_after_shot(
                         video_path           = video_path,
                         shot_time            = st,
@@ -992,24 +1012,20 @@ def run_pipeline(
                         fps                  = fps,
                         frame_w              = _frame_w,
                         frame_h              = _frame_h,
-                        confirmed_goal_times = goal_times_snapshot,
+                        confirmed_goal_times = existing_goal_times,
                     )
 
                 shot_goal_candidates = []
                 results_map = {}
 
-                # PATCH v3 : on analyse séquentiellement par ordre chronologique
-                # pour mettre à jour existing_goal_times après chaque but confirmé.
-                # Le ThreadPoolExecutor est retiré — latence Gemini est le goulot,
-                # pas le CPU, donc la parallélisation n'apportait pas grand chose
-                # et empêchait la mise à jour temps réel de confirmed_goal_times.
-                for shot, st, window in shots_to_analyze:
-                    try:
-                        snapshot = list(existing_goal_times)  # snapshot au moment de l'appel
-                        _, _, result = _analyze_shot((shot, st, window, snapshot))
-                        results_map[st] = (shot, result)
-                    except Exception as _e:
-                        print(f"  [SHOT→GOAL] Erreur analyse : {_e}")
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    futures = {executor.submit(_analyze_shot, args): args for args in shots_to_analyze}
+                    for future in as_completed(futures):
+                        try:
+                            shot, st, result = future.result()
+                            results_map[st] = (shot, result)
+                        except Exception as _e:
+                            print(f"  [SHOT→GOAL] Erreur analyse : {_e}")
 
                 for shot, st, window in shots_to_analyze:
                     result = results_map.get(st, (shot, None))[1]
@@ -1048,19 +1064,11 @@ def run_pipeline(
                             and pt < _video_duration - 5.0     # pas en fin de vidéo
                         ]
                         _has_physical = any(
-                            abs(pt - goal_t) <= 20 for pt in _posthoc_times_filtered  # PATCH v3 : 15s → 20s
+                            abs(pt - goal_t) <= 15 for pt in _posthoc_times_filtered
                         )
-                        # PATCH v3 : terminal_goal dans ±25s = signal physique suffisant
-                        # (le terminal_events a déjà prouvé qu'il y a un but à cet endroit)
-                        _terminal_goal_nearby = any(
-                            abs(float(ev.get("time", 0)) - goal_t) <= 25.0
-                            for ev in (_terminal_evts or [])
-                            if ev.get("terminal_type") == "goal"
-                            and float(ev.get("confidence", 0)) >= 0.85
-                        )
-                        if not _has_physical and not _terminal_goal_nearby:
-                            print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±20s")
-                        if not too_close and (_has_physical or _terminal_goal_nearby) and not _kickoff_fp:
+                        if not _has_physical:
+                            print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±15s")
+                        if not too_close and _has_physical and not _kickoff_fp:
                             new_goal = {
                                 "type":             "goal",
                                 "time":             goal_t,
@@ -1082,10 +1090,7 @@ def run_pipeline(
                             shot_goal_candidates.append(new_goal)
                             existing_goal_times.append(goal_t)
                             detected_goal_times.append(goal_t)
-                            # PATCH v3 : confirmed_goal_times mis à jour temps réel
-                            _confirmed_goal_times = list(existing_goal_times)
                             print(f"  [SHOT→GOAL] ✅ BUT détecté à {int(goal_t//60):02d}:{int(goal_t%60):02d} conf={result['confidence']:.2f}")
-                            print(f"  [GOAL CONFIRMED] t={int(goal_t//60):02d}:{int(goal_t%60):02d} → cooldown actif (45s)")
 
                 if shot_goal_candidates:
                     events_validated = events_validated + shot_goal_candidates
