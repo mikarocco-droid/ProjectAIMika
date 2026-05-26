@@ -324,7 +324,6 @@ def run_pipeline(
         _kickoff_offset, _kickoff_conf = detect_kickoff_offset(
             video_path      = video_path,
             fps             = 25.0,
-            search_window_s = 600,
             verbose         = True,
         )
     except Exception as _e:
