@@ -37,7 +37,9 @@ logger = logging.getLogger(__name__)
 EARLY_GAME_WINDOW_S  = 300      # 5 premières minutes
 
 # Phase 2 : fenêtre de recherche du coup d'envoi
-KICKOFF_SEARCH_MAX_S = 1200     # 20 minutes max
+# On cherche jusqu'à 50% de la durée totale — au-delà c'est probablement
+# la mi-temps ou autre chose, pas le coup d'envoi initial
+KICKOFF_SEARCH_MAX_RATIO = 0.50  # 50% de la durée vidéo
 
 # Frame skip pendant le scan (rapide, pas besoin d'analyser chaque frame)
 SEARCH_FRAME_SKIP    = 15       # ~0.5s à 30fps
@@ -309,7 +311,6 @@ def _score_kickoff_frame(frame_bgr, frame_w, frame_h, play_zone_y):
 def detect_kickoff_offset(
     video_path,
     fps             = 25.0,
-    search_window_s = KICKOFF_SEARCH_MAX_S,
     verbose         = True,
 ):
     """
@@ -334,6 +335,9 @@ def detect_kickoff_offset(
     frame_w      = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_h      = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    video_duration_s = total_frames / max(video_fps, 1)
+    search_window_s  = video_duration_s * KICKOFF_SEARCH_MAX_RATIO
+
     # Résolution réduite pour la recherche
     proc_w = 480
     scale  = proc_w / max(frame_w, 1)
@@ -349,7 +353,8 @@ def detect_kickoff_offset(
 
     if verbose:
         print(f"  [KICKOFF] play_zone_y={play_zone_y:.2f} | "
-              f"recherche sur {search_window_s:.0f}s max")
+              f"vidéo={video_duration_s:.0f}s | "
+              f"recherche jusqu'à {search_window_s:.0f}s ({KICKOFF_SEARCH_MAX_RATIO*100:.0f}% de la vidéo)")
 
     # ── PHASE 1 : les 5 premières minutes — jeu déjà en cours ? ─────────────
     early_max_frame  = min(total_frames, int(EARLY_GAME_WINDOW_S * video_fps))
@@ -397,7 +402,7 @@ def detect_kickoff_offset(
     candidates  = []
 
     if verbose:
-        print(f"  [KICKOFF] Phase 2 : scan jusqu'à {search_window_s//60:.0f} min")
+        print(f"  [KICKOFF] Phase 2 : scan jusqu'à {search_window_s/60:.1f} min")
 
     frame_idx = 0
     while frame_idx < max_frame:
