@@ -149,22 +149,18 @@ def _detect_midline(frame_bgr, frame_w, frame_h, play_zone_y):
 def _is_game_active(cap, frame_idx, video_fps, frame_w_orig, frame_h_orig,
                     play_zone_y, proc_w, proc_h):
     """
-    Retourne True si le jeu est actif à ce moment de la vidéo.
+    Retourne True si le jeu est actif — mouvement significatif détecté
+    simultanément dans les deux moitiés du terrain.
 
-    Méthode : comparer 5 frames espacées de 2s autour de frame_idx.
-    On exige un mouvement soutenu (score élevé sur plusieurs comparaisons)
-    pour distinguer le vrai jeu du mouvement sporadic du pré-match
-    (tribunes, caméramans, joueurs qui s'échauffent statiquement).
-
-    Critères :
-    - Mouvement moyen > 15.0 sur au moins 3 des 4 comparaisons
-    - OU mouvement moyen > 25.0 sur au moins 2 comparaisons
+    Pendant le pré-match les joueurs sont dans leur moitié → mouvement
+    unilatéral. Pendant le match le mouvement est bilatéral.
     """
-    MOTION_HIGH   = 25.0   # mouvement intense (jeu actif certain)
-    MOTION_MEDIUM = 15.0   # mouvement moyen (jeu probable si soutenu)
+    MOTION_THRESHOLD = 12.0   # mouvement minimum par moitié
+    BILATERAL_MIN    = 2      # nombre de comparaisons bilatérales requises
 
-    step = int(2.0 * video_fps)  # 2 secondes entre chaque frame
-    frames_gray = []
+    step = int(2.0 * video_fps)
+    frames_left  = []  # zone gauche du terrain
+    frames_right = []  # zone droite du terrain
 
     for offset in [-2*step, -step, 0, step, 2*step]:
         fidx = max(0, frame_idx + offset)
@@ -173,25 +169,25 @@ def _is_game_active(cap, frame_idx, video_fps, frame_w_orig, frame_h_orig,
         if not ret:
             continue
         small   = cv2.resize(f, (proc_w, proc_h))
-        roi     = small[int(proc_h * play_zone_y):, :]
+        y_start = int(proc_h * play_zone_y)
+        roi     = small[y_start:, :]
         gray    = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        frames_gray.append(gray)
+        mid     = proc_w // 2
+        frames_left.append(gray[:, :mid])
+        frames_right.append(gray[:, mid:])
 
-    if len(frames_gray) < 3:
+    if len(frames_left) < 3:
         return False
 
-    motion_scores = []
-    for i in range(len(frames_gray) - 1):
-        diff  = cv2.absdiff(frames_gray[i], frames_gray[i + 1])
-        score = float(np.mean(diff))
-        motion_scores.append(score)
+    bilateral_count = 0
+    for i in range(len(frames_left) - 1):
+        motion_left  = float(np.mean(cv2.absdiff(frames_left[i],  frames_left[i+1])))
+        motion_right = float(np.mean(cv2.absdiff(frames_right[i], frames_right[i+1])))
+        # Les deux moitiés bougent en même temps = jeu en cours
+        if motion_left > MOTION_THRESHOLD and motion_right > MOTION_THRESHOLD:
+            bilateral_count += 1
 
-    high_count   = sum(1 for s in motion_scores if s > MOTION_HIGH)
-    medium_count = sum(1 for s in motion_scores if s > MOTION_MEDIUM)
-
-    # Jeu actif si mouvement intense sur 2+ comparaisons
-    # OU mouvement moyen soutenu sur 3+ comparaisons
-    return high_count >= 2 or medium_count >= 3
+    return bilateral_count >= BILATERAL_MIN
 
 
 # ─────────────────────────────────────────────────────────────────────────────
