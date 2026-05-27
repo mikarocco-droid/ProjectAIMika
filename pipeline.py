@@ -49,7 +49,7 @@ from analysis.context_engine import ContextEngine
 from analysis.player_identity import resolve_player_identities, get_player_label
 from analysis.goal_posthoc    import detect_fast_goals_from_ball
 from analysis.terminal_events import detect_terminal_events, build_candidate_windows
-from analysis.kickoff_detector import find_kickoff_offset, apply_kickoff_offset, apply_kickoff_offset_frames, reset_pre_kickoff_state
+from analysis.kickoff_detector import find_kickoff_offset, apply_kickoff_offset, apply_kickoff_offset_frames, reset_pre_kickoff_state, find_match_end, apply_match_end
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTE ZONE DE BUT — source unique
@@ -424,6 +424,31 @@ def run_pipeline(
         jersey_map = reset_pre_kickoff_state(jersey_map, _kickoff_offset, fps=fps)
     else:
         print(f"  [KICKOFF] Pas de coup d'envoi détecté → timestamps inchangés")
+
+    # ── DÉTECTION FIN DE MATCH ───────────────────────────────────────────────
+    # Cherche la fin du match dans les frames_data pour couper l'après-match.
+    # Prolongation et tirs au but sont couverts (seuil silence = 25 min).
+    # Les gamins sans vareuse après le match ne seront pas comptés comme joueurs.
+    _team_colors = None
+    try:
+        _team_colors = {
+            int(k): v.get("color_bgr") or v.get("color")
+            for k, v in teams.items()
+            if v.get("color_bgr") or v.get("color")
+        } if teams else None
+    except Exception:
+        pass
+
+    _match_end_s = find_match_end(
+        frames_data          = frames_data,
+        fps                  = fps,
+        team_colors          = _team_colors,
+        silence_threshold_s  = 1500.0,   # 25 min sans jeu = fin du match
+        min_match_duration_s = 2700.0,   # chercher fin seulement après 45 min de jeu
+    )
+
+    if _match_end_s is not None:
+        events, frames_data = apply_match_end(events, frames_data, _match_end_s, fps=fps)
 
     # ── Alimenter le bootstrapper depuis frames_data ────────────────────────
     if _team_bootstrapper is not None and frames_data:
