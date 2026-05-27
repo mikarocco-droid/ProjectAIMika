@@ -49,7 +49,7 @@ from analysis.context_engine import ContextEngine
 from analysis.player_identity import resolve_player_identities, get_player_label
 from analysis.goal_posthoc    import detect_fast_goals_from_ball
 from analysis.terminal_events import detect_terminal_events, build_candidate_windows
-from analysis.kickoff_detector import detect_kickoff_offset, apply_kickoff_offset, apply_kickoff_offset_frames
+from analysis.kickoff_detector import find_kickoff_offset, apply_kickoff_offset, apply_kickoff_offset_frames, reset_pre_kickoff_state
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTE ZONE DE BUT — source unique
@@ -314,22 +314,6 @@ def run_pipeline(
         print(f"  [GOAL_BOX] Non disponible : {_e}")
 
     # ─────────────────────────────────────────
-    # STEP 0c — DÉTECTION COUP D'ENVOI
-    # ─────────────────────────────────────────
-    # Cherche le premier coup d'envoi dans les 10 premières minutes
-    # pour corriger les timestamps (vidéo lancée avant le match)
-    _kickoff_offset   = 0.0
-    _kickoff_conf     = 0.0
-    try:
-        _kickoff_offset, _kickoff_conf = detect_kickoff_offset(
-            video_path      = video_path,
-            fps             = 25.0,
-            verbose         = True,
-        )
-    except Exception as _e:
-        print(f"  [KICKOFF] Erreur détection : {_e} — offset=0s")
-
-    # ─────────────────────────────────────────
     # 1. TRACKING + EVENTS
     # ─────────────────────────────────────────
     # ─────────────────────────────────────────
@@ -417,17 +401,29 @@ def run_pipeline(
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
-    # ── Appliquer l'offset coup d'envoi ──────────────────────────────────────
+    # ── DÉTECTION COUP D'ENVOI ────────────────────────────────────────────────
+    # Le coup d'envoi est détecté par terminal_events pendant le tracking
+    # (event type="kickoff" : ballon au rond central + joueurs symétriques).
+    # On cherche le premier kickoff pour corriger tous les timestamps.
+    _video_duration_s = total_frames / max(fps, 1)
+    _kickoff_offset, _kickoff_conf = find_kickoff_offset(events, _video_duration_s)
+
     if _kickoff_offset > 0:
         print(f"  [KICKOFF] Application offset={_kickoff_offset:.1f}s "
-              f"(conf={_kickoff_conf:.2f}) sur events et frames_data")
-        events, _n_removed = apply_kickoff_offset(
-            events, _kickoff_offset, fps=fps
-        )
-        frames_data = apply_kickoff_offset_frames(
-            frames_data, _kickoff_offset, fps=fps
-        )
-        print(f"  [KICKOFF] {len(events)} events après correction")
+              f"(conf={_kickoff_conf:.2f}) — suppression pré-match")
+
+        # 1. Corriger timestamps + supprimer events avant le coup d'envoi
+        events, _n_removed = apply_kickoff_offset(events, _kickoff_offset, fps=fps)
+        print(f"  [KICKOFF] {len(events)} events après correction "
+              f"({_n_removed} events pré-match supprimés)")
+
+        # 2. Supprimer les frames_data avant le coup d'envoi
+        frames_data = apply_kickoff_offset_frames(frames_data, _kickoff_offset, fps=fps)
+
+        # 3. Nettoyer le jersey_map (joueurs vus seulement à l'échauffement)
+        jersey_map = reset_pre_kickoff_state(jersey_map, _kickoff_offset, fps=fps)
+    else:
+        print(f"  [KICKOFF] Pas de coup d'envoi détecté → timestamps inchangés")
 
     # ── Alimenter le bootstrapper depuis frames_data ────────────────────────
     if _team_bootstrapper is not None and frames_data:
