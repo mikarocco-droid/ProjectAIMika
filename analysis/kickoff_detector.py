@@ -361,8 +361,7 @@ def detect_kickoff_offset(
     mixed_play_count = 0
 
     if verbose:
-        print(f"  [KICKOFF] Phase 1 : scan {EARLY_GAME_WINDOW_S//60} min "
-              f"({early_max_frame} frames) — jeu déjà en cours ?")
+        print(f"  [KICKOFF] Phase 1 : scan des {EARLY_GAME_WINDOW_S//60} premières min — match déjà lancé ?")
 
     frame_idx = 0
     while frame_idx < early_max_frame:
@@ -381,8 +380,9 @@ def detect_kickoff_offset(
                 if verbose:
                     mm = int(t // 60)
                     ss = int(t % 60)
-                    print(f"  [KICKOFF] ⚡ Jeu déjà en cours à {mm:02d}:{ss:02d} "
-                          f"(coup d'envoi raté) → offset=0s")
+                    print(f"  [KICKOFF] ❌ Pas de coup d'envoi détecté "
+                          f"— match déjà en cours à {mm:02d}:{ss:02d} "
+                          f"(coup d'envoi hors caméra) → t=0 inchangé")
                 cap.release()
                 return 0.0, 0.0
         else:
@@ -391,8 +391,8 @@ def detect_kickoff_offset(
         frame_idx += SEARCH_FRAME_SKIP
 
     if verbose:
-        print(f"  [KICKOFF] Phase 1 : pas de jeu actif dans les "
-              f"{EARLY_GAME_WINDOW_S//60} min → recherche coup d'envoi...")
+        print(f"  [KICKOFF] Phase 1 OK — pas de jeu actif dans les {EARLY_GAME_WINDOW_S//60} min "
+              f"→ recherche du coup d'envoi...")
 
     # ── PHASE 2 : chercher le coup d'envoi jusqu'à KICKOFF_SEARCH_MAX_S ─────
     max_frame   = min(total_frames, int(search_window_s * video_fps))
@@ -402,7 +402,7 @@ def detect_kickoff_offset(
     candidates  = []
 
     if verbose:
-        print(f"  [KICKOFF] Phase 2 : scan jusqu'à {search_window_s/60:.1f} min")
+        print(f"  [KICKOFF] Phase 2 : scan jusqu'à {search_window_s/60:.1f} min...")
 
     frame_idx = 0
     while frame_idx < max_frame:
@@ -426,26 +426,28 @@ def detect_kickoff_offset(
                 kickoff_frame = candidates[-consecutive][0]
                 kickoff_time  = kickoff_frame / video_fps
 
-                # PATCH : si le coup d'envoi est dans les 60 premières secondes,
-                # c'est soit un vrai coup d'envoi sans pré-match (offset inutile),
-                # soit un faux positif (but → kickoff d'après-but).
-                # Dans les deux cas, offset=0 est la bonne réponse.
+                # Si le coup d'envoi est dans les 60 premières secondes :
+                # soit le match commence dès le début (offset négligeable),
+                # soit c'est un kickoff d'après-but (faux positif).
+                # Dans les deux cas → offset=0, pas de correction.
                 if kickoff_time < 60.0:
                     if verbose:
                         mm = int(kickoff_time // 60)
                         ss = int(kickoff_time % 60)
-                        print(f"  [KICKOFF] ⚡ Kickoff à {mm:02d}:{ss:02d} < 60s "
-                              f"→ match commence dès le début → offset=0s")
+                        print(f"  [KICKOFF] ❌ Pas de coup d'envoi détecté "
+                              f"— match commence dès le début du fichier ({mm:02d}:{ss:02d}) "
+                              f"→ t=0 inchangé")
                     cap.release()
                     return 0.0, 0.0
 
-                confidence    = min(1.0, best_score / 6.0)
+                confidence = min(1.0, best_score / 6.0)
 
                 if verbose:
                     mm = int(kickoff_time // 60)
                     ss = int(kickoff_time % 60)
                     print(f"  [KICKOFF] ✅ Coup d'envoi détecté à {mm:02d}:{ss:02d} "
-                          f"(score={best_score:.1f}, conf={confidence:.2f})")
+                          f"→ t=0 (conf={confidence:.2f}, score={best_score:.1f})")
+                    print(f"  [KICKOFF] Timestamps corrigés : t_video - {kickoff_time:.0f}s")
 
                 cap.release()
                 return kickoff_time, confidence
@@ -461,16 +463,22 @@ def detect_kickoff_offset(
     # Meilleur candidat isolé si score suffisant
     if best_frame >= 0 and best_score >= KICKOFF_SCORE_MIN + 0.5:
         kickoff_time = best_frame / video_fps
-        confidence   = min(0.6, best_score / 8.0)
+        if kickoff_time < 60.0:
+            if verbose:
+                print(f"  [KICKOFF] ❌ Pas de coup d'envoi détecté "
+                      f"— match commence dès le début du fichier → t=0 inchangé")
+            return 0.0, 0.0
+        confidence = min(0.6, best_score / 8.0)
         if verbose:
             mm = int(kickoff_time // 60)
             ss = int(kickoff_time % 60)
             print(f"  [KICKOFF] ⚠️  Coup d'envoi probable à {mm:02d}:{ss:02d} "
-                  f"(score={best_score:.1f}, conf={confidence:.2f}, non-confirmé)")
+                  f"→ t=0 (conf={confidence:.2f}, non-confirmé)")
+            print(f"  [KICKOFF] Timestamps corrigés : t_video - {kickoff_time:.0f}s")
         return kickoff_time, confidence
 
     if verbose:
-        print(f"  [KICKOFF] ❌ Coup d'envoi non détecté → offset=0s")
+        print(f"  [KICKOFF] ❌ Pas de coup d'envoi détecté → t=0 inchangé")
 
     return 0.0, 0.0
 
