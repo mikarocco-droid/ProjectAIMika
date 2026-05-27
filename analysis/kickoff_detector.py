@@ -151,31 +151,33 @@ def _is_game_active(cap, frame_idx, video_fps, frame_w_orig, frame_h_orig,
     """
     Retourne True si le jeu est actif à ce moment de la vidéo.
 
-    Méthode : comparer 3 frames espacées de 1s autour de frame_idx.
-    Si le mouvement moyen (absdiff) dans la zone de jeu dépasse un seuil
-    sur au moins 2 des 3 comparaisons → jeu actif.
+    Méthode : comparer 5 frames espacées de 2s autour de frame_idx.
+    On exige un mouvement soutenu (score élevé sur plusieurs comparaisons)
+    pour distinguer le vrai jeu du mouvement sporadic du pré-match
+    (tribunes, caméramans, joueurs qui s'échauffent statiquement).
 
-    Plus fiable que la détection de joueurs par couleur car fonctionne
-    quelle que soit la caméra, les couleurs de maillots, l'angle.
+    Critères :
+    - Mouvement moyen > 15.0 sur au moins 3 des 4 comparaisons
+    - OU mouvement moyen > 25.0 sur au moins 2 comparaisons
     """
-    MOTION_THRESHOLD = 8.0   # niveau de mouvement moyen minimum (0-255)
-    step = int(1.0 * video_fps)  # 1 seconde entre chaque frame comparée
-    y_start = int(frame_h_orig * play_zone_y)
+    MOTION_HIGH   = 25.0   # mouvement intense (jeu actif certain)
+    MOTION_MEDIUM = 15.0   # mouvement moyen (jeu probable si soutenu)
 
+    step = int(2.0 * video_fps)  # 2 secondes entre chaque frame
     frames_gray = []
-    for offset in [-step, 0, step]:
+
+    for offset in [-2*step, -step, 0, step, 2*step]:
         fidx = max(0, frame_idx + offset)
         cap.set(cv2.CAP_PROP_POS_FRAMES, fidx)
         ret, f = cap.read()
         if not ret:
             continue
-        small = cv2.resize(f, (proc_w, proc_h))
-        # Ne garder que la zone de jeu (ignorer tribunes)
-        roi  = small[int(proc_h * play_zone_y):, :]
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        small   = cv2.resize(f, (proc_w, proc_h))
+        roi     = small[int(proc_h * play_zone_y):, :]
+        gray    = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         frames_gray.append(gray)
 
-    if len(frames_gray) < 2:
+    if len(frames_gray) < 3:
         return False
 
     motion_scores = []
@@ -184,9 +186,12 @@ def _is_game_active(cap, frame_idx, video_fps, frame_w_orig, frame_h_orig,
         score = float(np.mean(diff))
         motion_scores.append(score)
 
-    # Jeu actif si au moins 1 comparaison dépasse le seuil
-    active = sum(1 for s in motion_scores if s > MOTION_THRESHOLD) >= 1
-    return active
+    high_count   = sum(1 for s in motion_scores if s > MOTION_HIGH)
+    medium_count = sum(1 for s in motion_scores if s > MOTION_MEDIUM)
+
+    # Jeu actif si mouvement intense sur 2+ comparaisons
+    # OU mouvement moyen soutenu sur 3+ comparaisons
+    return high_count >= 2 or medium_count >= 3
 
 
 # ─────────────────────────────────────────────────────────────────────────────
