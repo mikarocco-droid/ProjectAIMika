@@ -146,39 +146,47 @@ def _detect_midline(frame_bgr, frame_w, frame_h, play_zone_y):
 # PHASE 1 — DÉTECTION "JEU EN COURS" (scan grossier)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _is_game_active(frame_bgr, frame_w, frame_h, play_zone_y):
+def _is_game_active(cap, frame_idx, video_fps, frame_w_orig, frame_h_orig,
+                    play_zone_y, proc_w, proc_h):
     """
-    Retourne True si le jeu est clairement en cours sur cette frame.
-    Signal : ballon dans la zone de jeu ET joueurs des deux côtés du terrain.
-    Distingue de l'échauffement (chaque équipe dans sa moitié).
+    Retourne True si le jeu est actif à ce moment de la vidéo.
+
+    Méthode : comparer 3 frames espacées de 1s autour de frame_idx.
+    Si le mouvement moyen (absdiff) dans la zone de jeu dépasse un seuil
+    sur au moins 2 des 3 comparaisons → jeu actif.
+
+    Plus fiable que la détection de joueurs par couleur car fonctionne
+    quelle que soit la caméra, les couleurs de maillots, l'angle.
     """
-    ball = _detect_ball_hsv(frame_bgr, frame_w, frame_h)
-    if ball is None:
+    MOTION_THRESHOLD = 8.0   # niveau de mouvement moyen minimum (0-255)
+    step = int(1.0 * video_fps)  # 1 seconde entre chaque frame comparée
+    y_start = int(frame_h_orig * play_zone_y)
+
+    frames_gray = []
+    for offset in [-step, 0, step]:
+        fidx = max(0, frame_idx + offset)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, fidx)
+        ret, f = cap.read()
+        if not ret:
+            continue
+        small = cv2.resize(f, (proc_w, proc_h))
+        # Ne garder que la zone de jeu (ignorer tribunes)
+        roi  = small[int(proc_h * play_zone_y):, :]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        frames_gray.append(gray)
+
+    if len(frames_gray) < 2:
         return False
 
-    bx, by = ball
-    if by < play_zone_y:
-        return False
+    motion_scores = []
+    for i in range(len(frames_gray) - 1):
+        diff  = cv2.absdiff(frames_gray[i], frames_gray[i + 1])
+        score = float(np.mean(diff))
+        motion_scores.append(score)
 
-    positions   = _detect_player_positions(frame_bgr, frame_w, frame_h, play_zone_y)
-    if len(positions) < 4:
-        return False
-
-    left_count  = sum(1 for (cx, cy) in positions if cx < 0.40)
-    right_count = sum(1 for (cx, cy) in positions if cx > 0.60)
-
-    # Jeu actif = joueurs des deux côtés + ballon dans zone de jeu
-    if left_count >= 2 and right_count >= 2:
-        # Distinguer de l'échauffement :
-        # pendant l'échauffement chaque équipe reste dans sa moitié
-        # → ballon côté gauche mais joueurs à droite = jeu traversant
-        if abs(bx - 0.5) > 0.15:  # ballon pas au centre
-            return True
-        # Ballon au centre avec joueurs des deux côtés = kickoff ou jeu central
-        if left_count >= 3 and right_count >= 3:
-            return True
-
-    return False
+    # Jeu actif si au moins 1 comparaison dépasse le seuil
+    active = sum(1 for s in motion_scores if s > MOTION_THRESHOLD) >= 1
+    return active
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,15 +307,10 @@ def detect_kickoff_offset(video_path, fps=25.0, verbose=True):
 
     frame_idx = coarse_step   # on commence à 30s, pas à 0
     while frame_idx < max_frame:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = cap.read()
-        if not ret:
-            break
-
         t     = frame_idx / video_fps
-        small = cv2.resize(frame, (PROC_W, proc_h))
 
-        if _is_game_active(small, PROC_W, proc_h, play_zone_y):
+        if _is_game_active(cap, frame_idx, video_fps, frame_w_orig, frame_h_orig,
+                           play_zone_y, PROC_W, proc_h):
             game_active_time = t
             mm = int(t // 60)
             ss = int(t % 60)
