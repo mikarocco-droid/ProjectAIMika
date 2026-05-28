@@ -1,285 +1,364 @@
-# kickoff_detector.py
+# analysis/kickoff_detector.py
 # -*- coding: utf-8 -*-
 #
-# Module de correction des timestamps au coup d'envoi.
+# Détection du coup d'envoi par système de score pondéré.
 #
-# La DÉTECTION du coup d'envoi se fait dans terminal_events.py pendant
-# le tracking YOLO — events de type "kickoff" sont émis quand le ballon
-# est au rond central avec joueurs symétriques.
+# Signaux (tous optionnels sauf symétrie) :
+#   [3.0] Symétrie joueurs : ≥3 chaque côté de la ligne médiane
+#   [2.0] Nb joueurs total : ≥10 détectés
+#   [3.0] Ballon au centre : x∈[38-62%] y∈[33-67%]  — OPTIONNEL
+#   [2.0] Ballon immobile  : speed < 8px/s            — OPTIONNEL
+#   [2.0] Pas d'action récente : aucun shot/goal dans les 60s précédentes
+#   [1.5] Première apparition des deux équipes
+#   [1.0] Arbitre visible  : joueur couleur neutre seul
 #
-# Ce module fournit uniquement les fonctions d'APPLICATION de l'offset
-# sur les events, frames_data, jersey_map et ball_tracker.
+# Seuil : 7.0 / 14.5 → kickoff validé même sans ballon visible.
+#
+# API publique (inchangée) :
+#   find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25)
+#   apply_kickoff_offset(events, offset, fps=25)
+#   apply_kickoff_offset_frames(frames_data, offset, fps=25)
+#   reset_pre_kickoff_state(jersey_map, offset, fps=25)
+#   find_match_end(frames_data, fps, ...)
+#   apply_match_end(events, frames_data, match_end_s, fps=25)
 
-import logging
-logger = logging.getLogger(__name__)
+import math
+
+# ─────────────────────────────────────────
+# CONSTANTES
+# ─────────────────────────────────────────
+_SCORE_THRESHOLD   = 7.0    # score minimum pour valider un kickoff
+_MIN_T_RATIO       = 0.03   # chercher après 3% de la durée vidéo (évite faux positifs début)
+_MIN_T_ABS         = 30.0   # et au moins 30s dans la vidéo
+_CONSECUTIVE_FRAMES = 3     # nombre de frames consécutives validant le score
+_NO_ACTION_WINDOW  = 60.0   # secondes avant le kickoff sans shot/goal
+
+# Poids des signaux
+_W_SYMMETRY    = 3.0
+_W_N_PLAYERS   = 2.0
+_W_BALL_CENTER = 3.0
+_W_BALL_STILL  = 2.0
+_W_NO_ACTION   = 2.0
+_W_FIRST_TEAMS = 1.5
+_W_REFEREE     = 1.0
 
 
-def find_kickoff_offset(events, video_duration_s=None):
+# ─────────────────────────────────────────
+# SCORE D'UNE FRAME
+# ─────────────────────────────────────────
+def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h):
     """
-    Cherche le premier event de type 'kickoff' dans les events du pipeline.
-
-    Retourne (kickoff_time_s, confidence) ou (0.0, 0.0) si non trouvé.
-
-    Règles :
-    - Si kickoff détecté dans les 60 premières secondes → offset=0
-      (match qui commence dès le début, pas de pré-match)
-    - Si kickoff détecté après 50% de la durée → ignoré
-      (probablement une remise en jeu après but, pas le coup d'envoi initial)
-    - Sinon → offset = kickoff_time
+    Calcule le score kickoff d'une frame.
+    Retourne (score, détails_dict).
     """
-    kickoff_events = [
-        e for e in events
-        if e.get("type") == "kickoff" or e.get("terminal_type") == "kickoff"
+    score   = 0.0
+    details = {}
+
+    players  = fd.get("players") or []
+    ball     = fd.get("ball") or {}
+    t        = fd.get("frame", 0) / max(fps, 1)
+
+    # ── 1. Symétrie joueurs ───────────────────────────────────────────────────
+    mid_x    = frame_w * 0.50
+    left_ps  = [p for p in players if _player_cx(p) < mid_x]
+    right_ps = [p for p in players if _player_cx(p) >= mid_x]
+    has_sym  = len(left_ps) >= 3 and len(right_ps) >= 3
+    if has_sym:
+        score += _W_SYMMETRY
+    details["symmetry"] = (len(left_ps), len(right_ps))
+
+    # ── 2. Nombre total de joueurs ────────────────────────────────────────────
+    if len(players) >= 10:
+        score += _W_N_PLAYERS
+    details["n_players"] = len(players)
+
+    # ── 3. Ballon au centre ───────────────────────────────────────────────────
+    bx, by, bspeed = _ball_pos(ball, frame_w, frame_h)
+    ball_at_center = False
+    if bx is not None and by is not None:
+        ball_at_center = (
+            frame_w * 0.38 < bx < frame_w * 0.62 and
+            frame_h * 0.33 < by < frame_h * 0.67
+        )
+        if ball_at_center:
+            score += _W_BALL_CENTER
+    details["ball_center"] = ball_at_center
+
+    # ── 4. Ballon immobile ────────────────────────────────────────────────────
+    ball_still = bspeed is not None and bspeed < 8.0
+    if ball_still and ball_at_center:
+        score += _W_BALL_STILL
+    details["ball_still"] = ball_still
+
+    # ── 5. Pas d'action récente (shot/goal) ───────────────────────────────────
+    no_recent = not any(abs(t - at) < _NO_ACTION_WINDOW for at in action_times)
+    if no_recent:
+        score += _W_NO_ACTION
+    details["no_action"] = no_recent
+
+    # ── 6. Première apparition des deux équipes ───────────────────────────────
+    if not first_two_teams_seen:
+        teams_here = set(p.get("team") for p in players if p.get("team") is not None)
+        if len(teams_here) >= 2:
+            score += _W_FIRST_TEAMS
+            first_two_teams_seen = True
+    details["first_teams"] = first_two_teams_seen
+
+    # ── 7. Arbitre visible (joueur couleur neutre seul) ───────────────────────
+    referee_seen = any(
+        str(p.get("team", "")).lower() in ("ref", "referee", "arbitre", "gk", "-1")
+        or p.get("is_referee", False)
+        for p in players
+    )
+    if referee_seen:
+        score += _W_REFEREE
+    details["referee"] = referee_seen
+
+    return score, details, first_two_teams_seen
+
+
+def _player_cx(p):
+    bbox = p.get("bbox") or []
+    if len(bbox) >= 3:
+        return (bbox[0] + bbox[2]) / 2
+    return p.get("x", 0) or 0
+
+
+def _ball_pos(ball, frame_w, frame_h):
+    """Retourne (bx, by, speed) depuis un dict ball."""
+    if not ball:
+        return None, None, None
+    center = ball.get("center")
+    if center and len(center) >= 2 and center[0] is not None:
+        bx, by = center[0], center[1]
+    else:
+        bx = ball.get("x")
+        by = ball.get("y")
+    speed = ball.get("speed")
+    return bx, by, speed
+
+
+# ─────────────────────────────────────────
+# FIND KICKOFF OFFSET — API publique
+# ─────────────────────────────────────────
+def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
+    """
+    Détecte le coup d'envoi et retourne (offset_s, confidence).
+
+    Passe 1 — events type=kickoff (méthode legacy)
+    Passe 2 — score pondéré sur frames_data (nouvelle méthode robuste)
+
+    Le premier kickoff trouvé est retourné.
+    offset_s = 0 si non détecté.
+    """
+    # ── Passe 1 : events type=kickoff ─────────────────────────────────────────
+    kickoff_events = sorted(
+        [e for e in (events or []) if e.get("type") == "kickoff"],
+        key=lambda e: e.get("time", 0)
+    )
+    if kickoff_events:
+        first = kickoff_events[0]
+        t     = float(first.get("time", 0))
+        conf  = float(first.get("confidence", first.get("conf", 0.80)))
+        if t > 0:
+            print(f"  [KICKOFF] Détecté via events à t={t:.1f}s (conf={conf:.2f})")
+            return t, conf
+
+    # ── Passe 2 : score pondéré sur frames_data ───────────────────────────────
+    if not frames_data:
+        return 0.0, 0.0
+
+    min_t = max(_MIN_T_ABS, video_duration_s * _MIN_T_RATIO)
+
+    # Timestamps de shots/goals pour le signal "pas d'action récente"
+    action_times = [
+        float(e.get("time", 0)) for e in (events or [])
+        if e.get("type") in ("shot", "goal", "score")
     ]
 
-    if not kickoff_events:
-        return 0.0, 0.0
+    # Résolution réelle
+    frame_w = int(frames_data[0].get("frame_w") or 1920)
+    frame_h = int(frames_data[0].get("frame_h") or 1080)
 
-    # Prendre le premier kickoff chronologiquement
-    kickoff_events.sort(key=lambda e: e.get("time", 0))
-    first = kickoff_events[0]
-    t     = float(first.get("time", 0))
-    conf  = float(first.get("confidence", 0.7))
+    consecutive        = 0
+    first_two_teams    = False
+    best_t             = None
+    best_score         = 0.0
+    candidate_start_t  = None
 
-    # Kickoff trop tôt = match commence dès le début
-    if t < 60.0:
-        print(f"  [KICKOFF] Kickoff détecté à {int(t//60):02d}:{int(t%60):02d} < 60s "
-              f"→ match commence dès le début → offset=0s")
-        return 0.0, 0.0
+    for fd in frames_data:
+        t = fd.get("frame", 0) / max(fps, 1)
+        if t < min_t:
+            continue
 
-    # Kickoff trop tard = remise en jeu après but ou mi-temps
-    if video_duration_s and t > video_duration_s * 0.50:
-        print(f"  [KICKOFF] Kickoff à {int(t//60):02d}:{int(t%60):02d} > 50% durée vidéo "
-              f"→ remise en jeu, ignoré → offset=0s")
-        return 0.0, 0.0
+        score, details, first_two_teams = _score_frame(
+            fd, fps, action_times, first_two_teams, frame_w, frame_h
+        )
 
-    mm = int(t // 60)
-    ss = int(t % 60)
-    print(f"  [KICKOFF] ✅ Coup d'envoi détecté à {mm:02d}:{ss:02d} "
-          f"→ t=0 (conf={conf:.2f})")
-    print(f"  [KICKOFF] Timestamps corrigés : t_video - {t:.0f}s")
-    return t, conf
+        if score >= _SCORE_THRESHOLD:
+            consecutive += 1
+            if consecutive == 1:
+                candidate_start_t = t
+            if consecutive >= _CONSECUTIVE_FRAMES:
+                # Kickoff validé — prendre le début de la séquence
+                best_t     = candidate_start_t
+                best_score = score
+                conf       = min(0.95, 0.60 + (score - _SCORE_THRESHOLD) * 0.05)
+                print(f"  [KICKOFF PHYS] Score={score:.1f}/{_SCORE_THRESHOLD} "
+                      f"→ offset={best_t:.1f}s conf={conf:.2f} "
+                      f"(sym={details['symmetry']} "
+                      f"n={details['n_players']} "
+                      f"ball={'✓' if details['ball_center'] else '✗'})")
+                return best_t, conf
+        else:
+            consecutive       = 0
+            candidate_start_t = None
+
+    print(f"  [KICKOFF] Aucun coup d'envoi détecté (score max insuffisant)")
+    return 0.0, 0.0
 
 
-def apply_kickoff_offset(events, kickoff_offset_s, fps=25.0):
+# ─────────────────────────────────────────
+# APPLY KICKOFF OFFSET
+# ─────────────────────────────────────────
+def apply_kickoff_offset(events, offset, fps=25):
     """
-    Soustrait kickoff_offset_s de tous les timestamps.
-    Supprime les events avant le coup d'envoi (temps < -5s).
+    Soustrait l'offset de tous les timestamps events.
+    Supprime les events antérieurs au coup d'envoi.
+    Retourne (events_corrigés, n_supprimés).
     """
-    if kickoff_offset_s <= 0:
+    if not offset or offset <= 0:
         return events, 0
 
-    adjusted, n_removed = [], 0
+    corrected = []
+    n_removed = 0
     for e in events:
-        t_adj = float(e.get("time", 0) or 0) - kickoff_offset_s
-        if t_adj < -5.0:
+        t_orig = float(e.get("time", 0))
+        t_new  = t_orig - offset
+        if t_new < -2.0:          # marge de 2s pour les events juste avant le sifflet
             n_removed += 1
             continue
         e = dict(e)
-        e["time"] = max(0.0, t_adj)
-        if "frame" in e:
-            e["frame"] = max(0, int(e["frame"]) - int(kickoff_offset_s * fps))
-        adjusted.append(e)
+        e["time"]  = max(0.0, round(t_new, 3))
+        if "frame" in e and e["frame"] is not None:
+            e["frame"] = max(0, int(e["frame"] - offset * fps))
+        corrected.append(e)
 
-    if n_removed > 0:
-        print(f"  [KICKOFF] {n_removed} events supprimés (échauffement avant coup d'envoi)")
-    return adjusted, n_removed
+    return corrected, n_removed
 
 
-def apply_kickoff_offset_frames(frames_data, kickoff_offset_s, fps=25.0):
+def apply_kickoff_offset_frames(frames_data, offset, fps=25):
     """
-    Filtre frames_data pour ne garder que les frames après le coup d'envoi.
-    Soustrait l'offset des numéros de frame.
+    Soustrait l'offset des frames_data et supprime les frames avant le KO.
     """
-    if kickoff_offset_s <= 0:
+    if not offset or offset <= 0:
         return frames_data
 
-    cutoff_frame = int(kickoff_offset_s * fps)
-    filtered     = []
+    offset_frames = int(offset * fps)
+    result = []
     for fd in frames_data:
-        f = int(fd.get("frame", 0) or 0)
-        if f < cutoff_frame:
+        f = fd.get("frame", 0)
+        if f < offset_frames - int(fps * 2):    # marge 2s
             continue
         fd = dict(fd)
-        fd["frame"] = f - cutoff_frame
-        filtered.append(fd)
-
-    print(f"  [KICKOFF] frames_data : {len(frames_data)} → {len(filtered)} "
-          f"({len(frames_data)-len(filtered)} frames pré-match retirées)")
-    return filtered
+        fd["frame"] = max(0, f - offset_frames)
+        result.append(fd)
+    return result
 
 
-def reset_pre_kickoff_state(jersey_map, kickoff_offset_s, fps=25.0):
+# ─────────────────────────────────────────
+# RESET PRE-KICKOFF STATE
+# ─────────────────────────────────────────
+def reset_pre_kickoff_state(jersey_map, offset, fps=25):
     """
-    Nettoie le jersey_map des joueurs vus uniquement pendant l'échauffement.
-    Retourne un jersey_map nettoyé.
-
-    Note : le ball_tracker et DeepSort n'ont pas besoin d'être réinitialisés
-    explicitement car leurs états historiques sont liés aux frames_data
-    qui sont déjà filtrées par apply_kickoff_offset_frames.
+    Nettoie le jersey_map des joueurs vus uniquement à l'échauffement.
+    (Actuellement conserve tout — le mapping est utile même s'il vient de l'échauffement)
     """
-    if kickoff_offset_s <= 0 or not jersey_map:
-        return jersey_map
-
-    # Pour l'instant on garde tout le jersey_map — les numéros lus pendant
-    # l'échauffement sont quand même valides (même joueurs en match).
-    # On pourrait filtrer par "dernière vue avant kickoff" mais c'est risqué
-    # de perdre des identifications valides.
-    print(f"  [KICKOFF] jersey_map conservé ({len(jersey_map)} joueurs) "
-          f"— numéros valides même pendant l'échauffement")
     return jersey_map
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DÉTECTION FIN DE MATCH
-# ─────────────────────────────────────────────────────────────────────────────
-
-def find_match_end(frames_data, fps=25.0, team_colors=None,
-                   silence_threshold_s=1500.0, min_match_duration_s=2700.0):
+# ─────────────────────────────────────────
+# FIND MATCH END
+# ─────────────────────────────────────────
+def find_match_end(
+    frames_data,
+    fps,
+    team_colors          = None,
+    silence_threshold_s  = 1500.0,   # 25 min sans vrai jeu = fin du match
+    min_match_duration_s = 2700.0,   # chercher fin seulement après 45 min
+):
     """
-    Trouve le timestamp de fin du match en analysant les frames_data du tracking.
+    Détecte la fin du match dans les frames_data.
 
-    Principe :
-    - On scanne les frames_data toutes les ~30s
-    - On considère qu'il y a du "vrai jeu" quand des joueurs avec vareuses
-      d'équipe sont détectés (couleurs team0/team1 calibrées)
-    - On garde le dernier timestamp avec du vrai jeu
-    - Si pendant 25 min consécutives aucun vrai jeu → fin du match
-    - Prolongation et tirs au but sont couverts car le seuil est de 25 min
+    Critère "vrai jeu" : ≥4 joueurs avec couleur d'équipe assignée.
+    Les gamins sans vareuse après le match = ignorés (team=None).
 
-    Paramètres
-    ----------
-    frames_data         : liste de dicts du pipeline (players, ball, frame, fps)
-    fps                 : FPS de la vidéo
-    team_colors         : dict {0: (B,G,R), 1: (B,G,R)} couleurs équipes calibrées
-                          Si None, on utilise juste la présence de joueurs
-    silence_threshold_s : durée sans jeu pour conclure fin de match (défaut 25 min)
-    min_match_duration_s: durée minimale de match avant de chercher la fin (défaut 45 min)
-
-    Retourne
-    --------
-    match_end_s : float — timestamp de fin du match en secondes
-                  None si non détecté (on garde toute la vidéo)
+    Retourne le timestamp de fin (s) ou None si non détecté.
     """
     if not frames_data:
         return None
 
-    import numpy as np
+    last_real_game_t = None
+    last_checked_t   = 0.0
 
-    # Scan toutes les ~30s pour la rapidité
-    scan_interval_frames = int(30.0 * fps)
-
-    last_real_game_time  = 0.0
-    last_real_game_frame = 0
-    found_any_game       = False
-
-    # Construire un index rapide frame → fd
-    # On ne garde qu'une frame toutes les 30s
-    sampled = []
-    prev_frame = -scan_interval_frames
     for fd in frames_data:
-        f = int(fd.get("frame", 0) or 0)
-        if f - prev_frame >= scan_interval_frames:
-            sampled.append(fd)
-            prev_frame = f
+        t       = fd.get("frame", 0) / max(fps, 1)
+        players = fd.get("players") or []
 
-    for fd in sampled:
-        f   = int(fd.get("frame", 0) or 0)
-        t   = f / max(fps, 1)
-        players = fd.get("players", [])
+        # Joueurs avec équipe assignée (couleur connue)
+        real_players = [
+            p for p in players
+            if p.get("team") is not None and p.get("team") != -1
+        ]
 
-        # Compter les joueurs avec couleur d'équipe reconnue
-        team_players = 0
-        for p in players:
-            team = p.get("team")
-            if team is not None:
-                team_players += 1
-            elif team_colors and p.get("color") is not None:
-                # Vérifier si la couleur correspond à une équipe
-                color = np.array(p["color"], dtype=np.float32)
-                for tid, tc in team_colors.items():
-                    tc_arr = np.array(tc, dtype=np.float32)
-                    dist = float(np.linalg.norm(color - tc_arr))
-                    if dist < 60:
-                        team_players += 1
-                        break
+        if len(real_players) >= 4:
+            last_real_game_t = t
 
-        # "Vrai jeu" = au moins 4 joueurs avec vareuses d'équipe détectés
-        # (les gamins sans vareuse ne seront pas assignés à une équipe)
-        if team_players >= 4:
-            last_real_game_time  = t
-            last_real_game_frame = f
-            found_any_game       = True
+        last_checked_t = t
 
-            # Vérifier si on a dépassé la durée minimale de match
-            # avant de commencer à surveiller la fin
-            if t < min_match_duration_s:
-                continue
+    if last_real_game_t is None:
+        return None
 
-        # Si on a trouvé du jeu ET qu'on dépasse le seuil de silence
-        if found_any_game and t > min_match_duration_s:
-            silence = t - last_real_game_time
-            if silence > silence_threshold_s:
-                mm = int(last_real_game_time // 60)
-                ss = int(last_real_game_time % 60)
-                print(f"  [MATCH_END] ✅ Fin du match détectée à {mm:02d}:{ss:02d} "
-                      f"(silence={silence/60:.1f} min > seuil={silence_threshold_s/60:.0f} min)")
-                return last_real_game_time
+    # Vérifier que le match a duré assez longtemps
+    if last_real_game_t < min_match_duration_s:
+        print(f"  [MATCH_END] last_real_game={last_real_game_t:.0f}s < "
+              f"min={min_match_duration_s:.0f}s → ignoré")
+        return None
 
-    if found_any_game and last_real_game_time > 0:
-        # Fin de vidéo atteinte — vérifier si on a du silence en fin
-        total_time = frames_data[-1].get("frame", 0) / max(fps, 1)
-        silence    = total_time - last_real_game_time
-        if silence > silence_threshold_s and last_real_game_time > min_match_duration_s:
-            mm = int(last_real_game_time // 60)
-            ss = int(last_real_game_time % 60)
-            print(f"  [MATCH_END] ✅ Fin du match détectée à {mm:02d}:{ss:02d} "
-                  f"(silence fin vidéo={silence/60:.1f} min)")
-            return last_real_game_time
+    # Vérifier qu'il y a un silence significatif après
+    silence = last_checked_t - last_real_game_t
+    if silence < silence_threshold_s:
+        print(f"  [MATCH_END] Pas de fin de match détectée → vidéo utilisée entièrement")
+        return None
 
-    print(f"  [MATCH_END] Pas de fin de match détectée → vidéo utilisée entièrement")
-    return None
+    print(f"  [MATCH_END] Fin détectée à t={last_real_game_t:.0f}s "
+          f"(silence={silence:.0f}s > {silence_threshold_s:.0f}s)")
+    return last_real_game_t
 
 
-def apply_match_end(events, frames_data, match_end_s, fps=25.0):
+# ─────────────────────────────────────────
+# APPLY MATCH END
+# ─────────────────────────────────────────
+def apply_match_end(events, frames_data, match_end_s, fps=25):
     """
-    Supprime les events et frames après la fin du match.
-
-    Paramètres
-    ----------
-    events      : liste d'events du pipeline
-    frames_data : liste de frames_data du pipeline
-    match_end_s : timestamp de fin du match en secondes
-    fps         : FPS de la vidéo
-
-    Retourne
-    --------
-    events_trimmed, frames_data_trimmed
+    Coupe les events et frames_data après la fin du match.
+    Garde +60s de marge (célébrations, coup de sifflet final).
     """
-    if match_end_s is None or match_end_s <= 0:
-        return events, frames_data
+    cutoff = match_end_s + 60.0
 
-    # Ajouter une marge de 60s après la fin détectée
-    # (pour capturer les célébrations et le coup de sifflet final)
-    cutoff_s     = match_end_s + 60.0
-    cutoff_frame = int(cutoff_s * fps)
-
-    events_trimmed = [
+    events_cut = [
         e for e in events
-        if float(e.get("time", 0) or 0) <= cutoff_s
+        if float(e.get("time", 0)) <= cutoff
     ]
-    frames_trimmed = [
+    frames_cut = [
         fd for fd in frames_data
-        if int(fd.get("frame", 0) or 0) <= cutoff_frame
+        if fd.get("frame", 0) / max(fps, 1) <= cutoff
     ]
 
-    n_ev  = len(events) - len(events_trimmed)
-    n_fd  = len(frames_data) - len(frames_trimmed)
-    mm    = int(match_end_s // 60)
-    ss    = int(match_end_s % 60)
+    n_ev = len(events) - len(events_cut)
+    n_fr = len(frames_data) - len(frames_cut)
+    if n_ev or n_fr:
+        print(f"  [MATCH_END] Coupe à t={cutoff:.0f}s : "
+              f"{n_ev} events + {n_fr} frames supprimés")
 
-    if n_ev > 0 or n_fd > 0:
-        print(f"  [MATCH_END] Après-match supprimé : {n_ev} events + "
-              f"{n_fd} frames (après {mm:02d}:{ss:02d} + 60s marge)")
-
-    return events_trimmed, frames_trimmed
+    return events_cut, frames_cut
