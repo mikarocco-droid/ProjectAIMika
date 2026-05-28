@@ -29,7 +29,7 @@ import math
 # ─────────────────────────────────────────
 _SCORE_THRESHOLD   = 7.0    # score minimum pour valider un kickoff
 _MIN_T_RATIO       = 0.03   # chercher après 3% de la durée vidéo (évite faux positifs début)
-_MIN_T_ABS         = 30.0   # et au moins 30s dans la vidéo
+_MIN_T_ABS         = 60.0   # chercher après 60s minimum (le KO ne peut pas être dans la 1ère minute)
 _CONSECUTIVE_FRAMES = 3     # nombre de frames consécutives validant le score
 _NO_ACTION_WINDOW  = 60.0   # secondes avant le kickoff sans shot/goal
 
@@ -59,13 +59,28 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h):
     t        = fd.get("frame", 0) / max(fps, 1)
 
     # ── 1. Symétrie joueurs ───────────────────────────────────────────────────
+    # Critère renforcé : ≥4 chaque côté ET ratio min/max ≥ 0.45
+    # → rejette échauffement (8,3) ratio=0.375, accepte KO (6,5) ratio=0.83
     mid_x    = frame_w * 0.50
     left_ps  = [p for p in players if _player_cx(p) < mid_x]
     right_ps = [p for p in players if _player_cx(p) >= mid_x]
-    has_sym  = len(left_ps) >= 3 and len(right_ps) >= 3
+    n_left, n_right = len(left_ps), len(right_ps)
+    sym_ratio = min(n_left, n_right) / max(n_left, n_right, 1)
+    has_sym   = n_left >= 4 and n_right >= 4 and sym_ratio >= 0.45
     if has_sym:
         score += _W_SYMMETRY
-    details["symmetry"] = (len(left_ps), len(right_ps))
+    details["symmetry"] = (n_left, n_right)
+    details["sym_ratio"] = sym_ratio
+
+    # ── 1b. Spread horizontal : joueurs répartis sur ≥60% de la largeur ──────
+    if players:
+        xs       = [_player_cx(p) for p in players]
+        spread_x = (max(xs) - min(xs)) / max(frame_w, 1)
+        if spread_x >= 0.60:
+            score += 1.0   # bonus léger — confirme terrain complet occupé
+    else:
+        spread_x = 0.0
+    details["spread_x"] = spread_x
 
     # ── 2. Nombre total de joueurs ────────────────────────────────────────────
     if len(players) >= 10:
@@ -206,7 +221,8 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
                 conf       = min(0.95, 0.60 + (score - _SCORE_THRESHOLD) * 0.05)
                 print(f"  [KICKOFF PHYS] Score={score:.1f}/{_SCORE_THRESHOLD} "
                       f"→ offset={best_t:.1f}s conf={conf:.2f} "
-                      f"(sym={details['symmetry']} "
+                      f"(sym={details['symmetry']} ratio={details.get('sym_ratio',0):.2f} "
+                      f"spread={details.get('spread_x',0):.2f} "
                       f"n={details['n_players']} "
                       f"ball={'✓' if details['ball_center'] else '✗'})")
                 return best_t, conf
