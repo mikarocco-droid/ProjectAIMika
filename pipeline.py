@@ -434,7 +434,11 @@ def run_pipeline(
     # (event type="kickoff" : ballon au rond central + joueurs symétriques).
     # On cherche le premier kickoff pour corriger tous les timestamps.
     _video_duration_s = total_frames / max(fps, 1)
-    _kickoff_offset, _kickoff_conf = find_kickoff_offset(events, _video_duration_s)
+    _kickoff_offset, _kickoff_conf = find_kickoff_offset(
+        events, _video_duration_s,
+        frames_data = frames_data,   # V9.8 : score pondéré sans dépendre du ballon
+        fps         = fps,
+    )
 
     if _kickoff_offset > 0:
         print(f"  [KICKOFF] Application offset={_kickoff_offset:.1f}s "
