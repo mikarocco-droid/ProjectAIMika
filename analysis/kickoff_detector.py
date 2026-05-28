@@ -200,6 +200,10 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
     best_t             = None
     best_score         = 0.0
     candidate_start_t  = None
+    # On collecte TOUS les candidats et on prend le DERNIER
+    # → Le vrai KO est toujours le dernier regroupement symétrique
+    #   avant le début du jeu, pas le premier (échauffement)
+    all_candidates     = []
 
     for fd in frames_data:
         t = fd.get("frame", 0) / max(fps, 1)
@@ -215,23 +219,28 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
             if consecutive == 1:
                 candidate_start_t = t
             if consecutive >= _CONSECUTIVE_FRAMES:
-                # Kickoff validé — prendre le début de la séquence
-                best_t     = candidate_start_t
-                best_score = score
-                conf       = min(0.95, 0.60 + (score - _SCORE_THRESHOLD) * 0.05)
-                print(f"  [KICKOFF PHYS] Score={score:.1f}/{_SCORE_THRESHOLD} "
-                      f"→ offset={best_t:.1f}s conf={conf:.2f} "
-                      f"(sym={details['symmetry']} ratio={details.get('sym_ratio',0):.2f} "
-                      f"spread={details.get('spread_x',0):.2f} "
-                      f"n={details['n_players']} "
-                      f"ball={'✓' if details['ball_center'] else '✗'})")
-                return best_t, conf
+                all_candidates.append((candidate_start_t, score, details))
+                # Ne pas break — continuer pour trouver le dernier
         else:
             consecutive       = 0
             candidate_start_t = None
 
-    print(f"  [KICKOFF] Aucun coup d'envoi détecté (score max insuffisant)")
-    return 0.0, 0.0
+    if not all_candidates:
+        print(f"  [KICKOFF] Aucun coup d'envoi détecté (score max insuffisant)")
+        return 0.0, 0.0
+
+    # Prendre le DERNIER candidat — le vrai KO précède toujours le jeu
+    best_t, best_score, details = all_candidates[-1]
+    conf = min(0.95, 0.60 + (best_score - _SCORE_THRESHOLD) * 0.05)
+    n_candidates = len(all_candidates)
+    print(f"  [KICKOFF PHYS] {n_candidates} candidat(s) → dernier retenu : "
+          f"Score={best_score:.1f}/{_SCORE_THRESHOLD} "
+          f"→ offset={best_t:.1f}s conf={conf:.2f} "
+          f"(sym={details['symmetry']} ratio={details.get('sym_ratio',0):.2f} "
+          f"spread={details.get('spread_x',0):.2f} "
+          f"n={details['n_players']} "
+          f"ball={'✓' if details['ball_center'] else '✗'})")
+    return best_t, conf
 
 
 # ─────────────────────────────────────────
