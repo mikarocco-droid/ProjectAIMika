@@ -247,6 +247,34 @@ def run_pipeline(
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
 
+    # ── Auto frame_skip selon FPS réel de la vidéo ───────────────────────────
+    # Garantit ~6.25 fps analysés quelle que soit la source (25/30/50/60fps)
+    # Override LOCAL uniquement — n'affecte pas les runs parallèles
+    import cv2 as _cv2 ; import re as _re_fps
+    try:
+        _cap     = _cv2.VideoCapture(video_path)
+        _src_fps = _cap.get(_cv2.CAP_PROP_FPS)
+        _cap.release()
+        if not _src_fps or _src_fps < 10:
+            _src_fps = 25.0
+        _auto_skip = max(1, round(_src_fps / 6.25))
+        _cfg_skip  = int(os.environ.get("FRAME_SKIP_EVERY",
+                         getattr(config, "FRAME_SKIP_EVERY", 4)))
+        if _auto_skip != _cfg_skip:
+            print(f"  [AUTO SKIP] FPS={_src_fps:.1f} → "
+                  f"FRAME_SKIP_EVERY={_auto_skip} "
+                  f"(config={_cfg_skip}, "
+                  f"{_src_fps/_auto_skip:.1f} fps analysés)")
+            # Injecter dans l'environnement pour que config.py le relise
+            os.environ["FRAME_SKIP_EVERY"] = str(_auto_skip)
+            config.FRAME_SKIP_EVERY = _auto_skip
+        else:
+            print(f"  [AUTO SKIP] FPS={_src_fps:.1f} → "
+                  f"FRAME_SKIP_EVERY={_auto_skip} (inchangé)")
+    except Exception as _eskip:
+        print(f"  [AUTO SKIP] Ignoré : {_eskip}")
+    # ─────────────────────────────────────────────────────────────────────────
+
     print(f"\nPIPELINE START - {sport.upper()} | mode={mode}")
 
     # Initialisations globales
