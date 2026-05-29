@@ -195,20 +195,24 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
     frame_w = int(frames_data[0].get("frame_w") or 1920)
     frame_h = int(frames_data[0].get("frame_h") or 1080)
 
+    # Fenêtre de recherche pré-match : max 10 min ou 40% de la durée
+    # Couvre les cas : clip 8 min (KO à 5:08), clip 15 min, match complet
+    max_search_t = min(max(video_duration_s * 0.40, 360.0), 900.0)
+
     consecutive        = 0
     first_two_teams    = False
     best_t             = None
     best_score         = 0.0
     candidate_start_t  = None
-    # On collecte TOUS les candidats et on prend le DERNIER
-    # → Le vrai KO est toujours le dernier regroupement symétrique
-    #   avant le début du jeu, pas le premier (échauffement)
     all_candidates     = []
 
     for fd in frames_data:
         t = fd.get("frame", 0) / max(fps, 1)
         if t < min_t:
             continue
+        # Stopper la recherche une fois hors fenêtre pré-match
+        if t > max_search_t:
+            break
 
         score, details, first_two_teams = _score_frame(
             fd, fps, action_times, first_two_teams, frame_w, frame_h
@@ -219,22 +223,22 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
             if consecutive == 1:
                 candidate_start_t = t
             if consecutive >= _CONSECUTIVE_FRAMES:
-                all_candidates.append((candidate_start_t, score, details))
-                # Ne pas break — continuer pour trouver le dernier
+                all_candidates.append((candidate_start_t, score, dict(details)))
         else:
             consecutive       = 0
             candidate_start_t = None
 
     if not all_candidates:
-        print(f"  [KICKOFF] Aucun coup d'envoi détecté (score max insuffisant)")
+        print(f"  [KICKOFF] Aucun coup d'envoi détecté dans les {max_search_t:.0f}s initiales")
         return 0.0, 0.0
 
-    # Prendre le DERNIER candidat — le vrai KO précède toujours le jeu
+    # Prendre le DERNIER candidat dans la fenêtre pré-match
+    # = le vrai KO, précédé par l'échauffement et le cri de guerre
     best_t, best_score, details = all_candidates[-1]
     conf = min(0.95, 0.60 + (best_score - _SCORE_THRESHOLD) * 0.05)
     n_candidates = len(all_candidates)
-    print(f"  [KICKOFF PHYS] {n_candidates} candidat(s) → dernier retenu : "
-          f"Score={best_score:.1f}/{_SCORE_THRESHOLD} "
+    print(f"  [KICKOFF PHYS] {n_candidates} candidat(s) dans {max_search_t:.0f}s "
+          f"→ dernier retenu : Score={best_score:.1f}/{_SCORE_THRESHOLD} "
           f"→ offset={best_t:.1f}s conf={conf:.2f} "
           f"(sym={details['symmetry']} ratio={details.get('sym_ratio',0):.2f} "
           f"spread={details.get('spread_x',0):.2f} "
