@@ -195,9 +195,26 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
     frame_w = int(frames_data[0].get("frame_w") or 1920)
     frame_h = int(frames_data[0].get("frame_h") or 1080)
 
-    # Fenêtre de recherche pré-match : max 10 min ou 40% de la durée
-    # Couvre les cas : clip 8 min (KO à 5:08), clip 15 min, match complet
+    # Fenêtre de recherche pré-match
+    # Borne haute : min(40% durée, 900s) ET premier event de jeu - 5s
+    # Le KO ne peut pas être APRÈS le premier tir/goal détecté
     max_search_t = min(max(video_duration_s * 0.40, 360.0), 900.0)
+
+    # Affiner avec le premier event de jeu si disponible
+    first_game_event_t = None
+    for e in (events or []):
+        if e.get("type") in ("shot", "goal", "score"):
+            t_e = float(e.get("time", 0))
+            if t_e > min_t:
+                if first_game_event_t is None or t_e < first_game_event_t:
+                    first_game_event_t = t_e
+    if first_game_event_t is not None:
+        # Le KO est forcément avant le premier tir, avec 10s de marge
+        event_bound = first_game_event_t - 10.0
+        if event_bound > min_t:
+            max_search_t = min(max_search_t, event_bound)
+            print(f"  [KICKOFF] Borne max ajustée : {max_search_t:.0f}s "
+                  f"(premier event jeu à {first_game_event_t:.0f}s)")
 
     consecutive        = 0
     first_two_teams    = False
