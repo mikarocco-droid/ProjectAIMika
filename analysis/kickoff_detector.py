@@ -200,10 +200,16 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
     # Le KO ne peut pas être APRÈS le premier tir/goal détecté
     max_search_t = min(max(video_duration_s * 0.40, 360.0), 900.0)
 
-    # Affiner avec le premier event de jeu si disponible
+    # Affiner avec le premier event de jeu QUALIFIÉ si disponible
+    # Ignorer les FP d'échauffement (xg≈0, shot sans tir réel)
     first_game_event_t = None
     for e in (events or []):
         if e.get("type") in ("shot", "goal", "score"):
+            xg = float(e.get("xg", e.get("xG", 0)) or 0)
+            # Ne compter que les events avec xg significatif
+            # → élimine les FP d'échauffement (xg=0 ou très bas)
+            if xg < 0.05:
+                continue
             t_e = float(e.get("time", 0))
             if t_e > min_t:
                 if first_game_event_t is None or t_e < first_game_event_t:
