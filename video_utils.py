@@ -238,9 +238,23 @@ def create_highlights(
         frame      = e.get("frame", 0)
         t          = frame_to_time(frame, fps)
         is_goal    = e.get("type") in ["goal", "score"]
-        # Les buts utilisent context_before plein (couvre la phase de jeu)
-        # Les tirs utilisent la moitié (pas besoin de remonter aussi loin)
-        _before    = context_before if is_goal else max(context_before // 2, 8)
+        if is_goal:
+            # Context adaptatif selon le type de but :
+            _src    = e.get("detected_from", e.get("source", ""))
+            _action = e.get("action_before", "")
+            if _action == "penalty":
+                # Penalty : sifflet → placement → concentration → élan → tir (~30-40s)
+                _before = 45
+            elif "gemini" in str(_src):
+                # Gemini détecte via célébration/kickoff → remonter plus loin
+                # pour capturer le tir réel avant la célébration
+                _before = 35
+            else:
+                # But normal (tir rapide depuis events_standard ou terminal)
+                _before = context_before
+        else:
+            # Tir non but : moitié du contexte suffit
+            _before = max(context_before // 2, 8)
         time_start = max(0, t - _before)
         time_end   = t + (context_goal if is_goal else context_after)
 
