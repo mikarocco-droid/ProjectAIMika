@@ -267,13 +267,29 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
         print(f"  [KICKOFF] Aucun coup d'envoi détecté dans les {max_search_t:.0f}s initiales")
         return 0.0, 0.0
 
-    # Prendre le DERNIER candidat dans la fenêtre pré-match
-    # = le vrai KO, précédé par l'échauffement et le cri de guerre
-    best_t, best_score, details = all_candidates[-1]
+    # Stratégie de sélection :
+    # 1. Priorité absolue : candidat avec ballon IMMOBILE AU CENTRE
+    #    → signal le plus fiable du vrai KO (ballon posé sur le point)
+    # 2. Sinon : dernier candidat (le vrai KO précède toujours le jeu)
+    ball_center_candidates = [
+        (t, s, d) for t, s, d in all_candidates
+        if d.get("ball_center") and d.get("ball_still")
+    ]
+
+    if ball_center_candidates:
+        # Parmi les candidats ballon-au-centre, prendre le DERNIER
+        best_t, best_score, details = ball_center_candidates[-1]
+        selection = "ballon immobile au centre"
+    else:
+        # Fallback : dernier candidat toutes catégories
+        best_t, best_score, details = all_candidates[-1]
+        selection = "dernier candidat (sans signal ballon)"
+
     conf = min(0.95, 0.60 + (best_score - _SCORE_THRESHOLD) * 0.05)
     n_candidates = len(all_candidates)
-    print(f"  [KICKOFF PHYS] {n_candidates} candidat(s) dans {max_search_t:.0f}s "
-          f"→ dernier retenu : Score={best_score:.1f}/{_SCORE_THRESHOLD} "
+    n_ball = len(ball_center_candidates)
+    print(f"  [KICKOFF PHYS] {n_candidates} candidat(s) ({n_ball} avec ballon) "
+          f"→ {selection} : Score={best_score:.1f}/{_SCORE_THRESHOLD} "
           f"→ offset={best_t:.1f}s conf={conf:.2f} "
           f"(sym={details['symmetry']} ratio={details.get('sym_ratio',0):.2f} "
           f"spread={details.get('spread_x',0):.2f} "
