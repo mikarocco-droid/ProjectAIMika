@@ -200,27 +200,39 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
     # Le KO ne peut pas être APRÈS le premier tir/goal détecté
     max_search_t = min(max(video_duration_s * 0.40, 360.0), 900.0)
 
-    # Affiner avec le premier event de jeu QUALIFIÉ si disponible
-    # Ignorer les FP d'échauffement (xg≈0, shot sans tir réel)
+    # Affiner avec le premier event de jeu FIABLE si disponible
+    # On ignore events_standard (xg auto=0.5 même sur FP échauffement)
+    # On garde seulement les sources physiques confirmées :
+    #   - goal_posthoc : ballon détecté dans la cage physiquement
+    #   - terminal_goal / terminal_goalkeeper_save : signal visuel fort
+    #   - shot_to_goal_gemini : Gemini a confirmé visuellement
+    RELIABLE_SOURCES = {"goal_posthoc", "terminal_goal",
+                        "terminal_goalkeeper_save", "shot_to_goal_gemini",
+                        "ball_appears_in_goal"}
     first_game_event_t = None
     for e in (events or []):
-        if e.get("type") in ("shot", "goal", "score"):
-            xg = float(e.get("xg", e.get("xG", 0)) or 0)
-            # Ne compter que les events avec xg significatif
-            # → élimine les FP d'échauffement (xg=0 ou très bas)
-            if xg < 0.05:
-                continue
-            t_e = float(e.get("time", 0))
-            if t_e > min_t:
-                if first_game_event_t is None or t_e < first_game_event_t:
-                    first_game_event_t = t_e
+        if e.get("type") not in ("shot", "goal", "score"):
+            continue
+        src = e.get("detected_from", e.get("source", ""))
+        # Ignorer events_standard et posthoc simples — sources trop bruyantes
+        if src not in RELIABLE_SOURCES:
+            continue
+        t_e = float(e.get("time", 0))
+        if t_e > min_t:
+            if first_game_event_t is None or t_e < first_game_event_t:
+                first_game_event_t = t_e
     if first_game_event_t is not None:
-        # Le KO est forcément avant le premier tir, avec 10s de marge
         event_bound = first_game_event_t - 10.0
-        if event_bound > min_t:
+        # N'appliquer la borne que si elle est significative :
+        # > 50% de max_search → évite de réduire inutilement sur clips courts
+        # où les events fiables sont eux-mêmes avant le vrai KO
+        if event_bound > max_search_t * 0.5 and event_bound > min_t:
             max_search_t = min(max_search_t, event_bound)
             print(f"  [KICKOFF] Borne max ajustée : {max_search_t:.0f}s "
-                  f"(premier event jeu à {first_game_event_t:.0f}s)")
+                  f"(premier event fiable à {first_game_event_t:.0f}s)")
+        else:
+            print(f"  [KICKOFF] Borne event ignorée ({event_bound:.0f}s < 50% de {max_search_t:.0f}s)"
+                  f" → recherche jusqu'à {max_search_t:.0f}s")
 
     consecutive        = 0
     first_two_teams    = False
