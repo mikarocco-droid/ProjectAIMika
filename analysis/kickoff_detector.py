@@ -111,6 +111,24 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
             sep_b = (t0_right + t1_left) / 2.0
             separation = max(sep_a, sep_b)
 
+    # PROBE : distribution équipes 307-310s
+    if 307 <= t <= 310:
+        team_dist = {str(k)[:20]: len(v) for k, v in team_players.items()}
+        player_details = []
+        for p in players[:6]:
+            pid       = p.get("id", "?")
+            tid       = _get_team(p)
+            cx_norm   = round(_player_cx(p) / frame_w, 2) if frame_w else "?"
+            raw_team  = p.get("team")
+            raw_tid   = p.get("team_id")
+            raw_color = p.get("color")
+            player_details.append(
+                f"p{pid}:tid={tid}(t={raw_team},ti={raw_tid},c={str(raw_color)[:10]})x={cx_norm}"
+            )
+        print(f"  [KO PROBE] t={t:.1f}s score_pre_sep n_teams={len(team_players)} "
+              f"teams_dist={team_dist} sep={round(separation,2)}")
+        print(f"    {' | '.join(player_details)}")
+
     score += 5.0 * separation
     details["team_separation"] = round(separation, 3)
 
@@ -368,22 +386,6 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
             fd, fps, action_times, first_two_teams, frame_w, frame_h,
             ball_speed_px=_ball_speed
         )
-
-        # PROBE : distribution équipes à 308s — signal de séparation réel
-        if 307 <= t <= 310:
-            team_dist = {str(k)[:20]: len(v) for k, v in team_players.items()}
-            # Détail par joueur
-            player_details = []
-            for p in players[:5]:  # top 5 pour ne pas spammer
-                pid  = p.get("id", "?")
-                tid  = _get_team(p)
-                cx   = round(_player_cx(p) / frame_w, 2) if frame_w else "?"
-                raw_team  = p.get("team")
-                raw_color = p.get("color")
-                player_details.append(f"p{pid}:team={tid}(raw_t={raw_team},col={str(raw_color)[:15]}) x={cx}")
-            print(f"  [KO PROBE] t={t:.1f}s score={score:.2f} sep={details.get('team_separation',0):.2f} "
-                  f"n_teams={len(team_players)} teams_dist={team_dist}")
-            print(f"    joueurs: {' | '.join(player_details)}")
 
         if score >= _SCORE_THRESHOLD:
             consecutive += 1
