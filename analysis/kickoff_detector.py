@@ -389,6 +389,16 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
     # Trier les candidats par score décroissant
     scored_candidates = sorted(all_candidates, key=lambda x: x[1], reverse=True)
 
+    # Debug : top 8 candidats avec détails
+    print(f"  [KICKOFF] {len(all_candidates)} candidat(s) dans {max_search_t:.0f}s :")
+    for cand_t, cand_score, cand_det in scored_candidates[:8]:
+        t_fmt = f"{int(cand_t//60)}:{int(cand_t%60):02d}"
+        print(f"    t={t_fmt} score={cand_score:.1f} "
+              f"sep={cand_det.get('team_separation',0):.2f} "
+              f"n_team={cand_det.get('n_with_team',0)} "
+              f"ball={'✓' if cand_det.get('ball_center') else '✗'} "
+              f"near={cand_det.get('players_near_ball',0)}")
+
     best_t     = None
     best_score = 0.0
     best_det   = None
@@ -396,7 +406,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
 
     for cand_t, cand_score, cand_details in scored_candidates[:5]:
         activity = _post_activity(cand_t, frames_data, fps)
-        if activity >= 200.0:   # ballon a parcouru ≥200px dans les 30s → vrai jeu
+        if activity >= 200.0:
             best_t     = cand_t
             best_score = cand_score
             best_det   = cand_details
@@ -404,112 +414,17 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
             break
 
     if best_t is None:
-        # Fallback : prendre le meilleur score sans validation
         best_t, best_score, best_det = scored_candidates[0]
         activity = _post_activity(best_t, frames_data, fps)
         selection = f"meilleur score sans validation (activité={activity:.0f}px)"
-    # Cherche : ballon IMMOBILE au centre (≥3 frames) SUIVI d'un départ brusque
-    # C'est la signature exacte d'un coup d'envoi, immunisée contre l'échauffement
-    # car pendant l'échauffement le ballon bouge souvent entre les frames
-    _KO_STILL_FRAMES  = 3    # frames immobiles minimum
-    _KO_STILL_SPEED   = 15   # px max entre frames pour "immobile"
-    _KO_DEPART_SPEED  = 50   # px min pour "départ brusque"
-
-    _still_start_t    = None
-    _still_count      = 0
-    _prev_center_p3   = None
-
-    for fd in frames_data:
-        t = fd.get("frame", 0) / max(fps, 1)
-        if t < min_t or t > max_search_t:
-            if t > max_search_t:
-                break
-            continue
-
-        ball = fd.get("ball")
-        if not ball:
-            _still_count = 0
-            _still_start_t = None
-            _prev_center_p3 = None
-            continue
-
-        center = ball.get("center")
-        if not center or len(center) < 2 or center[0] is None:
-            _still_count = 0
-            _still_start_t = None
-            _prev_center_p3 = None
-            continue
-
-        cx, cy = float(center[0]), float(center[1])
-
-        # Vérifier que le ballon est au centre
-        at_center = (frame_w * 0.40 < cx < frame_w * 0.60 and
-                     frame_h * 0.35 < cy < frame_h * 0.62)
-
-        if not at_center:
-            _still_count = 0
-            _still_start_t = None
-            _prev_center_p3 = None
-            continue
-
-        if _prev_center_p3 is not None:
-            import math as _math2
-            dist = _math2.hypot(cx - _prev_center_p3[0], cy - _prev_center_p3[1])
-
-            if dist < _KO_STILL_SPEED:
-                # Ballon immobile au centre
-                _still_count += 1
-                if _still_count == 1:
-                    _still_start_t = t
-            elif dist > _KO_DEPART_SPEED and _still_count >= _KO_STILL_FRAMES:
-                # Départ brusque après immobilité → signature KO !
-                conf_p3 = min(0.95, 0.70 + _still_count * 0.02)
-                print(f"  [KICKOFF SIG] Signature KO détectée : "
-                      f"ballon immobile {_still_count} frames au centre "
-                      f"→ départ brusque ({dist:.0f}px) "
-                      f"→ offset={_still_start_t:.1f}s conf={conf_p3:.2f}")
-                return _still_start_t, conf_p3
-            else:
-                _still_count = 0
-                _still_start_t = None
-
-        _prev_center_p3 = (cx, cy)
-
-    # ── Sélection parmi les candidats score ──────────────────────────────────
-    # 1. Priorité : candidat avec ballon immobile AU CENTRE + symétrie correcte
-    #    → signal le plus fiable du vrai KO
-    # 2. Sinon parmi les candidats avec ballon-au-centre sans symétrie stricte
-    # 3. Fallback : dernier candidat
-    ball_center_sym_candidates = [
-        (t, s, d) for t, s, d in all_candidates
-        if d.get("ball_center") and d.get("ball_still")
-        and d.get("sym_ratio", 0) >= 0.45   # symétrie minimale requise
-    ]
-    ball_center_candidates = [
-        (t, s, d) for t, s, d in all_candidates
-        if d.get("ball_center") and d.get("ball_still")
-    ]
-
-    if ball_center_sym_candidates:
-        best_t, best_score, details = ball_center_sym_candidates[-1]
-        selection = "ballon immobile au centre + symétrie"
-    elif ball_center_candidates:
-        best_t, best_score, details = ball_center_candidates[-1]
-        selection = "ballon immobile au centre (symétrie faible)"
-    else:
-        best_t, best_score, details = all_candidates[-1]
-        selection = "dernier candidat (sans signal ballon)"
 
     conf = min(0.95, 0.60 + (best_score - _SCORE_THRESHOLD) * 0.05)
-    n_candidates = len(all_candidates)
-    n_ball = len(ball_center_candidates)
-    print(f"  [KICKOFF PHYS] {n_candidates} candidat(s) ({n_ball} avec ballon) "
-          f"→ {selection} : Score={best_score:.1f}/{_SCORE_THRESHOLD} "
+    print(f"  [KICKOFF PHYS] {len(all_candidates)} candidat(s) → {selection} : "
+          f"Score={best_score:.1f}/{_SCORE_THRESHOLD} "
           f"→ offset={best_t:.1f}s conf={conf:.2f} "
-          f"(sym={details['symmetry']} ratio={details.get('sym_ratio',0):.2f} "
-          f"spread={details.get('spread_x',0):.2f} "
-          f"n={details['n_players']} "
-          f"ball={'✓' if details['ball_center'] else '✗'})")
+          f"(sep={best_det.get('team_separation',0):.2f} "
+          f"n_team={best_det.get('n_with_team',0)} "
+          f"ball={'✓' if best_det.get('ball_center') else '✗'})")
     return best_t, conf
 
 
