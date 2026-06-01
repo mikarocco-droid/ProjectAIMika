@@ -369,16 +369,21 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
             ball_speed_px=_ball_speed
         )
 
-        # PROBE : afficher le score détaillé autour du vrai KO attendu
-        if 295 <= t <= 320:
-            print(f"  [KICKOFF PROBE] t={t:.1f}s score={score:.2f} "
-                  f"sep={details.get('team_separation',0):.2f} "
-                  f"n_team={details.get('n_with_team',0)} "
-                  f"n_players={details.get('n_players',0)} "
-                  f"ball_center={details.get('ball_center',False)} "
-                  f"ball_still={details.get('ball_still',False)} "
-                  f"spread={details.get('spread_x',0):.2f} "
-                  f"near={details.get('players_near_ball',0)}")
+        # PROBE : distribution équipes à 308s — signal de séparation réel
+        if 307 <= t <= 310:
+            team_dist = {str(k)[:20]: len(v) for k, v in team_players.items()}
+            # Détail par joueur
+            player_details = []
+            for p in players[:5]:  # top 5 pour ne pas spammer
+                pid  = p.get("id", "?")
+                tid  = _get_team(p)
+                cx   = round(_player_cx(p) / frame_w, 2) if frame_w else "?"
+                raw_team  = p.get("team")
+                raw_color = p.get("color")
+                player_details.append(f"p{pid}:team={tid}(raw_t={raw_team},col={str(raw_color)[:15]}) x={cx}")
+            print(f"  [KO PROBE] t={t:.1f}s score={score:.2f} sep={details.get('team_separation',0):.2f} "
+                  f"n_teams={len(team_players)} teams_dist={team_dist}")
+            print(f"    joueurs: {' | '.join(player_details)}")
 
         if score >= _SCORE_THRESHOLD:
             consecutive += 1
