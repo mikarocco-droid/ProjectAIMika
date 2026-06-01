@@ -412,8 +412,10 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
             prev_c = (cx, cy)
         return total_dist
 
-    # Trier les candidats par score décroissant
-    scored_candidates = sorted(all_candidates, key=lambda x: x[1], reverse=True)
+    # Trier les candidats : score décroissant, puis temps décroissant (plus tardif = plus fiable)
+    # Le vrai KO est toujours le plus tardif parmi les candidats de même score :
+    # l'échauffement génère des faux positifs TÔT, le vrai KO arrive TARD dans la fenêtre.
+    scored_candidates = sorted(all_candidates, key=lambda x: (x[1], x[0]), reverse=True)
 
     # Debug : top 8 candidats avec détails
     print(f"  [KICKOFF] {len(all_candidates)} candidat(s) dans {max_search_t:.0f}s :")
