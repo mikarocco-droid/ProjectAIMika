@@ -259,8 +259,17 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
         _b = _fd.get("ball")
         if _b and not _debug_shown:
             print(f"  [KICKOFF DEBUG] Structure ball : {list(_b.keys()) if isinstance(_b, dict) else type(_b)}")
-            print(f"  [KICKOFF DEBUG] Exemple ball   : {_b}")
             _debug_shown = True
+
+        # Chercher un joueur avec des infos d'équipe
+        for _p in (_fd.get("players") or []):
+            if not _debug_shown:
+                break
+            print(f"  [KICKOFF DEBUG] Structure player : {list(_p.keys()) if isinstance(_p, dict) else type(_p)}")
+            print(f"  [KICKOFF DEBUG] Exemple player  : { {k: _p[k] for k in list(_p.keys())[:8]} }")
+            _debug_shown = False  # une seule fois
+            break
+        if not _debug_shown:
             break
 
     # Fenêtre de recherche pré-match
