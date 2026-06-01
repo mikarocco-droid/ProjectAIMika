@@ -51,9 +51,8 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
     """
     Calcule le score kickoff d'une frame.
 
-    Signal principal : SÉPARATION DES ÉQUIPES par rapport à la ligne médiane.
-    Au KO : équipe A dans moitié gauche, équipe B dans moitié droite.
-    À l'échauffement : joueurs mélangés → score faible.
+    Signal principal : SÉPARATION DES ÉQUIPES (contrainte réglementaire football).
+    Score continu — pas de seuil binaire.
 
     Retourne (score, détails_dict, first_two_teams_seen).
     """
@@ -65,10 +64,10 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
     t       = fd.get("frame", 0) / max(fps, 1)
     mid_x   = frame_w * 0.50
 
-    # ── 1. SÉPARATION DES ÉQUIPES [poids 5.0] ────────────────────────────────
-    # C'est le signal le plus discriminant : au KO les équipes sont séparées,
-    # pendant l'échauffement elles sont mélangées.
-    # Calcul : pour chaque équipe, quel % de ses joueurs est dans sa moitié ?
+    # ── 1. SÉPARATION DES ÉQUIPES — score continu [max 5.0] ─────────────────
+    # Calcule le meilleur score de séparation (team A gauche / team B droite
+    # ou l'inverse) de façon continue.
+    # KO parfait → 5.0 | échauffement → ~0.5 | cri de guerre → ~1.0
     team_players = {}
     for p in players:
         team = p.get("team")
@@ -77,43 +76,33 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
         cx = _player_cx(p)
         team_players.setdefault(team, []).append(cx)
 
-    team_separation = 0.0
+    separation = 0.0
     if len(team_players) >= 2:
         teams = list(team_players.keys())[:2]
-        # Trouver quelle équipe est majoritairement à gauche/droite
-        team0_left  = sum(1 for cx in team_players[teams[0]] if cx < mid_x)
-        team0_right = sum(1 for cx in team_players[teams[0]] if cx >= mid_x)
-        team1_left  = sum(1 for cx in team_players[teams[1]] if cx < mid_x)
-        team1_right = sum(1 for cx in team_players[teams[1]] if cx >= mid_x)
-
         n0 = len(team_players[teams[0]])
         n1 = len(team_players[teams[1]])
+        if n0 >= 3 and n1 >= 3:   # minimum 3 joueurs par équipe pour être fiable
+            t0_left  = sum(1 for cx in team_players[teams[0]] if cx < mid_x) / n0
+            t0_right = 1.0 - t0_left
+            t1_left  = sum(1 for cx in team_players[teams[1]] if cx < mid_x) / n1
+            t1_right = 1.0 - t1_left
+            # Scénario A : team0 gauche, team1 droite
+            sep_a = (t0_left + t1_right) / 2.0
+            # Scénario B : team0 droite, team1 gauche
+            sep_b = (t0_right + t1_left) / 2.0
+            separation = max(sep_a, sep_b)
 
-        if n0 > 0 and n1 > 0:
-            # Scénario A : team0 à gauche, team1 à droite
-            sep_a = (team0_left / n0) * (team1_right / n1)
-            # Scénario B : team0 à droite, team1 à gauche
-            sep_b = (team0_right / n0) * (team1_left / n1)
-            team_separation = max(sep_a, sep_b)
+    score += 5.0 * separation
+    details["team_separation"] = round(separation, 3)
 
-    # Seuil : 0.64 = au moins 80% chaque équipe dans sa moitié (0.8 × 0.8)
-    has_separation = team_separation >= 0.64
-    if has_separation:
-        score += 5.0
-    elif team_separation >= 0.49:   # seuil assoupli (70% × 70%)
-        score += 2.5
-    details["team_separation"] = round(team_separation, 3)
-
-    # ── 2. Nombre de joueurs avec équipe assignée [poids 2.0] ────────────────
+    # ── 2. Nombre de joueurs avec équipe assignée [max 2.0] ──────────────────
     n_with_team = sum(1 for p in players if p.get("team") is not None)
-    if n_with_team >= 10:
-        score += 2.0
-    elif n_with_team >= 7:
-        score += 1.0
-    details["n_players"] = len(players)
+    n_score = min(1.0, (n_with_team - 6) / 4.0) * 2.0 if n_with_team >= 6 else 0.0
+    score += max(0.0, n_score)
+    details["n_players"]   = len(players)
     details["n_with_team"] = n_with_team
 
-    # ── 3. Ballon au centre [poids 2.0] ──────────────────────────────────────
+    # ── 3. Ballon au centre [max 2.0] ─────────────────────────────────────────
     bx, by, bspeed = _ball_pos(ball, frame_w, frame_h)
     ball_at_center = False
     if bx is not None and by is not None:
@@ -125,41 +114,41 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
             score += 2.0
     details["ball_center"] = ball_at_center
 
-    # ── 4. Ballon immobile [poids 1.0] ────────────────────────────────────────
-    if ball_speed_px is not None:
-        bspeed = ball_speed_px
-    ball_still = bspeed is not None and bspeed < 15.0
-    if ball_still and ball_at_center:
-        score += 1.0
-    details["ball_still"] = ball_still
+    # ── 4. 1-2 joueurs près du ballon [max 2.0] ───────────────────────────────
+    # Au KO : 1 ou 2 tireurs près du ballon, personne d'autre
+    # Échauffement / discussions : plusieurs joueurs groupés au centre
+    if bx is not None and by is not None:
+        near_ball_dist = frame_w * 0.08   # ~8% de la largeur
+        players_near = [
+            p for p in players
+            if abs(_player_cx(p) - bx) < near_ball_dist
+            and abs(_player_cy(p) - by) < near_ball_dist
+        ]
+        n_near = len(players_near)
+        if 1 <= n_near <= 2:
+            score += 2.0
+        elif n_near == 3:
+            score += 0.5
+        details["players_near_ball"] = n_near
+    else:
+        details["players_near_ball"] = 0
 
-    # ── 5. Peu de joueurs dans le rond central [poids 1.0] ────────────────────
-    # Au KO : max 2 joueurs dans le rond (les tireurs)
-    # À l'échauffement : les joueurs restent souvent autour
-    center_radius_x = frame_w * 0.08   # ~8% de la largeur ≈ rayon du rond
-    center_radius_y = frame_h * 0.10
+    # ── 5. Peu de joueurs dans le rond central [max 1.0] ─────────────────────
+    # Hors des 2 tireurs, personne ne doit être dans le rond
+    cx_center = frame_w * 0.50
+    cy_center = frame_h * 0.50
+    r_x = frame_w * 0.09
+    r_y = frame_h * 0.11
     players_in_circle = [
         p for p in players
-        if abs(_player_cx(p) - frame_w * 0.50) < center_radius_x
-        and abs(_player_cy(p) - frame_h * 0.50) < center_radius_y
+        if abs(_player_cx(p) - cx_center) < r_x
+        and abs(_player_cy(p) - cy_center) < r_y
     ]
-    few_in_circle = 0 < len(players_in_circle) <= 3
-    if few_in_circle:
+    if 0 < len(players_in_circle) <= 3:
         score += 1.0
     details["players_in_circle"] = len(players_in_circle)
 
-    # ── 6. Symétrie globale (garde) [poids 1.0] ───────────────────────────────
-    left_ps  = [p for p in players if _player_cx(p) < mid_x]
-    right_ps = [p for p in players if _player_cx(p) >= mid_x]
-    n_left, n_right = len(left_ps), len(right_ps)
-    sym_ratio = min(n_left, n_right) / max(n_left, n_right, 1)
-    has_sym   = sym_ratio >= 0.45 and n_left >= 3 and n_right >= 3
-    if has_sym:
-        score += 1.0
-    details["symmetry"] = (n_left, n_right)
-    details["sym_ratio"] = sym_ratio
-
-    # ── 7. Spread horizontal [bonus 0.5] ──────────────────────────────────────
+    # ── 6. Spread horizontal [bonus 0.5] ──────────────────────────────────────
     if players:
         xs = [_player_cx(p) for p in players]
         spread_x = (max(xs) - min(xs)) / max(frame_w, 1)
@@ -169,11 +158,21 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
         spread_x = 0.0
     details["spread_x"] = spread_x
 
-    # ── 8. Première apparition des deux équipes [bonus 1.0] ──────────────────
+    # ── 7. Symétrie globale [bonus 0.5] ───────────────────────────────────────
+    left_ps   = [p for p in players if _player_cx(p) < mid_x]
+    right_ps  = [p for p in players if _player_cx(p) >= mid_x]
+    n_left, n_right = len(left_ps), len(right_ps)
+    sym_ratio = min(n_left, n_right) / max(n_left, n_right, 1)
+    if sym_ratio >= 0.45 and n_left >= 3 and n_right >= 3:
+        score += 0.5
+    details["symmetry"]  = (n_left, n_right)
+    details["sym_ratio"] = sym_ratio
+
+    # ── 8. Première apparition des deux équipes [bonus 0.5] ──────────────────
     if not first_two_teams_seen:
         teams_here = set(p.get("team") for p in players if p.get("team") is not None)
         if len(teams_here) >= 2:
-            score += 1.0
+            score += 0.5
             first_two_teams_seen = True
     details["first_teams"] = first_two_teams_seen
 
@@ -181,7 +180,6 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
 
 
 def _player_cy(p):
-    """Centre y d'un joueur."""
     bbox = p.get("bbox") or []
     if len(bbox) >= 4:
         return (bbox[1] + bbox[3]) / 2
@@ -359,7 +357,57 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
         print(f"  [KICKOFF] Aucun coup d'envoi détecté dans les {max_search_t:.0f}s initiales")
         return 0.0, 0.0
 
-    # ── Passe 3 : signature physique KO ──────────────────────────────────────
+    # ── Validation par activité dans les 30s suivant le candidat ─────────────
+    # Le vrai KO déclenche une activité réelle : le ballon parcourt de longues
+    # distances dans les 30s qui suivent.
+    # Faux positifs (placement temporaire) → peu d'activité ensuite.
+    def _post_activity(candidate_t, frames_data, fps, window=30.0, min_dist=200.0):
+        """Distance totale parcourue par le ballon dans les 30s après candidate_t."""
+        total_dist = 0.0
+        prev_c = None
+        import math as _mact
+        for fd in frames_data:
+            t = fd.get("frame", 0) / max(fps, 1)
+            if t < candidate_t:
+                continue
+            if t > candidate_t + window:
+                break
+            ball = fd.get("ball")
+            if not ball:
+                prev_c = None
+                continue
+            center = ball.get("center")
+            if not center or center[0] is None:
+                prev_c = None
+                continue
+            cx, cy = float(center[0]), float(center[1])
+            if prev_c is not None:
+                total_dist += _mact.hypot(cx - prev_c[0], cy - prev_c[1])
+            prev_c = (cx, cy)
+        return total_dist
+
+    # Trier les candidats par score décroissant
+    scored_candidates = sorted(all_candidates, key=lambda x: x[1], reverse=True)
+
+    best_t     = None
+    best_score = 0.0
+    best_det   = None
+    selection  = "meilleur score"
+
+    for cand_t, cand_score, cand_details in scored_candidates[:5]:
+        activity = _post_activity(cand_t, frames_data, fps)
+        if activity >= 200.0:   # ballon a parcouru ≥200px dans les 30s → vrai jeu
+            best_t     = cand_t
+            best_score = cand_score
+            best_det   = cand_details
+            selection  = f"meilleur score validé (activité={activity:.0f}px)"
+            break
+
+    if best_t is None:
+        # Fallback : prendre le meilleur score sans validation
+        best_t, best_score, best_det = scored_candidates[0]
+        activity = _post_activity(best_t, frames_data, fps)
+        selection = f"meilleur score sans validation (activité={activity:.0f}px)"
     # Cherche : ballon IMMOBILE au centre (≥3 frames) SUIVI d'un départ brusque
     # C'est la signature exacte d'un coup d'envoi, immunisée contre l'échauffement
     # car pendant l'échauffement le ballon bouge souvent entre les frames
