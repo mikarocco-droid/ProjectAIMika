@@ -64,21 +64,39 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
     t       = fd.get("frame", 0) / max(fps, 1)
     mid_x   = frame_w * 0.50
 
-    # ── 1. SÉPARATION DES ÉQUIPES — score continu [max 5.0] ─────────────────
-    # La clé d'équipe dans frames_data peut être 'team', 'team_id', 'color',
-    # 'team_color', ou un index couleur. On essaie toutes les variantes.
+    # ── 1. SÉPARATION GÉOMÉTRIQUE DES ÉQUIPES [max 5.0] ─────────────────────
+    # Au coup d'envoi : une équipe à gauche, une à droite de la ligne médiane.
+    # On mesure la pureté des deux moitiés de terrain sans dépendre des team_id
+    # (qui peuvent être absents ou tous identiques dans frames_data).
+    #
+    # Méthode :
+    #   - Compter n_left  = joueurs avec cx < mid_x
+    #   - Compter n_right = joueurs avec cx >= mid_x
+    #   - Si les deux moitiés sont bien peuplées (≥3 chacune),
+    #     calculer purity = max(n_left, n_right) / total
+    #     → 0.5 si parfaitement mélangés, 1.0 si tous d'un côté
+    #   - separation = (purity - 0.5) * 2  → [0, 1]
+    #
+    # Bonus séparation par équipe si team_id disponible et discriminant.
+
+    cx_list = [_player_cx(p) for p in players if _player_cx(p) is not None]
+    separation = 0.0
+    if len(cx_list) >= 6:
+        n_left  = sum(1 for cx in cx_list if cx < mid_x)
+        n_right = len(cx_list) - n_left
+        if n_left >= 3 and n_right >= 3:
+            purity = max(n_left, n_right) / len(cx_list)
+            separation = (purity - 0.5) * 2.0   # [0.0 → 1.0]
+
+    # Bonus si team_id disponible et distingue vraiment 2 équipes
     def _get_team(p):
-        """Retourne un identifiant d'équipe depuis un dict joueur."""
         for key in ("team", "team_id", "team_idx"):
             v = p.get(key)
             if v is not None:
                 return v
-        # Fallback : utiliser la couleur dominante comme proxy d'équipe
-        # La couleur est stockée sous 'color', 'team_color', ou 'jersey_color'
         for key in ("color", "team_color", "jersey_color"):
             v = p.get(key)
             if v is not None:
-                # Convertir en tuple hashable si c'est une liste
                 if isinstance(v, (list, tuple)) and len(v) >= 3:
                     return (int(v[0]) // 30, int(v[1]) // 30, int(v[2]) // 30)
                 return v
@@ -94,9 +112,7 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
         cx = _player_cx(p)
         team_players.setdefault(t_id, []).append(cx)
 
-    separation = 0.0
     if len(team_players) >= 2:
-        # Prendre les 2 équipes avec le plus de joueurs
         sorted_teams = sorted(team_players.keys(),
                               key=lambda k: len(team_players[k]), reverse=True)
         teams = sorted_teams[:2]
@@ -104,30 +120,12 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
         n1 = len(team_players[teams[1]])
         if n0 >= 3 and n1 >= 3:
             t0_left  = sum(1 for cx in team_players[teams[0]] if cx < mid_x) / n0
-            t0_right = 1.0 - t0_left
             t1_left  = sum(1 for cx in team_players[teams[1]] if cx < mid_x) / n1
-            t1_right = 1.0 - t1_left
-            sep_a = (t0_left + t1_right) / 2.0
-            sep_b = (t0_right + t1_left) / 2.0
-            separation = max(sep_a, sep_b)
-
-    # PROBE : distribution équipes 307-310s
-    if 307 <= t <= 310:
-        team_dist = {str(k)[:20]: len(v) for k, v in team_players.items()}
-        player_details = []
-        for p in players[:6]:
-            pid       = p.get("id", "?")
-            tid       = _get_team(p)
-            cx_norm   = round(_player_cx(p) / frame_w, 2) if frame_w else "?"
-            raw_team  = p.get("team")
-            raw_tid   = p.get("team_id")
-            raw_color = p.get("color")
-            player_details.append(
-                f"p{pid}:tid={tid}(t={raw_team},ti={raw_tid},c={str(raw_color)[:10]})x={cx_norm}"
-            )
-        print(f"  [KO PROBE] t={t:.1f}s score_pre_sep n_teams={len(team_players)} "
-              f"teams_dist={team_dist} sep={round(separation,2)}")
-        print(f"    {' | '.join(player_details)}")
+            sep_a = (t0_left + (1 - t1_left)) / 2.0
+            sep_b = ((1 - t0_left) + t1_left) / 2.0
+            team_sep = max(sep_a, sep_b)
+            # Utiliser le meilleur des deux signaux
+            separation = max(separation, team_sep)
 
     score += 5.0 * separation
     details["team_separation"] = round(separation, 3)
