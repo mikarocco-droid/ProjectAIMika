@@ -46,7 +46,8 @@ _W_REFEREE     = 1.0
 # ─────────────────────────────────────────
 # SCORE D'UNE FRAME
 # ─────────────────────────────────────────
-def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h):
+def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
+                 ball_speed_px=None):
     """
     Calcule le score kickoff d'une frame.
     Retourne (score, détails_dict).
@@ -100,7 +101,11 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h):
     details["ball_center"] = ball_at_center
 
     # ── 4. Ballon immobile ────────────────────────────────────────────────────
-    ball_still = bspeed is not None and bspeed < 8.0
+    # La vitesse n'est pas dans frames_data — on utilise ball_speed_px calculé
+    # dans la boucle principale depuis les positions consécutives
+    if ball_speed_px is not None:
+        bspeed = ball_speed_px
+    ball_still = bspeed is not None and bspeed < 15.0  # < 15px entre 2 frames analysées
     if ball_still and ball_at_center:
         score += _W_BALL_STILL
     details["ball_still"] = ball_still
@@ -140,7 +145,10 @@ def _player_cx(p):
 
 
 def _ball_pos(ball, frame_w, frame_h):
-    """Retourne (bx, by, speed) depuis un dict ball."""
+    """Retourne (bx, by, speed) depuis un dict ball de frames_data.
+    Note : frames_data ne stocke pas la vitesse — retourne None pour speed.
+    La vitesse est calculée dans find_kickoff_offset via positions consécutives.
+    """
     if not ball:
         return None, None, None
     center = ball.get("center")
@@ -149,6 +157,7 @@ def _ball_pos(ball, frame_w, frame_h):
     else:
         bx = ball.get("x")
         by = ball.get("y")
+    # Pas de speed dans frames_data — sera injecté depuis l'extérieur
     speed = ball.get("speed")
     return bx, by, speed
 
@@ -250,6 +259,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
     best_score         = 0.0
     candidate_start_t  = None
     all_candidates     = []
+    _prev_ball_center  = None  # pour calculer la vitesse inter-frames
 
     for fd in frames_data:
         t = fd.get("frame", 0) / max(fps, 1)
@@ -259,8 +269,29 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
         if t > max_search_t:
             break
 
+        # Calculer la vitesse du ballon depuis les positions consécutives
+        _ball_speed = None
+        _ball = fd.get("ball")
+        if _ball:
+            _c = _ball.get("center")
+            if _c and len(_c) >= 2 and _c[0] is not None:
+                _cx, _cy = float(_c[0]), float(_c[1])
+                if _prev_ball_center is not None:
+                    import math as _math
+                    _dx = _cx - _prev_ball_center[0]
+                    _dy = _cy - _prev_ball_center[1]
+                    # Distance en pixels entre 2 frames analysées consécutives
+                    # (pas de conversion temps — on compare directement les pixels)
+                    _ball_speed = _math.hypot(_dx, _dy)
+                _prev_ball_center = (_cx, _cy)
+            else:
+                _prev_ball_center = None
+        else:
+            _prev_ball_center = None
+
         score, details, first_two_teams = _score_frame(
-            fd, fps, action_times, first_two_teams, frame_w, frame_h
+            fd, fps, action_times, first_two_teams, frame_w, frame_h,
+            ball_speed_px=_ball_speed
         )
 
         if score >= _SCORE_THRESHOLD:
