@@ -309,20 +309,27 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
         return 0.0, 0.0
 
     # Stratégie de sélection :
-    # 1. Priorité absolue : candidat avec ballon IMMOBILE AU CENTRE
-    #    → signal le plus fiable du vrai KO (ballon posé sur le point)
-    # 2. Sinon : dernier candidat (le vrai KO précède toujours le jeu)
+    # 1. Priorité : candidat avec ballon immobile AU CENTRE + symétrie correcte
+    #    → signal le plus fiable du vrai KO
+    # 2. Sinon parmi les candidats avec ballon-au-centre sans symétrie stricte
+    # 3. Fallback : dernier candidat
+    ball_center_sym_candidates = [
+        (t, s, d) for t, s, d in all_candidates
+        if d.get("ball_center") and d.get("ball_still")
+        and d.get("sym_ratio", 0) >= 0.45   # symétrie minimale requise
+    ]
     ball_center_candidates = [
         (t, s, d) for t, s, d in all_candidates
         if d.get("ball_center") and d.get("ball_still")
     ]
 
-    if ball_center_candidates:
-        # Parmi les candidats ballon-au-centre, prendre le DERNIER
+    if ball_center_sym_candidates:
+        best_t, best_score, details = ball_center_sym_candidates[-1]
+        selection = "ballon immobile au centre + symétrie"
+    elif ball_center_candidates:
         best_t, best_score, details = ball_center_candidates[-1]
-        selection = "ballon immobile au centre"
+        selection = "ballon immobile au centre (symétrie faible)"
     else:
-        # Fallback : dernier candidat toutes catégories
         best_t, best_score, details = all_candidates[-1]
         selection = "dernier candidat (sans signal ballon)"
 
