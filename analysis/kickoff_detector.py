@@ -65,30 +65,49 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
     mid_x   = frame_w * 0.50
 
     # ── 1. SÉPARATION DES ÉQUIPES — score continu [max 5.0] ─────────────────
-    # Calcule le meilleur score de séparation (team A gauche / team B droite
-    # ou l'inverse) de façon continue.
-    # KO parfait → 5.0 | échauffement → ~0.5 | cri de guerre → ~1.0
+    # La clé d'équipe dans frames_data peut être 'team', 'team_id', 'color',
+    # 'team_color', ou un index couleur. On essaie toutes les variantes.
+    def _get_team(p):
+        """Retourne un identifiant d'équipe depuis un dict joueur."""
+        for key in ("team", "team_id", "team_idx"):
+            v = p.get(key)
+            if v is not None:
+                return v
+        # Fallback : utiliser la couleur dominante comme proxy d'équipe
+        # La couleur est stockée sous 'color', 'team_color', ou 'jersey_color'
+        for key in ("color", "team_color", "jersey_color"):
+            v = p.get(key)
+            if v is not None:
+                # Convertir en tuple hashable si c'est une liste
+                if isinstance(v, (list, tuple)) and len(v) >= 3:
+                    return (int(v[0]) // 30, int(v[1]) // 30, int(v[2]) // 30)
+                return v
+        return None
+
     team_players = {}
+    n_with_team_count = 0
     for p in players:
-        team = p.get("team")
-        if team is None:
+        t_id = _get_team(p)
+        if t_id is None:
             continue
+        n_with_team_count += 1
         cx = _player_cx(p)
-        team_players.setdefault(team, []).append(cx)
+        team_players.setdefault(t_id, []).append(cx)
 
     separation = 0.0
     if len(team_players) >= 2:
-        teams = list(team_players.keys())[:2]
+        # Prendre les 2 équipes avec le plus de joueurs
+        sorted_teams = sorted(team_players.keys(),
+                              key=lambda k: len(team_players[k]), reverse=True)
+        teams = sorted_teams[:2]
         n0 = len(team_players[teams[0]])
         n1 = len(team_players[teams[1]])
-        if n0 >= 3 and n1 >= 3:   # minimum 3 joueurs par équipe pour être fiable
+        if n0 >= 3 and n1 >= 3:
             t0_left  = sum(1 for cx in team_players[teams[0]] if cx < mid_x) / n0
             t0_right = 1.0 - t0_left
             t1_left  = sum(1 for cx in team_players[teams[1]] if cx < mid_x) / n1
             t1_right = 1.0 - t1_left
-            # Scénario A : team0 gauche, team1 droite
             sep_a = (t0_left + t1_right) / 2.0
-            # Scénario B : team0 droite, team1 gauche
             sep_b = (t0_right + t1_left) / 2.0
             separation = max(sep_a, sep_b)
 
@@ -96,7 +115,7 @@ def _score_frame(fd, fps, action_times, first_two_teams_seen, frame_w, frame_h,
     details["team_separation"] = round(separation, 3)
 
     # ── 2. Nombre de joueurs avec équipe assignée [max 2.0] ──────────────────
-    n_with_team = sum(1 for p in players if p.get("team") is not None)
+    n_with_team = n_with_team_count
     n_score = min(1.0, (n_with_team - 6) / 4.0) * 2.0 if n_with_team >= 6 else 0.0
     score += max(0.0, n_score)
     details["n_players"]   = len(players)
@@ -253,23 +272,21 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
     frame_w = int(frames_data[0].get("frame_w") or 1920)
     frame_h = int(frames_data[0].get("frame_h") or 1080)
 
-    # DEBUG : afficher la structure réelle du dict ball sur quelques frames
+    # DEBUG : afficher la structure réelle du dict ball et player
     _debug_shown = False
     for _fd in frames_data[:50]:
         _b = _fd.get("ball")
-        if _b and not _debug_shown:
-            print(f"  [KICKOFF DEBUG] Structure ball : {list(_b.keys()) if isinstance(_b, dict) else type(_b)}")
+        _ps = _fd.get("players") or []
+        if _b and _ps and not _debug_shown:
+            print(f"  [KICKOFF DEBUG] Structure ball   : {list(_b.keys())}")
+            _p0 = _ps[0]
+            print(f"  [KICKOFF DEBUG] Structure player : {list(_p0.keys())[:12]}")
+            _team_keys = [k for k in _p0.keys()
+                          if any(w in k.lower() for w in ('team','color','jersey','idx','class'))]
+            print(f"  [KICKOFF DEBUG] Clés équipe      : {_team_keys}")
+            if _team_keys:
+                print(f"  [KICKOFF DEBUG] Valeurs équipe   : { {k: _p0.get(k) for k in _team_keys[:3]} }")
             _debug_shown = True
-
-        # Chercher un joueur avec des infos d'équipe
-        for _p in (_fd.get("players") or []):
-            if not _debug_shown:
-                break
-            print(f"  [KICKOFF DEBUG] Structure player : {list(_p.keys()) if isinstance(_p, dict) else type(_p)}")
-            print(f"  [KICKOFF DEBUG] Exemple player  : { {k: _p[k] for k in list(_p.keys())[:8]} }")
-            _debug_shown = False  # une seule fois
-            break
-        if not _debug_shown:
             break
 
     # Fenêtre de recherche pré-match
