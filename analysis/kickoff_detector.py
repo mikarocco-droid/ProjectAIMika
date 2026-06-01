@@ -195,6 +195,16 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
     frame_w = int(frames_data[0].get("frame_w") or 1920)
     frame_h = int(frames_data[0].get("frame_h") or 1080)
 
+    # DEBUG : afficher la structure réelle du dict ball sur quelques frames
+    _debug_shown = False
+    for _fd in frames_data[:50]:
+        _b = _fd.get("ball")
+        if _b and not _debug_shown:
+            print(f"  [KICKOFF DEBUG] Structure ball : {list(_b.keys()) if isinstance(_b, dict) else type(_b)}")
+            print(f"  [KICKOFF DEBUG] Exemple ball   : {_b}")
+            _debug_shown = True
+            break
+
     # Fenêtre de recherche pré-match
     # Borne haute : min(40% durée, 900s) ET premier event de jeu - 5s
     # Le KO ne peut pas être APRÈS le premier tir/goal détecté
