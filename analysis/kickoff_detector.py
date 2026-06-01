@@ -369,6 +369,17 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
             ball_speed_px=_ball_speed
         )
 
+        # PROBE : afficher le score détaillé autour du vrai KO attendu
+        if 295 <= t <= 320:
+            print(f"  [KICKOFF PROBE] t={t:.1f}s score={score:.2f} "
+                  f"sep={details.get('team_separation',0):.2f} "
+                  f"n_team={details.get('n_with_team',0)} "
+                  f"n_players={details.get('n_players',0)} "
+                  f"ball_center={details.get('ball_center',False)} "
+                  f"ball_still={details.get('ball_still',False)} "
+                  f"spread={details.get('spread_x',0):.2f} "
+                  f"near={details.get('players_near_ball',0)}")
+
         if score >= _SCORE_THRESHOLD:
             consecutive += 1
             if consecutive == 1:
@@ -412,84 +423,18 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
             prev_c = (cx, cy)
         return total_dist
 
-    # ── Bonus : events réels dans les 60s suivant le candidat ────────────────
-    # Le vrai KO est immédiatement suivi d'actions de match.
-    # L'échauffement → pas d'action dans la fenêtre suivante.
-    _event_list = []
-    for _e in (events or []):
-        _t_e = float(_e.get("time", 0))
-        if _t_e > min_t:
-            _event_list.append((_t_e, _e.get("type", ""), _e.get("detected_from", _e.get("source", ""))))
-
-    # Poids par type d'événement (signal de match réel)
-    _EVENT_WEIGHTS = {
-        "goal":                    4.0,
-        "terminal_goal":           4.0,
-        "goal_posthoc":            3.0,
-        "shot_to_goal_gemini":     3.0,
-        "ball_appears_in_goal":    3.0,
-        "shot":                    2.0,
-        "dangerous_attack":        1.5,
-        "goalkeeper_save":         1.5,
-        "clearance":               1.0,
-        "interception":            1.0,
-        "dribble":                 1.0,
-        "pass":                    0.8,
-        "progressive_run":         0.8,
-        "possession":              0.5,
-        "touche":                  1.0,
-        "corner":                  1.5,
-        "free_kick":               1.5,
-    }
-
-    def _future_event_bonus(candidate_t, event_list, window=60.0):
-        """
-        Bonus basé sur les events réels dans les 0-60s suivant le candidat.
-        Fenêtre : 0s (le KO lui-même peut déclencher un penalty immédiatement)
-        Retourne (bonus_total, premier_event_décrit).
-        """
-        best_bonus = 0.0
-        best_desc  = None
-        for t_e, etype, esrc in event_list:
-            dt = t_e - candidate_t
-            if dt < 0 or dt > window:
-                continue
-            # Pondération temporelle : bonus plein si < 20s, dégressif ensuite
-            time_factor = 1.0 if dt <= 20 else (1.0 - (dt - 20) / 80.0)
-            # Poids par type
-            type_weight = _EVENT_WEIGHTS.get(etype, 0.5)
-            # Chercher aussi dans la source (goal_posthoc vient souvent d'events_standard)
-            src_weight  = _EVENT_WEIGHTS.get(esrc, 0.0)
-            weight      = max(type_weight, src_weight)
-            bonus       = weight * time_factor * 3.0 / max(type_weight, 0.5)  # normalise sur 3.0 max
-            bonus       = min(bonus, 3.0)
-            if bonus > best_bonus:
-                best_bonus = bonus
-                best_desc  = f"{etype}@{int(t_e//60)}:{int(t_e%60):02d}(+{dt:.0f}s)"
-        return round(best_bonus, 2), best_desc
-
-    # Appliquer le bonus sur tous les candidats
-    bonused_candidates = []
-    for cand_t, cand_score, cand_det in all_candidates:
-        bonus, bonus_desc = _future_event_bonus(cand_t, _event_list)
-        bonused_candidates.append((cand_t, cand_score + bonus, cand_det, bonus, bonus_desc))
-
-    # Trier par score total décroissant
-    bonused_candidates.sort(key=lambda x: x[1], reverse=True)
+    # Trier les candidats par score décroissant
+    scored_candidates = sorted(all_candidates, key=lambda x: x[1], reverse=True)
 
     # Debug : TOUS les candidats
     print(f"  [KICKOFF] {len(all_candidates)} candidat(s) dans {max_search_t:.0f}s :")
-    for cand_t, cand_total, cand_det, cand_bonus, cand_desc in bonused_candidates:
+    for cand_t, cand_score, cand_det in scored_candidates:
         t_fmt = f"{int(cand_t//60)}:{int(cand_t%60):02d}"
-        print(f"    t={t_fmt} score={cand_total:.1f} "
-              f"(base={cand_total-cand_bonus:.1f} bonus={cand_bonus:+.1f} [{cand_desc or 'aucun'}]) "
+        print(f"    t={t_fmt} score={cand_score:.1f} "
               f"sep={cand_det.get('team_separation',0):.2f} "
               f"n={cand_det.get('n_with_team',0)} "
               f"ball={'✓' if cand_det.get('ball_center') else '✗'} "
               f"near={cand_det.get('players_near_ball',0)}")
-
-    # scored_candidates pour la sélection finale
-    scored_candidates = [(t, s, d) for t, s, d, _, _ in bonused_candidates]
 
     best_t     = None
     best_score = 0.0
