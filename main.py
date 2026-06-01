@@ -24,6 +24,18 @@ def default_progress(pct):
 def assign_teams_by_color(frame, tracked, color_detector):
     color_detector.update(frame, tracked)
 
+    # Récupérer les centroides calibrés (team0_color, team1_color)
+    # TeamColorDetector les stocke dans _team_colors = {0: (b,g,r), 1: (b,g,r)}
+    # ou dans les attributs team0/team1/centroids selon l'implémentation.
+    team_centroids = None
+    for attr in ("_team_colors", "team_colors", "centroids", "_centroids"):
+        tc = getattr(color_detector, attr, None)
+        if tc and len(tc) >= 2:
+            team_centroids = tc
+            break
+
+    import numpy as _np
+
     for p in tracked:
         if p.get("team") is not None:
             continue
@@ -41,14 +53,28 @@ def assign_teams_by_color(frame, tracked, color_detector):
 
         if color:
             b, g, r = color
-            if g > r and g > b:
-                p["team"] = 0
-            elif r > g and r > b:
-                p["team"] = 1
-            elif b > r and b > g:
-                p["team"] = 1
+            if team_centroids and len(team_centroids) >= 2:
+                # Comparer la couleur aux centroides calibrés (distance euclidienne BGR)
+                player_bgr = _np.array([b, g, r], dtype=float)
+                best_team  = 0
+                best_dist  = float("inf")
+                for tid, centroid in team_centroids.items():
+                    c_bgr = _np.array(centroid[:3], dtype=float)
+                    dist  = float(_np.linalg.norm(player_bgr - c_bgr))
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_team = int(tid)
+                p["team"] = best_team
             else:
-                p["team"] = 0
+                # Fallback règle fixe
+                if g > r and g > b:
+                    p["team"] = 0
+                elif r > g and r > b:
+                    p["team"] = 1
+                elif b > r and b > g:
+                    p["team"] = 1
+                else:
+                    p["team"] = 0
 
     return tracked
 
