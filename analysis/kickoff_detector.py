@@ -458,10 +458,13 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
                       f"mean={global_mean:.1f})")
                 break
 
-    if _motion_offset is not None:
-        print(f"  [MOTION] Offset candidat par transition : {_motion_offset:.1f}s")
-    else:
-        print("  [MOTION] Aucune transition claire détectée")
+    consecutive        = 0
+    first_two_teams    = False
+    best_t             = None
+    best_score         = 0.0
+    candidate_start_t  = None
+    all_candidates     = []
+    _prev_ball_center  = None  # pour calculer la vitesse inter-frames
 
     for fd in frames_data:
         t = fd.get("frame", 0) / max(fps, 1)
