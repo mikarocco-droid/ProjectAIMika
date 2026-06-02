@@ -1142,14 +1142,22 @@ def run_pipeline(
 
                 def _analyze_shot(args):
                     shot, st, window = args
+                    # st est en temps RELATIF post-KO.
+                    # find_goal_after_shot lit des frames dans la vidéo brute →
+                    # il faut ajouter l'offset KO pour pointer sur la bonne frame.
+                    _ko = _kickoff_offset if _kickoff_offset > 0 else 0
+                    _abs_shot_time = st + _ko
+                    # confirmed_goal_times est en relatif → convertir en absolu
+                    # pour que les comparaisons internes de find_goal_after_shot soient cohérentes
+                    _abs_confirmed = [gt + _ko for gt in existing_goal_times]
                     return shot, st, find_goal_after_shot(
                         video_path           = video_path,
-                        shot_time            = st,
+                        shot_time            = _abs_shot_time,
                         window               = window,
                         fps                  = fps,
                         frame_w              = _frame_w,
                         frame_h              = _frame_h,
-                        confirmed_goal_times = existing_goal_times,
+                        confirmed_goal_times = _abs_confirmed,
                     )
 
                 shot_goal_candidates = []
@@ -1175,7 +1183,10 @@ def run_pipeline(
                     if (result and result.get("is_goal")
                             and result.get("confidence", 0) >= 0.85
                             and _gv_stg >= 2):
-                        goal_t = result["timestamp"]
+                        # result["timestamp"] est en temps ABSOLU vidéo (find_goal_after_shot
+                        # travaille sur la vidéo brute). On le reconvertit en temps RELATIF post-KO.
+                        _goal_t_abs = result["timestamp"]
+                        goal_t = _goal_t_abs - (_kickoff_offset if _kickoff_offset > 0 else 0)
                         too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
                         _kickoff_fp = False  # filtre retiré : rejetait de vraies actions
                         # Exiger un signal physique posthoc dans la fenêtre tir→but
