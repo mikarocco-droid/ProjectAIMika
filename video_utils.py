@@ -165,6 +165,8 @@ def create_highlights(
     player_id            = None,
     sport                = "football",
     confirmed_goal_times = None,   # Liste des temps buts confirmés (incl. shot_to_goal_gemini)
+    kickoff_offset       = 0,      # Offset KO en secondes — les timestamps events sont relatifs,
+                                   # il faut ajouter cet offset pour lire la bonne position dans la vidéo brute
 ):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -236,7 +238,7 @@ def create_highlights(
 
     for i, e in enumerate(key_events):
         frame      = e.get("frame", 0)
-        t          = frame_to_time(frame, fps)
+        t          = frame_to_time(frame, fps) + kickoff_offset  # relatif → absolu vidéo
         is_goal    = e.get("type") in ["goal", "score"]
         if is_goal:
             # Context adaptatif selon le type de but :
