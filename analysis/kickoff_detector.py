@@ -641,7 +641,10 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
         # Le premier confirmé par Gemini remplace la sélection physique.
         if gemini_verify_fn and video_path and groups:
             print(f"  [KICKOFF GEMINI] Vérification visuelle des top groupes...")
-            _top_grps = sorted(groups, key=lambda g: max(x[1] for x in g), reverse=True)[:5]
+            # Trier par timestamp croissant : le premier KO dans le temps est le bon.
+            # On vérifie TOUS les groupes — pas seulement les plus longs.
+            # Un match a toujours un KO : le premier groupe confirmé par Gemini est le vrai.
+            _top_grps = sorted(groups, key=lambda g: min(x[0] for x in g))
             for grp in _top_grps:
                 best_in_grp = max(grp, key=lambda x: x[1])
                 cand_t = best_in_grp[0]
