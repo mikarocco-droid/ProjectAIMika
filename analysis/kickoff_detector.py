@@ -357,6 +357,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25, vide
     # Le KO est la première transition durable faible→fort.
     # ─────────────────────────────────────────────────────────────────────────
     _motion_trace = []  # (t, player_motion_px, ball_motion_px)
+    _motion_by_t  = {}  # t → p_motion  (pour log des groupes)
     _prev_player_pos = {}   # pid → (cx, cy)
     _prev_ball_pos_m = None
 
@@ -381,6 +382,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25, vide
                 moves.append(math.hypot(cx - ox, cy - oy))
             _prev_player_pos[pid] = (cx, cy)
         p_motion = sum(moves) / len(moves) if moves else 0.0
+        _motion_by_t[t] = p_motion
 
         # Ball motion
         b_motion = 0.0
@@ -498,6 +500,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25, vide
             fd, fps, action_times, first_two_teams, frame_w, frame_h,
             ball_speed_px=_ball_speed
         )
+        details["p_motion"] = _motion_by_t.get(t, 0.0)
 
         # ── PROBE 250-320s : 4 champs seulement ─────────────────────────────
         if 250.0 <= t <= 320.0:
@@ -515,7 +518,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25, vide
                     ball_str = "none"
             else:
                 ball_str = "none"
-            print(f"  [KO_PROBE] t={t:6.1f}s sep={sep:.2f} n={n:2d} ball={ball_str}")
+            print(f"  [KO_PROBE] t={t:6.1f}s sep={sep:.2f} n={n:2d} ball={ball_str} pm={_motion_by_t.get(t,0.0):.1f}")
 
         if score >= _SCORE_THRESHOLD:
             consecutive += 1
@@ -602,6 +605,20 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25, vide
 
         # Trier les groupes par longueur décroissante (séquence la plus stable)
         groups.sort(key=lambda g: len(g), reverse=True)
+
+        # Log des groupes avec p_motion moyen — pour décider ensuite si ce signal
+        # discrimine effectivement les vrais KO des placements pré-match
+        print(f"  [KICKOFF GROUPS] {len(groups)} groupe(s) sep≥0.45 :")
+        for gi, grp in enumerate(groups[:8]):
+            g_best = max(grp, key=lambda x: x[1])
+            t_fmt = f"{int(g_best[0]//60)}:{int(g_best[0]%60):02d}"
+            pm_vals = [d.get("p_motion", 0.0) for _, _, d in grp]
+            pm_avg = sum(pm_vals) / max(len(pm_vals), 1)
+            pm_min = min(pm_vals)
+            pm_max = max(pm_vals)
+            print(f"    grp[{gi}] t={t_fmt} len={len(grp)} "
+                  f"sep={g_best[2].get('team_separation',0):.2f} "
+                  f"p_motion avg={pm_avg:.1f} min={pm_min:.1f} max={pm_max:.1f}")
 
         # Parmi les 3 groupes les plus longs, prendre le premier validé par activité
         for grp in groups[:3]:
