@@ -437,7 +437,8 @@ def run_pipeline(
     _kickoff_offset, _kickoff_conf = find_kickoff_offset(
         events, _video_duration_s,
         frames_data = frames_data,   # V9.8 : score pondéré sans dépendre du ballon
-        fps         = fps,
+        fps         = fps,        
+        video_path  = video_path,   # ← ligne ajoutée
     )
 
     if _kickoff_offset > 0:
