@@ -433,12 +433,91 @@ def run_pipeline(
     # Le coup d'envoi est détecté par terminal_events pendant le tracking
     # (event type="kickoff" : ballon au rond central + joueurs symétriques).
     # On cherche le premier kickoff pour corriger tous les timestamps.
+    # ── DÉTECTION COUP D'ENVOI ────────────────────────────────────────────────
+    # Le coup d'envoi est détecté par terminal_events pendant le tracking
+    # (event type="kickoff" : ballon au rond central + joueurs symétriques).
+    # On cherche le premier kickoff pour corriger tous les timestamps.
     _video_duration_s = total_frames / max(fps, 1)
+
+    # Callback Gemini pour vérification visuelle des candidats kickoff
+    def _gemini_verify_kickoff(vpath, candidate_t, offsets=(-2.0, 0.0, 2.0)):
+        """
+        Extrait 3 frames autour de candidate_t et demande à Gemini si c'est
+        un coup d'envoi (ballon au rond central, 2 joueurs face à face).
+        Retourne (is_kickoff: bool, confidence: float).
+        """
+        try:
+            import cv2 as _cv2
+            import base64 as _b64
+            from ai.gemini_validator import get_client as _get_client, safe_json_load as _sjl
+            cap = _cv2.VideoCapture(vpath)
+            if not cap.isOpened():
+                return False, 0.0
+            real_fps = cap.get(_cv2.CAP_PROP_FPS) or fps
+            frames_b64 = []
+            for off in offsets:
+                t_target = max(0.0, candidate_t + off)
+                cap.set(_cv2.CAP_PROP_POS_FRAMES, int(t_target * real_fps))
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                _, buf = _cv2.imencode(".jpg", frame,
+                                       [_cv2.IMWRITE_JPEG_QUALITY, 75])
+                frames_b64.append(_b64.b64encode(buf).decode())
+            cap.release()
+            if not frames_b64:
+                return False, 0.0
+
+            client = _get_client()
+            if client is None:
+                return False, 0.0
+
+            prompt = (
+                "You are analyzing a football (soccer) match video. "
+                "I will show you 1 to 3 frames taken around a specific moment. "
+                "Your task: determine if ANY of these frames shows a kickoff — "
+                "the moment the match starts or restarts after a goal. "
+                "A kickoff looks like: ball placed at the center circle, "
+                "1 or 2 players standing near the ball at the center spot, "
+                "referee nearby, all other players on their respective halves "
+                "behind the halfway line. "
+                "If the image shows players still walking/running to their positions, "
+                "or a team huddle/cheer before kickoff, or normal open play, answer NO. "
+                "Respond ONLY with valid JSON: "
+                "{\"is_kickoff\": true/false, \"confidence\": 0.0-1.0, "
+                "\"reason\": \"one short sentence\"}"
+            )
+            content = [{"type": "text", "text": prompt}]
+            for b64 in frames_b64:
+                content.append({"type": "image_url",
+                                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+
+            import google.generativeai as _genai
+            model = _genai.GenerativeModel("gemini-2.5-flash")
+            parts = [prompt]
+            for b64 in frames_b64:
+                import io as _io
+                img_data = _b64.b64decode(b64)
+                parts.append({"mime_type": "image/jpeg", "data": img_data})
+            response = model.generate_content(parts)
+            result = _sjl(response.text)
+            if result is None:
+                return False, 0.0
+            is_ko = bool(result.get("is_kickoff", False))
+            conf  = float(result.get("confidence", 0.5))
+            reason = result.get("reason", "")
+            print(f"    [KICKOFF GEMINI DETAIL] is_kickoff={is_ko} conf={conf:.2f} reason={reason}")
+            return is_ko, conf
+        except Exception as e:
+            print(f"  [KICKOFF GEMINI ERROR] {e}")
+            return False, 0.0
+
     _kickoff_offset, _kickoff_conf = find_kickoff_offset(
         events, _video_duration_s,
-        frames_data = frames_data,   # V9.8 : score pondéré sans dépendre du ballon
-        fps         = fps,        
-        video_path  = video_path,   # ← ligne ajoutée
+        frames_data      = frames_data,
+        fps              = fps,
+        video_path       = video_path,
+        gemini_verify_fn = _gemini_verify_kickoff,
     )
 
     if _kickoff_offset > 0:
