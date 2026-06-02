@@ -645,9 +645,17 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             # On vérifie TOUS les groupes — pas seulement les plus longs.
             # Un match a toujours un KO : le premier groupe confirmé par Gemini est le vrai.
             _top_grps = sorted(groups, key=lambda g: min(x[0] for x in g))
+            # Durée totale de la vidéo — pour calibrer le seuil minimum
             for grp in _top_grps:
                 best_in_grp = max(grp, key=lambda x: x[1])
                 cand_t = best_in_grp[0]
+                # Filtre p_motion : un vrai KO a les joueurs en mouvement (p_motion > 5).
+                # Un groupe d'attente pré-KO a p_motion très faible (joueurs immobiles).
+                pm_vals = [_motion_by_t.get(e[0], 0.0) for e in grp]
+                pm_avg = sum(pm_vals) / max(len(pm_vals), 1)
+                if pm_avg < 5.0:
+                    print(f"  [KICKOFF GEMINI] t={int(cand_t//60)}:{int(cand_t%60):02d} → ⏭️  ignoré (p_motion={pm_avg:.1f} trop bas)")
+                    continue
                 activity = _post_activity(cand_t, frames_data, fps)
                 if activity < 200.0:
                     continue
