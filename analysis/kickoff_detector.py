@@ -634,6 +634,139 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
         selection = f"meilleur score sans validation (activité={activity:.0f}px)"
 
     conf = min(0.95, 0.60 + (best_score - _SCORE_THRESHOLD) * 0.05)
+
+    # ── AFFINAGE PAR DÉTECTION VISUELLE DU BALLON AU ROND CENTRAL ────────────
+    # Pour les top-5 candidats par sep, on analyse les frames originales
+    # dans une fenêtre ±15s pour trouver un objet clair et petit (ballon)
+    # qui est PRÉSENT puis DISPARAÎT dans la zone centrale.
+    # C'est le vrai signal du coup d'envoi : ballon posé → joué.
+    #
+    # On ne modifie best_t que si on trouve un signal clair.
+    # Sinon on garde le résultat actuel.
+
+    def _detect_ball_played_in_center(video_path, candidate_t, frame_w, frame_h,
+                                      fps, window=15.0):
+        """
+        Ouvre la vidéo originale autour de candidate_t.
+        Cherche dans la zone centrale (40-60% x, 35-65% y) :
+          - un pixel cluster clair/blanc/rond présent N frames consécutives
+          - suivi d'une absence (le ballon vient d'être joué)
+        Retourne le timestamp de la disparition, ou None.
+        """
+        try:
+            import cv2 as _cv2
+            import numpy as _np
+        except ImportError:
+            return None
+
+        if not video_path:
+            return None
+
+        try:
+            cap = _cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return None
+
+            real_fps = cap.get(_cv2.CAP_PROP_FPS) or fps
+            start_frame = max(0, int((candidate_t - window) * real_fps))
+            end_frame   = int((candidate_t + window) * real_fps)
+
+            cap.set(_cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+            cx1 = int(frame_w * 0.38)
+            cx2 = int(frame_w * 0.62)
+            cy1 = int(frame_h * 0.33)
+            cy2 = int(frame_h * 0.67)
+
+            present_streak  = 0
+            absent_streak   = 0
+            last_present_t  = None
+            PRESENT_THRESH  = 4    # frames consécutives avec ballon
+            ABSENT_THRESH   = 3    # frames consécutives sans ballon
+
+            frame_idx = start_frame
+            while frame_idx <= end_frame:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                t_cur = frame_idx / real_fps
+
+                # Extraire la zone centrale et réduire
+                roi = frame[cy1:cy2, cx1:cx2]
+                small = _cv2.resize(roi, (64, 48))
+
+                # Chercher un objet clair (ballon blanc/clair)
+                gray = _cv2.cvtColor(small, _cv2.COLOR_BGR2GRAY)
+                # Seuil adaptatif : pixels très clairs dans une scène verte
+                _, thresh = _cv2.threshold(gray, 200, 255, _cv2.THRESH_BINARY)
+                # Chercher des blobs petits et ronds
+                contours, _ = _cv2.findContours(
+                    thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE
+                )
+                ball_found = False
+                for cnt in contours:
+                    area = _cv2.contourArea(cnt)
+                    if 8 < area < 200:  # taille compatible ballon
+                        x, y, w, h = _cv2.boundingRect(cnt)
+                        aspect = w / max(h, 1)
+                        if 0.5 < aspect < 2.0:  # forme ronde/ovale
+                            ball_found = True
+                            break
+
+                if ball_found:
+                    present_streak += 1
+                    absent_streak   = 0
+                    if present_streak >= PRESENT_THRESH:
+                        last_present_t = t_cur
+                else:
+                    absent_streak  += 1
+                    present_streak  = 0
+                    if absent_streak >= ABSENT_THRESH and last_present_t is not None:
+                        cap.release()
+                        return last_present_t  # instant de la disparition = KO
+
+                frame_idx += 1
+
+            cap.release()
+        except Exception:
+            pass
+        return None
+
+    # Récupérer le chemin vidéo depuis frames_data si disponible
+    _video_path = None
+    for _fd in (frames_data or []):
+        _vp = _fd.get("video_path") or _fd.get("source_video")
+        if _vp:
+            _video_path = _vp
+            break
+
+    # Tenter l'affinage sur les top-3 candidats sep
+    _top_sep = sorted(
+        [(t, s, d) for t, s, d in scored_candidates
+         if d.get("team_separation", 0) >= 0.35],
+        key=lambda x: x[1], reverse=True
+    )[:3]
+
+    _refined = False
+    if _video_path and _top_sep:
+        for _cand_t, _cand_s, _cand_d in _top_sep:
+            _ball_t = _detect_ball_played_in_center(
+                _video_path, _cand_t, frame_w, frame_h, fps
+            )
+            if _ball_t is not None:
+                print(f"  [KICKOFF BALL] ballon joué détecté visuellement "
+                      f"à t={_ball_t:.1f}s (candidat={_cand_t:.1f}s)")
+                best_t    = _ball_t
+                best_score = _cand_s
+                best_det   = _cand_d
+                selection  = f"ball_played visuel à {_ball_t:.1f}s"
+                conf       = min(0.95, conf + 0.10)
+                _refined   = True
+                break
+    if not _refined:
+        print(f"  [KICKOFF BALL] affinage visuel non disponible "
+              f"({'pas de chemin vidéo' if not _video_path else 'aucun signal trouvé'})")
+
     print(f"  [KICKOFF PHYS] {len(all_candidates)} candidat(s) → {selection} : "
           f"Score={best_score:.1f}/{_SCORE_THRESHOLD} "
           f"→ offset={best_t:.1f}s conf={conf:.2f} "
