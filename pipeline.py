@@ -449,7 +449,9 @@ def run_pipeline(
         try:
             import cv2 as _cv2
             import base64 as _b64
-            from ai.gemini_validator import get_client as _get_client, safe_json_load as _sjl
+            import json as _json
+            import re as _re
+            import google.generativeai as _genai
             cap = _cv2.VideoCapture(vpath)
             if not cap.isOpened():
                 return False, 0.0
@@ -468,10 +470,7 @@ def run_pipeline(
             if not frames_b64:
                 return False, 0.0
 
-            client = _get_client()
-            if client is None:
-                return False, 0.0
-
+            model = _genai.GenerativeModel("gemini-2.5-flash")
             prompt = (
                 "You are analyzing a football (soccer) match video. "
                 "I will show you 1 to 3 frames taken around a specific moment. "
@@ -487,24 +486,26 @@ def run_pipeline(
                 "{\"is_kickoff\": true/false, \"confidence\": 0.0-1.0, "
                 "\"reason\": \"one short sentence\"}"
             )
-            content = [{"type": "text", "text": prompt}]
-            for b64 in frames_b64:
-                content.append({"type": "image_url",
-                                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
-
-            import google.generativeai as _genai
-            model = _genai.GenerativeModel("gemini-2.5-flash")
             parts = [prompt]
             for b64 in frames_b64:
-                import io as _io
                 img_data = _b64.b64decode(b64)
                 parts.append({"mime_type": "image/jpeg", "data": img_data})
             response = model.generate_content(parts)
-            result = _sjl(response.text)
+
+            # Parser le JSON de la réponse
+            raw = response.text.strip()
+            # Extraire le JSON même s'il est entouré de backticks
+            m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+            result = None
+            if m:
+                try:
+                    result = _json.loads(m.group())
+                except Exception:
+                    pass
             if result is None:
                 return False, 0.0
-            is_ko = bool(result.get("is_kickoff", False))
-            conf  = float(result.get("confidence", 0.5))
+            is_ko  = bool(result.get("is_kickoff", False))
+            conf   = float(result.get("confidence", 0.5))
             reason = result.get("reason", "")
             print(f"    [KICKOFF GEMINI DETAIL] is_kickoff={is_ko} conf={conf:.2f} reason={reason}")
             return is_ko, conf
