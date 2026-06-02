@@ -344,13 +344,124 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
             print(f"  [KICKOFF] Borne event ignorée ({event_bound:.0f}s < 50% de {max_search_t:.0f}s)"
                   f" → recherche jusqu'à {max_search_t:.0f}s")
 
-    consecutive        = 0
-    first_two_teams    = False
-    best_t             = None
-    best_score         = 0.0
-    candidate_start_t  = None
-    all_candidates     = []
-    _prev_ball_center  = None  # pour calculer la vitesse inter-frames
+    # ─────────────────────────────────────────────────────────────────────────
+    # SIGNAL PRINCIPAL : transition d'activité joueurs + ballon
+    #
+    # Le pré-match (échauffement) = joueurs qui marchent / statiques.
+    # Le match = joueurs qui courent, ballon qui se déplace en continu.
+    #
+    # On calcule une activité glissante (fenêtre 10s) sur :
+    #   - player_motion : moyenne des distances inter-frames par joueur tracké
+    #   - ball_motion   : distance inter-frames du ballon
+    #
+    # Le KO est la première transition durable faible→fort.
+    # ─────────────────────────────────────────────────────────────────────────
+    _motion_trace = []  # (t, player_motion_px, ball_motion_px)
+    _prev_player_pos = {}   # pid → (cx, cy)
+    _prev_ball_pos_m = None
+
+    for fd in frames_data:
+        t = fd.get("frame", 0) / max(fps, 1)
+        if t > max_search_t + 60:
+            break
+
+        # Player motion
+        players_fd = fd.get("players", [])
+        moves = []
+        for p in players_fd:
+            pid = p.get("id")
+            if pid is None:
+                continue
+            cx = _player_cx(p)
+            cy = _player_cy(p)
+            if cx is None or cy is None:
+                continue
+            if pid in _prev_player_pos:
+                ox, oy = _prev_player_pos[pid]
+                moves.append(math.hypot(cx - ox, cy - oy))
+            _prev_player_pos[pid] = (cx, cy)
+        p_motion = sum(moves) / len(moves) if moves else 0.0
+
+        # Ball motion
+        b_motion = 0.0
+        ball_fd = fd.get("ball")
+        if ball_fd:
+            bc = ball_fd.get("center")
+            if bc and len(bc) >= 2 and bc[0] is not None:
+                bx, by = float(bc[0]), float(bc[1])
+                if _prev_ball_pos_m is not None:
+                    b_motion = math.hypot(bx - _prev_ball_pos_m[0],
+                                          by - _prev_ball_pos_m[1])
+                _prev_ball_pos_m = (bx, by)
+            else:
+                _prev_ball_pos_m = None
+        else:
+            _prev_ball_pos_m = None
+
+        _motion_trace.append((t, p_motion, b_motion))
+
+    # Activité glissante (fenêtre 5s)
+    _WIN = 5.0
+    _activity_curve = []
+    for i, (t, pm, bm) in enumerate(_motion_trace):
+        window = [x for x in _motion_trace if t - _WIN <= x[0] <= t]
+        avg_pm = sum(x[1] for x in window) / max(len(window), 1)
+        avg_bm = sum(x[2] for x in window) / max(len(window), 1)
+        combined = avg_pm + avg_bm * 0.5
+        _activity_curve.append((t, combined))
+
+    # Log ASCII de la courbe (résolution 10s, jusqu'à max_search_t + 30s)
+    if _activity_curve:
+        max_act = max(a for _, a in _activity_curve) or 1.0
+        print("  [MOTION] Profil activité (résolution 10s, █=haut, ░=bas) :")
+        bucket_size = 10.0
+        t_max_log = min(max_search_t + 30, _activity_curve[-1][0])
+        t_cur = 0.0
+        while t_cur <= t_max_log:
+            bucket = [a for t, a in _activity_curve
+                      if t_cur <= t < t_cur + bucket_size]
+            if bucket:
+                val = sum(bucket) / len(bucket)
+                bar_len = int(val / max_act * 20)
+                bar = '█' * bar_len + '░' * (20 - bar_len)
+                print(f"    {int(t_cur):4d}s [{bar}] {val:.1f}")
+            t_cur += bucket_size
+
+    # Détection de transition faible→fort
+    # On cherche la première fenêtre de 10s où l'activité dépasse
+    # le seuil = moyenne_globale * 1.5, précédée d'une fenêtre basse
+    _motion_offset = None
+    if len(_activity_curve) >= 10:
+        vals = [a for _, a in _activity_curve]
+        global_mean = sum(vals) / len(vals)
+        threshold_hi = global_mean * 1.5
+        threshold_lo = global_mean * 0.7
+
+        # Calculer activité glissante 10s
+        _win10 = 10.0
+        _smoothed = []
+        for t, _ in _activity_curve:
+            w = [a for tt, a in _activity_curve if t - _win10 <= tt <= t]
+            _smoothed.append((t, sum(w) / max(len(w), 1)))
+
+        # Chercher première transition lo→hi
+        _was_low = False
+        for i, (t, act) in enumerate(_smoothed):
+            if t < min_t:
+                continue
+            if act <= threshold_lo:
+                _was_low = True
+            if _was_low and act >= threshold_hi:
+                _motion_offset = t
+                print(f"  [MOTION] Transition détectée à t={t:.1f}s "
+                      f"(act={act:.1f} > seuil={threshold_hi:.1f}, "
+                      f"mean={global_mean:.1f})")
+                break
+
+    if _motion_offset is not None:
+        print(f"  [MOTION] Offset candidat par transition : {_motion_offset:.1f}s")
+    else:
+        print("  [MOTION] Aucune transition claire détectée")
 
     for fd in frames_data:
         t = fd.get("frame", 0) / max(fps, 1)
@@ -431,9 +542,9 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
     # Trier les candidats par score décroissant
     scored_candidates = sorted(all_candidates, key=lambda x: x[1], reverse=True)
 
-    # Debug : TOUS les candidats
+    # Debug : top-20 candidats
     print(f"  [KICKOFF] {len(all_candidates)} candidat(s) dans {max_search_t:.0f}s :")
-    for cand_t, cand_score, cand_det in scored_candidates:
+    for cand_t, cand_score, cand_det in scored_candidates[:20]:
         t_fmt = f"{int(cand_t//60)}:{int(cand_t%60):02d}"
         print(f"    t={t_fmt} score={cand_score:.1f} "
               f"sep={cand_det.get('team_separation',0):.2f} "
@@ -446,14 +557,55 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
     best_det   = None
     selection  = "meilleur score"
 
-    for cand_t, cand_score, cand_details in scored_candidates[:5]:
-        activity = _post_activity(cand_t, frames_data, fps)
-        if activity >= 200.0:
-            best_t     = cand_t
-            best_score = cand_score
-            best_det   = cand_details
-            selection  = f"meilleur score validé (activité={activity:.0f}px)"
-            break
+    # Stratégie 1 : parmi les candidats avec sep >= 0.45, prendre celui dont
+    # la séquence consécutive de frames avec sep ≥ 0.45 est la plus longue.
+    # Le vrai KO a les équipes statiques sur leurs moitiés pendant ~5-15 secondes.
+    # L'échauffement a des joueurs qui bougent partout (séquences courtes).
+    high_sep = [(t, s, d) for t, s, d in scored_candidates
+                if d.get("team_separation", 0) >= 0.45]
+
+    if high_sep:
+        # Grouper les candidats consécutifs (delta < 2s) et mesurer la longueur
+        # de chaque séquence continue
+        groups = []
+        current_group = [high_sep[0]]
+        for i in range(1, len(high_sep)):
+            t_prev = high_sep[i-1][0]
+            t_curr = high_sep[i][0]
+            if abs(t_curr - t_prev) <= 2.0:
+                current_group.append(high_sep[i])
+            else:
+                groups.append(current_group)
+                current_group = [high_sep[i]]
+        groups.append(current_group)
+
+        # Trier les groupes par longueur décroissante (séquence la plus stable)
+        groups.sort(key=lambda g: len(g), reverse=True)
+
+        # Parmi les 3 groupes les plus longs, prendre le premier validé par activité
+        for grp in groups[:3]:
+            # Représenter le groupe par son meilleur score
+            best_in_grp = max(grp, key=lambda x: x[1])
+            cand_t, cand_score, cand_details = best_in_grp
+            activity = _post_activity(cand_t, frames_data, fps)
+            if activity >= 200.0:
+                best_t     = cand_t
+                best_score = cand_score
+                best_det   = cand_details
+                selection  = (f"sep≥0.45 séquence={len(grp)}f "
+                              f"validé (activité={activity:.0f}px)")
+                break
+
+    # Stratégie 2 : fallback sur les 5 meilleurs scores
+    if best_t is None:
+        for cand_t, cand_score, cand_details in scored_candidates[:5]:
+            activity = _post_activity(cand_t, frames_data, fps)
+            if activity >= 200.0:
+                best_t     = cand_t
+                best_score = cand_score
+                best_det   = cand_details
+                selection  = f"meilleur score validé (activité={activity:.0f}px)"
+                break
 
     if best_t is None:
         best_t, best_score, best_det = scored_candidates[0]
