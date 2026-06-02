@@ -1249,13 +1249,29 @@ def run_pipeline(
                 if shot_goal_candidates:
                     # Parmi les buts détectés, garder le meilleur score par fenêtre de 45s
                     # Évite qu'un faux positif à score modéré bloque un vrai but à score élevé
-                    shot_goal_candidates.sort(key=lambda e: float(e.get("gemini_conf", 0)), reverse=True)
+                    shot_goal_candidates.sort(key=lambda e: (float(e.get("gemini_conf", 0)), float(e.get("xg", 0))), reverse=True)
+                    _ko = _kickoff_offset if _kickoff_offset > 0 else 0
+                    for _dbg in shot_goal_candidates:
+                        _dbg_t = _dbg.get("time", 0)
+                        print(f"  [GOAL CANDIDATE] rel={int(_dbg_t//60):02d}:{int(_dbg_t%60):02d} "
+                              f"abs={_dbg_t + _ko:.1f}s "
+                              f"conf={_dbg.get('gemini_conf', 0):.2f}")
                     _final_goals = []
                     for _cand in shot_goal_candidates:
                         _ct = _cand.get("time", 0)
                         _too_close = any(abs(_ct - _fg.get("time", 0)) < 45 for _fg in _final_goals)
                         if not _too_close:
+                            _ko2 = _kickoff_offset if _kickoff_offset > 0 else 0
+                            _ct2 = _cand.get("time", 0)
+                            print(f"  [GOAL FINAL] rel={int(_ct2//60):02d}:{int(_ct2%60):02d} "
+                                  f"abs={_ct2 + _ko2:.1f}s "
+                                  f"conf={_cand.get('gemini_conf', 0):.2f}")
                             _final_goals.append(_cand)
+                    # Déduplication finale contre les buts déjà confirmés (existing_goal_times)
+                    _final_goals = [
+                        g for g in _final_goals
+                        if not any(abs(g.get("time", 0) - gt) < 45 for gt in existing_goal_times)
+                    ]
                     events_validated = events_validated + _final_goals
                     print(f"  [SHOT→GOAL] {len(_final_goals)} but(s) ajouté(s) via analyse tirs ({len(shot_goal_candidates)} candidats)")
                 else:
@@ -1717,14 +1733,15 @@ def run_pipeline(
         print(f"  Highlights max : {_max_hl} (durée={_duration_min:.0f} min)")
 
         highlights = create_highlights(
-            video_path = video_path,
-            events     = events,
-            output_dir = os.path.join(output_dir, "highlights"),
-            fps        = fps,
-            max_clips  = _max_hl,
-            mode       = mode,
-            player_id  = player_id,
-            sport      = sport
+            video_path      = video_path,
+            events          = events,
+            output_dir      = os.path.join(output_dir, "highlights"),
+            fps             = fps,
+            max_clips       = _max_hl,
+            mode            = mode,
+            player_id       = player_id,
+            sport           = sport,
+            kickoff_offset  = _kickoff_offset if _kickoff_offset > 0 else 0,
         )
         highlights = normalize_highlights(highlights, mode=mode)
 
