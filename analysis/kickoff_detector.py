@@ -651,8 +651,9 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                 activity = _post_activity(cand_t, frames_data, fps)
                 if activity < 200.0:
                     continue
-                # Extraire 3 frames : 2s avant, au moment, 2s après
-                offsets = [-2.0, 0.0, 2.0]
+                # Extraire 4 frames : -2s, 0s, +2s, +5s
+                # La frame +5s est discriminante : vrai KO = jeu lancé, faux = joueurs encore en placement
+                offsets = [-2.0, 0.0, 2.0, 5.0]
                 confirmed, conf_gemini = gemini_verify_fn(
                     video_path, cand_t, offsets=offsets
                 )
