@@ -249,7 +249,8 @@ def _ball_pos(ball, frame_w, frame_h):
 # ─────────────────────────────────────────
 # FIND KICKOFF OFFSET — API publique
 # ─────────────────────────────────────────
-def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25, video_path=None):
+def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
+                        video_path=None, gemini_verify_fn=None):
     """
     Détecte le coup d'envoi et retourne (offset_s, confidence).
 
@@ -633,6 +634,34 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25, vide
                 selection  = (f"sep≥0.45 séquence={len(grp)}f "
                               f"validé (activité={activity:.0f}px)")
                 break
+
+        # ── Vérification Gemini des top candidats ────────────────────────────
+        # Si un callback gemini_verify_fn est fourni ET video_path disponible,
+        # on vérifie visuellement les top-5 groupes par score.
+        # Le premier confirmé par Gemini remplace la sélection physique.
+        if gemini_verify_fn and video_path and groups:
+            print(f"  [KICKOFF GEMINI] Vérification visuelle des top groupes...")
+            _top_grps = sorted(groups, key=lambda g: max(x[1] for x in g), reverse=True)[:5]
+            for grp in _top_grps:
+                best_in_grp = max(grp, key=lambda x: x[1])
+                cand_t = best_in_grp[0]
+                activity = _post_activity(cand_t, frames_data, fps)
+                if activity < 200.0:
+                    continue
+                # Extraire 3 frames : 2s avant, au moment, 2s après
+                offsets = [-2.0, 0.0, 2.0]
+                confirmed, conf_gemini = gemini_verify_fn(
+                    video_path, cand_t, offsets=offsets
+                )
+                print(f"  [KICKOFF GEMINI] t={int(cand_t//60)}:{int(cand_t%60):02d} "
+                      f"→ {'✅ KO confirmé' if confirmed else '❌ rejeté'} "
+                      f"(conf={conf_gemini:.2f})")
+                if confirmed:
+                    best_t     = cand_t
+                    best_score = best_in_grp[1]
+                    best_det   = best_in_grp[2]
+                    selection  = f"gemini_confirmed (conf={conf_gemini:.2f})"
+                    break
 
     # Stratégie 2 : fallback sur les 5 meilleurs scores
     if best_t is None:
