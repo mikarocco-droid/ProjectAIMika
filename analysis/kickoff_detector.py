@@ -499,6 +499,24 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
             ball_speed_px=_ball_speed
         )
 
+        # ── PROBE 250-320s : 4 champs seulement ─────────────────────────────
+        if 250.0 <= t <= 320.0:
+            sep  = details.get("team_separation", 0.0)
+            n    = len(fd.get("players", []))
+            ball_fd = fd.get("ball")
+            if ball_fd:
+                bc = ball_fd.get("center")
+                if bc and len(bc) >= 2 and bc[0] is not None and frame_w and frame_h:
+                    bx_n = round(float(bc[0]) / frame_w, 2)
+                    by_n = round(float(bc[1]) / frame_h, 2)
+                    spd  = f"{_ball_speed:.0f}" if _ball_speed is not None else "?"
+                    ball_str = f"{bx_n},{by_n} spd={spd}"
+                else:
+                    ball_str = "none"
+            else:
+                ball_str = "none"
+            print(f"  [KO_PROBE] t={t:6.1f}s sep={sep:.2f} n={n:2d} ball={ball_str}")
+
         if score >= _SCORE_THRESHOLD:
             consecutive += 1
             if consecutive == 1:
