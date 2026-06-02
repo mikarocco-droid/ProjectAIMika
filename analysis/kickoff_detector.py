@@ -249,7 +249,7 @@ def _ball_pos(ball, frame_w, frame_h):
 # ─────────────────────────────────────────
 # FIND KICKOFF OFFSET — API publique
 # ─────────────────────────────────────────
-def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
+def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25, video_path=None):
     """
     Détecte le coup d'envoi et retourne (offset_s, confidence).
 
@@ -732,13 +732,14 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25):
             pass
         return None
 
-    # Récupérer le chemin vidéo depuis frames_data si disponible
-    _video_path = None
-    for _fd in (frames_data or []):
-        _vp = _fd.get("video_path") or _fd.get("source_video")
-        if _vp:
-            _video_path = _vp
-            break
+    # Récupérer le chemin vidéo — priorité au paramètre direct, sinon scan frames_data
+    _video_path = video_path
+    if not _video_path:
+        for _fd in (frames_data or []):
+            _vp = _fd.get("video_path") or _fd.get("source_video")
+            if _vp:
+                _video_path = _vp
+                break
 
     # Tenter l'affinage sur les top-3 candidats sep
     _top_sep = sorted(
