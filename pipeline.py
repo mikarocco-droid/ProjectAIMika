@@ -1135,7 +1135,7 @@ def run_pipeline(
                     if already_covered:
                         continue
                     next_shot_t = shot_times_all[i + 1] if i + 1 < len(shot_times_all) else st + 999
-                    window = max(25, min(45, next_shot_t - st - 5))
+                    window = max(35, min(60, next_shot_t - st - 5))
                     shots_to_analyze.append((shot, st, window))
 
                 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1147,6 +1147,12 @@ def run_pipeline(
                     # il faut ajouter l'offset KO pour pointer sur la bonne frame.
                     _ko = _kickoff_offset if _kickoff_offset > 0 else 0
                     _abs_shot_time = st + _ko
+                    # Un but ne peut pas arriver dans les 15 premières secondes
+                    # après le coup d'envoi — filtre les faux positifs très proches du KO
+                    if st < 15.0:
+                        return shot, st, {"is_goal": False, "timestamp": None,
+                                          "confidence": 0.0, "desc": "trop proche KO",
+                                          "goal_votes": 0, "goal_score": 0}
                     # confirmed_goal_times est en relatif → convertir en absolu
                     # pour que les comparaisons internes de find_goal_after_shot soient cohérentes
                     _abs_confirmed = [gt + _ko for gt in existing_goal_times]
@@ -1241,8 +1247,17 @@ def run_pipeline(
                             print(f"  [SHOT→GOAL] ✅ BUT détecté à {int(goal_t//60):02d}:{int(goal_t%60):02d} conf={result['confidence']:.2f}")
 
                 if shot_goal_candidates:
-                    events_validated = events_validated + shot_goal_candidates
-                    print(f"  [SHOT→GOAL] {len(shot_goal_candidates)} but(s) ajouté(s) via analyse tirs")
+                    # Parmi les buts détectés, garder le meilleur score par fenêtre de 45s
+                    # Évite qu'un faux positif à score modéré bloque un vrai but à score élevé
+                    shot_goal_candidates.sort(key=lambda e: float(e.get("gemini_conf", 0)), reverse=True)
+                    _final_goals = []
+                    for _cand in shot_goal_candidates:
+                        _ct = _cand.get("time", 0)
+                        _too_close = any(abs(_ct - _fg.get("time", 0)) < 45 for _fg in _final_goals)
+                        if not _too_close:
+                            _final_goals.append(_cand)
+                    events_validated = events_validated + _final_goals
+                    print(f"  [SHOT→GOAL] {len(_final_goals)} but(s) ajouté(s) via analyse tirs ({len(shot_goal_candidates)} candidats)")
                 else:
                     print(f"  [SHOT→GOAL] Aucun but confirmé")
 
