@@ -440,10 +440,12 @@ def run_pipeline(
     _video_duration_s = total_frames / max(fps, 1)
 
     # Callback Gemini pour vérification visuelle des candidats kickoff
-    def _gemini_verify_kickoff(vpath, candidate_t, offsets=(-2.0, 0.0, 2.0)):
+    def _gemini_verify_kickoff(vpath, candidate_t, offsets=(-2.0, 0.0, 2.0, 5.0)):
         """
-        Extrait 3 frames autour de candidate_t et demande à Gemini si c'est
-        un coup d'envoi (ballon au rond central, 2 joueurs face à face).
+        Extrait 4 frames autour de candidate_t et demande à Gemini si c'est
+        un coup d'envoi. La frame à +5s est clé : après un vrai KO le jeu
+        est lancé (joueurs en course). Après un simple placement les joueurs
+        marchent encore vers leurs positions.
         Retourne (is_kickoff: bool, confidence: float).
         """
         try:
@@ -473,15 +475,17 @@ def run_pipeline(
             model = _genai.GenerativeModel("gemini-2.5-flash")
             prompt = (
                 "You are analyzing a football (soccer) match video. "
-                "I will show you 1 to 3 frames taken around a specific moment. "
-                "Your task: determine if ANY of these frames shows a kickoff — "
+                "I will show you 4 frames taken at -2s, 0s, +2s and +5s around a specific moment. "
+                "Your task: determine if this moment is a kickoff — "
                 "the moment the match starts or restarts after a goal. "
-                "A kickoff looks like: ball placed at the center circle, "
-                "1 or 2 players standing near the ball at the center spot, "
-                "referee nearby, all other players on their respective halves "
-                "behind the halfway line. "
-                "If the image shows players still walking/running to their positions, "
-                "or a team huddle/cheer before kickoff, or normal open play, answer NO. "
+                "A kickoff sequence looks like: "
+                "at 0s the ball is placed at the center circle with 1 or 2 players near it, "
+                "referee nearby, all other players on their halves — "
+                "AND at +5s the game is clearly in open play (players running, ball moving away from center). "
+                "Answer NO if: at +5s players are still walking to their positions (pre-kickoff placement), "
+                "or if it is a team huddle/cheer, or normal open play without a restart. "
+                "The key signal is the +5s frame: real kickoff = active open play; "
+                "false positive = players still settling into position. "
                 "Respond ONLY with valid JSON: "
                 "{\"is_kickoff\": true/false, \"confidence\": 0.0-1.0, "
                 "\"reason\": \"one short sentence\"}"
