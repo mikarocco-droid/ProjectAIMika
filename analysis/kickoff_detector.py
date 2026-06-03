@@ -644,23 +644,23 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             # Trier par timestamp croissant : le premier KO dans le temps est le bon.
             # On vérifie TOUS les groupes — pas seulement les plus longs.
             # Un match a toujours un KO : le premier groupe confirmé par Gemini est le vrai.
+            # On vérifie TOUS les groupes avec p_motion >= 8.0.
+            # On collecte tous ceux confirmés par Gemini, puis on retient
+            # celui avec la p_motion la plus élevée (vrai KO = mouvement maximal).
             _top_grps = sorted(groups, key=lambda g: min(x[0] for x in g))
-            # Durée totale de la vidéo — pour calibrer le seuil minimum
+            _gemini_confirmed_candidates = []  # (cand_t, score, details, conf, pm_avg)
             for grp in _top_grps:
                 best_in_grp = max(grp, key=lambda x: x[1])
                 cand_t = best_in_grp[0]
-                # Filtre p_motion : un vrai KO a les joueurs en mouvement (p_motion > 5).
-                # Un groupe d'attente pré-KO a p_motion très faible (joueurs immobiles).
                 pm_vals = [_motion_by_t.get(e[0], 0.0) for e in grp]
                 pm_avg = sum(pm_vals) / max(len(pm_vals), 1)
+                print(f"  [KICKOFF GEMINI] t={int(cand_t//60)}:{int(cand_t%60):02d} → p_motion={pm_avg:.1f} (seuil=8.0)")
                 if pm_avg < 8.0:
                     print(f"  [KICKOFF GEMINI] t={int(cand_t//60)}:{int(cand_t%60):02d} → ⏭️  ignoré (p_motion={pm_avg:.1f} trop bas)")
                     continue
                 activity = _post_activity(cand_t, frames_data, fps)
                 if activity < 200.0:
                     continue
-                # Extraire 4 frames : -2s, 0s, +2s, +5s
-                # La frame +5s est discriminante : vrai KO = jeu lancé, faux = joueurs encore en placement
                 offsets = [-2.0, 0.0, 2.0, 5.0]
                 confirmed, conf_gemini = gemini_verify_fn(
                     video_path, cand_t, offsets=offsets
@@ -669,11 +669,28 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                       f"→ {'✅ KO confirmé' if confirmed else '❌ rejeté'} "
                       f"(conf={conf_gemini:.2f})")
                 if confirmed:
-                    best_t     = cand_t
-                    best_score = best_in_grp[1]
-                    best_det   = best_in_grp[2]
-                    selection  = f"gemini_confirmed (conf={conf_gemini:.2f})"
-                    break
+                    _gemini_confirmed_candidates.append(
+                        (cand_t, best_in_grp[1], best_in_grp[2], conf_gemini, pm_avg)
+                    )
+            # Sélection : parmi tous confirmés, score combiné p_motion + timestamp tardif.
+            # Le vrai KO a toujours la p_motion la plus haute ET est le plus tardif.
+            # Score = p_motion * 0.7 + position_relative * 0.3
+            # (position_relative = rang chronologique / total)
+            if _gemini_confirmed_candidates:
+                _n = len(_gemini_confirmed_candidates)
+                for _rank, _cand in enumerate(_gemini_confirmed_candidates):
+                    _pos_score = _rank / max(_n - 1, 1)  # 0=premier, 1=dernier
+                    _combined  = _cand[4] * 0.7 + _pos_score * 30 * 0.3  # normalise p_motion ~0-30
+                    _cand = _cand + (_combined,)
+                    _gemini_confirmed_candidates[_rank] = _cand
+                _best = max(_gemini_confirmed_candidates, key=lambda x: x[5])
+                best_t, best_score, best_det = _best[0], _best[1], _best[2]
+                conf_gemini = _best[3]
+                selection = f"gemini_confirmed (conf={conf_gemini:.2f})"
+                print(f"  [KICKOFF GEMINI] ✅ Sélection finale : t={int(best_t//60)}:{int(best_t%60):02d} "
+                      f"p_motion={_best[4]:.1f} score_combiné={_best[5]:.1f} "
+                      f"parmi {_n} confirmé(s)")
+
 
     # Stratégie 2 : fallback sur les 5 meilleurs scores
     if best_t is None:
