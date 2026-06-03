@@ -686,7 +686,8 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
             timestamp = shot_time + window / 2
 
         print(f"  [SHOT→GOAL] shot={shot_time:.1f}s → is_goal={is_goal} "
-              f"t={timestamp} conf={confidence:.2f} | {evidence[:80]}")
+              f"t={timestamp} conf={confidence:.2f} score={goal_score}\n"
+              f"  EVIDENCE FULL: {evidence}")
 
         print(f"  [SHOT→GOAL SCORE] goal_score={goal_score} → goal_votes={goal_votes}")
         return {
