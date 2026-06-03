@@ -433,96 +433,12 @@ def run_pipeline(
     # Le coup d'envoi est détecté par terminal_events pendant le tracking
     # (event type="kickoff" : ballon au rond central + joueurs symétriques).
     # On cherche le premier kickoff pour corriger tous les timestamps.
-    # ── DÉTECTION COUP D'ENVOI ────────────────────────────────────────────────
-    # Le coup d'envoi est détecté par terminal_events pendant le tracking
-    # (event type="kickoff" : ballon au rond central + joueurs symétriques).
-    # On cherche le premier kickoff pour corriger tous les timestamps.
     _video_duration_s = total_frames / max(fps, 1)
-
-    # Callback Gemini pour vérification visuelle des candidats kickoff
-    def _gemini_verify_kickoff(vpath, candidate_t, offsets=(-2.0, 0.0, 2.0, 5.0)):
-        """
-        Extrait 4 frames autour de candidate_t et demande à Gemini si c'est
-        un coup d'envoi. La frame à +5s est clé : après un vrai KO le jeu
-        est lancé (joueurs en course). Après un simple placement les joueurs
-        marchent encore vers leurs positions.
-        Retourne (is_kickoff: bool, confidence: float).
-        """
-        try:
-            import cv2 as _cv2
-            import base64 as _b64
-            import json as _json
-            import re as _re
-            import google.generativeai as _genai
-            cap = _cv2.VideoCapture(vpath)
-            if not cap.isOpened():
-                return False, 0.0
-            real_fps = cap.get(_cv2.CAP_PROP_FPS) or fps
-            frames_b64 = []
-            for off in offsets:
-                t_target = max(0.0, candidate_t + off)
-                cap.set(_cv2.CAP_PROP_POS_FRAMES, int(t_target * real_fps))
-                ret, frame = cap.read()
-                if not ret:
-                    continue
-                _, buf = _cv2.imencode(".jpg", frame,
-                                       [_cv2.IMWRITE_JPEG_QUALITY, 75])
-                frames_b64.append(_b64.b64encode(buf).decode())
-            cap.release()
-            if not frames_b64:
-                return False, 0.0
-
-            model = _genai.GenerativeModel("gemini-2.5-flash")
-            prompt = (
-                "You are analyzing a football (soccer) match video. "
-                "I will show you 4 frames taken at -2s, 0s, +2s and +5s around a specific moment. "
-                "Your task: determine if this moment is a kickoff — "
-                "the moment the match starts or restarts after a goal. "
-                "A kickoff sequence looks like: "
-                "at 0s the ball is placed at the center circle with 1 or 2 players near it, "
-                "referee nearby, all other players on their halves — "
-                "AND at +5s the game is clearly in open play (players running, ball moving away from center). "
-                "Answer NO if: at +5s players are still walking to their positions (pre-kickoff placement), "
-                "or if it is a team huddle/cheer, or normal open play without a restart. "
-                "The key signal is the +5s frame: real kickoff = active open play; "
-                "false positive = players still settling into position. "
-                "Respond ONLY with valid JSON: "
-                "{\"is_kickoff\": true/false, \"confidence\": 0.0-1.0, "
-                "\"reason\": \"one short sentence\"}"
-            )
-            parts = [prompt]
-            for b64 in frames_b64:
-                img_data = _b64.b64decode(b64)
-                parts.append({"mime_type": "image/jpeg", "data": img_data})
-            response = model.generate_content(parts)
-
-            # Parser le JSON de la réponse
-            raw = response.text.strip()
-            # Extraire le JSON même s'il est entouré de backticks
-            m = _re.search(r'\{.*\}', raw, _re.DOTALL)
-            result = None
-            if m:
-                try:
-                    result = _json.loads(m.group())
-                except Exception:
-                    pass
-            if result is None:
-                return False, 0.0
-            is_ko  = bool(result.get("is_kickoff", False))
-            conf   = float(result.get("confidence", 0.5))
-            reason = result.get("reason", "")
-            print(f"    [KICKOFF GEMINI DETAIL] is_kickoff={is_ko} conf={conf:.2f} reason={reason}")
-            return is_ko, conf
-        except Exception as e:
-            print(f"  [KICKOFF GEMINI ERROR] {e}")
-            return False, 0.0
-
     _kickoff_offset, _kickoff_conf = find_kickoff_offset(
         events, _video_duration_s,
-        frames_data      = frames_data,
-        fps              = fps,
-        video_path       = video_path,
-        gemini_verify_fn = _gemini_verify_kickoff,
+        frames_data = frames_data,   # V9.8 : score pondéré sans dépendre du ballon
+        fps         = fps,        
+        video_path  = video_path,   # ← ligne ajoutée
     )
 
     if _kickoff_offset > 0:
@@ -1135,39 +1051,24 @@ def run_pipeline(
                     if already_covered:
                         continue
                     next_shot_t = shot_times_all[i + 1] if i + 1 < len(shot_times_all) else st + 999
-                    window = max(35, min(60, next_shot_t - st - 5))
+                    window = max(25, min(45, next_shot_t - st - 5))
                     shots_to_analyze.append((shot, st, window))
 
                 from concurrent.futures import ThreadPoolExecutor, as_completed
 
                 def _analyze_shot(args):
                     shot, st, window = args
-                    # st est en temps RELATIF post-KO.
-                    # find_goal_after_shot lit des frames dans la vidéo brute →
-                    # il faut ajouter l'offset KO pour pointer sur la bonne frame.
-                    _ko = _kickoff_offset if _kickoff_offset > 0 else 0
-                    _abs_shot_time = st + _ko
-                    # Un but ne peut pas arriver dans les 15 premières secondes
-                    # après le coup d'envoi — filtre les faux positifs très proches du KO
-                    if st < 15.0:
-                        return shot, st, {"is_goal": False, "timestamp": None,
-                                          "confidence": 0.0, "desc": "trop proche KO",
-                                          "goal_votes": 0, "goal_score": 0}
-                    # confirmed_goal_times est en relatif → convertir en absolu
-                    # pour que les comparaisons internes de find_goal_after_shot soient cohérentes
-                    _abs_confirmed = [gt + _ko for gt in existing_goal_times]
                     return shot, st, find_goal_after_shot(
                         video_path           = video_path,
-                        shot_time            = _abs_shot_time,
+                        shot_time            = st,
                         window               = window,
                         fps                  = fps,
                         frame_w              = _frame_w,
                         frame_h              = _frame_h,
-                        confirmed_goal_times = _abs_confirmed,
+                        confirmed_goal_times = existing_goal_times,
                     )
 
                 shot_goal_candidates = []
-                _existing_goal_times_snapshot = list(existing_goal_times)  # snapshot avant la boucle
                 results_map = {}
 
                 with ThreadPoolExecutor(max_workers=3) as executor:
@@ -1183,20 +1084,15 @@ def run_pipeline(
                     result = results_map.get(st, (shot, None))[1]
                     # FIX : already_covered élargi à 200s — un kickoff peut rester visible
                     # longtemps après un but (remise en jeu lente, caméra large)
-                    # st est en absolu, detected_goal_times est en relatif → convertir st en relatif
-                    _st_rel = st - (_kickoff_offset if _kickoff_offset > 0 else 0)
-                    already_covered = any(abs(gt - _st_rel) < 30 for gt in detected_goal_times)
+                    already_covered = any(abs(gt - st) < 200 for gt in detected_goal_times)
                     if already_covered:
                         continue
                     _gv_stg = result.get("goal_votes", 1) if result else 0
                     if (result and result.get("is_goal")
                             and result.get("confidence", 0) >= 0.85
                             and _gv_stg >= 2):
-                        # result["timestamp"] est en temps ABSOLU vidéo (find_goal_after_shot
-                        # travaille sur la vidéo brute). On le reconvertit en temps RELATIF post-KO.
-                        _goal_t_abs = result["timestamp"]
-                        goal_t = _goal_t_abs - (_kickoff_offset if _kickoff_offset > 0 else 0)
-                        too_close = any(abs(gt - goal_t) < 20 for gt in existing_goal_times)
+                        goal_t = result["timestamp"]
+                        too_close = any(abs(gt - goal_t) < _GOAL_COOLDOWN_POST for gt in existing_goal_times)
                         _kickoff_fp = False  # filtre retiré : rejetait de vraies actions
                         # Exiger un signal physique posthoc dans la fenêtre tir→but
                         # Évite de valider un kickoff initial confondu avec un kickoff après but
@@ -1250,36 +1146,8 @@ def run_pipeline(
                             print(f"  [SHOT→GOAL] ✅ BUT détecté à {int(goal_t//60):02d}:{int(goal_t%60):02d} conf={result['confidence']:.2f}")
 
                 if shot_goal_candidates:
-                    # Parmi les buts détectés, garder le meilleur score par fenêtre de 45s
-                    # Évite qu'un faux positif à score modéré bloque un vrai but à score élevé
-                    shot_goal_candidates.sort(key=lambda e: (float(e.get("gemini_conf", 0)), float(e.get("xg", 0))), reverse=True)
-                    _ko = _kickoff_offset if _kickoff_offset > 0 else 0
-                    for _dbg in shot_goal_candidates:
-                        _dbg_t = _dbg.get("time", 0)
-                        print(f"  [GOAL CANDIDATE] rel={int(_dbg_t//60):02d}:{int(_dbg_t%60):02d} "
-                              f"abs={_dbg_t + _ko:.1f}s "
-                              f"conf={_dbg.get('gemini_conf', 0):.2f} "
-                              f"score={_dbg.get('goal_score', '?')} "
-                              f"| {str(_dbg.get('desc',''))[:80]}")
-                    _final_goals = []
-                    for _cand in shot_goal_candidates:
-                        _ct = _cand.get("time", 0)
-                        _too_close = any(abs(_ct - _fg.get("time", 0)) < 20 for _fg in _final_goals)
-                        if not _too_close:
-                            _ko2 = _kickoff_offset if _kickoff_offset > 0 else 0
-                            _ct2 = _cand.get("time", 0)
-                            print(f"  [GOAL FINAL] rel={int(_ct2//60):02d}:{int(_ct2%60):02d} "
-                                  f"abs={_ct2 + _ko2:.1f}s "
-                                  f"conf={_cand.get('gemini_conf', 0):.2f}")
-                            _final_goals.append(_cand)
-                    # Déduplication finale contre les buts confirmés AVANT cette boucle
-                    # (existing_goal_times_before_loop est capturé avant la boucle shot→goal)
-                    _final_goals = [
-                        g for g in _final_goals
-                        if not any(abs(g.get("time", 0) - gt) < 45 for gt in _existing_goal_times_snapshot)
-                    ]
-                    events_validated = events_validated + _final_goals
-                    print(f"  [SHOT→GOAL] {len(_final_goals)} but(s) ajouté(s) via analyse tirs ({len(shot_goal_candidates)} candidats)")
+                    events_validated = events_validated + shot_goal_candidates
+                    print(f"  [SHOT→GOAL] {len(shot_goal_candidates)} but(s) ajouté(s) via analyse tirs")
                 else:
                     print(f"  [SHOT→GOAL] Aucun but confirmé")
 
@@ -1739,15 +1607,14 @@ def run_pipeline(
         print(f"  Highlights max : {_max_hl} (durée={_duration_min:.0f} min)")
 
         highlights = create_highlights(
-            video_path      = video_path,
-            events          = events,
-            output_dir      = os.path.join(output_dir, "highlights"),
-            fps             = fps,
-            max_clips       = _max_hl,
-            mode            = mode,
-            player_id       = player_id,
-            sport           = sport,
-            kickoff_offset  = _kickoff_offset if _kickoff_offset > 0 else 0,
+            video_path = video_path,
+            events     = events,
+            output_dir = os.path.join(output_dir, "highlights"),
+            fps        = fps,
+            max_clips  = _max_hl,
+            mode       = mode,
+            player_id  = player_id,
+            sport      = sport
         )
         highlights = normalize_highlights(highlights, mode=mode)
 
