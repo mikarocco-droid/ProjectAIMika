@@ -268,14 +268,32 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     if frames_data:
         _p1_early_frames = [f for f in frames_data if float(f.get("time", 0)) <= 60.0]
         if _p1_early_frames:
-            _p1_moves = []
+            # Calculer la p_motion par distances inter-frames (comme la Passe 2)
+            # car les players dans frames_data n'ont pas de champ "speed"
+            _p1_prev_pos = {}
+            _p1_frame_avgs = []
             for f in _p1_early_frames:
                 players = f.get("players") or []
-                moves = [p.get("speed", 0) or 0 for p in players if isinstance(p, dict)]
+                moves = []
+                for p in players:
+                    if not isinstance(p, dict):
+                        continue
+                    pid = p.get("id") or p.get("player_id") or p.get("tracker_id")
+                    if pid is None:
+                        continue
+                    cx = _player_cx(p)
+                    cy = _player_cy(p)
+                    if cx is None or cy is None:
+                        continue
+                    if pid in _p1_prev_pos:
+                        ox, oy = _p1_prev_pos[pid]
+                        moves.append(math.hypot(cx - ox, cy - oy))
+                    _p1_prev_pos[pid] = (cx, cy)
                 if moves:
-                    _p1_moves.append(sum(moves) / len(moves))
-            if _p1_moves:
-                _p1_avg = sum(_p1_moves) / len(_p1_moves)
+                    _p1_frame_avgs.append(sum(moves) / len(moves))
+            if _p1_frame_avgs:
+                _p1_avg = sum(_p1_frame_avgs) / len(_p1_frame_avgs)
+                print(f"  [KICKOFF P1] p_motion moy 0-60s = {_p1_avg:.1f}")
                 if _p1_avg >= 8.0:
                     _p1_early_high = True
                     print(f"  [KICKOFF P1] p_motion moy 0-60s = {_p1_avg:.1f} → vidéo commence en jeu, passe 1 ignorée")
