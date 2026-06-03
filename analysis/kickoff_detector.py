@@ -261,11 +261,30 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     offset_s = 0 si non détecté.
     """
     # ── Passe 1 : events type=kickoff ─────────────────────────────────────────
+    # Vérification early motion : si la vidéo commence déjà en jeu
+    # (p_motion élevée dès les 60 premières secondes), ignorer les kickoff events
+    # qui seraient de faux positifs du terminal_events.
+    _p1_early_high = False
+    if frames_data:
+        _p1_early_frames = [f for f in frames_data if float(f.get("time", 0)) <= 60.0]
+        if _p1_early_frames:
+            _p1_moves = []
+            for f in _p1_early_frames:
+                players = f.get("players") or []
+                moves = [p.get("speed", 0) or 0 for p in players if isinstance(p, dict)]
+                if moves:
+                    _p1_moves.append(sum(moves) / len(moves))
+            if _p1_moves:
+                _p1_avg = sum(_p1_moves) / len(_p1_moves)
+                if _p1_avg >= 8.0:
+                    _p1_early_high = True
+                    print(f"  [KICKOFF P1] p_motion moy 0-60s = {_p1_avg:.1f} → vidéo commence en jeu, passe 1 ignorée")
+
     kickoff_events = sorted(
         [e for e in (events or []) if e.get("type") == "kickoff"],
         key=lambda e: e.get("time", 0)
     )
-    if kickoff_events:
+    if kickoff_events and not _p1_early_high:
         first = kickoff_events[0]
         t     = float(first.get("time", 0))
         conf  = float(first.get("confidence", first.get("conf", 0.80)))
