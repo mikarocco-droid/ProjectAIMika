@@ -1167,6 +1167,7 @@ def run_pipeline(
                     )
 
                 shot_goal_candidates = []
+                _existing_goal_times_snapshot = list(existing_goal_times)  # snapshot avant la boucle
                 results_map = {}
 
                 with ThreadPoolExecutor(max_workers=3) as executor:
@@ -1267,10 +1268,11 @@ def run_pipeline(
                                   f"abs={_ct2 + _ko2:.1f}s "
                                   f"conf={_cand.get('gemini_conf', 0):.2f}")
                             _final_goals.append(_cand)
-                    # Déduplication finale contre les buts déjà confirmés (existing_goal_times)
+                    # Déduplication finale contre les buts confirmés AVANT cette boucle
+                    # (existing_goal_times_before_loop est capturé avant la boucle shot→goal)
                     _final_goals = [
                         g for g in _final_goals
-                        if not any(abs(g.get("time", 0) - gt) < 45 for gt in existing_goal_times)
+                        if not any(abs(g.get("time", 0) - gt) < 45 for gt in _existing_goal_times_snapshot)
                     ]
                     events_validated = events_validated + _final_goals
                     print(f"  [SHOT→GOAL] {len(_final_goals)} but(s) ajouté(s) via analyse tirs ({len(shot_goal_candidates)} candidats)")
