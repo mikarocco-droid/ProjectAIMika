@@ -1258,11 +1258,13 @@ def run_pipeline(
                         _dbg_t = _dbg.get("time", 0)
                         print(f"  [GOAL CANDIDATE] rel={int(_dbg_t//60):02d}:{int(_dbg_t%60):02d} "
                               f"abs={_dbg_t + _ko:.1f}s "
-                              f"conf={_dbg.get('gemini_conf', 0):.2f}")
+                              f"conf={_dbg.get('gemini_conf', 0):.2f} "
+                              f"score={_dbg.get('goal_score', '?')} "
+                              f"| {str(_dbg.get('desc',''))[:80]}")
                     _final_goals = []
                     for _cand in shot_goal_candidates:
                         _ct = _cand.get("time", 0)
-                        _too_close = any(abs(_ct - _fg.get("time", 0)) < 45 for _fg in _final_goals)
+                        _too_close = any(abs(_ct - _fg.get("time", 0)) < 20 for _fg in _final_goals)
                         if not _too_close:
                             _ko2 = _kickoff_offset if _kickoff_offset > 0 else 0
                             _ct2 = _cand.get("time", 0)
