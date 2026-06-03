@@ -660,7 +660,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                 best_det   = {}
                 selection  = "no_kickoff_video_starts_in_play"
                 # Forcer offset=0 et sortir
-                return 0.0, 0.0, "no_kickoff_video_starts_in_play"
+                return 0.0, 0.0
 
             _top_grps = sorted(groups, key=lambda g: min(x[0] for x in g))
             _gemini_confirmed_candidates = []  # (cand_t, score, details, conf, pm_avg)
