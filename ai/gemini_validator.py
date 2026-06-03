@@ -546,9 +546,17 @@ POSITIVE signals (accumulate across frames):
 +4 : unambiguous multi-player celebration (multiple players running toward each other, arms wide, hugging)
 +3 : ball unmistakably INSIDE the net — net is visibly BULGING/DEFORMED by the ball, AND ball is clearly behind the goal line between the posts. NOT just near the net.
 +3 : net clearly deformed/bulging in an early frame even if ball is no longer visible inside (fast goal, ball rebounded out)
-+3 : attacking players walking/jogging back toward center circle after action
++1 : attacking players walking/jogging back toward center circle after action — ONLY if combined with ball-in-net or celebration evidence. ALONE this signal is worth 0. Players repositioning after a throw-in, free kick, or normal play also walk back toward the center — this signal is unreliable alone.
 +2 : players from scoring team showing clear joy reactions (arms up, jumping, turning to teammates) even if full group celebration not yet formed
 +1 : ball near goal line but position unclear
+
+CRITICAL RULE — MINIMUM PHYSICAL EVIDENCE:
+A goal CANNOT be confirmed by kickoff alone (+5) or kickoff + walking back (+5+1) without ANY physical evidence.
+To confirm a goal, you MUST have at least ONE of:
+- Ball visibly inside the net (+3)
+- Net deformation (+3)
+- Unambiguous celebration (+4 or +2)
+If your ONLY signals are center kickoff (+5) and/or walking back (+1) → is_goal=false, score=0
 
 NEGATIVE signals (subtract immediately):
 -5 : goalkeeper holding/catching/securing ball in hands or arms → is_goal=false, override ALL positives
@@ -618,47 +626,35 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
         goal_score = int(parsed.get("goal_score", 0))
 
         # FIX kickoff fantôme — si le signal est UNIQUEMENT un kickoff (+5)
-        # SANS aucun signal physique (ballon dans filet, gardien qui récupère)
-        # et qu'un but déjà confirmé existe dans les 60s précédentes → rejeter
-        # PATCH v3 :
-        # - "walking back" SEUL sans filet/gardien = kickoff (pas physique)
-        # - walking back + kickoff + "+3" ensemble = signal valide
-        # - fenêtre 200s → 60s
-        if is_goal and confirmed_goal_times:
+        # SANS aucun signal physique (ballon dans filet, célébration)
+        # → rejeter inconditionnellement (walking back seul n'est pas une preuve)
+        if is_goal:
             _evidence_lower = evidence.lower()
             _has_net_signal = any(kw in _evidence_lower for kw in [
                 "inside the net", "inside net", "net deform",
                 "goalkeeper", "retrieving", "ball unmistakably",
                 "ball clearly inside", "bulg",
             ])
-            _has_walking_back = any(kw in _evidence_lower for kw in [
-                "walking back", "walking/jogging back", "jogging back",
-                "toward center circle", "back toward center",
+            _has_celebration = any(kw in _evidence_lower for kw in [
+                "celebration", "celebrating", "arms wide", "hugging",
+                "joy", "+4", "+2",
             ])
-            _has_physical_signal = (
-                _has_net_signal
-                or (_has_walking_back and "+5" in evidence and "+3" in evidence)
-            )
+            _has_physical_signal = _has_net_signal or _has_celebration
             _kickoff_only = (
                 "+5" in evidence
                 and not _has_physical_signal
             )
             if _kickoff_only:
-                _recent_goal = any(
-                    0 < shot_time - gt < 60
-                    for gt in confirmed_goal_times
-                )
-                if _recent_goal:
-                    print(f"  [SHOT→GOAL] ❌ Kickoff fantôme rejeté t={int(shot_time//60):02d}:{int(shot_time%60):02d} "
-                          f"— kickoff sans signal physique, but confirmé dans 60s (score={goal_score})")
-                    return {
-                        "is_goal":    False,
-                        "timestamp":  None,
-                        "confidence": 0.0,
-                        "desc":       f"kickoff fantôme rejeté (but confirmé dans 60s)",
-                        "goal_votes": 0,
-                        "goal_score": 0,
-                    }
+                print(f"  [SHOT→GOAL] ❌ Kickoff fantôme rejeté t={int(shot_time//60):02d}:{int(shot_time%60):02d} "
+                      f"— kickoff sans signal physique (score={goal_score})")
+                return {
+                    "is_goal":    False,
+                    "timestamp":  None,
+                    "confidence": 0.0,
+                    "desc":       f"kickoff fantôme rejeté (pas de signal physique)",
+                    "goal_votes": 0,
+                    "goal_score": 0,
+                }
 
         # Convertir goal_score en goal_votes pour la logique pipeline
         # score >= 5 = 2 votes (fiable), score 3-4 = 1 vote (borderline)
