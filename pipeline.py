@@ -1183,7 +1183,9 @@ def run_pipeline(
                     result = results_map.get(st, (shot, None))[1]
                     # FIX : already_covered élargi à 200s — un kickoff peut rester visible
                     # longtemps après un but (remise en jeu lente, caméra large)
-                    already_covered = any(abs(gt - st) < 30 for gt in detected_goal_times)
+                    # st est en absolu, detected_goal_times est en relatif → convertir st en relatif
+                    _st_rel = st - (_kickoff_offset if _kickoff_offset > 0 else 0)
+                    already_covered = any(abs(gt - _st_rel) < 30 for gt in detected_goal_times)
                     if already_covered:
                         continue
                     _gv_stg = result.get("goal_votes", 1) if result else 0
