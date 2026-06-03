@@ -647,6 +647,21 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             # On vérifie TOUS les groupes avec p_motion >= 8.0.
             # On collecte tous ceux confirmés par Gemini, puis on retient
             # celui avec la p_motion la plus élevée (vrai KO = mouvement maximal).
+            # ── Vérification : la vidéo commence-t-elle déjà en jeu ? ──────────
+            # Si la p_motion moyenne des 60 premières secondes est élevée (>= 8.0),
+            # la vidéo commence en cours de match → pas de KO à trouver, offset = 0.
+            _early_motions = [v for t, v in _motion_by_t.items() if t <= 60.0]
+            _early_pm_avg  = sum(_early_motions) / max(len(_early_motions), 1) if _early_motions else 0.0
+            print(f"  [KICKOFF EARLY] p_motion moy 0-60s = {_early_pm_avg:.1f}")
+            if _early_pm_avg >= 8.0:
+                print(f"  [KICKOFF EARLY] ⚠️  Vidéo commence en cours de jeu → offset=0 (pas de KO initial)")
+                best_t     = 0.0
+                best_score = 0.0
+                best_det   = {}
+                selection  = "no_kickoff_video_starts_in_play"
+                # Forcer offset=0 et sortir
+                return 0.0, 0.0, "no_kickoff_video_starts_in_play"
+
             _top_grps = sorted(groups, key=lambda g: min(x[0] for x in g))
             _gemini_confirmed_candidates = []  # (cand_t, score, details, conf, pm_avg)
             for grp in _top_grps:
