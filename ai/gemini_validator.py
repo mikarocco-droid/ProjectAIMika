@@ -294,11 +294,16 @@ _AV_LOCK        = _threading.Lock()
 
 def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
                          frame_w=1920, frame_h=1080,
-                         confirmed_goal_times=None):
+                         confirmed_goal_times=None,
+                         kickoff_offset=0.0):
     """
     Analyse la fenêtre [shot_time, shot_time+window] après un tir détecté.
     Envoie des frames espacées à Gemini avec la question :
     "Est-ce qu'un but a été marqué ? Si oui, à quel timestamp exact ?"
+
+    shot_time      : temps relatif post-kickoff (utilisé pour le scoring/logs)
+    kickoff_offset : offset à additionner pour obtenir le temps absolu dans le fichier vidéo
+                     (nécessaire pour l'extraction des frames par OpenCV)
 
     Returns:
         dict {"is_goal": bool, "timestamp": float, "confidence": float, "desc": str}
@@ -333,20 +338,40 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
 
     # Extraire les frames en une seule passe séquentielle
     # (évite les seeks répétés qui peuvent sauter des frames sur fichier Drive/réseau)
+    #
+    # IMPORTANT : shot_time est en temps RELATIF post-kickoff (utilisé pour logs/prompt).
+    # Pour l'extraction OpenCV on doit utiliser le temps ABSOLU dans le fichier vidéo :
+    #   abs_time = shot_time + kickoff_offset
+    abs_shot_time = shot_time + float(kickoff_offset or 0.0)
+    abs_sample_times = [round(abs_shot_time + off, 1) for off in [0, 2, 4, 7, 12, 18, 25, window]
+                        if round(abs_shot_time + off, 1) <= abs_shot_time + window]
+    # Dédupliquer en conservant l'ordre
+    _seen_abs = set()
+    abs_sample_times_dedup = []
+    for _at in abs_sample_times:
+        if _at not in _seen_abs:
+            abs_sample_times_dedup.append(_at)
+            _seen_abs.add(_at)
+    abs_sample_times = abs_sample_times_dedup
+
+    if kickoff_offset:
+        print(f"    [FRAME EXTRACT] shot_rel={shot_time:.1f}s + offset={kickoff_offset:.1f}s → abs={abs_shot_time:.1f}s ({int(abs_shot_time//60):02d}:{int(abs_shot_time%60):02d})")
+
     parts = []
     valid_times = []
     cap = cv2.VideoCapture(video_path)
     try:
-        if not sample_times:
+        if not abs_sample_times:
             pass
         else:
-            # Seek unique au début de la fenêtre
-            first_frame_id = max(0, int(sample_times[0] * fps) - 5)
+            # Seek unique au début de la fenêtre (temps absolu fichier)
+            first_frame_id = max(0, int(abs_sample_times[0] * fps) - 5)
             cap.set(cv2.CAP_PROP_POS_FRAMES, first_frame_id)
             current_frame_id = first_frame_id
 
-            # Construire un set des frame_ids cibles
-            targets = {int(st * fps): st for st in sample_times}
+            # Construire un set des frame_ids cibles (abs) → temps relatif pour les logs
+            # valid_times reste en relatif (pour le prompt Gemini et les logs)
+            targets = {int(at * fps): st for at, st in zip(abs_sample_times, sample_times)}
             target_ids = sorted(targets.keys())
             target_idx = 0
 
@@ -378,6 +403,28 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
 
     if not parts:
         return None
+
+    # DEBUG : sauvegarder les frames envoyées à Gemini pour audit
+    import os as _os
+    _debug_dir = _os.environ.get("GEMINI_DEBUG_FRAMES_DIR", "")
+    if _debug_dir:
+        _safe_t = str(int(shot_time)).zfill(5)
+        _shot_debug_dir = _os.path.join(_debug_dir, f"shot_{_safe_t}s")
+        _os.makedirs(_shot_debug_dir, exist_ok=True)
+        # Sauvegarder les frames avec leurs timestamps
+        cap2 = cv2.VideoCapture(video_path)
+        for _vt, _avt in zip(valid_times, abs_sample_times):
+            _fid = int(_avt * fps)
+            cap2.set(cv2.CAP_PROP_POS_FRAMES, _fid)
+            _ret, _frm = cap2.read()
+            if _ret and _frm is not None:
+                _mm = int(_vt // 60)
+                _ss = int(_vt % 60)
+                _fname = _os.path.join(_shot_debug_dir, f"t{_mm:02d}m{_ss:02d}s_frame{_fid}.jpg")
+                cv2.imwrite(_fname, _frm)
+        cap2.release()
+        print(f"    [GEMINI DEBUG] shot={shot_time:.1f}s → {len(valid_times)} frames saved in {_shot_debug_dir}")
+        print(f"    [GEMINI DEBUG] timestamps envoyés: {[f'{int(t//60):02d}:{int(t%60):02d}' for t in valid_times]}")
 
     # ── EARLY STOP — prompt minimal sur frames 0-5s ─────────────────────
     # À 0-5s après le tir : chercher UNIQUEMENT le ballon dans le filet
