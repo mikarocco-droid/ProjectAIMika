@@ -406,7 +406,7 @@ def detect_fast_goals_from_ball(
             "posthoc_side": _side,
         })
 
-        print(f"⚽ GOAL {goal_time:.2f}s | score={score:.2f} | stuck={stuck} | rebound={rebound} | reason={_reason} | side={_side} | peak={peak:.0f}px/f")
+        print(f"⚽ GOAL {goal_time:.2f}s | score={score:.2f} | stuck={stuck} | rebound={rebound} | reason={_reason} | side={_side} | peak={peak:.0f}px/f | x={x:.0f} y={y:.0f} (x%={x/frame_w*100:.1f}%)")
 
         existing.append(goal_time)
         i += max(stuck, 5)
