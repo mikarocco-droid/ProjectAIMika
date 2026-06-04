@@ -311,6 +311,11 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             return t, conf
 
     # ── Passe 2 : score pondéré sur frames_data ───────────────────────────────
+    # Si la Passe 1 a déjà détecté que la vidéo commence en jeu → offset=0 directement
+    if _p1_early_high:
+        print(f"  [KICKOFF P2] Passe 1 a détecté vidéo en jeu → offset=0, Passe 2 ignorée")
+        return 0.0, 0.0
+
     if not frames_data:
         return 0.0, 0.0
 
