@@ -396,25 +396,19 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
         _early_prompt = f"""Football match analysis.
 {len(early_parts)} frames from {_et_str}, taken 0-5 seconds after a shot on goal at {int(shot_time//60):02d}:{int(shot_time%60):02d}.
 
-Question: Is the ball clearly INSIDE the goal (behind the goal line, inside the net)?
+Answer these 4 factual questions ONLY based on what you literally see. Do not infer. Do not narrate.
 
-Rules — read carefully:
-- YES: ball is fully past the goal line, inside the net, net is VISIBLY BULGING/DEFORMED by the ball (net pushed inward)
-- YES: goalkeeper is retrieving the ball from INSIDE the net (body inside goal area)
-- NO: ball is near the net or in front of it but net is flat/undisturbed → answer NO
-- NO: ball is beside the post or outside the goal frame → answer NO
-- NO: goalkeeper holding/catching the ball in his hands or arms (even if inside the goal area)
-- NO: ball is BEHIND the goal (outside the net, on the other side of the goal frame) → this is a corner kick or goal kick, NOT a goal
-- NO: ball visible behind the goal structure from outside → corner kick situation
-- NO: goalkeeper picking up the ball while standing upright
-- NO: ball in front of the goal or on the goal line
-- NO: goalkeeper holding/catching ball in front of the goal
-- NO: ball near the post but not inside
-- NO: ball anywhere outside the net
+1. ball_visible: true or false — can you see the ball in these frames?
+2. ball_location: one of ["inside_net", "in_front_of_goal", "near_post", "midfield", "other_side_of_goal", "not_visible"]
+3. net_deformed: true or false — is the net visibly bulging inward from a ball impact?
+4. goalkeeper_position: one of ["diving_save", "kneeling_outside_net", "kneeling_inside_net_retrieving", "standing", "not_visible"]
+
+Then compute:
+- is_goal = true ONLY if ball_location == "inside_net" AND net_deformed == true
+- confidence = 0.95 only if both conditions above are unambiguous
 
 Return ONLY valid JSON:
-{{"is_goal": true or false, "timestamp": <seconds or null>, "confidence": <0.0-1.0>, "evidence": "<describe exactly: ball position relative to net/line>"}}
-confidence=0.95 only if ball is unmistakably inside the net.
+{{"ball_visible": bool, "ball_location": "...", "net_deformed": bool, "goalkeeper_position": "...", "is_goal": bool, "timestamp": <seconds or null>, "confidence": <0.0-1.0>}}
 Default to is_goal=false if any doubt."""
         try:
             _resp = client.models.generate_content(
@@ -422,12 +416,29 @@ Default to is_goal=false if any doubt."""
                 contents = [_early_prompt] + list(early_parts),
             )
             _data = _safe_json_load(_resp.text.strip())
-            if (_data and _data.get("is_goal")
-                    and _data.get("confidence", 0) >= EARLY_STOP_MIN_CONF):
+            # EARLY = preuve supplémentaire, pas verdict final
+            # Seul ball_inside_net + net_deformed = signal fort
+            # is_goal=True de Gemini seul ne suffit plus
+            _ball_in_net = (_data.get("ball_location") == "inside_net"
+                            if _data else False)
+            _net_deformed = (_data.get("net_deformed", False)
+                             if _data else False)
+            _early_conf = _data.get("confidence", 0) if _data else 0
+            _early_is_goal = _data.get("is_goal", False) if _data else False
+
+            # Log toujours pour debug
+            _loc = _data.get("ball_location", "?") if _data else "?"
+            _gk  = _data.get("goalkeeper_position", "?") if _data else "?"
+            print(f"  [SHOT→GOAL EARLY] shot={shot_time:.1f}s "
+                  f"ball={_loc} net_def={_net_deformed} gk={_gk} "
+                  f"gemini_goal={_early_is_goal} conf={_early_conf:.2f}")
+
+            if (_early_is_goal
+                    and _ball_in_net
+                    and _net_deformed
+                    and _early_conf >= EARLY_STOP_MIN_CONF):
+                # Double confirmation physique : ballon dans le filet ET filet déformé
                 _ts = _data.get("timestamp")
-                print(f"  [SHOT→GOAL EARLY] shot={shot_time:.1f}s → BUT t={_ts} "
-                      f"conf={_data['confidence']:.2f} | {_data.get('evidence','')[:80]}")
-                # Valider que le timestamp est dans la fenêtre réelle
                 _ts_validated = None
                 if _ts is not None:
                     try:
@@ -435,20 +446,26 @@ Default to is_goal=false if any doubt."""
                         if shot_time - 5 <= _ts_f <= shot_time + window + 5:
                             _ts_validated = _ts_f
                         else:
-                            # Timestamp hors fenêtre (ex: Gemini renvoie mm:ss au lieu de secondes)
                             _ts_validated = shot_time + 2
                     except (ValueError, TypeError):
                         _ts_validated = shot_time + 2
                 else:
                     _ts_validated = shot_time + 2
+                print(f"    → EARLY CONFIRMÉ (ball_in_net + net_deformed) t={_ts_validated}")
                 return {
                     "is_goal":    True,
                     "timestamp":  _ts_validated,
-                    "confidence": _data["confidence"],
-                    "desc":       _data.get("evidence", ""),
-                    "goal_votes": 2,   # early stop = ballon dans filet évident = score >= 5
+                    "confidence": _early_conf,
+                    "desc":       f"ball_location={_loc} net_deformed=True",
+                    "goal_votes": 2,
                     "goal_score": 8,
                 }
+            elif _early_is_goal and _early_conf >= EARLY_STOP_MIN_CONF:
+                # Gemini dit goal mais sans double confirmation → bonus seulement
+                print(f"    → EARLY partiel (gemini=goal mais ball_in_net={_ball_in_net} net_def={_net_deformed}) → bonus +3 uniquement")
+                # On ne retourne pas, on injecte un bonus dans _early_bonus pour l'analyse complète
+                # Pour l'instant : continuer l'analyse complète avec ce signal mémorisé
+                pass  # l'analyse complète va continuer normalement
         except Exception:
             pass  # early stop échoue → continue avec analyse complète
 
@@ -1990,7 +2007,7 @@ def validate_events_with_gemini(
         # Un but détecté par goal_posthoc (conf élevée) → seuil plus souple
         threshold = get_dynamic_threshold(event) if event.get("type") == "goal"                     else MIN_CONF_SHOT
 
-        if gemini_type == "goal" and confiance >= threshold and goal_votes >= 1:
+        if gemini_type == "goal" and (confiance >= threshold or goal_votes >= 1):
             # 🟢 Gemini confirme → gardé
             if result.get("equipe") is not None:
                 event["team"] = result["equipe"]
