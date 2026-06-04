@@ -433,39 +433,24 @@ Default to is_goal=false if any doubt."""
                   f"ball={_loc} net_def={_net_deformed} gk={_gk} "
                   f"gemini_goal={_early_is_goal} conf={_early_conf:.2f}")
 
-            if (_early_is_goal
-                    and _ball_in_net
-                    and _net_deformed
-                    and _early_conf >= EARLY_STOP_MIN_CONF):
-                # Double confirmation physique : ballon dans le filet ET filet déformé
-                _ts = _data.get("timestamp")
-                _ts_validated = None
-                if _ts is not None:
-                    try:
-                        _ts_f = float(_ts)
-                        if shot_time - 5 <= _ts_f <= shot_time + window + 5:
-                            _ts_validated = _ts_f
-                        else:
-                            _ts_validated = shot_time + 2
-                    except (ValueError, TypeError):
-                        _ts_validated = shot_time + 2
-                else:
-                    _ts_validated = shot_time + 2
-                print(f"    → EARLY CONFIRMÉ (ball_in_net + net_deformed) t={_ts_validated}")
-                return {
-                    "is_goal":    True,
-                    "timestamp":  _ts_validated,
-                    "confidence": _early_conf,
-                    "desc":       f"ball_location={_loc} net_deformed=True",
-                    "goal_votes": 2,
-                    "goal_score": 8,
-                }
-            elif _early_is_goal and _early_conf >= EARLY_STOP_MIN_CONF:
-                # Gemini dit goal mais sans double confirmation → bonus seulement
-                print(f"    → EARLY partiel (gemini=goal mais ball_in_net={_ball_in_net} net_def={_net_deformed}) → bonus +3 uniquement")
-                # On ne retourne pas, on injecte un bonus dans _early_bonus pour l'analyse complète
-                # Pour l'instant : continuer l'analyse complète avec ce signal mémorisé
-                pass  # l'analyse complète va continuer normalement
+            # EARLY = signal contextuel parmi d'autres, bonus plafonné à 4/10
+            # Règle : le bonus EARLY seul ne peut jamais faire passer un score faible
+            # au-dessus du seuil (6/10). Un score contextuel >= 4 est requis.
+            _early_bonus = 0
+            if _ball_in_net:
+                _early_bonus += 2   # signal fort mais faillible
+            if _net_deformed:
+                _early_bonus += 1   # signal complémentaire
+            if _early_conf >= EARLY_STOP_MIN_CONF:
+                _early_bonus += 1   # confiance élevée
+
+            # max = 4 : même parfait, l'EARLY ne peut passer un score de 2 à 6
+            if _early_bonus > 0:
+                _status = "FORT" if _early_bonus >= 3 else "PARTIEL"
+                print(f"    → EARLY {_status} bonus={_early_bonus}/4 "
+                      f"(ball_in_net={_ball_in_net} net_def={_net_deformed} conf={_early_conf:.2f})")
+            else:
+                print(f"    → EARLY neutre (aucun signal physique)")
         except Exception:
             pass  # early stop échoue → continue avec analyse complète
 
@@ -633,6 +618,25 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
         confidence = float(parsed.get("confidence", 0.0))
         evidence   = parsed.get("evidence", "")
         goal_score = int(parsed.get("goal_score", 0))
+
+        # Injecter le bonus EARLY dans le score final
+        # Décomposition loggée pour audit : base + bonus → final
+        try:
+            _eb = _early_bonus  # calculé dans le bloc EARLY ci-dessus
+        except NameError:
+            _eb = 0
+        _score_base = goal_score
+        # Condition : le bonus EARLY ne s'applique que si l'analyse contextuelle
+        # a déjà trouvé un signal minimum (>= 3). Si le contexte est vide,
+        # l'EARLY seul ne suffit jamais — ça évite de recréer un oracle déguisé.
+        _EARLY_REQUIRES_BASE = 3  # score contextuel minimum pour activer le bonus
+        if _eb > 0 and _score_base >= _EARLY_REQUIRES_BASE:
+            goal_score = min(10, goal_score + _eb)
+            print(f"    [EARLY BONUS] base={_score_base} +early={_eb} → final={goal_score}/10 (actif)")
+        elif _eb > 0:
+            print(f"    [EARLY BONUS] base={_score_base} +early={_eb} → ignoré (contexte trop faible < {_EARLY_REQUIRES_BASE})")
+        else:
+            print(f"    [EARLY BONUS] base={_score_base} +early=0 → final={goal_score}/10")
 
         # FIX kickoff fantôme — si le signal est UNIQUEMENT un kickoff (+5)
         # SANS aucun signal physique (ballon dans filet, gardien qui récupère)
