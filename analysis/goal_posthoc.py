@@ -387,6 +387,10 @@ def detect_fast_goals_from_ball(
 
         confidence = round(min(0.6 + score * 0.07, 0.97), 2)
 
+        # Raison principale de détection (pour diagnostic)
+        _reason = "shot_strict" if recent_shot_strict else ("shot_loose" if recent_shot_loose else "no_shot")
+        _side   = "left" if cross_left else "right"
+
         goals.append({
             "type": "goal",
             "time": round(goal_time, 2),
@@ -398,9 +402,11 @@ def detect_fast_goals_from_ball(
             "detected_from": "goal_posthoc_v9.6",
             "shot_linked": recent_shot_strict or recent_shot_loose,
             "rebound": rebound,
+            "posthoc_reason": _reason,
+            "posthoc_side": _side,
         })
 
-        print(f"⚽ GOAL {goal_time:.2f}s | score={score:.2f} | stuck={stuck} | rebound={rebound}")
+        print(f"⚽ GOAL {goal_time:.2f}s | score={score:.2f} | stuck={stuck} | rebound={rebound} | reason={_reason} | side={_side} | peak={peak:.0f}px/f")
 
         existing.append(goal_time)
         i += max(stuck, 5)
