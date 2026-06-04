@@ -1066,6 +1066,7 @@ def run_pipeline(
                         frame_w              = _frame_w,
                         frame_h              = _frame_h,
                         confirmed_goal_times = existing_goal_times,
+                        kickoff_offset       = _kickoff_offset,
                     )
 
                 shot_goal_candidates = []
