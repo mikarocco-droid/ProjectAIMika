@@ -607,6 +607,20 @@ def run_pipeline(
 
     print(f"  Résolution pipeline : {_frame_w}x{_frame_h}")
 
+    # ── Étape 0c : Camera Profile (Sprint 1 — log uniquement) ────────────────
+    _camera_profile = {}
+    try:
+        from vision.camera_profile import build_camera_profile
+        _camera_profile = build_camera_profile(
+            frames_data = frames_data,
+            fps         = fps,
+            frame_w     = _frame_w,
+            frame_h     = _frame_h,
+            calib_seconds = 45,
+        )
+    except Exception as _cp_e:
+        print(f"  [CAMERA_PROFILE] Ignoré : {_cp_e}")
+
     try:
         from analysis.post_processing import post_process_events
 
