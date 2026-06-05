@@ -294,16 +294,11 @@ _AV_LOCK        = _threading.Lock()
 
 def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
                          frame_w=1920, frame_h=1080,
-                         confirmed_goal_times=None,
-                         kickoff_offset=0.0):
+                         confirmed_goal_times=None):
     """
     Analyse la fenêtre [shot_time, shot_time+window] après un tir détecté.
     Envoie des frames espacées à Gemini avec la question :
     "Est-ce qu'un but a été marqué ? Si oui, à quel timestamp exact ?"
-
-    shot_time      : temps relatif post-kickoff (utilisé pour le scoring/logs)
-    kickoff_offset : offset à additionner pour obtenir le temps absolu dans le fichier vidéo
-                     (nécessaire pour l'extraction des frames par OpenCV)
 
     Returns:
         dict {"is_goal": bool, "timestamp": float, "confidence": float, "desc": str}
@@ -338,40 +333,20 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
 
     # Extraire les frames en une seule passe séquentielle
     # (évite les seeks répétés qui peuvent sauter des frames sur fichier Drive/réseau)
-    #
-    # IMPORTANT : shot_time est en temps RELATIF post-kickoff (utilisé pour logs/prompt).
-    # Pour l'extraction OpenCV on doit utiliser le temps ABSOLU dans le fichier vidéo :
-    #   abs_time = shot_time + kickoff_offset
-    abs_shot_time = shot_time + float(kickoff_offset or 0.0)
-    abs_sample_times = [round(abs_shot_time + off, 1) for off in [0, 2, 4, 7, 12, 18, 25, window]
-                        if round(abs_shot_time + off, 1) <= abs_shot_time + window]
-    # Dédupliquer en conservant l'ordre
-    _seen_abs = set()
-    abs_sample_times_dedup = []
-    for _at in abs_sample_times:
-        if _at not in _seen_abs:
-            abs_sample_times_dedup.append(_at)
-            _seen_abs.add(_at)
-    abs_sample_times = abs_sample_times_dedup
-
-    if kickoff_offset:
-        print(f"    [FRAME EXTRACT] shot_rel={shot_time:.1f}s + offset={kickoff_offset:.1f}s → abs={abs_shot_time:.1f}s ({int(abs_shot_time//60):02d}:{int(abs_shot_time%60):02d})")
-
     parts = []
     valid_times = []
     cap = cv2.VideoCapture(video_path)
     try:
-        if not abs_sample_times:
+        if not sample_times:
             pass
         else:
-            # Seek unique au début de la fenêtre (temps absolu fichier)
-            first_frame_id = max(0, int(abs_sample_times[0] * fps) - 5)
+            # Seek unique au début de la fenêtre
+            first_frame_id = max(0, int(sample_times[0] * fps) - 5)
             cap.set(cv2.CAP_PROP_POS_FRAMES, first_frame_id)
             current_frame_id = first_frame_id
 
-            # Construire un set des frame_ids cibles (abs) → temps relatif pour les logs
-            # valid_times reste en relatif (pour le prompt Gemini et les logs)
-            targets = {int(at * fps): st for at, st in zip(abs_sample_times, sample_times)}
+            # Construire un set des frame_ids cibles
+            targets = {int(st * fps): st for st in sample_times}
             target_ids = sorted(targets.keys())
             target_idx = 0
 
@@ -404,28 +379,6 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
     if not parts:
         return None
 
-    # DEBUG : sauvegarder les frames envoyées à Gemini pour audit
-    import os as _os
-    _debug_dir = _os.environ.get("GEMINI_DEBUG_FRAMES_DIR", "")
-    if _debug_dir:
-        _safe_t = str(int(shot_time)).zfill(5)
-        _shot_debug_dir = _os.path.join(_debug_dir, f"shot_{_safe_t}s")
-        _os.makedirs(_shot_debug_dir, exist_ok=True)
-        # Sauvegarder les frames avec leurs timestamps
-        cap2 = cv2.VideoCapture(video_path)
-        for _vt, _avt in zip(valid_times, abs_sample_times):
-            _fid = int(_avt * fps)
-            cap2.set(cv2.CAP_PROP_POS_FRAMES, _fid)
-            _ret, _frm = cap2.read()
-            if _ret and _frm is not None:
-                _mm = int(_vt // 60)
-                _ss = int(_vt % 60)
-                _fname = _os.path.join(_shot_debug_dir, f"t{_mm:02d}m{_ss:02d}s_frame{_fid}.jpg")
-                cv2.imwrite(_fname, _frm)
-        cap2.release()
-        print(f"    [GEMINI DEBUG] shot={shot_time:.1f}s → {len(valid_times)} frames saved in {_shot_debug_dir}")
-        print(f"    [GEMINI DEBUG] timestamps envoyés: {[f'{int(t//60):02d}:{int(t%60):02d}' for t in valid_times]}")
-
     # ── EARLY STOP — prompt minimal sur frames 0-5s ─────────────────────
     # À 0-5s après le tir : chercher UNIQUEMENT le ballon dans le filet
     # Pas de kickoff possible à ce stade → prompt simplifié et rapide
@@ -443,19 +396,25 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
         _early_prompt = f"""Football match analysis.
 {len(early_parts)} frames from {_et_str}, taken 0-5 seconds after a shot on goal at {int(shot_time//60):02d}:{int(shot_time%60):02d}.
 
-Answer these 4 factual questions ONLY based on what you literally see. Do not infer. Do not narrate.
+Question: Is the ball clearly INSIDE the goal (behind the goal line, inside the net)?
 
-1. ball_visible: true or false — can you see the ball in these frames?
-2. ball_location: one of ["inside_net", "in_front_of_goal", "near_post", "midfield", "other_side_of_goal", "not_visible"]
-3. net_deformed: true or false — is the net visibly bulging inward from a ball impact?
-4. goalkeeper_position: one of ["diving_save", "kneeling_outside_net", "kneeling_inside_net_retrieving", "standing", "not_visible"]
-
-Then compute:
-- is_goal = true ONLY if ball_location == "inside_net" AND net_deformed == true
-- confidence = 0.95 only if both conditions above are unambiguous
+Rules — read carefully:
+- YES: ball is fully past the goal line, inside the net, net is VISIBLY BULGING/DEFORMED by the ball (net pushed inward)
+- YES: goalkeeper is retrieving the ball from INSIDE the net (body inside goal area)
+- NO: ball is near the net or in front of it but net is flat/undisturbed → answer NO
+- NO: ball is beside the post or outside the goal frame → answer NO
+- NO: goalkeeper holding/catching the ball in his hands or arms (even if inside the goal area)
+- NO: ball is BEHIND the goal (outside the net, on the other side of the goal frame) → this is a corner kick or goal kick, NOT a goal
+- NO: ball visible behind the goal structure from outside → corner kick situation
+- NO: goalkeeper picking up the ball while standing upright
+- NO: ball in front of the goal or on the goal line
+- NO: goalkeeper holding/catching ball in front of the goal
+- NO: ball near the post but not inside
+- NO: ball anywhere outside the net
 
 Return ONLY valid JSON:
-{{"ball_visible": bool, "ball_location": "...", "net_deformed": bool, "goalkeeper_position": "...", "is_goal": bool, "timestamp": <seconds or null>, "confidence": <0.0-1.0>}}
+{{"is_goal": true or false, "timestamp": <seconds or null>, "confidence": <0.0-1.0>, "evidence": "<describe exactly: ball position relative to net/line>"}}
+confidence=0.95 only if ball is unmistakably inside the net.
 Default to is_goal=false if any doubt."""
         try:
             _resp = client.models.generate_content(
@@ -463,41 +422,33 @@ Default to is_goal=false if any doubt."""
                 contents = [_early_prompt] + list(early_parts),
             )
             _data = _safe_json_load(_resp.text.strip())
-            # EARLY = preuve supplémentaire, pas verdict final
-            # Seul ball_inside_net + net_deformed = signal fort
-            # is_goal=True de Gemini seul ne suffit plus
-            _ball_in_net = (_data.get("ball_location") == "inside_net"
-                            if _data else False)
-            _net_deformed = (_data.get("net_deformed", False)
-                             if _data else False)
-            _early_conf = _data.get("confidence", 0) if _data else 0
-            _early_is_goal = _data.get("is_goal", False) if _data else False
-
-            # Log toujours pour debug
-            _loc = _data.get("ball_location", "?") if _data else "?"
-            _gk  = _data.get("goalkeeper_position", "?") if _data else "?"
-            print(f"  [SHOT→GOAL EARLY] shot={shot_time:.1f}s "
-                  f"ball={_loc} net_def={_net_deformed} gk={_gk} "
-                  f"gemini_goal={_early_is_goal} conf={_early_conf:.2f}")
-
-            # EARLY = signal contextuel parmi d'autres, bonus plafonné à 4/10
-            # Règle : le bonus EARLY seul ne peut jamais faire passer un score faible
-            # au-dessus du seuil (6/10). Un score contextuel >= 4 est requis.
-            _early_bonus = 0
-            if _ball_in_net:
-                _early_bonus += 2   # signal fort mais faillible
-            if _net_deformed:
-                _early_bonus += 1   # signal complémentaire
-            if _early_conf >= EARLY_STOP_MIN_CONF:
-                _early_bonus += 1   # confiance élevée
-
-            # max = 4 : même parfait, l'EARLY ne peut passer un score de 2 à 6
-            if _early_bonus > 0:
-                _status = "FORT" if _early_bonus >= 3 else "PARTIEL"
-                print(f"    → EARLY {_status} bonus={_early_bonus}/4 "
-                      f"(ball_in_net={_ball_in_net} net_def={_net_deformed} conf={_early_conf:.2f})")
-            else:
-                print(f"    → EARLY neutre (aucun signal physique)")
+            if (_data and _data.get("is_goal")
+                    and _data.get("confidence", 0) >= EARLY_STOP_MIN_CONF):
+                _ts = _data.get("timestamp")
+                print(f"  [SHOT→GOAL EARLY] shot={shot_time:.1f}s → BUT t={_ts} "
+                      f"conf={_data['confidence']:.2f} | {_data.get('evidence','')[:80]}")
+                # Valider que le timestamp est dans la fenêtre réelle
+                _ts_validated = None
+                if _ts is not None:
+                    try:
+                        _ts_f = float(_ts)
+                        if shot_time - 5 <= _ts_f <= shot_time + window + 5:
+                            _ts_validated = _ts_f
+                        else:
+                            # Timestamp hors fenêtre (ex: Gemini renvoie mm:ss au lieu de secondes)
+                            _ts_validated = shot_time + 2
+                    except (ValueError, TypeError):
+                        _ts_validated = shot_time + 2
+                else:
+                    _ts_validated = shot_time + 2
+                return {
+                    "is_goal":    True,
+                    "timestamp":  _ts_validated,
+                    "confidence": _data["confidence"],
+                    "desc":       _data.get("evidence", ""),
+                    "goal_votes": 2,   # early stop = ballon dans filet évident = score >= 5
+                    "goal_score": 8,
+                }
         except Exception:
             pass  # early stop échoue → continue avec analyse complète
 
@@ -591,7 +542,7 @@ For celebrations to count as evidence they must be UNAMBIGUOUS:
 SCORING SYSTEM — assign a score based on ALL frames combined:
 
 POSITIVE signals (accumulate across frames):
-+5 : center kickoff clearly visible (ball at center spot, both teams on opposite halves, static formation)
++5 : center kickoff clearly visible (ball at center spot, both teams on opposite halves, static formation) — COUNT THIS ONLY ONCE per analysis, even if visible in multiple frames. A kickoff is a binary event: either it happened or it didn't. Do NOT add +5 multiple times.
 +4 : unambiguous multi-player celebration (multiple players running toward each other, arms wide, hugging)
 +3 : ball unmistakably INSIDE the net — net is visibly BULGING/DEFORMED by the ball, AND ball is clearly behind the goal line between the posts. NOT just near the net.
 +3 : net clearly deformed/bulging in an early frame even if ball is no longer visible inside (fast goal, ball rebounded out)
@@ -665,25 +616,6 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
         confidence = float(parsed.get("confidence", 0.0))
         evidence   = parsed.get("evidence", "")
         goal_score = int(parsed.get("goal_score", 0))
-
-        # Injecter le bonus EARLY dans le score final
-        # Décomposition loggée pour audit : base + bonus → final
-        try:
-            _eb = _early_bonus  # calculé dans le bloc EARLY ci-dessus
-        except NameError:
-            _eb = 0
-        _score_base = goal_score
-        # Condition : le bonus EARLY ne s'applique que si l'analyse contextuelle
-        # a déjà trouvé un signal minimum (>= 3). Si le contexte est vide,
-        # l'EARLY seul ne suffit jamais — ça évite de recréer un oracle déguisé.
-        _EARLY_REQUIRES_BASE = 3  # score contextuel minimum pour activer le bonus
-        if _eb > 0 and _score_base >= _EARLY_REQUIRES_BASE:
-            goal_score = min(10, goal_score + _eb)
-            print(f"    [EARLY BONUS] base={_score_base} +early={_eb} → final={goal_score}/10 (actif)")
-        elif _eb > 0:
-            print(f"    [EARLY BONUS] base={_score_base} +early={_eb} → ignoré (contexte trop faible < {_EARLY_REQUIRES_BASE})")
-        else:
-            print(f"    [EARLY BONUS] base={_score_base} +early=0 → final={goal_score}/10")
 
         # FIX kickoff fantôme — si le signal est UNIQUEMENT un kickoff (+5)
         # SANS aucun signal physique (ballon dans filet, gardien qui récupère)
@@ -1326,21 +1258,16 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
                 "_shot_votes": shot_votes,
             }
 
-        # Si Gemini a vu un but ET que le score positif est suffisant, ignorer les pénalités
-        if goal_votes >= 1 and final_score_no_neg >= 0.20:  # 0.20 = seuil bas mais raisonnable
-            print(f"  [GOAL OVERRIDES NEG] goal_votes={goal_votes} → but confirmé malgré neg_score={neg_score:.2f}")
+        # Override supprimé v9.8 : goal_votes ne suffit pas à ignorer les pénalités
+        # Un score négatif = signal fort (gardien tient le ballon, touche, etc.)
+        # → ne jamais confirmer un but si final_score <= 1.5
+        # Cas borderline : score positif mais pas assez pour final_score > 1.5
+        # → exiger au moins 2 votes ET final_score > 0 (pas négatif)
+        if goal_votes >= 2 and final_score > 0:
+            print(f"  [GOAL 2VOTES+POS] goal_votes={goal_votes} final_score={final_score:.2f} → but confirmé")
             return {
                 "type": "goal",
                 "confiance": min(best_conf, 0.70),
-                "description": best_result.get("description", "") if best_result else "",
-                "_goal_votes": goal_votes,
-                "_shot_votes": shot_votes,
-            }
-
-        if goal_votes >= 1 and goal_score >= 0.25:  # 1 vote / 3 offsets = 0.33 > 0.25 ✓
-            return {
-                "type": "goal",
-                "confiance": min(best_conf, 0.7),
                 "description": best_result.get("description", "") if best_result else "",
                 "_goal_votes": goal_votes,
                 "_shot_votes": shot_votes,
