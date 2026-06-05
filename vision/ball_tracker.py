@@ -457,10 +457,26 @@ class BallTracker:
             accel_ratio = spd_recent / (spd_before + 1e-6)
             accel_ok = accel_ratio >= 1.2  # vitesse 20% plus haute (frame_skip=4 = timestamps espacés)
 
+        # ── Filtre direction verticale v9.8 ──────────────────────────
+        # Un vrai tir se dirige vers le cadre du but (30%-70% de frame_h)
+        # Un dégagement/centre se dirige vers le haut ou vers le bas du terrain
+        # dx, dy = direction normalisée du ballon
+        _dir = self.ball_buffer.direction()
+        _dx, _dy = _dir if _dir else (0, 0)
+        # La destination projetée à partir de la position actuelle
+        _dest_y = (last[1] + _dy * frame_w * 0.3) if last is not None else frame_h / 2
+        _goal_y_min = frame_h * 0.25   # 25% du haut
+        _goal_y_max = frame_h * 0.75   # 75% du haut
+        _toward_goal_height = (_goal_y_min <= _dest_y <= _goal_y_max)
+
+        # Relever la stabilité pour exclure les dégagements en arc
+        _stability_min = max(stability_threshold, 0.60)
+
         result = (spd > speed_threshold_px_per_sec
                   and toward
-                  and stability > stability_threshold
-                  and accel_ok)
+                  and stability > _stability_min
+                  and accel_ok
+                  and _toward_goal_height)
 
         # Log DEBUG — activé via config.DEBUG
         try:
