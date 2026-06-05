@@ -294,8 +294,7 @@ _AV_LOCK        = _threading.Lock()
 
 def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
                          frame_w=1920, frame_h=1080,
-                         confirmed_goal_times=None,
-                         kickoff_offset=0):
+                         confirmed_goal_times=None):
     """
     Analyse la fenêtre [shot_time, shot_time+window] après un tir détecté.
     Envoie des frames espacées à Gemini avec la question :
@@ -543,7 +542,7 @@ For celebrations to count as evidence they must be UNAMBIGUOUS:
 SCORING SYSTEM — assign a score based on ALL frames combined:
 
 POSITIVE signals (accumulate across frames):
-+5 : center kickoff clearly visible (ball at center spot, both teams on opposite halves, static formation) — COUNT THIS ONLY ONCE per analysis, even if visible in multiple frames. A kickoff is a binary event: either it happened or it didn't. Do NOT add +5 multiple times.
++5 : center kickoff clearly visible (ball at center spot, both teams on opposite halves, static formation)
 +4 : unambiguous multi-player celebration (multiple players running toward each other, arms wide, hugging)
 +3 : ball unmistakably INSIDE the net — net is visibly BULGING/DEFORMED by the ball, AND ball is clearly behind the goal line between the posts. NOT just near the net.
 +3 : net clearly deformed/bulging in an early frame even if ball is no longer visible inside (fast goal, ball rebounded out)
@@ -662,8 +661,18 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
                     }
 
         # Convertir goal_score en goal_votes pour la logique pipeline
-        # score >= 5 = 2 votes (fiable), score 3-4 = 1 vote (borderline)
-        goal_votes = 2 if goal_score >= 6 else (1 if goal_score >= 4 else 0)  # seuils montés pour réduire FP
+        # Règle stricte v9.8 :
+        # Si Gemini voit lui-même le ballon hors du filet (signaux -1 ou -2 présents),
+        # le kickoff seul ne peut pas compenser — exiger score >= 9 pour 2 votes
+        # Sinon (preuves directes solides) : score >= 6 suffit
+        _has_ball_outside = ("outside the net" in evidence.lower()
+                             or "beside" in evidence.lower()
+                             or "hors du filet" in evidence.lower()
+                             or "outside goal" in evidence.lower())
+        if _has_ball_outside:
+            goal_votes = 2 if goal_score >= 10 else (1 if goal_score >= 7 else 0)
+        else:
+            goal_votes = 2 if goal_score >= 6 else (1 if goal_score >= 4 else 0)
 
         # Valider le timestamp dans la fenêtre
         if is_goal and timestamp is not None:
@@ -1259,16 +1268,21 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
                 "_shot_votes": shot_votes,
             }
 
-        # Override supprimé v9.8 : goal_votes ne suffit pas à ignorer les pénalités
-        # Un score négatif = signal fort (gardien tient le ballon, touche, etc.)
-        # → ne jamais confirmer un but si final_score <= 1.5
-        # Cas borderline : score positif mais pas assez pour final_score > 1.5
-        # → exiger au moins 2 votes ET final_score > 0 (pas négatif)
-        if goal_votes >= 2 and final_score > 0:
-            print(f"  [GOAL 2VOTES+POS] goal_votes={goal_votes} final_score={final_score:.2f} → but confirmé")
+        # Si Gemini a vu un but ET que le score positif est suffisant, ignorer les pénalités
+        if goal_votes >= 1 and final_score_no_neg >= 0.20:  # 0.20 = seuil bas mais raisonnable
+            print(f"  [GOAL OVERRIDES NEG] goal_votes={goal_votes} → but confirmé malgré neg_score={neg_score:.2f}")
             return {
                 "type": "goal",
                 "confiance": min(best_conf, 0.70),
+                "description": best_result.get("description", "") if best_result else "",
+                "_goal_votes": goal_votes,
+                "_shot_votes": shot_votes,
+            }
+
+        if goal_votes >= 1 and goal_score >= 0.25:  # 1 vote / 3 offsets = 0.33 > 0.25 ✓
+            return {
+                "type": "goal",
+                "confiance": min(best_conf, 0.7),
                 "description": best_result.get("description", "") if best_result else "",
                 "_goal_votes": goal_votes,
                 "_shot_votes": shot_votes,
