@@ -1028,7 +1028,7 @@ def run_pipeline(
         # Évite les faux positifs (gardien, dégagements, centres) sur les vidéos standard
         # où goal_posthoc + ball_appears_in_goal suffisent.
         try:
-            from ai.gemini_validator import find_goal_after_shot
+            from ai.gemini_validator import find_goal_after_shot, find_goal_after_shot_v2
 
             _confirmed_goal_times = [
                 e.get("time", 0) for e in events_validated
@@ -1072,7 +1072,8 @@ def run_pipeline(
 
                 def _analyze_shot(args):
                     shot, st, window = args
-                    return shot, st, find_goal_after_shot(
+                    # V1 — logique actuelle (décision finale)
+                    r_v1 = find_goal_after_shot(
                         video_path           = video_path,
                         shot_time            = st,
                         window               = window,
@@ -1082,6 +1083,28 @@ def run_pipeline(
                         confirmed_goal_times = existing_goal_times,
                         kickoff_offset       = _kickoff_offset,
                     )
+                    # V2 — observation pure, comparaison A/B (pas de décision finale)
+                    try:
+                        r_v2 = find_goal_after_shot_v2(
+                            video_path           = video_path,
+                            shot_time            = st,
+                            window               = window,
+                            fps                  = fps,
+                            frame_w              = _frame_w,
+                            frame_h              = _frame_h,
+                            confirmed_goal_times = existing_goal_times,
+                            kickoff_offset       = _kickoff_offset,
+                        )
+                        # Log comparatif V1 vs V2
+                        _v1_goal  = r_v1.get("is_goal", False) if r_v1 else False
+                        _v1_score = r_v1.get("goal_score", 0)  if r_v1 else 0
+                        _v2_goal  = r_v2.get("is_goal", False) if r_v2 else False
+                        _v2_score = r_v2.get("goal_score", 0)  if r_v2 else 0
+                        _t_str = f"{int(st//60):02d}:{int(st%60):02d}"
+                        print(f"  [AB] shot={_t_str} | V1 goal={_v1_goal} score={_v1_score} | V2 goal={_v2_goal} score={_v2_score:.1f}")
+                    except Exception as _ev2:
+                        print(f"  [V2] Erreur A/B : {_ev2}")
+                    return shot, st, r_v1
 
                 shot_goal_candidates = []
                 results_map = {}
