@@ -714,6 +714,277 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
         print(f"  [SHOT→GOAL] Erreur : {e}")
         return None
 
+# ─────────────────────────────────────────────────────────────────────────────
+# find_goal_after_shot_v2 — Architecture Observation → Décision
+#
+# Principe fondamental :
+#   Gemini observe uniquement — il ne conclut JAMAIS "is_goal"
+#   Le code Python prend la décision finale
+#
+# Différences vs V1 :
+#   - Prompt ne contient pas les mots "goal", "is_goal", "did a goal"
+#   - Gemini retourne un JSON d'observations pures
+#   - Le scoring est entièrement dans le code Python
+#   - Pas de seuil fixe au départ — logs pour calibration
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _score_observation_v2(obs: dict) -> tuple[float, list[str]]:
+    """
+    Calcule le score but à partir des observations Gemini.
+    Gemini n'a jamais vu cette logique — il observe, Python décide.
+
+    Retourne (score, [raisons])
+    """
+    score = 0.0
+    reasons = []
+
+    ball_loc = obs.get("ball_location", "unknown")
+    kickoff  = obs.get("center_kickoff_visible", False)
+    to_center = obs.get("players_moving_to_center", False)
+    celebration = obs.get("celebration_visible", False)
+    gk_inside = obs.get("goalkeeper_inside_goal", False)
+    gk_visible = obs.get("goalkeeper_visible", False)
+    referee = obs.get("referee_visible", False)
+
+    # ── Signaux négatifs — override immédiat ──────────────────────────────
+    if referee:
+        score -= 4.0
+        reasons.append("referee_visible -4")
+
+    # ── Signaux positifs ──────────────────────────────────────────────────
+
+    # Ballon dans le filet — signal physique direct
+    if ball_loc == "inside_net":
+        score += 3.0
+        reasons.append("ball_inside_net +3")
+    elif ball_loc == "goal_area":
+        score += 0.5
+        reasons.append("ball_goal_area +0.5")
+
+    # Gardien à l'intérieur du but (récupération) — SEULEMENT si ballon en zone
+    # Sans signal ballon, le gardien dans le but c'est normal
+    if gk_inside and ball_loc in ("inside_net", "goal_area"):
+        score += 1.5
+        reasons.append("goalkeeper_inside_goal +1.5")
+
+    # Coup d'envoi — signal de contexte faible (réduit depuis +5 en V1)
+    if kickoff:
+        score += 1.0
+        reasons.append("center_kickoff +1")
+
+    # Joueurs qui reviennent au centre — corroborant
+    if to_center:
+        score += 1.0
+        reasons.append("players_moving_to_center +1")
+
+    # Célébration — signal faible, ambigu, metadata uniquement
+    if celebration:
+        score += 0.5
+        reasons.append("celebration +0.5")
+
+    return score, reasons
+
+
+def find_goal_after_shot_v2(video_path, shot_time, window=30, fps=25,
+                             frame_w=1920, frame_h=1080,
+                             confirmed_goal_times=None,
+                             kickoff_offset=0):
+    """
+    V2 — Architecture Observation → Décision.
+
+    Gemini retourne uniquement des observations visuelles structurées.
+    Aucun champ "is_goal" dans le prompt ou la réponse Gemini.
+    Le code Python calcule le score et prend la décision.
+
+    Returns:
+        dict compatible V1 :
+        {"is_goal": bool, "timestamp": float, "confidence": float,
+         "desc": str, "goal_votes": int, "goal_score": float}
+        ou None si Gemini indisponible
+    """
+    global _quota_exhausted, _gemini_unavailable
+
+    if _quota_exhausted or _gemini_unavailable:
+        return None
+
+    client = get_client()
+    if client is None:
+        return None
+
+    # ── Extraction frames (identique V1) ──────────────────────────────────
+    offsets = [0, 2, 4, 7, 12, 18, 25, window]
+    sample_times = []
+    seen = set()
+    for off in offsets:
+        t = round(shot_time + off, 1)
+        if t not in seen and t <= shot_time + window:
+            sample_times.append(t)
+            seen.add(t)
+
+    parts = []
+    valid_times = []
+    cap = cv2.VideoCapture(video_path)
+    try:
+        if sample_times:
+            first_frame_id = max(0, int(sample_times[0] * fps) - 5)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, first_frame_id)
+            current_frame_id = first_frame_id
+            targets = {int(st * fps): st for st in sample_times}
+            target_ids = sorted(targets.keys())
+            target_idx = 0
+            while target_idx < len(target_ids):
+                target_id = target_ids[target_idx]
+                while current_frame_id < target_id:
+                    ret, _ = cap.read()
+                    if not ret:
+                        break
+                    current_frame_id += 1
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    current_frame_id += 1
+                    h, w = frame.shape[:2]
+                    if w > 960:
+                        frame = cv2.resize(frame, (960, int(h * 960 / w)))
+                    parts.append(frame_to_part(frame))
+                    valid_times.append(targets[target_id])
+                else:
+                    break
+                target_idx += 1
+    finally:
+        cap.release()
+
+    if not parts:
+        return None
+
+    # ── Prompt d'observation pure — Gemini ne sait pas qu'on cherche un but ──
+    times_str = ", ".join(f"{int(t//60):02d}:{int(t%60):02d}" for t in valid_times)
+    shot_str  = f"{int(shot_time//60):02d}:{int(shot_time%60):02d}"
+
+    prompt_v2 = f"""You are analyzing a football/soccer match.
+I am showing you {len(parts)} frames from timestamps: {times_str}
+These frames cover {window} seconds of play starting at {shot_str}.
+
+Your task: describe ONLY what you can directly observe in these frames.
+Do NOT interpret, conclude, or infer what happened. Only report visible facts.
+
+For EACH of the following fields, report what you observe across ALL frames combined:
+
+ball_visible: true if the ball is visible in at least one frame, false otherwise.
+
+ball_location: where is the ball located in the frames? Choose the MOST specific location observed:
+  - "inside_net"   : ball is physically INSIDE the net, clearly behind the goal line between the posts, net is visibly pushed inward
+  - "goal_area"    : ball is within the 6-yard box area in front of goal (NOT inside net)
+  - "penalty_area" : ball is inside the penalty box but outside the 6-yard box
+  - "midfield"     : ball is in the middle third of the pitch
+  - "out_of_play"  : ball is out of bounds (touchline, corner, etc.)
+  - "unknown"      : ball not visible or location unclear
+
+  IMPORTANT: "inside_net" means the ball has physically crossed the goal line and is inside the net structure.
+  Do NOT use "inside_net" if the ball is near the net but outside it, or if the net appears flat/undisturbed.
+  Do NOT confuse the painted penalty box lines on the ground with the 3D goal net structure.
+
+goal_visible: true if the goal structure (posts + net) is visible in at least one frame.
+
+goalkeeper_visible: true if the goalkeeper (different colored jersey) is visible.
+
+goalkeeper_inside_goal: true ONLY if the goalkeeper is physically inside the goal structure (between the posts, behind the goal line), crouching or retrieving something. NOT simply standing in front of the goal.
+
+center_kickoff_visible: true ONLY if you can clearly see:
+  - ball positioned at the exact center spot of the pitch
+  - players from both teams positioned on opposite halves
+  - static, organized formation visible
+  All three conditions must be simultaneously visible. If any condition is missing, return false.
+
+players_moving_to_center: true if you observe players walking or jogging toward the center circle of the pitch.
+
+celebration_visible: true ONLY if you observe multiple players from the same team clearly embracing, jumping on each other, or running toward each other with arms open in obvious joy. NOT: one player raising a hand, players jogging, players disputing.
+
+referee_visible: true if you observe the referee (typically in black, yellow, or fluorescent kit, different from both teams) visibly active on the pitch.
+
+confidence: your overall confidence in the accuracy of these observations (0.0 to 1.0).
+
+Return ONLY valid JSON, no markdown, no explanation:
+{{
+  "ball_visible": true or false,
+  "ball_location": "inside_net|goal_area|penalty_area|midfield|out_of_play|unknown",
+  "goal_visible": true or false,
+  "goalkeeper_visible": true or false,
+  "goalkeeper_inside_goal": true or false,
+  "center_kickoff_visible": true or false,
+  "players_moving_to_center": true or false,
+  "celebration_visible": true or false,
+  "referee_visible": true or false,
+  "confidence": 0.0
+}}"""
+
+    try:
+        t0 = time.time()
+        result = _call_gemini(client, [text_to_part(prompt_v2)] + parts)
+        elapsed = time.time() - t0
+        _METRICS["gemini_time"] += elapsed
+
+        if result is None:
+            return None
+
+        text   = extract_response_text(result)
+        parsed = _safe_json_load(text)
+
+        if parsed is None:
+            return None
+
+        # ── Scoring Python ────────────────────────────────────────────────
+        score, reasons = _score_observation_v2(parsed)
+        reasons_str = ", ".join(reasons) if reasons else "no signals"
+
+        # ── Log pour calibration (pas de décision binaire encore) ─────────
+        print(f"  [V2 OBS] shot={shot_time:.1f}s | score={score:.1f} | {reasons_str}")
+        print(f"  [V2 OBS] ball={parsed.get('ball_location','?')} "
+              f"kickoff={parsed.get('center_kickoff_visible','?')} "
+              f"to_center={parsed.get('players_moving_to_center','?')} "
+              f"celebration={parsed.get('celebration_visible','?')} "
+              f"gk_inside={parsed.get('goalkeeper_inside_goal','?')} "
+              f"referee={parsed.get('referee_visible','?')}")
+
+        # ── Décision — seuil provisoire pour tests, ajuster après calibration ──
+        # Score >= 4.0 : inside_net (+3) + au moins un corroborant
+        # Score >= 2.0 : kickoff + to_center uniquement → is_goal=True provisoire
+        # À calibrer sur vidéo 1 + vidéo 2 avant de fixer définitivement
+        THRESHOLD = 2.0
+        is_goal_v2 = (score >= THRESHOLD) and (parsed.get("referee_visible", False) is False)
+
+        # Confiance basée sur score
+        if score >= 4.5:
+            conf_v2 = 0.90
+        elif score >= 3.0:
+            conf_v2 = 0.80
+        elif score >= 2.0:
+            conf_v2 = 0.70
+        else:
+            conf_v2 = 0.0
+
+        # Timestamp estimé
+        timestamp_v2 = shot_time + 2 if is_goal_v2 else None
+
+        # goal_votes compatible pipeline V1
+        goal_votes_v2 = 2 if score >= 4.5 else (1 if score >= 2.0 else 0)
+
+        print(f"  [V2 DECISION] score={score:.1f} → is_goal={is_goal_v2} "
+              f"conf={conf_v2:.2f} votes={goal_votes_v2}")
+
+        return {
+            "is_goal":    is_goal_v2,
+            "timestamp":  timestamp_v2,
+            "confidence": conf_v2,
+            "desc":       reasons_str,
+            "goal_votes": goal_votes_v2,
+            "goal_score": score,
+        }
+
+    except Exception as e:
+        print(f"  [V2] Erreur : {e}")
+        return None
+
+
 def print_metrics():
     total = _METRICS["cache_hits"] + _METRICS["cache_misses"]
     hit_rate = (_METRICS["cache_hits"] / total) if total else 0
