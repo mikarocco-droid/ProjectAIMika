@@ -29,7 +29,7 @@ def build_camera_profile(
     fps: float = 25.0,
     frame_w: int = 1920,
     frame_h: int = 1080,
-    calib_seconds: int = 45,
+    calib_seconds: int = 99999,  # par défaut : tout le match
 ) -> dict:
     """
     Analyse les positions du ballon sur les premières secondes
@@ -54,11 +54,17 @@ def build_camera_profile(
             continue
         center = ball.get("center")
         if center and center[0] is not None and center[1] is not None:
-            ball_positions.append((float(center[0]), float(center[1])))
+            cx, cy = float(center[0]), float(center[1])
+            # Exclure les positions aberrantes : ballon hors image ou tracking perdu
+            if cx < 10 or cy < 10:
+                continue
+            if cx > frame_w - 10 or cy > frame_h - 10:
+                continue
+            ball_positions.append((cx, cy))
 
-    if len(ball_positions) < 30:
+    if len(ball_positions) < 50:
         print(f"  [CAMERA_PROFILE] Pas assez de positions ({len(ball_positions)}) "
-              f"sur les {calib_seconds}s → profil non disponible")
+              f"→ profil non disponible")
         return profile
 
     xs = sorted(p[0] for p in ball_positions)
