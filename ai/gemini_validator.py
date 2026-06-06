@@ -294,7 +294,8 @@ _AV_LOCK        = _threading.Lock()
 
 def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
                          frame_w=1920, frame_h=1080,
-                         confirmed_goal_times=None):
+                         confirmed_goal_times=None,
+                         kickoff_offset=0):
     """
     Analyse la fenêtre [shot_time, shot_time+window] après un tir détecté.
     Envoie des frames espacées à Gemini avec la question :
@@ -1268,21 +1269,14 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
                 "_shot_votes": shot_votes,
             }
 
-        # Si Gemini a vu un but ET que le score positif est suffisant, ignorer les pénalités
-        if goal_votes >= 1 and final_score_no_neg >= 0.20:  # 0.20 = seuil bas mais raisonnable
-            print(f"  [GOAL OVERRIDES NEG] goal_votes={goal_votes} → but confirmé malgré neg_score={neg_score:.2f}")
+        # Override supprimé v9.8 : goal_votes >= 1 seul ne suffit pas à ignorer les pénalités
+        # Un score négatif = signal fort (gardien tient le ballon, touche, etc.)
+        # Exiger goal_votes >= 2 ET final_score > 0
+        if goal_votes >= 2 and final_score > 0:
+            print(f"  [GOAL 2VOTES+POS] goal_votes={goal_votes} final_score={final_score:.2f} → but confirmé")
             return {
                 "type": "goal",
                 "confiance": min(best_conf, 0.70),
-                "description": best_result.get("description", "") if best_result else "",
-                "_goal_votes": goal_votes,
-                "_shot_votes": shot_votes,
-            }
-
-        if goal_votes >= 1 and goal_score >= 0.25:  # 1 vote / 3 offsets = 0.33 > 0.25 ✓
-            return {
-                "type": "goal",
-                "confiance": min(best_conf, 0.7),
                 "description": best_result.get("description", "") if best_result else "",
                 "_goal_votes": goal_votes,
                 "_shot_votes": shot_votes,
