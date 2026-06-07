@@ -668,12 +668,13 @@ def run_pipeline(
         _raw_posthoc_times = []  # init avant try — préservé pour SHOT→GOAL
         try:
             fast_goals = detect_fast_goals_from_ball(
-                frames_data = frames_data,
-                events      = events,
-                fps         = fps,
-                frame_w     = _frame_w,
-                frame_h     = _frame_h,
-                goal_box    = _goal_box,
+                frames_data    = frames_data,
+                events         = events,
+                fps            = fps,
+                frame_w        = _frame_w,
+                frame_h        = _frame_h,
+                goal_box       = _goal_box,
+                camera_profile = _camera_profile,  # Sprint 2 — géométrie adaptative
             )
             if fast_goals:
                 events.extend(fast_goals)
