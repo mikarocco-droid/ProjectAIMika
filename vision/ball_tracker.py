@@ -549,8 +549,8 @@ class BallTracker:
         self.shot_candidate = None
 
     def is_short_range_shot(self, frame_w, frame_h,
-                             speed_threshold_px=150,
-                             reappear_goal_pct=0.12):
+                             speed_threshold_px=200,
+                             reappear_goal_pct=0.07):
         """
         Détecte les frappes ultra-courtes (reprises à bout portant, tap-ins)
         que is_shot_candidate() rate parce qu'elles durent 1-2 frames.
@@ -600,7 +600,7 @@ class BallTracker:
             speed_before = math.hypot(p_prev[0] - p_before[0], p_prev[1] - p_before[1]) / dt_before * (1.0 / max(self.fps, 1))
             speed_before_frame = math.hypot(p_prev[0] - p_before[0], p_prev[1] - p_before[1])
             # Le pic doit être au moins 3x la vitesse précédente
-            if speed_px_frame < speed_before_frame * 2.5:
+            if speed_px_frame < speed_before_frame * 4.0:
                 return False, speed_px_frame
 
         return True, speed_px_frame
