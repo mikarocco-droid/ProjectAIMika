@@ -104,8 +104,9 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0):
             left_zone  = col_smooth[:left_end]
             right_zone = col_smooth[right_beg:]
 
-            # Seuil = 40% de la hauteur de frame (lignes doivent couvrir >40% verticalement)
-            min_coverage = sh * 0.40
+            # Seuil = 20% de la hauteur de frame (lignes doivent couvrir >20% verticalement)
+            # 40% était trop strict pour les caméras basses/zoom
+            min_coverage = sh * 0.20
 
             if left_zone.max() > min_coverage:
                 # Pic le plus à droite dans la zone gauche
@@ -125,6 +126,8 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0):
 
         cap.release()
 
+        print(f"  [CAMERA_PROFILE] line_detect votes : left={len(left_votes)} right={len(right_votes)}")
+        
         # Médiane des votes (robuste aux outliers)
         goal_left_x  = None
         goal_right_x = None
