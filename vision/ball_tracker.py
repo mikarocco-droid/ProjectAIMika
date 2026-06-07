@@ -344,21 +344,6 @@ class BallTracker:
         if best is None:
             self._filtered_streak += 1
             self.lost_frames += 1
-            # ── SHORT_RANGE_SHOT — détection à la première frame de perte ────
-            # C'est ici qu'on a lost_frames=1, APRÈS avoir vu le pic de vitesse.
-            # last_valid_ball contient la position du dernier ballon visible (le pic).
-            if self.lost_frames == 1:
-                _srs_ok, _srs_spd = self.is_short_range_shot(frame_w, frame_h)
-                if _srs_ok:
-                    self.short_range_shot_pending = True
-                    self._srs_speed = _srs_spd
-                    self._srs_pos   = self.last_valid_ball
-                    print(f"  [SHORT_RANGE_SHOT] speed={_srs_spd:.0f}px/f "
-                          f"x={self.last_valid_ball[0]/frame_w:.2f} "
-                          f"→ tir à bout portant détecté ✅")
-                else:
-                    self.short_range_shot_pending = False
-            # ──────────────────────────────────────────────────────────────────
             if self.lost_frames <= 2:
                 # Frames 1-2 : prédiction courte (micro-occlusion / tirs rapides)
                 pos = self.kalman.update(None)
