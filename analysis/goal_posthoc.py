@@ -144,6 +144,7 @@ def detect_fast_goals_from_ball(
     frame_h=1080,
     shot_window=5.0,
     goal_box=None,       # résultat de detect_goal_box() — zones dynamiques
+    camera_profile=None, # Sprint 2 — profil caméra pour géométrie adaptative
 ):
 
     goals = []
@@ -151,17 +152,34 @@ def detect_fast_goals_from_ball(
         return goals
 
     # ── Initialisation de TOUTES les variables — doivent précéder toute utilisation
-    GOAL_PCT          = 0.06
-    GOAL_X_LEFT       = frame_w * GOAL_PCT
-    GOAL_X_RIGHT      = frame_w * (1 - GOAL_PCT)
+    # Sprint 2 : dériver GOAL_PCT depuis camera_profile si disponible
+    _cp_goal_left_px  = None
+    _cp_goal_right_px = None
+    if camera_profile and isinstance(camera_profile, dict):
+        _cp_goal_left_px  = camera_profile.get("est_goal_left_px")
+        _cp_goal_right_px = camera_profile.get("est_goal_right_px")
+
+    if _cp_goal_left_px is not None and _cp_goal_right_px is not None:
+        # Utiliser les estimations du profil caméra
+        GOAL_PCT      = _cp_goal_left_px / frame_w  # pour compatibilité
+        GOAL_X_LEFT   = float(_cp_goal_left_px)
+        GOAL_X_RIGHT  = float(_cp_goal_right_px)
+        print(f"  [GOAL_POSTHOC] camera_profile actif : "
+              f"goal_left={GOAL_X_LEFT:.0f}px ({GOAL_PCT*100:.1f}%) "
+              f"goal_right={GOAL_X_RIGHT:.0f}px ({GOAL_X_RIGHT/frame_w*100:.1f}%)")
+    else:
+        GOAL_PCT      = 0.06
+        GOAL_X_LEFT   = frame_w * GOAL_PCT
+        GOAL_X_RIGHT  = frame_w * (1 - GOAL_PCT)
+
     GOAL_Y_TOP        = frame_h * 0.20
     GOAL_Y_BOTTOM     = frame_h * 0.80
     LINE_MARGIN       = frame_w * 0.002
     MIN_PEAK_SPEED    = 15.0
     SHOT_LOOKBACK_LOOSE = 8.0
     _DISAPPEAR_L_MIN  = 0
-    _DISAPPEAR_L_MAX  = frame_w * 0.06
-    _DISAPPEAR_R_MIN  = frame_w * 0.94
+    _DISAPPEAR_L_MAX  = GOAL_X_LEFT   # zone disparition gauche = jusqu'au but gauche
+    _DISAPPEAR_R_MIN  = GOAL_X_RIGHT  # zone disparition droite = depuis le but droit
     _DISAPPEAR_R_MAX  = frame_w
     STOP_NEAR_GOAL_X_MIN  = frame_w * 0.45
     STOP_NEAR_GOAL_X_MAX  = frame_w * 0.92
@@ -173,10 +191,8 @@ def detect_fast_goals_from_ball(
 
     frame_w, frame_h = _resolve_resolution(frames_data, frame_w, frame_h)
 
-    # GOAL_X_LEFT/RIGHT : valeurs fixes stables — ne pas surcharger depuis goal_box
+    # GOAL_X_LEFT/RIGHT : déjà calculés depuis camera_profile ou fallback ci-dessus
     # goal_box utilisé UNIQUEMENT pour les zones disappear (plus précises)
-    GOAL_X_LEFT  = frame_w * GOAL_PCT
-    GOAL_X_RIGHT = frame_w * (1 - GOAL_PCT)
 
     if goal_box and goal_box.get("method") == "vision":
         try:
@@ -195,8 +211,8 @@ def detect_fast_goals_from_ball(
             _DISAPPEAR_R_MAX = frame_w
     else:
         _DISAPPEAR_L_MIN = 0
-        _DISAPPEAR_L_MAX = frame_w * 0.06
-        _DISAPPEAR_R_MIN = frame_w * 0.94
+        _DISAPPEAR_L_MAX = GOAL_X_LEFT   # adaptatif via camera_profile
+        _DISAPPEAR_R_MIN = GOAL_X_RIGHT  # adaptatif via camera_profile
         _DISAPPEAR_R_MAX = frame_w
 
     GOAL_Y_TOP = frame_h * 0.2
