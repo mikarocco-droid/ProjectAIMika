@@ -478,6 +478,16 @@ class BallTracker:
                   and accel_ok
                   and _toward_goal_height)
 
+        # ── SHORT_RANGE_SHOT — frappe ultra-courte depuis le petit rectangle ──
+        # Bypass du filtre standard pour les tap-ins / reprises à bout portant
+        # qui durent 1 frame et ne satisfont pas les critères de trajectoire normale
+        if not result:
+            _srs, _srs_speed = self.is_short_range_shot(frame_w, frame_h)
+            if _srs:
+                print(f"  [SHORT_RANGE_SHOT] speed={_srs_speed:.0f}px/f "
+                      f"x={last[0]/frame_w:.2f} → tir à bout portant détecté ✅")
+                return True
+
         # Log DEBUG — activé via config.DEBUG
         try:
             from config import DEBUG
@@ -528,6 +538,63 @@ class BallTracker:
 
     def clear_shot_candidate(self):
         self.shot_candidate = None
+
+    def is_short_range_shot(self, frame_w, frame_h,
+                             speed_threshold_px=150,
+                             reappear_goal_pct=0.12):
+        """
+        Détecte les frappes ultra-courtes (reprises à bout portant, tap-ins)
+        que is_shot_candidate() rate parce qu'elles durent 1-2 frames.
+
+        Signature caractéristique :
+          1. Vitesse brutale sur 1 frame (≥ 150 px/frame)
+          2. Ballon perdu immédiatement après (lost_frames >= 1)
+          3. Dernière position connue dans la zone offensive (x < 12% ou x > 88%)
+          4. Vitesse AVANT le pic était basse (ballon contrôlé, pas un dégagement)
+
+        Cette combinaison est quasi-impossible à réunir autrement que sur
+        une reprise à bout portant depuis le petit rectangle.
+
+        Retourne (bool, speed_px) pour logging.
+        """
+        # Condition 1 : ballon perdu en ce moment (frappe rapide vient de se produire)
+        if self.lost_frames < 1:
+            return False, 0.0
+
+        # Condition 2 : dernière position connue dans zone offensive
+        last = self.last_valid_ball
+        if last is None:
+            return False, 0.0
+        bx = last[0]
+        if not (bx < frame_w * reappear_goal_pct or bx > frame_w * (1 - reappear_goal_pct)):
+            return False, 0.0
+
+        # Condition 3 : vitesse du dernier déplacement très élevée
+        pts = self.ball_buffer.get()
+        if len(pts) < 2:
+            return False, 0.0
+        p_prev = pts[-2]
+        p_last = pts[-1]
+        dt = max(p_last[2] - p_prev[2], 1e-4)
+        speed_px = math.hypot(p_last[0] - p_prev[0], p_last[1] - p_prev[1]) / dt * (1.0 / max(self.fps, 1))
+        # speed_px en px/frame (normalisé par fps)
+        speed_px_frame = math.hypot(p_last[0] - p_prev[0], p_last[1] - p_prev[1])
+
+        if speed_px_frame < speed_threshold_px:
+            return False, speed_px_frame
+
+        # Condition 4 : vitesse AVANT le pic était basse (ballon posé, pas un dégagement)
+        # On compare avec le segment précédent
+        if len(pts) >= 3:
+            p_before = pts[-3]
+            dt_before = max(p_prev[2] - p_before[2], 1e-4)
+            speed_before = math.hypot(p_prev[0] - p_before[0], p_prev[1] - p_before[1]) / dt_before * (1.0 / max(self.fps, 1))
+            speed_before_frame = math.hypot(p_prev[0] - p_before[0], p_prev[1] - p_before[1])
+            # Le pic doit être au moins 3x la vitesse précédente
+            if speed_px_frame < speed_before_frame * 2.5:
+                return False, speed_px_frame
+
+        return True, speed_px_frame
 
     def closest_player(self, players):
         last = self.ball_buffer.last_pos()
