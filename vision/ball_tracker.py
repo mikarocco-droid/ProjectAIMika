@@ -257,6 +257,8 @@ class BallTracker:
         self.velocity         = (0.0, 0.0)
         self._filtered_streak     = 0
         self._MAX_FILTERED_STREAK = 25  # vélocité estimée
+        # Sprint 2 — camera_profile pour géométrie adaptative
+        self._camera_profile = None
         # SHORT_RANGE_SHOT — flag déclenché quand pic vitesse + disparition immédiate
         self.short_range_shot_pending = False
         self._srs_speed               = 0.0
@@ -436,12 +438,24 @@ class BallTracker:
             return False
 
         # Filtre zone offensive — tirs partent des 25% proches des buts
-        # (pas du milieu de terrain)
+        # Sprint 2 : utiliser camera_profile si disponible pour adapter la zone
         last = self.ball_buffer.last_pos()
         if last is not None:
             bx = last[0]
-            if not (bx < frame_w * 0.25 or bx > frame_w * 0.75):
-                return False
+            # Zone offensive = 25% du terrain depuis chaque but
+            # camera_profile permet de corriger selon la géométrie réelle
+            _cp = getattr(self, '_camera_profile', None)
+            if _cp and _cp.get('est_goal_left_px') and _cp.get('est_goal_right_px'):
+                _gl  = _cp['est_goal_left_px']
+                _gr  = _cp['est_goal_right_px']
+                _tw  = _gr - _gl  # largeur réelle du terrain en pixels
+                _off_left  = _gl + _tw * 0.30   # 30% depuis but gauche
+                _off_right = _gr - _tw * 0.30   # 30% depuis but droit
+                if not (bx < _off_left or bx > _off_right):
+                    return False
+            else:
+                if not (bx < frame_w * 0.25 or bx > frame_w * 0.75):
+                    return False
 
         spd       = self.get_speed_per_second()
         toward, _ = self.ball_buffer.toward_goal(frame_w, frame_h,
