@@ -612,11 +612,12 @@ def run_pipeline(
     try:
         from vision.camera_profile import build_camera_profile
         _camera_profile = build_camera_profile(
-            frames_data = frames_data,
-            fps         = fps,
-            frame_w     = _frame_w,
-            frame_h     = _frame_h,
+            frames_data   = frames_data,
+            fps           = fps,
+            frame_w       = _frame_w,
+            frame_h       = _frame_h,
             calib_seconds = 45,
+            video_path    = video_path,   # Sprint 2 — détection lignes terrain
         )
     except Exception as _cp_e:
         print(f"  [CAMERA_PROFILE] Ignoré : {_cp_e}")
