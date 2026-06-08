@@ -24,7 +24,8 @@ Usage dans pipeline.py :
 import math
 
 
-def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0):
+def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0,
+                                   ball_goal_left_px=None, ball_goal_right_px=None):
     """
     Lit 20 frames espacées entre t=5s et t=90s.
     Pour chaque frame, détecte les colonnes denses de blanc sur fond vert.
@@ -61,6 +62,13 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0):
         left_votes  = []
         right_votes = []
 
+        # Estimations ballon converties en coordonnées small (480p)
+        # Calculées après lecture de la première frame (scale connu alors)
+        # Pour l'instant initialisées à None, recalculées dans la boucle
+        _ball_goal_left_sw  = None
+        _ball_goal_right_sw = None
+        _scale_set          = False
+
         for fid in sample_frames:
             cap.set(cv2.CAP_PROP_POS_FRAMES, int(fid))
             ret, frame = cap.read()
@@ -73,6 +81,14 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0):
             scale = 480 / fh
             small = cv2.resize(frame, (int(fw * scale), 480))
             sh, sw = small.shape[:2]
+
+            # Calculer les zones de vote adaptatives au premier passage
+            if not _scale_set:
+                _scale_set = True
+                if ball_goal_left_px is not None:
+                    _ball_goal_left_sw  = int(ball_goal_left_px  * scale)
+                if ball_goal_right_px is not None:
+                    _ball_goal_right_sw = int(ball_goal_right_px * scale)
 
             # Masque herbe verte
             hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
@@ -97,12 +113,27 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0):
             # Lisser
             col_smooth = np.convolve(col_sum, np.ones(7)/7, mode='same')
 
-            # Zones de but : x < 18% (gauche) et x > 82% (droite)
-            left_end  = int(sw * 0.18)
-            right_beg = int(sw * 0.82)
+            # Zones de vote adaptatives.
+            # Caméra standard : x < 18% gauche, x > 82% droite.
+            # Caméra déportée : centrer autour de l'estimation ballon ±12% cadre.
+            if _ball_goal_left_sw is not None:
+                lg = _ball_goal_left_sw
+                left_start = max(0, int(lg - sw * 0.12))
+                left_end   = min(sw, int(lg + sw * 0.12))
+            else:
+                left_start = 0
+                left_end   = int(sw * 0.18)
 
-            left_zone  = col_smooth[:left_end]
-            right_zone = col_smooth[right_beg:]
+            if _ball_goal_right_sw is not None:
+                rg = _ball_goal_right_sw
+                right_beg = max(0, int(rg - sw * 0.12))
+                right_end = min(sw, int(rg + sw * 0.12))
+            else:
+                right_beg = int(sw * 0.82)
+                right_end = sw
+
+            left_zone  = col_smooth[left_start:left_end]
+            right_zone = col_smooth[right_beg:right_end]
 
             # Seuil = 20% de la hauteur de frame (lignes doivent couvrir >20% verticalement)
             # 40% était trop strict pour les caméras basses/zoom
@@ -113,14 +144,16 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0):
                 # (poteau droit du but gauche = limite intérieure)
                 peaks = np.where(left_zone > min_coverage)[0]
                 if len(peaks) > 0:
-                    x_small = peaks.max()  # bord intérieur du but gauche
+                    # peaks sont relatifs à left_zone → reconvertir en coord absolue small
+                    x_small = left_start + peaks.max()
                     x_orig = int(x_small / scale)
                     left_votes.append(x_orig)
 
             if right_zone.max() > min_coverage:
                 peaks = np.where(right_zone > min_coverage)[0]
                 if len(peaks) > 0:
-                    x_small = right_beg + peaks.min()  # bord intérieur but droit
+                    # peaks relatifs à right_zone → reconvertir en coord absolue small
+                    x_small = right_beg + peaks.min()
                     x_orig = int(x_small / scale)
                     right_votes.append(x_orig)
 
@@ -233,7 +266,9 @@ def build_camera_profile(
 
     if video_path:
         gl_lines, gr_lines = _detect_goal_lines_from_video(
-            video_path, frame_w, frame_h, fps
+            video_path, frame_w, frame_h, fps,
+            ball_goal_left_px=est_goal_left_ball,
+            ball_goal_right_px=est_goal_right_ball,
         )
         if gl_lines is not None or gr_lines is not None:
             # Fusionner : prendre la détection lignes quand disponible
