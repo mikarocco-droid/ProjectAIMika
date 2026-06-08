@@ -666,17 +666,28 @@ def run_pipeline(
             print(f"  Filtre xG=0 : {n_goals_raw - n_goals_filtered} faux but(s) supprimés")
 
         # ── Étape 2 : goal_posthoc ────────────────────────────────────────────
+        # Sur caméra panoramique (low_side_zoom), goal_posthoc génère du bruit
+        # structurel : il confond les ballons qui sortent du cadre avec des
+        # entrées dans le filet. Le but n'est pas à position fixe → désactivé.
+        _posthoc_camera_type = (_camera_profile or {}).get("camera_type", "unknown")
+        _posthoc_disabled    = _posthoc_camera_type == "low_side_zoom"
+        if _posthoc_disabled:
+            print(f"  goal_posthoc désactivé : camera_type={_posthoc_camera_type} (panoramique)")
+
         _raw_posthoc_times = []  # init avant try — préservé pour SHOT→GOAL
         try:
-            fast_goals = detect_fast_goals_from_ball(
-                frames_data    = frames_data,
-                events         = events,
-                fps            = fps,
-                frame_w        = _frame_w,
-                frame_h        = _frame_h,
-                goal_box       = _goal_box,
-                camera_profile = _camera_profile,  # Sprint 2 — géométrie adaptative
-            )
+            if _posthoc_disabled:
+                fast_goals = []
+            else:
+                fast_goals = detect_fast_goals_from_ball(
+                    frames_data    = frames_data,
+                    events         = events,
+                    fps            = fps,
+                    frame_w        = _frame_w,
+                    frame_h        = _frame_h,
+                    goal_box       = _goal_box,
+                    camera_profile = _camera_profile,  # Sprint 2 — géométrie adaptative
+                )
             if fast_goals:
                 events.extend(fast_goals)
                 events.sort(key=lambda e: e.get("time", 0))
