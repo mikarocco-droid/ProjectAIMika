@@ -164,6 +164,17 @@ def detect_fast_goals_from_ball(
         GOAL_PCT      = _cp_goal_left_px / frame_w  # pour compatibilité
         GOAL_X_LEFT   = float(_cp_goal_left_px)
         GOAL_X_RIGHT  = float(_cp_goal_right_px)
+        # Sprint 2 — garde-fou : un ballon dans le but ne peut pas être
+        # collé au bord absolu du cadre. Un x < 2% signifie hors terrain,
+        # pas dans le filet (le poteau gauche du but est toujours à >2%).
+        _MIN_GOAL_X = frame_w * 0.02  # ~38px sur 1920
+        _MAX_GOAL_X = frame_w * 0.98
+        if GOAL_X_LEFT < _MIN_GOAL_X:
+            print(f"  [GOAL_POSTHOC] goal_left plancher 2% : {GOAL_X_LEFT:.0f}→{_MIN_GOAL_X:.0f}px")
+            GOAL_X_LEFT = _MIN_GOAL_X
+        if GOAL_X_RIGHT > _MAX_GOAL_X:
+            GOAL_X_RIGHT = _MAX_GOAL_X
+        GOAL_PCT = GOAL_X_LEFT / frame_w
         print(f"  [GOAL_POSTHOC] camera_profile actif : "
               f"goal_left={GOAL_X_LEFT:.0f}px ({GOAL_PCT*100:.1f}%) "
               f"goal_right={GOAL_X_RIGHT:.0f}px ({GOAL_X_RIGHT/frame_w*100:.1f}%)")
