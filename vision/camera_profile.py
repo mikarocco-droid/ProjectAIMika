@@ -213,9 +213,12 @@ def build_camera_profile(
 
     if x_coverage > 0.82 and y_coverage > 0.40:
         camera_type = "high_side"
-    elif x_coverage < 0.70:
+    elif x_coverage < 0.60:
+        # Caméra très zoomée / panoramique : terrain < 60% du cadre
+        # goal_posthoc peu fiable sur ce type de caméra
         camera_type = "low_side_zoom"
     else:
+        # Caméra latérale standard : terrain 60-82% du cadre
         camera_type = "low_side"
 
     # ── Sprint 1 : estimation par positions ballon ────────────────────────
