@@ -478,6 +478,7 @@ def run_pipeline(
         team_colors          = _team_colors,
         silence_threshold_s  = 1500.0,   # 25 min sans jeu = fin du match
         min_match_duration_s = 2700.0,   # chercher fin seulement après 45 min de jeu
+        video_duration_s     = _video_duration_s,  # adaptatif selon durée vidéo
     )
 
     if _match_end_s is not None:
@@ -1145,18 +1146,19 @@ def run_pipeline(
                         goal_t = result["timestamp"]
                         too_close = any(abs(gt - goal_t) < _GOAL_COOLDOWN_POST for gt in existing_goal_times)
                         _kickoff_fp = False  # filtre retiré : rejetait de vraies actions
-                        # Exiger un signal physique posthoc dans la fenêtre tir→but
-                        # Évite de valider un kickoff initial confondu avec un kickoff après but
-                        # Utiliser les posthoc BRUTS (avant filtrage Gemini)
-                        # pour ne pas rater les buts dont le posthoc a été supprimé
-                        # Posthoc BRUTS (avant filtrage Gemini) — évite de rejeter
-                        # des buts dont le candidat posthoc a été supprimé en amont
-                        _posthoc_times = _raw_posthoc_times if _raw_posthoc_times else [
-                            e.get("time", 0) for e in events
-                            if isinstance(e, dict)
-                            and e.get("type") in ("goal", "score")
-                            and e.get("source", "").startswith("goal_posthoc")
-                        ]
+                        # Exiger un signal physique dans la fenêtre tir→but
+                        # Sur caméra panoramique (posthoc désactivé), utiliser
+                        # les terminal_events comme signal physique alternatif
+                        if _posthoc_disabled:
+                            # terminal_goals + terminal_offensifs suffisent
+                            _posthoc_times = list(_terminal_goals_times) + list(_terminal_offensive_times)
+                        else:
+                            _posthoc_times = _raw_posthoc_times if _raw_posthoc_times else [
+                                e.get("time", 0) for e in events
+                                if isinstance(e, dict)
+                                and e.get("type") in ("goal", "score")
+                                and e.get("source", "").startswith("goal_posthoc")
+                            ]
                         # Fenêtre réduite à ±15s (était ±30s) — évite que le kickoff
                         # de la 2e mi-temps (~+60s) valide un FP à la fin de la 1ère
                         # Exclure les posthoc estampillés "kickoff" ou trop proches
