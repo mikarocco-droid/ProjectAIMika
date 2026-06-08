@@ -412,6 +412,9 @@ Rules — read carefully:
 - NO: goalkeeper holding/catching ball in front of the goal
 - NO: ball near the post but not inside
 - NO: ball anywhere outside the net
+- NO: goal kick — goalkeeper or defender kicking a stationary ball outward from the 6-yard box (ball moving AWAY from net toward midfield) → answer NO immediately
+- NO: goalkeeper distributing the ball (punting or throwing it outward from inside the goal) → answer NO immediately
+- NO: out-of-match content — children playing casually (small bodies, no team jerseys), empty pitch, informal game, or post-match activity → answer NO immediately
 
 Return ONLY valid JSON:
 {{"is_goal": true or false, "timestamp": <seconds or null>, "confidence": <0.0-1.0>, "evidence": "<describe exactly: ball position relative to net/line>"}}
@@ -529,11 +532,15 @@ DO NOT interpret as a goal:
 - BALL HIT POST: ball bouncing off post or crossbar without clearly entering the net = NOT a goal
 - BALL BEHIND THE GOAL (OUTSIDE): ball visible behind the goal structure from outside the net — this means corner kick or goal kick, NOT a goal. The ball must be INSIDE the net between the posts, not behind the goal frame from the exterior.
 - DEFENSIVE FREE KICK NEAR GOAL: player about to kick a stationary ball near the penalty area, others standing around = NOT a goal, NOT a kickoff
+- GOAL KICK (coup de pied de but): goalkeeper or defender placing ball on/near the 6-yard box line and kicking it outward (away from goal, toward midfield) = NOT a goal. Key signals: ball starts inside or very near the goal area, no attacking players nearby, ball is kicked AWAY from the net toward the field. This is a restart after the ball went out, NOT a goal. Score -5 immediately.
+- GOALKEEPER PUNTING / DISTRIBUTION: goalkeeper holding ball inside goal area then kicking/throwing it outward = NOT a goal. The ball is moving AWAY from the net.
 - BALL CAUGHT BY GOALKEEPER THEN CLEARED: goalkeeper catches ball and punts/throws it = NOT a goal, even if ball was near goal line
 - LONG BALL INTO GOALKEEPER: ball played toward goal that goalkeeper catches or holds comfortably = NOT a goal (no danger)
 - REFEREE ON PITCH NEAR PLAYERS: if the referee (black or yellow kit) is visibly active on the pitch standing near a group of players → this indicates a stoppage (injury, foul, incident), NOT a goal. Players grouping around the referee = stoppage, not celebration.
 - INJURY STOPPAGE: players gathering around a player on the ground, referee nearby, ball out of play near the touchline or penalty area = injury stoppage, NOT a goal. Score -5 immediately.
 - PENALTY BOX LINES MISREAD AS NET: if the "deformation" or "rectangle" visible is flat on the ground with white lines → it is the penalty box painted on grass, NOT the goal net. Do not award +3 for this.
+- OUT-OF-MATCH CONTENT: if the scene shows children playing casually (small bodies, no team jerseys, informal play), spectators on the pitch, an empty pitch with no organized game, or a goal kick/free kick situation from a completely different informal context → this is NOT a football match goal. Score -10 immediately, is_goal=false.
+  Signs of out-of-match content: very small players (children), no visible team colors/jerseys, casual clothing, no referee visible anywhere, completely empty pitch, or the context clearly resembles post-match/pre-match informal activity.
 
 For celebrations to count as evidence they must be UNAMBIGUOUS:
 - Multiple players from SAME team running toward each other with arms wide open
@@ -552,12 +559,14 @@ POSITIVE signals (accumulate across frames):
 +1 : ball near goal line but position unclear
 
 NEGATIVE signals (subtract immediately):
+-10: out-of-match content detected (children playing, empty pitch, informal game, no team jerseys) → is_goal=false, override ALL positives, stop scoring
 -5 : goalkeeper holding/catching/securing ball in hands or arms → is_goal=false, override ALL positives
 -5 : referee visible and active on pitch near players (injury stoppage, foul stoppage) → is_goal=false, override ALL positives
 -3 : players gathered around a player lying on the ground (injury) = NOT a celebration
 -4 : ball clearly kicked/headed away from goal (defensive clearance)
 -4 : corner kick or throw-in visible immediately after
 -4 : ball visible BEHIND the goal from outside (behind the goal frame/net exterior) → corner kick or goal kick situation
+-5 : goal kick detected (goalkeeper/defender kicking stationary ball outward from 6-yard box, ball moving away from net) → is_goal=false
 -3 : goalkeeper standing upright with ball (not diving, not retrieving from inside net)
 -3 : defensive free kick near goal area (stationary ball, players standing around)
 -1 : ball visible beside/around the post or outside the frame of the goal (not between the posts) — weak signal, overridden by ball-in-net evidence
