@@ -975,8 +975,9 @@ def find_match_end(
     frames_data,
     fps,
     team_colors          = None,
-    silence_threshold_s  = 1500.0,   # 25 min sans vrai jeu = fin du match
-    min_match_duration_s = 2700.0,   # chercher fin seulement après 45 min
+    silence_threshold_s  = 1500.0,   # 25 min sans vrai jeu = fin du match (matchs complets)
+    min_match_duration_s = 2700.0,   # chercher fin seulement après 45 min (matchs complets)
+    video_duration_s     = None,     # durée totale de la vidéo (si connue)
 ):
     """
     Détecte la fin du match dans les frames_data.
@@ -984,10 +985,31 @@ def find_match_end(
     Critère "vrai jeu" : ≥4 joueurs avec couleur d'équipe assignée.
     Les gamins sans vareuse après le match = ignorés (team=None).
 
+    Seuils adaptatifs : pour les vidéos courtes (extraits, fins de match),
+    les seuils sont réduits proportionnellement à la durée vidéo.
+
     Retourne le timestamp de fin (s) ou None si non détecté.
     """
     if not frames_data:
         return None
+
+    # ── Seuils adaptatifs selon durée vidéo ──────────────────────────────────
+    # Si la vidéo est plus courte qu'un match complet, adapter les seuils :
+    # - min_match_duration : au moins 30% de la durée vidéo (min 60s)
+    # - silence_threshold  : au moins 10% de la durée vidéo (min 30s)
+    if video_duration_s is not None and video_duration_s > 0:
+        adaptive_min = max(60.0, video_duration_s * 0.30)
+        adaptive_silence = max(30.0, video_duration_s * 0.10)
+        # Prendre le minimum entre les valeurs fixes et adaptatives
+        _min_match = min(min_match_duration_s, adaptive_min)
+        _silence   = min(silence_threshold_s, adaptive_silence)
+        if _min_match < min_match_duration_s or _silence < silence_threshold_s:
+            print(f"  [MATCH_END] Seuils adaptatifs : "
+                  f"min_match={_min_match:.0f}s (fixe={min_match_duration_s:.0f}s) | "
+                  f"silence={_silence:.0f}s (fixe={silence_threshold_s:.0f}s)")
+    else:
+        _min_match = min_match_duration_s
+        _silence   = silence_threshold_s
 
     last_real_game_t = None
     last_checked_t   = 0.0
@@ -1011,19 +1033,19 @@ def find_match_end(
         return None
 
     # Vérifier que le match a duré assez longtemps
-    if last_real_game_t < min_match_duration_s:
+    if last_real_game_t < _min_match:
         print(f"  [MATCH_END] last_real_game={last_real_game_t:.0f}s < "
-              f"min={min_match_duration_s:.0f}s → ignoré")
+              f"min={_min_match:.0f}s → ignoré")
         return None
 
     # Vérifier qu'il y a un silence significatif après
     silence = last_checked_t - last_real_game_t
-    if silence < silence_threshold_s:
+    if silence < _silence:
         print(f"  [MATCH_END] Pas de fin de match détectée → vidéo utilisée entièrement")
         return None
 
     print(f"  [MATCH_END] Fin détectée à t={last_real_game_t:.0f}s "
-          f"(silence={silence:.0f}s > {silence_threshold_s:.0f}s)")
+          f"(silence={silence:.0f}s > {_silence:.0f}s)")
     return last_real_game_t
 
 
