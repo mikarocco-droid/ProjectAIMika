@@ -1159,11 +1159,7 @@ def run_pipeline(
                                 and e.get("type") in ("goal", "score")
                                 and e.get("source", "").startswith("goal_posthoc")
                             ]
-                        # Fenêtre ±30s centrée sur shot_t (anchor = début de l'action)
-                        # goal_t peut être décalé de +10 à +20s par rapport au shot
-                        # → vérifier autour du shot plutôt que du goal évite les faux rejet
-                        # Exclure les posthoc trop proches du début de vidéo (kickoff initial)
-                        _anchor_t = st  # shot_t comme référence
+                        # Fenêtre ±15s centrée sur goal_t
                         _video_duration = total_frames / fps if fps > 0 else 9999
                         _posthoc_times_filtered = [
                             pt for pt in _posthoc_times
@@ -1171,10 +1167,10 @@ def run_pipeline(
                             and pt < _video_duration - 5.0     # pas en fin de vidéo
                         ]
                         _has_physical = any(
-                            abs(pt - _anchor_t) <= 30 for pt in _posthoc_times_filtered
+                            abs(pt - goal_t) <= 15 for pt in _posthoc_times_filtered
                         )
                         if not _has_physical:
-                            print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±30s (shot={int(_anchor_t//60):02d}:{int(_anchor_t%60):02d})")
+                            print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±15s")
                         if not too_close and _has_physical and not _kickoff_fp:
                             new_goal = {
                                 "type":             "goal",
