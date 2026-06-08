@@ -569,7 +569,12 @@ Only award +3 if the net is clearly DEFORMED (pushed inward) by the ball, provin
 If the net appears flat/undisturbed and the ball is near it → score 0 for that signal, not +3.
 
 DECISION:
-- total_score >= 5 → is_goal=true
+- total_score >= 5 → is_goal=true ONLY IF at least one physical signal is also present.
+  Physical signals = net deformation (+3), ball unmistakably in net (+3), celebration (+4 or +2), players walking back to center (+3).
+  CRITICAL EXCEPTION: if the ONLY positive signal is center kickoff (+5) with NO physical signal → is_goal=false.
+  Reason: a kickoff can follow any stoppage (foul, corner, free kick), not only goals.
+  Example: kickoff +5, ball outside net -2 = score 3 → is_goal=false (kickoff alone, negative physical signal)
+  Example: kickoff +5, net deformation +3 = score 8 → is_goal=true (physical signal present)
 - total_score == 4 → is_goal=true if celebration (+4) OR net deformation (+3) is present
 - total_score 3 → is_goal=true ONLY if net deformation clearly confirmed (+3 signal present)
 - total_score <= 2 → is_goal=false
@@ -748,8 +753,8 @@ def _score_observation_v2(obs: dict) -> tuple[float, list[str]]:
 
     # ── Signaux négatifs — override immédiat ──────────────────────────────
     if referee:
-        score -= 4.0
-        reasons.append("referee_visible -4")
+        score -= 1.0
+        reasons.append("referee_visible -1")
 
     # ── Signaux positifs ──────────────────────────────────────────────────
 
@@ -950,7 +955,7 @@ Return ONLY valid JSON, no markdown, no explanation:
         # Score >= 2.0 : kickoff + to_center uniquement → is_goal=True provisoire
         # À calibrer sur vidéo 1 + vidéo 2 avant de fixer définitivement
         THRESHOLD = 2.0
-        is_goal_v2 = (score >= THRESHOLD) and (parsed.get("referee_visible", False) is False)
+        is_goal_v2 = (score >= THRESHOLD)
 
         # Confiance basée sur score
         if score >= 4.5:
