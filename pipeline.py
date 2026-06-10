@@ -1013,6 +1013,38 @@ def run_pipeline(
                       f"tracker_conf={e.get('confidence',0):.2f} "
                       f"validated={e.get('gemini_validated',False)}")
 
+        # ── Filtre contextuel low_side_zoom — but gauche sans tir récent ──────────
+        # Sur caméra panoramique, le but gauche est toujours visible.
+        # Gemini confond régulièrement remises en jeu / dégagements gardien avec des buts.
+        # Règle : sur low_side_zoom, but côté gauche (bx < 0.10) sans tir dans les 10s
+        # précédentes → rejet systématique (0/4 FP réels avaient un tir récent).
+        _cam_type_for_filter = (_camera_profile or {}).get("camera_type", "unknown")
+        if _cam_type_for_filter == "low_side_zoom":
+            _shot_times = sorted([
+                e.get("time", 0) for e in events_validated
+                if e.get("type") in ("shot", "shot_on_target", "shot_blocked", "fast_shot")
+            ])
+            _filtered_goals = []
+            for _e in events_validated:
+                if _e.get("type") not in ("goal", "score") or not _e.get("gemini_validated"):
+                    _filtered_goals.append(_e)
+                    continue
+                _t  = _e.get("time", 0)
+                _bx = _e.get("bx") or (_e.get("ball_x", 9999) / _frame_w if _e.get("ball_x") else None)
+                # Côté gauche = bx < 0.10 OU position inconnue (None → on applique par sécurité)
+                _is_left = (_bx is None) or (_bx < 0.10)
+                if _is_left:
+                    _recent_shot = any(0 < _t - _st <= 10 for _st in _shot_times)
+                    if not _recent_shot:
+                        print(f"  [LOW_ZOOM_FILTER] But gauche rejeté t={int(_t//60):02d}:{int(_t%60):02d}"
+                              f" bx={_bx:.3f if _bx is not None else '?'} — aucun tir dans les 10s")
+                        continue
+                _filtered_goals.append(_e)
+            if len(_filtered_goals) < len(events_validated):
+                n_removed = len([e for e in events_validated if e.get("type") in ("goal","score") and e.get("gemini_validated")])                           - len([e for e in _filtered_goals if e.get("type") in ("goal","score") and e.get("gemini_validated")])
+                print(f"  [LOW_ZOOM_FILTER] {n_removed} but(s) rejeté(s) — filtre tir récent low_side_zoom")
+            events_validated = _filtered_goals
+
         # ── Cooldown post-Gemini — éliminer les doublons après validation ────────
         # V9.7+ : le cooldown long s'applique UNIQUEMENT sur les buts validés
         # Les candidats rejetés par Gemini ne bloquent plus les suivants
