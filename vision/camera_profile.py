@@ -131,12 +131,11 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0,
 
             if _ball_goal_right_sw is not None:
                 rg = _ball_goal_right_sw
-                # Sur caméra déportée (low_side_zoom), le jeu est concentré
-                # côté gauche → p99 ballon sous-estime fortement le but droit.
-                # On élargit la zone vers la droite : de rg jusqu'à sw
-                # pour capturer le poteau même s'il est hors de la zone de jeu.
+                # Sur caméra déportée, le jeu est côté gauche → p99 ballon
+                # sous-estime le but droit. On élargit à droite mais on exclut
+                # le bord du cadre (<85%) qui capture tribunes/panneaux parasites.
                 right_beg = max(0, int(rg - sw * 0.05))
-                right_end = sw
+                right_end = min(sw, int(sw * 0.85))
             else:
                 right_beg = int(sw * 0.82)
                 right_end = sw
@@ -151,7 +150,7 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0,
             # si le but droit estimé ballon est < 55% du cadre → caméra déportée
             # → seuil réduit à 3% pour capturer les petits buts.
             if _ball_goal_right_sw is not None and _ball_goal_right_sw < sw * 0.55:
-                min_coverage = sh * 0.03   # caméra panoramique : but lointain/petit
+                min_coverage = sh * 0.01   # caméra panoramique : but lointain/petit (~5px)
             else:
                 min_coverage = sh * 0.20   # caméra standard
 
