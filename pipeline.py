@@ -861,6 +861,32 @@ def run_pipeline(
 
         # Log PRE-GEMINI — état de tous les buts avant validation
         goals_pre = [e for e in events_for_gemini if e.get("type") == "goal"]
+        # ── Filtre contextuel pre-Gemini low_side_zoom ──────────────────────────
+        # Sur caméra panoramique, rejeter les candidats but gauche (bx < 0.10)
+        # sans tir dans les 10s précédentes — avant tout appel Gemini.
+        _cam_pre = (_camera_profile or {}).get("camera_type", "unknown")
+        if _cam_pre == "low_side_zoom":
+            _shot_times_pre = sorted([
+                e.get("time", 0) for e in events_clean
+                if e.get("type") in ("shot", "shot_on_target", "shot_blocked", "fast_shot")
+            ])
+            _goals_pre_filtered = []
+            for _e in goals_pre:
+                _t  = _e.get("time", 0)
+                _bx = _e.get("bx") or (_e.get("ball_x", 9999) / _frame_w if _e.get("ball_x") else None)
+                _is_left = (_bx is None) or (_bx < 0.10)
+                if _is_left:
+                    _recent = any(0 < _t - _st <= 10 for _st in _shot_times_pre)
+                    if not _recent:
+                        _bx_str = f"{_bx:.3f}" if _bx is not None else "?"
+                        print(f"  [LOW_ZOOM_PRE] Candidat rejeté avant Gemini t={int(_t//60):02d}:{int(_t%60):02d}"
+                              f" bx={_bx_str} — aucun tir dans les 10s")
+                        continue
+                _goals_pre_filtered.append(_e)
+            if len(_goals_pre_filtered) < len(goals_pre):
+                print(f"  [LOW_ZOOM_PRE] {len(goals_pre) - len(_goals_pre_filtered)} candidat(s) filtrés avant Gemini")
+            goals_pre = _goals_pre_filtered
+
         print(f"  [PRE-GEMINI PIPELINE] {len(goals_pre)} but(s) candidats")
         if DEBUG:
             for e in goals_pre:
@@ -1296,13 +1322,29 @@ def run_pipeline(
                     break
 
         if prio_players:
+            # ── PlayerIdentityMemory : skip les joueurs déjà connus ──────────
+            _pim_jerseys_known = {}
+            _pim = None
+            try:
+                from analysis.player_identity_memory import (
+                    load_memory_for_video, filter_unknown_players)
+                _pim = load_memory_for_video(video_path)
+                prio_players_filtered, _pim_jerseys_known = filter_unknown_players(
+                    _pim, prio_players[:40])
+                jersey_map.update(_pim_jerseys_known)
+            except Exception as _pim_e:
+                print(f"  [PIM] Non disponible : {_pim_e}")
+                prio_players_filtered = prio_players[:40]
+            # ─────────────────────────────────────────────────────────────────
+
             gemini_jerseys = read_jersey_numbers(
                 video_path          = video_path,
-                players_with_frames = prio_players[:40],
+                players_with_frames = prio_players_filtered,
                 fps                 = fps
-            )
+            ) if prio_players_filtered else {}
             jersey_map.update(gemini_jerseys)
-            print(f"  Gemini jerseys : {len(gemini_jerseys)} numéros lus "
+            print(f"  Gemini jerseys : {len(gemini_jerseys)} nouveaux lus, "
+                  f"{len(_pim_jerseys_known)} récupérés mémoire "
                   f"(buts+tirs 3 frames + {len(seen_general)} généraux)")
 
         # Lecture ciblée buteurs + passeurs sur frames de buts confirmés
@@ -1384,6 +1426,11 @@ def run_pipeline(
                 )
                 jersey_map.update(goal_jerseys)
                 print(f"  Gemini goal scorers : {len(goal_jerseys)} buteur(s)/passeur(s) identifié(s)")
+
+                # ── PIM : sauvegarder buteurs (source la plus fiable) ─────────
+                if _pim is not None and goal_jerseys:
+                    for _tid, _num in goal_jerseys.items():
+                        _pim.update_from_goal_scorer(track_id=_tid, jersey=_num)
         except Exception as _ej:
             print(f"  Goal scorers ignoré : {_ej}")
 
@@ -1396,6 +1443,16 @@ def run_pipeline(
     try:
         events, jersey_map = resolve_player_identities(events, jersey_map)
         print(f"  Jersey map : {len(jersey_map)} joueurs identifiés")
+
+        # ── PlayerIdentityMemory : mise à jour finale + sauvegarde ────────────
+        if _pim is not None:
+            _pim.update_from_pipeline(
+                jersey_map  = jersey_map,
+                events      = events,
+                visual_pool = _visual_pool if '_visual_pool' in dir() else None,
+            )
+            _pim.save()
+            _pim.summary()
     except Exception as e:
         print(f"  Identity resolver ignoré : {e}")
 
