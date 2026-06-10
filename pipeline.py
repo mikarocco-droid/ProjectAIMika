@@ -852,6 +852,13 @@ def run_pipeline(
     # ─────────────────────────────────────────────────────────────────────────
 
     print("Step 1b : Validation Gemini...")
+    # ── Initialisations défensives — survivent si le bloc Gemini échoue ────────
+    events_validated = events   # fallback : tous les events passent sans Gemini
+    events_clean     = []       # sera recalculé plus loin
+    _pim             = None     # PlayerIdentityMemory — initialisé dans le bloc try
+    _visual_pool     = {}       # pool visuel — initialisé dans le bloc try
+    # ─────────────────────────────────────────────────────────────────────────────
+
     try:
         from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers, read_goal_scorers
 
@@ -866,8 +873,10 @@ def run_pipeline(
         # sans tir dans les 10s précédentes — avant tout appel Gemini.
         _cam_pre = (_camera_profile or {}).get("camera_type", "unknown")
         if _cam_pre == "low_side_zoom":
+            # events_clean pas encore calculé ici → utiliser events directement
+            _events_for_shots = events_clean if events_clean else events
             _shot_times_pre = sorted([
-                e.get("time", 0) for e in events_clean
+                e.get("time", 0) for e in _events_for_shots
                 if e.get("type") in ("shot", "shot_on_target", "shot_blocked", "fast_shot")
             ])
             _goals_pre_filtered = []
@@ -1449,7 +1458,7 @@ def run_pipeline(
             _pim.update_from_pipeline(
                 jersey_map  = jersey_map,
                 events      = events,
-                visual_pool = _visual_pool if '_visual_pool' in dir() else None,
+                visual_pool = _visual_pool or None,
             )
             _pim.save()
             _pim.summary()
