@@ -94,15 +94,20 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0,
             hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
             green_mask = cv2.inRange(hsv, (35, 35, 35), (90, 255, 255))
 
-            # Pixels blancs sur fond vert (lignes de terrain)
-            # Blanc = tous canaux > 170 ET herbe visible dans le voisinage
+            # Pixels blancs dans la zone terrain
+            # On ne filtre plus "blanc sur fond vert" car les poteaux sont souvent
+            # entourés de ciel/tribunes, pas d'herbe → le AND avec green_dilated
+            # supprimait les poteaux sur caméra panoramique.
+            # On utilise directement le blanc dans la moitié basse du cadre.
             white_mask = cv2.inRange(small, (160, 160, 160), (255, 255, 255))
 
             # Garder seulement la zone terrain (y > 15% de hauteur)
             terrain_top = int(sh * 0.15)
             white_mask[:terrain_top, :] = 0
 
-            # Dilater le masque vert pour avoir le voisinage
+            # Exclure le ciel (pixels très lumineux sans saturation = ciel/nuages)
+            # On masque les zones sans vert du tout dans la colonne (évite les panneaux blancs)
+            # Dilatation verticale (15px — conservative)
             kernel = np.ones((15, 1), np.uint8)
             green_dilated = cv2.dilate(green_mask, kernel)
             white_on_field = cv2.bitwise_and(white_mask, green_dilated)
@@ -138,6 +143,15 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0,
 
             left_zone  = col_smooth[left_start:left_end]
             right_zone = col_smooth[right_beg:right_end]
+
+            # DIAGNOSTIC Sprint 2 — loguer sur les 3 premières frames
+            if len(left_votes) + len(right_votes) == 0 and fid == sample_frames[0]:
+                print(f"  [LINE_DIAG] frame={fid} sw={sw} sh={sh} scale={scale:.3f}")
+                print(f"  [LINE_DIAG] ball_right_sw={_ball_goal_right_sw} ball_left_sw={_ball_goal_left_sw}")
+                print(f"  [LINE_DIAG] zone_left=[{left_start},{left_end}] zone_right=[{right_beg},{right_end}]")
+                print(f"  [LINE_DIAG] min_coverage={min_coverage:.1f}")
+                print(f"  [LINE_DIAG] col_smooth max_left={left_zone.max():.1f} max_right={right_zone.max():.1f}")
+                print(f"  [LINE_DIAG] col_smooth global_max={col_smooth.max():.1f} global_argmax={col_smooth.argmax()} ({col_smooth.argmax()/sw*100:.1f}%)")
 
             # Seuil de couverture verticale.
             # Caméra standard : le poteau couvre ~20-30% de la hauteur.
