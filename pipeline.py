@@ -1036,8 +1036,9 @@ def run_pipeline(
                 if _is_left:
                     _recent_shot = any(0 < _t - _st <= 10 for _st in _shot_times)
                     if not _recent_shot:
+                        _bx_str = f"{_bx:.3f}" if _bx is not None else "?"
                         print(f"  [LOW_ZOOM_FILTER] But gauche rejeté t={int(_t//60):02d}:{int(_t%60):02d}"
-                              f" bx={_bx:.3f if _bx is not None else '?'} — aucun tir dans les 10s")
+                              f" bx={_bx_str} — aucun tir dans les 10s")
                         continue
                 _filtered_goals.append(_e)
             if len(_filtered_goals) < len(events_validated):
