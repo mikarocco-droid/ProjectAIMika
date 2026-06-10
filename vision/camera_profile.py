@@ -126,8 +126,12 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0,
 
             if _ball_goal_right_sw is not None:
                 rg = _ball_goal_right_sw
-                right_beg = max(0, int(rg - sw * 0.12))
-                right_end = min(sw, int(rg + sw * 0.12))
+                # Sur caméra déportée (low_side_zoom), le jeu est concentré
+                # côté gauche → p99 ballon sous-estime fortement le but droit.
+                # On élargit la zone vers la droite : de rg jusqu'à sw
+                # pour capturer le poteau même s'il est hors de la zone de jeu.
+                right_beg = max(0, int(rg - sw * 0.05))
+                right_end = sw
             else:
                 right_beg = int(sw * 0.82)
                 right_end = sw
@@ -135,9 +139,16 @@ def _detect_goal_lines_from_video(video_path, frame_w, frame_h, fps=25.0,
             left_zone  = col_smooth[left_start:left_end]
             right_zone = col_smooth[right_beg:right_end]
 
-            # Seuil = 20% de la hauteur de frame (lignes doivent couvrir >20% verticalement)
-            # 40% était trop strict pour les caméras basses/zoom
-            min_coverage = sh * 0.20
+            # Seuil de couverture verticale.
+            # Caméra standard : le poteau couvre ~20-30% de la hauteur.
+            # Caméra panoramique lointaine : le but est petit, ~3-8% de hauteur.
+            # On adapte selon x_coverage transmis via ball_goal_right_px :
+            # si le but droit estimé ballon est < 55% du cadre → caméra déportée
+            # → seuil réduit à 3% pour capturer les petits buts.
+            if _ball_goal_right_sw is not None and _ball_goal_right_sw < sw * 0.55:
+                min_coverage = sh * 0.03   # caméra panoramique : but lointain/petit
+            else:
+                min_coverage = sh * 0.20   # caméra standard
 
             if left_zone.max() > min_coverage:
                 # Pic le plus à droite dans la zone gauche
