@@ -851,6 +851,92 @@ def run_pipeline(
     print(f"  Mode éco : {n_eco}/{len(events)} events en phase creuse (skip Gemini)")
     # ─────────────────────────────────────────────────────────────────────────
 
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Step 1b-geo : GeometryExtractor pass (Sprint BC — mode passif)
+    # Aucune décision. Seulement observation et logs.
+    # ─────────────────────────────────────────────────────────────────────────
+    _field_model  = None
+    _geom_state   = {}
+    try:
+        import cv2 as _cv2_geo
+        from geometry.geometry_extractor import GeometryExtractor
+        from geometry.field_model import FieldModel
+
+        _geo_extractor = GeometryExtractor(frame_w=_frame_w, frame_h=_frame_h)
+        _field_model   = FieldModel()
+
+        # Échantillonner 1 frame toutes les 5s sur la durée du match
+        _geo_cap   = _cv2_geo.VideoCapture(video_path)
+        _geo_fps   = _geo_cap.get(_cv2_geo.CAP_PROP_FPS) or fps or 25.0
+        _geo_step  = int(_geo_fps * 5)   # 1 frame / 5s
+        _geo_total = int(_geo_cap.get(_cv2_geo.CAP_PROP_FRAME_COUNT))
+        _geo_n     = 0
+
+        _frame_idx = 0
+        while True:
+            _geo_cap.set(_cv2_geo.CAP_PROP_POS_FRAMES, _frame_idx)
+            _ret, _geo_frame = _geo_cap.read()
+            if not _ret:
+                break
+            obs = _geo_extractor.extract(_geo_frame, frame_idx=_frame_idx)
+            _field_model.update(obs)
+            _geo_n     += 1
+            _frame_idx += _geo_step
+            if _frame_idx >= _geo_total:
+                break
+
+        _geo_cap.release()
+        _geom_state = _field_model.get_state()
+
+        # ── Log passif — aucune décision métier ──────────────────────────────
+        _geo_conf = _geom_state.get("confidence", 0)
+        _geo_st   = _geom_state.get("status", "?")
+        print(f"  [GEOM] {_geo_n} frames analysées | conf={_geo_conf:.2f} | status={_geo_st}")
+        if _geom_state.get("status") == "ok":
+            _gl = _geom_state.get("goal_left_x")
+            _gr = _geom_state.get("goal_right_x")
+            _pl = _geom_state.get("penalty_left_x")
+            _pr = _geom_state.get("penalty_right_x")
+            _st = _geom_state.get("sideline_y_top")
+            _sb = _geom_state.get("sideline_y_bot")
+            if _gl is not None:
+                print(f"  [GEOM] goal_box      : left={_gl:.3f} right={_gr:.3f} "
+                      f"width={(_gr or 0)-_gl:.3f}")
+            if _pl is not None:
+                print(f"  [GEOM] penalty_area  : left={_pl:.3f} right={_pr:.3f}")
+            if _st is not None:
+                print(f"  [GEOM] sideline      : top={_st:.3f} bot={_sb:.3f}")
+
+            # ── Comparaison pixel vs world pour les buts détectés (BC.3 log) ─
+            _goals_for_geo = [e for e in events if e.get("type") in ("goal", "score")]
+            if _goals_for_geo and _gl is not None:
+                print(f"  [GEOM] ── Pixel vs World (passif) ──")
+                for _eg in _goals_for_geo:
+                    _t  = _eg.get("time", 0)
+                    _bx = _eg.get("bx") or (
+                        _eg.get("ball_x", 0) / _frame_w if _eg.get("ball_x") else None)
+                    _by = _eg.get("by") or (
+                        _eg.get("ball_y", 0) / _frame_h if _eg.get("ball_y") else None)
+                    if _bx is None:
+                        continue
+                    _pixel_goal = _bx < 0.10 or _bx > 0.90
+                    _world_goal = _field_model.ball_in_goal(_bx, _by or 0.5, side="left")
+                    _mm = int(_t // 60)
+                    _ss = int(_t % 60)
+                    print(f"  [GEOM]   {_mm:02d}:{_ss:02d} "
+                          f"bx={_bx:.3f} "
+                          f"pixel_goal={_pixel_goal} "
+                          f"world_goal={_world_goal}")
+
+        _field_model.summary()
+
+    except ImportError as _geo_e:
+        print(f"  [GEOM] geometry/ non disponible : {_geo_e}")
+    except Exception as _geo_e:
+        print(f"  [GEOM] Erreur (non bloquant) : {_geo_e}")
+    # ─────────────────────────────────────────────────────────────────────────
+
     print("Step 1b : Validation Gemini...")
     # ── Initialisations défensives — survivent si le bloc Gemini échoue ────────
     events_validated = events   # fallback : tous les events passent sans Gemini
@@ -1440,14 +1526,7 @@ def run_pipeline(
                 # ── PIM : sauvegarder buteurs (source la plus fiable) ─────────
                 if _pim is not None and goal_jerseys:
                     for _tid, _num in goal_jerseys.items():
-                        try:
-                            _pim.update_from_goal_scorer(track_id=_tid, jersey=_num)
-                        except AttributeError:
-                            # Compatibilité v1 de player_identity_memory
-                            try:
-                                _pim.register(_tid, _num, source="gemini_visual")
-                            except Exception:
-                                pass
+                        _pim.update_from_goal_scorer(track_id=_tid, jersey=_num)
         except Exception as _ej:
             print(f"  Goal scorers ignoré : {_ej}")
 
@@ -1463,23 +1542,13 @@ def run_pipeline(
 
         # ── PlayerIdentityMemory : mise à jour finale + sauvegarde ────────────
         if _pim is not None:
-            try:
-                _pim.update_from_pipeline(
-                    jersey_map  = jersey_map,
-                    events      = events,
-                    visual_pool = _visual_pool or None,
-                )
-            except AttributeError:
-                # Compatibilité v1 : update_from_pipeline absent
-                try:
-                    _pim.update_from_pipeline(jersey_map, events)
-                except AttributeError:
-                    pass  # v1 basique sans cette méthode
-            try:
-                _pim.save()
-                _pim.summary()
-            except Exception as _pim_e:
-                print(f"  [PIM] save/summary : {_pim_e}")
+            _pim.update_from_pipeline(
+                jersey_map  = jersey_map,
+                events      = events,
+                visual_pool = _visual_pool or None,
+            )
+            _pim.save()
+            _pim.summary()
     except Exception as e:
         print(f"  Identity resolver ignoré : {e}")
 
