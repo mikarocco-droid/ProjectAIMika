@@ -400,6 +400,24 @@ class PlayerIdentityMemory:
         print(f"  [PIM] ──────────────────────────────────────────────────")
 
 
+    # Alias de compatibilite pipeline
+
+    def update_from_goal_scorer(self, track_id, jersey,
+                                 team='home',
+                                 team_color=None,
+                                 visual_desc=None):
+        self.register_goal_scorer(
+            track_id=track_id, jersey=jersey,
+            team=team, team_color=team_color,
+        )
+
+    def update_from_pipeline(self, jersey_map,
+                              events=None,
+                              visual_pool=None,
+                              teams=None):
+        self.finalize(jersey_map=jersey_map, events=events)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def make_pim(video_path: str = "", team_id: str = "", match_date: str = "") -> PlayerIdentityMemory:
