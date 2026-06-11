@@ -860,26 +860,37 @@ def run_pipeline(
     _geom_state   = {}
     try:
         import cv2 as _cv2_geo
+        import time as _geo_time
         from geometry.geometry_extractor import GeometryExtractor
         from geometry.field_model import FieldModel
 
-        _geo_extractor = GeometryExtractor(frame_w=_frame_w, frame_h=_frame_h)
+        _geo_fps_val = fps or 25.0
+        _geo_extractor = GeometryExtractor(frame_w=_frame_w, frame_h=_frame_h,
+                                           fps=_geo_fps_val)
         _field_model   = FieldModel()
 
-        # Échantillonner 1 frame toutes les 5s sur la durée du match
-        _geo_cap   = _cv2_geo.VideoCapture(video_path)
-        _geo_fps   = _geo_cap.get(_cv2_geo.CAP_PROP_FPS) or fps or 25.0
-        _geo_step  = int(_geo_fps * 5)   # 1 frame / 5s
-        _geo_total = int(_geo_cap.get(_cv2_geo.CAP_PROP_FRAME_COUNT))
-        _geo_n     = 0
+        # Échantillonner 1 frame toutes les 5s
+        # MAX 150 frames (≈12min de match) pour limiter le temps d'exécution
+        _geo_cap    = _cv2_geo.VideoCapture(video_path)
+        _geo_fps    = _geo_cap.get(_cv2_geo.CAP_PROP_FPS) or _geo_fps_val
+        _geo_step   = int(_geo_fps * 5)   # 1 frame / 5s
+        _geo_total  = int(_geo_cap.get(_cv2_geo.CAP_PROP_FRAME_COUNT))
+        _geo_n      = 0
+        _geo_t0     = _geo_time.time()
 
-        _frame_idx = 0
-        while True:
+        # Debug sur les 10 premières frames pour diagnostiquer les rejets
+        _geo_debug_max = 10
+        print(f"  [GEOM] Debug actif sur les {_geo_debug_max} premières frames")
+
+        _frame_idx  = 0
+        while _geo_n < 150:
             _geo_cap.set(_cv2_geo.CAP_PROP_POS_FRAMES, _frame_idx)
             _ret, _geo_frame = _geo_cap.read()
             if not _ret:
                 break
-            obs = _geo_extractor.extract(_geo_frame, frame_idx=_frame_idx)
+            _debug_this = (_geo_n < _geo_debug_max)
+            obs = _geo_extractor.extract(_geo_frame, frame_idx=_frame_idx,
+                                          debug=_debug_this)
             _field_model.update(obs)
             _geo_n     += 1
             _frame_idx += _geo_step
@@ -887,12 +898,17 @@ def run_pipeline(
                 break
 
         _geo_cap.release()
+        _geo_elapsed = _geo_time.time() - _geo_t0
+        print(f"  [GEOM] Pass terminé : {_geo_n} frames en {_geo_elapsed:.1f}s "
+              f"({_geo_elapsed/_geo_n*1000:.0f}ms/frame)")
         _geom_state = _field_model.get_state()
 
         # ── Log passif — aucune décision métier ──────────────────────────────
         _geo_conf = _geom_state.get("confidence", 0)
         _geo_st   = _geom_state.get("status", "?")
-        print(f"  [GEOM] {_geo_n} frames analysées | conf={_geo_conf:.2f} | status={_geo_st}")
+        print(f"  [GEOM] {_geo_n} frames analysées | conf={_geo_conf:.2f} | "
+              f"status={_geo_st} | {_geo_elapsed:.1f}s")
+
         if _geom_state.get("status") == "ok":
             _gl = _geom_state.get("goal_left_x")
             _gr = _geom_state.get("goal_right_x")
@@ -900,13 +916,26 @@ def run_pipeline(
             _pr = _geom_state.get("penalty_right_x")
             _st = _geom_state.get("sideline_y_top")
             _sb = _geom_state.get("sideline_y_bot")
+            _ng = _geom_state.get("n_good", 0)
+            _no = _geom_state.get("n_observations", 0)
+
             if _gl is not None:
                 print(f"  [GEOM] goal_box      : left={_gl:.3f} right={_gr:.3f} "
-                      f"width={(_gr or 0)-_gl:.3f}")
+                      f"width={(_gr or 0)-_gl:.3f} ({_ng}/{_no} obs)")
             if _pl is not None:
                 print(f"  [GEOM] penalty_area  : left={_pl:.3f} right={_pr:.3f}")
             if _st is not None:
                 print(f"  [GEOM] sideline      : top={_st:.3f} bot={_sb:.3f}")
+
+            # Stabilité : variance des 20 dernières obs de goal_left
+            _hist = _field_model._history[-20:] if _field_model else []
+            _gl_vals = [h["goal_left"] for h in _hist if h.get("goal_left") is not None]
+            if len(_gl_vals) >= 3:
+                import statistics as _stat
+                _stdev = _stat.stdev(_gl_vals)
+                _stable = _stdev < 0.02
+                print(f"  [GEOM] stabilité     : goal_left σ={_stdev:.4f} "
+                      f"({'STABLE ✅' if _stable else 'INSTABLE ⚠️'})")
 
             # ── Comparaison pixel vs world pour les buts détectés (BC.3 log) ─
             _goals_for_geo = [e for e in events if e.get("type") in ("goal", "score")]
