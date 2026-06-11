@@ -169,8 +169,14 @@ class PlayerIdentityMemory:
             return hashlib.md5(self.team_id.encode()).hexdigest()[:10]
         return "global"
 
-    def _player_key(self, jersey: int, team: str) -> str:
-        return f"{jersey}_{team}"
+    def _normalize_team(self, team) -> str:
+        """Normalise la representation equipe : 0 -> home, 1 -> away."""
+        if team in ("0", 0):  return "home"
+        if team in ("1", 1):  return "away"
+        return str(team)
+
+    def _player_key(self, jersey: int, team) -> str:
+        return f"{jersey}_{self._normalize_team(team)}"
 
     # ── Persistance ─────────────────────────────────────────────────────────────
 
@@ -215,6 +221,7 @@ class PlayerIdentityMemory:
         Met à jour le registre niveau 1 (track→jersey) ET niveau 2 (persistant).
         """
         tid  = str(track_id)
+        team = self._normalize_team(team)
         conf = confidence or SOURCE_CONFIDENCE.get(source, 0.50)
 
         # Niveau 1 : track → jersey (temporaire)
@@ -349,7 +356,7 @@ class PlayerIdentityMemory:
         new_in_map = 0
         for tid, jersey in jersey_map.items():
             if str(tid) not in self._match_registry:
-                team = team_index.get(str(tid), "home")
+                team = self._normalize_team(team_index.get(str(tid), "home"))
                 self.register_detection(
                     track_id=str(tid), jersey=jersey, team=team,
                     source="gemini_batch",
