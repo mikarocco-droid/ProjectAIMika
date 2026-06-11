@@ -29,18 +29,19 @@ from typing import Optional
 
 # ── Paramètres ─────────────────────────────────────────────────────────────────
 
-# Zone d'intérêt : on n'analyse pas le ciel ni les tribunes
-ROI_Y_MIN = 0.20   # ignorer le haut de l'image
-ROI_Y_MAX = 0.95
+# Zone d'intérêt — élargie pour capturer les poteaux de but
+# Sur low_side_zoom, les poteaux peuvent commencer dès y=0.15
+ROI_Y_MIN = 0.10   # élargi de 0.20 → 0.10
+ROI_Y_MAX = 0.97
 
-# Détection lignes Hough
-HOUGH_THRESHOLD   = 60
-HOUGH_MIN_LENGTH  = 80
-HOUGH_MAX_GAP     = 20
+# Détection lignes Hough — seuils souples pour vidéos compressées/low_side_zoom
+HOUGH_THRESHOLD   = 30    # réduit de 60 → 30 pour détecter lignes peu contrastées
+HOUGH_MIN_LENGTH  = 40    # réduit de 80 → 40 pour courtes lignes partiellement visibles
+HOUGH_MAX_GAP     = 30    # augmenté pour tolérer les interruptions
 
-# Largeur minimale d'un but en % du cadre (évite les faux poteaux)
-MIN_GOAL_WIDTH_PCT  = 0.03   # 3% = ~58px sur 1920
-MAX_GOAL_WIDTH_PCT  = 0.12   # 12% = ~230px (but proche caméra)
+# Largeur but — élargie pour low_side_zoom (caméra très proche du but gauche)
+MIN_GOAL_WIDTH_PCT  = 0.02   # 2% = ~38px
+MAX_GOAL_WIDTH_PCT  = 0.18   # 18% = ~346px (but très proche caméra)
 
 # Largeur minimale surface de réparation
 MIN_PENALTY_WIDTH_PCT = 0.08
@@ -95,16 +96,19 @@ class GeometryExtractor:
         obs = extractor.extract(frame, frame_idx=500)
     """
 
-    def __init__(self, frame_w: int = 1920, frame_h: int = 1080):
+    def __init__(self, frame_w: int = 1920, frame_h: int = 1080, fps: float = 25.0):
         self.frame_w = frame_w
         self.frame_h = frame_h
+        self._fps    = fps
         self._n_calls = 0
         self._n_success = 0
 
-    def extract(self, frame: np.ndarray, frame_idx: int = 0) -> GeometryObservation:
+    def extract(self, frame: np.ndarray, frame_idx: int = 0,
+                debug: bool = False) -> GeometryObservation:
         """
         Extrait les structures géométriques d'une frame.
         Retourne une GeometryObservation avec confidence ≥ 0.
+        debug=True : logs détaillés pour BC.2 diagnostic.
         """
         self._n_calls += 1
         h, w = frame.shape[:2]
@@ -112,10 +116,20 @@ class GeometryExtractor:
         obs = GeometryObservation(frame_idx=frame_idx)
 
         # 1. Détecter les lignes blanches du terrain
-        lines = self._detect_white_lines(frame, w, h)
+        lines, debug_info = self._detect_white_lines_debug(frame, w, h)
+
+        if debug:
+            t_s = frame_idx / max(1, getattr(self, '_fps', 25.0))
+            print(f"  [GEOM_DEBUG] frame={frame_idx} t={t_s:.1f}s "
+                  f"grass={debug_info['grass_ratio']:.2f} "
+                  f"white_px={debug_info['white_pixels']} "
+                  f"hough_lines={debug_info['hough_lines']} "
+                  f"fallback={debug_info['used_fallback']}")
 
         if lines is None or len(lines) == 0:
             obs.method = "no_lines"
+            if debug:
+                print(f"  [GEOM_DEBUG]   → reject: no_lines")
             return obs
 
         # 2. Classifier les lignes : verticales (poteaux) vs horizontales (lignes)
@@ -153,27 +167,39 @@ class GeometryExtractor:
     # ── Détection lignes blanches ─────────────────────────────────────────────
 
     def _detect_white_lines(self, frame, w, h):
-        """Détecte les lignes blanches du terrain via Canny + HoughLinesP."""
-        # ROI : ignorer le ciel
+        """Compatibilité — appelle la version debug avec debug_info ignoré."""
+        lines, _ = self._detect_white_lines_debug(frame, w, h)
+        return lines
+
+    def _detect_white_lines_debug(self, frame, w, h):
+        """Détecte les lignes blanches + retourne des métriques de diagnostic."""
+        debug_info = {
+            "grass_ratio": 0.0,
+            "white_pixels": 0,
+            "hough_lines": 0,
+            "used_fallback": False,
+        }
+
         y0 = int(h * ROI_Y_MIN)
         y1 = int(h * ROI_Y_MAX)
         roi = frame[y0:y1, :]
 
-        # Masque couleur verte du terrain → inverser pour garder le blanc
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         green_mask = cv2.inRange(hsv,
-                                  np.array([35, 40, 40]),
-                                  np.array([85, 255, 255]))
+                                  np.array([25, 25, 25]),
+                                  np.array([95, 255, 255]))
 
-        # Lignes blanches = zones blanches sur fond vert
+        roi_pixels = roi.shape[0] * roi.shape[1]
+        debug_info["grass_ratio"] = float(np.count_nonzero(green_mask)) / max(1, roi_pixels)
+
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         _, white_mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+        debug_info["white_pixels"] = int(np.count_nonzero(white_mask))
 
-        # Garder seulement le blanc sur fond vert (dilater green_mask)
         green_dilated = cv2.dilate(green_mask, np.ones((5, 5), np.uint8), iterations=2)
         line_mask = cv2.bitwise_and(white_mask, green_dilated)
 
-        edges = cv2.Canny(line_mask, 50, 150)
+        edges = cv2.Canny(line_mask, 30, 120)
         lines = cv2.HoughLinesP(
             edges,
             rho=1, theta=np.pi/180,
@@ -181,17 +207,32 @@ class GeometryExtractor:
             minLineLength=HOUGH_MIN_LENGTH,
             maxLineGap=HOUGH_MAX_GAP,
         )
+        debug_info["hough_lines"] = len(lines) if lines is not None else 0
+
+        # Fallback : image grise directe si peu de lignes
+        if lines is None or len(lines) < 3:
+            edges_fb = cv2.Canny(gray, 40, 130)
+            lines_fb = cv2.HoughLinesP(
+                edges_fb,
+                rho=1, theta=np.pi/180,
+                threshold=max(15, HOUGH_THRESHOLD // 2),
+                minLineLength=max(20, HOUGH_MIN_LENGTH // 2),
+                maxLineGap=HOUGH_MAX_GAP * 2,
+            )
+            if lines_fb is not None:
+                lines = lines_fb
+                debug_info["used_fallback"] = True
+                debug_info["hough_lines"] = len(lines_fb)
 
         if lines is None:
-            return None
+            return None, debug_info
 
-        # Remettre les coordonnées dans le référentiel de la frame complète
         offset_y = y0
         adjusted = []
         for ln in lines:
             x1, y1_, x2, y2_ = ln[0]
             adjusted.append([x1, y1_ + offset_y, x2, y2_ + offset_y])
-        return adjusted
+        return adjusted, debug_info
 
     # ── Classification lignes ─────────────────────────────────────────────────
 
