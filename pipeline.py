@@ -873,10 +873,10 @@ def run_pipeline(
         # sans tir dans les 10s précédentes — avant tout appel Gemini.
         _cam_pre = (_camera_profile or {}).get("camera_type", "unknown")
         if _cam_pre == "low_side_zoom":
-            # events_clean pas encore calculé ici → utiliser events directement
-            _events_for_shots = events_clean if events_clean else events
+            # Utiliser events bruts (post post_processing, avant events_clean)
+            # events_clean n'est pas encore calculé à ce stade
             _shot_times_pre = sorted([
-                e.get("time", 0) for e in _events_for_shots
+                e.get("time", 0) for e in events
                 if e.get("type") in ("shot", "shot_on_target", "shot_blocked", "fast_shot")
             ])
             _goals_pre_filtered = []
@@ -1055,8 +1055,9 @@ def run_pipeline(
         # précédentes → rejet systématique (0/4 FP réels avaient un tir récent).
         _cam_type_for_filter = (_camera_profile or {}).get("camera_type", "unknown")
         if _cam_type_for_filter == "low_side_zoom":
+            # Utiliser events bruts pour trouver les tirs (plus complet que events_validated)
             _shot_times = sorted([
-                e.get("time", 0) for e in events_validated
+                e.get("time", 0) for e in events
                 if e.get("type") in ("shot", "shot_on_target", "shot_blocked", "fast_shot")
             ])
             _filtered_goals = []
@@ -1439,7 +1440,14 @@ def run_pipeline(
                 # ── PIM : sauvegarder buteurs (source la plus fiable) ─────────
                 if _pim is not None and goal_jerseys:
                     for _tid, _num in goal_jerseys.items():
-                        _pim.update_from_goal_scorer(track_id=_tid, jersey=_num)
+                        try:
+                            _pim.update_from_goal_scorer(track_id=_tid, jersey=_num)
+                        except AttributeError:
+                            # Compatibilité v1 de player_identity_memory
+                            try:
+                                _pim.register(_tid, _num, source="gemini_visual")
+                            except Exception:
+                                pass
         except Exception as _ej:
             print(f"  Goal scorers ignoré : {_ej}")
 
@@ -1455,13 +1463,23 @@ def run_pipeline(
 
         # ── PlayerIdentityMemory : mise à jour finale + sauvegarde ────────────
         if _pim is not None:
-            _pim.update_from_pipeline(
-                jersey_map  = jersey_map,
-                events      = events,
-                visual_pool = _visual_pool or None,
-            )
-            _pim.save()
-            _pim.summary()
+            try:
+                _pim.update_from_pipeline(
+                    jersey_map  = jersey_map,
+                    events      = events,
+                    visual_pool = _visual_pool or None,
+                )
+            except AttributeError:
+                # Compatibilité v1 : update_from_pipeline absent
+                try:
+                    _pim.update_from_pipeline(jersey_map, events)
+                except AttributeError:
+                    pass  # v1 basique sans cette méthode
+            try:
+                _pim.save()
+                _pim.summary()
+            except Exception as _pim_e:
+                print(f"  [PIM] save/summary : {_pim_e}")
     except Exception as e:
         print(f"  Identity resolver ignoré : {e}")
 
