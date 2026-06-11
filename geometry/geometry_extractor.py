@@ -132,16 +132,35 @@ class GeometryExtractor:
                 print(f"  [GEOM_DEBUG]   → reject: no_lines")
             return obs
 
+        # Classifier les lignes ici pour le debug
+        _v_lines_debug, _h_lines_debug = self._classify_lines(lines, w, h) if debug else ([], [])
+
         # 2. Classifier les lignes : verticales (poteaux) vs horizontales (lignes)
         v_lines, h_lines = self._classify_lines(lines, w, h)
 
+        if debug:
+            print(f"  [GEOM_DEBUG]   → vertical={len(v_lines)} horizontal={len(h_lines)} "
+                  f"ignored={len(lines)-len(v_lines)-len(h_lines)}")
+            if v_lines:
+                v_by_x = sorted(v_lines, key=lambda l: l['x_mean'])[:5]
+                xvals = [f"{int(l['x_mean']*w)}px({l['length']:.0f}L)" for l in v_by_x]
+                print(f"  [GEOM_DEBUG]   → top v_lines x: {' '.join(xvals)}")
+
         # 3. Chercher les structures but
-        goal_obs = self._find_goal_structures(v_lines, h_lines, w, h)
+        goal_obs = self._find_goal_structures(v_lines, h_lines, w, h,
+                                               debug=debug)
         if goal_obs:
             obs.goal_left_x     = goal_obs.get("left_x")
             obs.goal_right_x    = goal_obs.get("right_x")
             obs.confidence      += goal_obs.get("confidence", 0) * 0.5
             obs.method           = "hough_goal"
+            if debug:
+                print(f"  [GEOM_DEBUG]   → GOAL: left={obs.goal_left_x:.3f} "
+                      f"right={obs.goal_right_x:.3f} "
+                      f"conf={goal_obs.get('confidence',0):.2f}")
+        elif debug:
+            print(f"  [GEOM_DEBUG]   → no_goal_structure "
+                  f"(best pair needed: {MIN_GOAL_WIDTH_PCT:.2f}<w<{MAX_GOAL_WIDTH_PCT:.2f})")
 
         # 4. Chercher la surface de réparation
         penalty_obs = self._find_penalty_area(v_lines, h_lines, w, h)
@@ -236,10 +255,19 @@ class GeometryExtractor:
 
     # ── Classification lignes ─────────────────────────────────────────────────
 
-    def _classify_lines(self, lines, w, h):
-        """Sépare les lignes verticales (poteaux) des horizontales (lignes)."""
+    def _classify_lines(self, lines, w, h,
+                         min_vertical_length: float = 0.10):
+        """
+        Sépare les lignes verticales (poteaux) des horizontales (lignes).
+
+        min_vertical_length : longueur minimale pour une ligne verticale,
+            exprimée en fraction de la hauteur de l'image.
+            Filtre les courtes lignes de bruit (joueurs, publicités).
+            Valeur par défaut : 10% de la hauteur = ~108px sur 1080px.
+        """
         v_lines = []  # angle > 60° par rapport à horizontal
         h_lines = []  # angle < 30°
+        min_v_px = min_vertical_length * h
 
         for ln in lines:
             x1, y1, x2, y2 = ln
@@ -251,13 +279,14 @@ class GeometryExtractor:
             angle = np.degrees(np.arctan2(dy, max(dx, 1)))
 
             if angle > 60:
-                v_lines.append({
-                    "x_mean": (x1 + x2) / 2 / w,  # normalisé [0,1]
-                    "y_top":  min(y1, y2) / h,
-                    "y_bot":  max(y1, y2) / h,
-                    "length": length,
-                    "raw": (x1, y1, x2, y2),
-                })
+                if length >= min_v_px:   # filtrer les verticales courtes
+                    v_lines.append({
+                        "x_mean": (x1 + x2) / 2 / w,
+                        "y_top":  min(y1, y2) / h,
+                        "y_bot":  max(y1, y2) / h,
+                        "length": length,
+                        "raw": (x1, y1, x2, y2),
+                    })
             elif angle < 30:
                 h_lines.append({
                     "y_mean": (y1 + y2) / 2 / h,
@@ -271,16 +300,21 @@ class GeometryExtractor:
 
     # ── Structures but ────────────────────────────────────────────────────────
 
-    def _find_goal_structures(self, v_lines, h_lines, w, h) -> Optional[dict]:
+    def _find_goal_structures(self, v_lines, h_lines, w, h,
+                              debug: bool = False) -> Optional[dict]:
         """
         Cherche une paire de poteaux verticaux formant un but.
         Retourne {"left_x", "right_x", "confidence"} ou None.
         """
         if len(v_lines) < 2:
+            if debug:
+                print(f"  [GEOM_DEBUG]   → no_goal: <2 v_lines ({len(v_lines)})")
             return None
 
         best = None
         best_conf = 0.0
+        reject_width = 0
+        reject_overlap = 0
 
         # Trier par x
         v_sorted = sorted(v_lines, key=lambda l: l["x_mean"])
@@ -292,11 +326,13 @@ class GeometryExtractor:
                 width = right["x_mean"] - left["x_mean"]
 
                 if not (MIN_GOAL_WIDTH_PCT <= width <= MAX_GOAL_WIDTH_PCT):
+                    reject_width += 1
                     continue
 
                 # Les deux poteaux doivent avoir des y similaires (même hauteur)
                 y_overlap = min(left["y_bot"], right["y_bot"]) - max(left["y_top"], right["y_top"])
                 if y_overlap < 0.05:
+                    reject_overlap += 1
                     continue
 
                 # Chercher une barre transversale horizontale entre eux
@@ -314,6 +350,31 @@ class GeometryExtractor:
                         "right_x":   right["x_mean"],
                         "confidence": conf,
                     }
+
+        if debug:
+            n_pairs = len(v_sorted) * (len(v_sorted) - 1) // 2
+            if best:
+                print(f"  [GEOM_DEBUG]   → goal_pair found: "
+                      f"left={best['left_x']:.3f}({int(best['left_x']*w)}px) "
+                      f"right={best['right_x']:.3f}({int(best['right_x']*w)}px) "
+                      f"width={best['right_x']-best['left_x']:.3f} "
+                      f"conf={best['confidence']:.2f}")
+            else:
+                print(f"  [GEOM_DEBUG]   → no_goal_pair: "
+                      f"{n_pairs} paires testées | "
+                      f"rejet_width={reject_width} rejet_overlap={reject_overlap} "
+                      f"(seuil: {MIN_GOAL_WIDTH_PCT:.2f}<w<{MAX_GOAL_WIDTH_PCT:.2f})")
+                # Afficher les 3 premières paires rejetées pour width
+                if reject_width > 0 and len(v_sorted) <= 8:
+                    for i in range(min(3, len(v_sorted))):
+                        for j in range(i+1, min(i+3, len(v_sorted))):
+                            lf = v_sorted[i]
+                            rt = v_sorted[j]
+                            wd = rt["x_mean"] - lf["x_mean"]
+                            print(f"  [GEOM_DEBUG]     pair x1={int(lf['x_mean']*w)} "
+                                  f"x2={int(rt['x_mean']*w)} "
+                                  f"width={wd:.3f}({int(wd*w)}px) "
+                                  f"{'OK_width' if MIN_GOAL_WIDTH_PCT<=wd<=MAX_GOAL_WIDTH_PCT else 'BAD_width'}")
 
         return best
 
