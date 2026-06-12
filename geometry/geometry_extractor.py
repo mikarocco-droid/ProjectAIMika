@@ -139,12 +139,30 @@ class GeometryExtractor:
         v_lines, h_lines = self._classify_lines(lines, w, h)
 
         if debug:
+            n_ignored = len(lines) - len(v_lines) - len(h_lines)
             print(f"  [GEOM_DEBUG]   → vertical={len(v_lines)} horizontal={len(h_lines)} "
-                  f"ignored={len(lines)-len(v_lines)-len(h_lines)}")
+                  f"ignored={n_ignored}")
             if v_lines:
                 v_by_x = sorted(v_lines, key=lambda l: l['x_mean'])[:5]
                 xvals = [f"{int(l['x_mean']*w)}px({l['length']:.0f}L)" for l in v_by_x]
                 print(f"  [GEOM_DEBUG]   → top v_lines x: {' '.join(xvals)}")
+            elif lines and len(lines) > 5:
+                # Aucune verticale malgré beaucoup de lignes → loguer les angles réels
+                angles = []
+                for ln in lines:
+                    x1, y1, x2, y2 = ln
+                    dx, dy = abs(x2-x1), abs(y2-y1)
+                    length = (dx**2 + dy**2) ** 0.5
+                    if length >= 0.10 * h:  # seulement les longues
+                        angles.append((round(np.degrees(np.arctan2(dy, max(dx, 1))), 1), int(length)))
+                if angles:
+                    angles.sort(reverse=True)
+                    top = ' '.join(f"{a}°({l}px)" for a, l in angles[:6])
+                    print(f"  [GEOM_DEBUG]   → long_lines angles: {top}")
+                    near_v = [a for a, _ in angles if a > 40]
+                    if near_v:
+                        print(f"  [GEOM_DEBUG]   → angles 40-60°: {near_v[:8]} "
+                              f"← poteaux probables")
 
         # 3. Chercher les structures but
         goal_obs = self._find_goal_structures(v_lines, h_lines, w, h,
@@ -278,7 +296,7 @@ class GeometryExtractor:
                 continue
             angle = np.degrees(np.arctan2(dy, max(dx, 1)))
 
-            if angle > 60:
+            if angle > 50:   # CAS A: élargi de 60° → 50° pour caméras inclinées
                 if length >= min_v_px:   # filtrer les verticales courtes
                     v_lines.append({
                         "x_mean": (x1 + x2) / 2 / w,
