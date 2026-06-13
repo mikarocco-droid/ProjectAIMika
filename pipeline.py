@@ -942,13 +942,10 @@ def run_pipeline(
             from geometry.field_anchor_model import FieldAnchorModel as _FAM
             _anchor = _FAM()
             _anchor.set_frame_size(_frame_w, _frame_h)
-            # Prior depuis camera_profile — utiliser locals() pour accès fiable
-            _cp = locals().get('_camera_profile') or {}
-            if not _cp:
-                try:
-                    _cp = _camera_profile  # accès direct si disponible dans le scope
-                except NameError:
-                    _cp = {}
+            # Prior depuis camera_profile — accès direct dans le scope run_pipeline
+            # Note: locals() ne fonctionne pas dans un try imbriqué,
+            # on accède directement à _camera_profile défini plus haut
+            _cp = _camera_profile
             # Utiliser est_goal_left réel (varie selon la caméra)
             # vidéo 1 (low_side) : ~36px=1.9%  / vidéo 2 (low_side_zoom) : ~193px=10.1%
             _gl_raw  = _cp.get("est_goal_left", None)
