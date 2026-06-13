@@ -134,6 +134,13 @@ class FieldAnchorModel:
 
         if self.goal_prior_left is not None and penalty_obs is not None:
             depth_pct = penalty_obs - self.goal_prior_left
+            if depth_pct < 0:
+                # penalty_line < goal_prior : incohérent (mauvaise caméra ou obs bruitées)
+                # → recalibrer goal_prior depuis les observations
+                # La structure détectée est probablement le poteau lui-même, pas la surface
+                # Sur une caméra large (low_side), goal_left peut être < 5%
+                # → on accepte penalty_obs comme ancre unique et on désactive px_per_m
+                return  # impossible de calculer px_per_m sans référence fiable
             if depth_pct > 0.02:  # au moins 2% d'écart pour être fiable
                 depth_px = depth_pct * self.frame_width_px
                 self.px_per_m = depth_px / PENALTY_DEPTH_M
