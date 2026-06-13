@@ -937,26 +937,50 @@ def run_pipeline(
                 print(f"  [GEOM] stabilité     : goal_left σ={_stdev:.4f} "
                       f"({'STABLE ✅' if _stable else 'INSTABLE ⚠️'})")
 
-            # ── Comparaison pixel vs world pour les buts détectés (BC.3 log) ─
-            _goals_for_geo = [e for e in events if e.get("type") in ("goal", "score")]
-            if _goals_for_geo and _gl is not None:
-                print(f"  [GEOM] ── Pixel vs World (passif) ──")
-                for _eg in _goals_for_geo:
-                    _t  = _eg.get("time", 0)
-                    _bx = _eg.get("bx") or (
+            # ── FieldAnchorModel — fusion camera_profile + observations ────────
+        try:
+            from geometry.field_anchor_model import FieldAnchorModel as _FAM
+            _anchor = _FAM()
+            _anchor.set_frame_size(_frame_w, _frame_h)
+            # Prior depuis camera_profile (calculé avant ce bloc)
+            _cp = _camera_profile if '_camera_profile' in dir() else {}
+            _gl_prior = _cp.get("est_goal_left", 193) / _frame_w
+            _st_prior = _cp.get("zone_y_min", 0.28)
+            _anchor.set_camera_prior(
+                goal_left_pct    = _gl_prior,
+                sideline_top_pct = _st_prior,
+                prior_conf       = 0.60,
+            )
+            # Intégrer les observations GeometryExtractor
+            for _h in (_field_model._history if _field_model else []):
+                if _h.get("goal_left") is not None:
+                    from geometry.geometry_extractor import GeometryObservation as _GO
+                    _fake = _GO(goal_left_x=_h["goal_left"],
+                                confidence=_h.get("conf", 0.4))
+                    _anchor.update_from_observation(_fake)
+            _anchor.summary()
+
+            # ── Log distances en mètres sur chaque candidat but ──────────
+            _goals_for_anchor = [e for e in events if e.get("type") in ("goal", "score")]
+            if _goals_for_anchor and _anchor.is_ready():
+                print(f"  [ANCHOR] ── Distances réelles (passif) ──")
+                for _eg in _goals_for_anchor:
+                    _t   = _eg.get("time", 0)
+                    _bx  = _eg.get("bx") or (
                         _eg.get("ball_x", 0) / _frame_w if _eg.get("ball_x") else None)
-                    _by = _eg.get("by") or (
-                        _eg.get("ball_y", 0) / _frame_h if _eg.get("ball_y") else None)
                     if _bx is None:
                         continue
-                    _pixel_goal = _bx < 0.10 or _bx > 0.90
-                    _world_goal = _field_model.ball_in_goal(_bx, _by or 0.5, side="left")
-                    _mm = int(_t // 60)
-                    _ss = int(_t % 60)
-                    print(f"  [GEOM]   {_mm:02d}:{_ss:02d} "
-                          f"bx={_bx:.3f} "
-                          f"pixel_goal={_pixel_goal} "
-                          f"world_goal={_world_goal}")
+                    _d_goal    = _anchor.distance_to_goal_m(_bx)
+                    _d_penalty = _anchor.distance_to_penalty_m(_bx)
+                    _in_goal   = _anchor.ball_in_goal(_bx)
+                    _in_pen    = _anchor.ball_in_penalty(_bx)
+                    _mm, _ss   = int(_t // 60), int(_t % 60)
+                    print(f"  [ANCHOR]   {_mm:02d}:{_ss:02d} bx={_bx:.3f} "
+                          f"dist_but={_d_goal:.1f}m "
+                          f"dist_surface={_d_penalty:.1f}m "
+                          f"in_goal={_in_goal} in_penalty={_in_pen}")
+        except Exception as _anc_e:
+            print(f"  [ANCHOR] Erreur (non bloquant) : {_anc_e}")
 
         _field_model.summary()
 
