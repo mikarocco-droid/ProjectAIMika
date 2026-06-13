@@ -942,15 +942,29 @@ def run_pipeline(
             from geometry.field_anchor_model import FieldAnchorModel as _FAM
             _anchor = _FAM()
             _anchor.set_frame_size(_frame_w, _frame_h)
-            # Prior depuis camera_profile (calculé avant ce bloc)
-            _cp = _camera_profile if '_camera_profile' in dir() else {}
-            _gl_prior = _cp.get("est_goal_left", 193) / _frame_w
+            # Prior depuis camera_profile — utiliser locals() pour accès fiable
+            _cp = locals().get('_camera_profile') or {}
+            if not _cp:
+                try:
+                    _cp = _camera_profile  # accès direct si disponible dans le scope
+                except NameError:
+                    _cp = {}
+            # Utiliser est_goal_left réel (varie selon la caméra)
+            # vidéo 1 (low_side) : ~36px=1.9%  / vidéo 2 (low_side_zoom) : ~193px=10.1%
+            _gl_raw  = _cp.get("est_goal_left", None)
+            _gl_prior = (_gl_raw / _frame_w) if _gl_raw else None
             _st_prior = _cp.get("zone_y_min", 0.28)
-            _anchor.set_camera_prior(
-                goal_left_pct    = _gl_prior,
-                sideline_top_pct = _st_prior,
-                prior_conf       = 0.60,
-            )
+            if _gl_prior is None:
+                print("  [ANCHOR] ⚠️  est_goal_left absent du camera_profile → anchor désactivé")
+            else:
+                print(f"  [ANCHOR] goal_prior depuis camera_profile : "
+                      f"{_gl_raw:.0f}px = {_gl_prior*100:.1f}%")
+            if _gl_prior is not None:
+                _anchor.set_camera_prior(
+                    goal_left_pct    = _gl_prior,
+                    sideline_top_pct = _st_prior,
+                    prior_conf       = 0.60,
+                )
             # Intégrer les observations GeometryExtractor
             for _h in (_field_model._history if _field_model else []):
                 if _h.get("goal_left") is not None:
@@ -981,6 +995,16 @@ def run_pipeline(
                           f"in_goal={_in_goal} in_penalty={_in_pen}")
         except Exception as _anc_e:
             print(f"  [ANCHOR] Erreur (non bloquant) : {_anc_e}")
+
+        # Diagnostic si anchor non prêt
+        if '_anchor' in dir() and not _anchor.is_ready():
+            _pen = _anchor.penalty_line_obs
+            _gl  = _anchor.goal_prior_left
+            if _pen is not None and _gl is not None and _pen < _gl:
+                print(f"  [ANCHOR] ⚠️  penalty_line ({_pen:.3f}) < goal_prior ({_gl:.3f})")
+                print(f"  [ANCHOR]    → caméra large (est_goal_left={int(_gl*_frame_w)}px={_gl*100:.1f}%)")
+                print(f"  [ANCHOR]    → les observations détectent probablement le poteau, pas la surface")
+                print(f"  [ANCHOR]    → px_per_m non calculable sur cette caméra")
 
         _field_model.summary()
 
