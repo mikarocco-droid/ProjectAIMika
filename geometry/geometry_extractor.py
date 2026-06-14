@@ -1,23 +1,46 @@
 """
-GeometryExtractor — Sprint BC
-==============================
+GeometryExtractor — Sprint BC.3A
+==================================
 Extrait les structures géométriques du terrain depuis une frame vidéo.
 
-Principe : accumulation temporelle légère.
-- Pas d'homographie complète (Sprint D).
-- Objectif : fournir des coordonnées normalisées fiables pour
-  goal_left, goal_right, penalty_area_left, penalty_area_right.
+BC.3A — Refactor sémantique (2026-06-14)
+-----------------------------------------
+Problème BC.2 : goal_left_x / goal_right_x prétendaient identifier des
+poteaux alors que la caméra latérale voit des *lignes verticales* dont la
+nature réelle est inconnue.
+
+  Vidéo 1 : obs.goal_left_x = 0.052  → probablement ligne de but
+  Vidéo 2 : obs.goal_left_x = 0.221  → probablement ligne de surface
+  → même variable, deux sémantiques différentes.
+
+Nouveau modèle : GeometryExtractor n'interprète plus, il observe.
+  vertical_anchor_x    : position x normalisée de la structure verticale
+  vertical_anchor_conf : confiance dans la détection [0,1]
+  vertical_anchor_type : "goal_line" | "penalty_line" | "unknown"
+                          (hint seulement — FieldAnchorModel tranche)
+
+Les anciens champs goal_left_x / goal_right_x sont dépréciés → None.
+L'interprétation (H1=goal_line vs H2=penalty_line) est déléguée à
+FieldAnchorModel (BC.3C).
 
 Sortie par frame :
   GeometryObservation {
-    goal_left_x    : float | None   # x normalisé [0,1] du poteau gauche
-    goal_right_x   : float | None   # x normalisé [0,1] du poteau droit
-    penalty_left_x : float | None
-    penalty_right_x: float | None
-    sideline_y_top : float | None   # y normalisé de la ligne haute
-    sideline_y_bot : float | None
-    confidence     : float          # [0, 1]
-    method         : str            # "hough" | "contour" | "fallback"
+    # Nouveaux champs BC.3A
+    vertical_anchor_x    : float | None   # x normalisé [0,1]
+    vertical_anchor_conf : float          # [0,1]
+    vertical_anchor_type : str            # "goal_line"|"penalty_line"|"unknown"
+
+    # Champs existants conservés
+    penalty_left_x  : float | None
+    penalty_right_x : float | None
+    sideline_y_top  : float | None
+    sideline_y_bot  : float | None
+    confidence      : float
+    method          : str
+
+    # DÉPRÉCIÉS — toujours None depuis BC.3A
+    goal_left_x     : None   # était ambigu, remplacé par vertical_anchor_x
+    goal_right_x    : None
   }
 """
 
@@ -54,9 +77,25 @@ MIN_CONFIDENCE = 0.30
 
 @dataclass
 class GeometryObservation:
-    """Observation géométrique pour une frame."""
-    goal_left_x:     Optional[float] = None
-    goal_right_x:    Optional[float] = None
+    """
+    Observation géométrique pour une frame — BC.3A.
+
+    Philosophie : observer sans interpréter.
+    L'extracteur rapporte ce qu'il voit (une structure verticale à x=0.054).
+    FieldAnchorModel décide ce que c'est (ligne de but ? ligne de surface ?).
+    """
+    # ── Nouveaux champs BC.3A ──────────────────────────────────────────────────
+    # La structure verticale la plus saillante détectée dans la frame.
+    # Ne présume PAS de sa nature — c'est FieldAnchorModel qui tranche.
+    vertical_anchor_x:    Optional[float] = None   # x normalisé [0,1]
+    vertical_anchor_conf: float           = 0.0    # confiance détection [0,1]
+    vertical_anchor_type: str             = "unknown"
+    # "unknown"      : GeometryExtractor ne sait pas
+    # "goal_line"    : hint basé sur position < 10% (très probablement but)
+    # "penalty_line" : hint basé sur position 10-25% + largeur cohérente
+    # Ces hints sont des suggestions, pas des certitudes.
+
+    # ── Champs existants conservés ────────────────────────────────────────────
     penalty_left_x:  Optional[float] = None
     penalty_right_x: Optional[float] = None
     sideline_y_top:  Optional[float] = None
@@ -65,16 +104,31 @@ class GeometryObservation:
     method:          str   = "none"
     frame_idx:       int   = 0
 
-    def has_goal(self) -> bool:
-        return self.goal_left_x is not None or self.goal_right_x is not None
+    # ── Champs DÉPRÉCIÉS BC.3A ────────────────────────────────────────────────
+    # Conservés pour compatibilité descendante (code existant ne plante pas).
+    # Toujours None depuis BC.3A — ne plus lire ces champs.
+    goal_left_x:  Optional[float] = None   # DÉPRÉCIÉ → lire vertical_anchor_x
+    goal_right_x: Optional[float] = None   # DÉPRÉCIÉ
+
+    def has_vertical_anchor(self) -> bool:
+        """True si une structure verticale a été détectée."""
+        return self.vertical_anchor_x is not None
 
     def has_penalty(self) -> bool:
         return self.penalty_left_x is not None and self.penalty_right_x is not None
 
+    # Compatibilité descendante — code qui appelle has_goal() ne plante pas.
+    def has_goal(self) -> bool:
+        """DÉPRÉCIÉ BC.3A — utiliser has_vertical_anchor()."""
+        return self.has_vertical_anchor()
+
     def to_dict(self) -> dict:
         return {
-            "goal_left_x":     self.goal_left_x,
-            "goal_right_x":    self.goal_right_x,
+            # Nouveaux champs BC.3A
+            "vertical_anchor_x":    self.vertical_anchor_x,
+            "vertical_anchor_conf": self.vertical_anchor_conf,
+            "vertical_anchor_type": self.vertical_anchor_type,
+            # Champs conservés
             "penalty_left_x":  self.penalty_left_x,
             "penalty_right_x": self.penalty_right_x,
             "sideline_y_top":  self.sideline_y_top,
@@ -82,6 +136,9 @@ class GeometryObservation:
             "confidence":      self.confidence,
             "method":          self.method,
             "frame_idx":       self.frame_idx,
+            # Dépréciés — None
+            "goal_left_x":     None,   # DÉPRÉCIÉ
+            "goal_right_x":    None,   # DÉPRÉCIÉ
         }
 
 
@@ -100,15 +157,23 @@ class GeometryExtractor:
         self.frame_w = frame_w
         self.frame_h = frame_h
         self._fps    = fps
-        self._n_calls = 0
+        self._n_calls   = 0
         self._n_success = 0
+        # BC.4 — accumulation observations pour alimentation directe FieldAnchorModel.
+        # Le pipeline lit _observations au lieu de reconstruire des fakes depuis
+        # _field_model._history (BC.2 legacy).
+        # Seules les obs avec vertical_anchor_x valide sont stockées.
+        self._observations: list = []   # list[GeometryObservation]
 
     def extract(self, frame: np.ndarray, frame_idx: int = 0,
                 debug: bool = False) -> GeometryObservation:
         """
         Extrait les structures géométriques d'une frame.
         Retourne une GeometryObservation avec confidence ≥ 0.
-        debug=True : logs détaillés pour BC.2 diagnostic.
+
+        BC.3A : peuple vertical_anchor_x / _conf / _type au lieu de
+        goal_left_x / goal_right_x.
+        debug=True : logs enrichis BC.3B.
         """
         self._n_calls += 1
         h, w = frame.shape[:2]
@@ -120,7 +185,7 @@ class GeometryExtractor:
 
         if debug:
             t_s = frame_idx / max(1, getattr(self, '_fps', 25.0))
-            print(f"  [GEOM_DEBUG] frame={frame_idx} t={t_s:.1f}s "
+            print(f"  [GEOM] frame={frame_idx} t={t_s:.1f}s "
                   f"grass={debug_info['grass_ratio']:.2f} "
                   f"white_px={debug_info['white_pixels']} "
                   f"hough_lines={debug_info['hough_lines']} "
@@ -129,56 +194,53 @@ class GeometryExtractor:
         if lines is None or len(lines) == 0:
             obs.method = "no_lines"
             if debug:
-                print(f"  [GEOM_DEBUG]   → reject: no_lines")
+                print(f"  [GEOM]   → reject: no_lines")
             return obs
 
-        # Classifier les lignes ici pour le debug
-        _v_lines_debug, _h_lines_debug = self._classify_lines(lines, w, h) if debug else ([], [])
-
-        # 2. Classifier les lignes : verticales (poteaux) vs horizontales (lignes)
+        # 2. Classifier les lignes : verticales vs horizontales
         v_lines, h_lines = self._classify_lines(lines, w, h)
 
         if debug:
             n_ignored = len(lines) - len(v_lines) - len(h_lines)
-            print(f"  [GEOM_DEBUG]   → vertical={len(v_lines)} horizontal={len(h_lines)} "
+            print(f"  [GEOM]   → vertical={len(v_lines)} horizontal={len(h_lines)} "
                   f"ignored={n_ignored}")
             if v_lines:
                 v_by_x = sorted(v_lines, key=lambda l: l['x_mean'])[:5]
-                xvals = [f"{int(l['x_mean']*w)}px({l['length']:.0f}L)" for l in v_by_x]
-                print(f"  [GEOM_DEBUG]   → top v_lines x: {' '.join(xvals)}")
+                xvals = [f"{int(l['x_mean']*w)}px(L={l['length']:.0f})" for l in v_by_x]
+                print(f"  [GEOM]   → top v_lines x: {' '.join(xvals)}")
             elif lines and len(lines) > 5:
-                # Aucune verticale malgré beaucoup de lignes → loguer les angles réels
                 angles = []
                 for ln in lines:
                     x1, y1, x2, y2 = ln
                     dx, dy = abs(x2-x1), abs(y2-y1)
                     length = (dx**2 + dy**2) ** 0.5
-                    if length >= 0.10 * h:  # seulement les longues
+                    if length >= 0.10 * h:
                         angles.append((round(np.degrees(np.arctan2(dy, max(dx, 1))), 1), int(length)))
                 if angles:
                     angles.sort(reverse=True)
                     top = ' '.join(f"{a}°({l}px)" for a, l in angles[:6])
-                    print(f"  [GEOM_DEBUG]   → long_lines angles: {top}")
+                    print(f"  [GEOM]   → long_lines angles: {top}")
                     near_v = [a for a, _ in angles if a > 40]
                     if near_v:
-                        print(f"  [GEOM_DEBUG]   → angles 40-60°: {near_v[:8]} "
-                              f"← poteaux probables")
+                        print(f"  [GEOM]   → angles 40-60°: {near_v[:8]} ← poteaux probables")
 
-        # 3. Chercher les structures but
-        goal_obs = self._find_goal_structures(v_lines, h_lines, w, h,
-                                               debug=debug)
-        if goal_obs:
-            obs.goal_left_x     = goal_obs.get("left_x")
-            obs.goal_right_x    = goal_obs.get("right_x")
-            obs.confidence      += goal_obs.get("confidence", 0) * 0.5
-            obs.method           = "hough_goal"
+        # 3. BC.3A — chercher la structure verticale principale (anchor)
+        anchor_result = self._find_vertical_anchors(v_lines, h_lines, w, h, debug=debug)
+        if anchor_result:
+            obs.vertical_anchor_x    = anchor_result["anchor_x"]
+            obs.vertical_anchor_conf = anchor_result["confidence"]
+            obs.vertical_anchor_type = anchor_result["anchor_type"]
+            obs.confidence          += anchor_result["confidence"] * 0.5
+            obs.method               = "hough_anchor"
+
             if debug:
-                print(f"  [GEOM_DEBUG]   → GOAL: left={obs.goal_left_x:.3f} "
-                      f"right={obs.goal_right_x:.3f} "
-                      f"conf={goal_obs.get('confidence',0):.2f}")
+                print(f"  [GEOM]   → ANCHOR: x={obs.vertical_anchor_x:.3f} "
+                      f"({int(obs.vertical_anchor_x*w)}px) "
+                      f"type={obs.vertical_anchor_type} "
+                      f"conf={obs.vertical_anchor_conf:.2f}")
         elif debug:
-            print(f"  [GEOM_DEBUG]   → no_goal_structure "
-                  f"(best pair needed: {MIN_GOAL_WIDTH_PCT:.2f}<w<{MAX_GOAL_WIDTH_PCT:.2f})")
+            print(f"  [GEOM]   → no_anchor "
+                  f"(besoin ≥1 v_line longue dans [{MIN_GOAL_WIDTH_PCT:.2f}, {MAX_GOAL_WIDTH_PCT:.2f}])")
 
         # 4. Chercher la surface de réparation
         penalty_obs = self._find_penalty_area(v_lines, h_lines, w, h)
@@ -198,6 +260,10 @@ class GeometryExtractor:
 
         if obs.confidence >= MIN_CONFIDENCE:
             self._n_success += 1
+
+        # BC.4 — accumuler les obs avec anchor valide pour FieldAnchorModel
+        if obs.vertical_anchor_x is not None:
+            self._observations.append(obs)
 
         return obs
 
@@ -316,17 +382,106 @@ class GeometryExtractor:
 
         return v_lines, h_lines
 
-    # ── Structures but ────────────────────────────────────────────────────────
+    # ── BC.3A : Anchor vertical principal ───────────────────────────────────────
+
+    def _find_vertical_anchors(self, v_lines, h_lines, w, h,
+                               debug: bool = False) -> Optional[dict]:
+        """
+        BC.3A — Trouve la structure verticale la plus saillante sans l'interpréter.
+
+        Retourne :
+          {
+            "anchor_x":    float,   # x normalisé de la structure principale
+            "confidence":  float,   # [0,1]
+            "anchor_type": str,     # hint : "goal_line"|"penalty_line"|"unknown"
+          }
+        ou None si aucune structure verticale fiable trouvée.
+
+        Note sur anchor_type :
+          Ce n'est qu'un hint heuristique pour aider FieldAnchorModel.
+          La vraie décision d'interprétation appartient à FieldAnchorModel (BC.3C).
+          - "goal_line"    : x < 0.10 → très probablement ligne de but
+          - "penalty_line" : 0.10 ≤ x ≤ 0.28 → probablement ligne de surface
+          - "unknown"      : hors plage, ou signal ambiguë
+        """
+        if not v_lines:
+            if debug:
+                print(f"  [GEOM]   → no_anchor: 0 v_lines")
+            return None
+
+        # Sélectionner la ligne verticale la plus longue dans la zone gauche
+        # (le but est toujours du côté gauche sur cette caméra)
+        # Zone élargie : x < 0.35 pour capturer aussi la ligne de surface
+        candidates = [l for l in v_lines if l["x_mean"] < 0.40]
+
+        if not candidates:
+            # Fallback : prendre toutes les v_lines, prendre la plus à gauche
+            candidates = v_lines
+
+        # Trier par longueur décroissante + position gauche (penalise les structures lointaines)
+        # Score composite : length_norm × (1 - x_mean) pour favoriser les structures à gauche
+        def anchor_score(l):
+            length_norm = min(1.0, l["length"] / (0.4 * h))   # normalisé sur 40% hauteur
+            position_bonus = max(0.0, 1.0 - l["x_mean"] / 0.40)
+            return length_norm * 0.7 + position_bonus * 0.3
+
+        best = max(candidates, key=anchor_score)
+        anchor_x = best["x_mean"]
+
+        # Confiance : basée sur longueur de la ligne
+        length_norm = min(1.0, best["length"] / (0.3 * h))
+        # Bonus si une barre transversale existe à ce x (indice de but réel)
+        has_bar = self._has_horizontal_near(h_lines, anchor_x, tolerance=0.05)
+        conf = length_norm * 0.6 + (0.25 if has_bar else 0.0)
+        conf = min(1.0, conf)
+
+        # Hint sémantique (ne pas sur-interpréter)
+        if anchor_x < 0.10:
+            anchor_type = "goal_line"
+        elif 0.10 <= anchor_x <= 0.28:
+            anchor_type = "penalty_line"
+        else:
+            anchor_type = "unknown"
+
+        if debug:
+            print(f"  [GEOM]   → anchor_best: x={anchor_x:.3f}({int(anchor_x*w)}px) "
+                  f"length={best['length']:.0f}px "
+                  f"has_bar={has_bar} score={anchor_score(best):.2f} "
+                  f"→ type_hint={anchor_type}")
+            # Afficher aussi les autres candidats pour comparaison
+            others = sorted(candidates, key=anchor_score, reverse=True)[1:4]
+            for o in others:
+                print(f"  [GEOM]     alt: x={o['x_mean']:.3f}({int(o['x_mean']*w)}px) "
+                      f"length={o['length']:.0f}px score={anchor_score(o):.2f}")
+
+        return {
+            "anchor_x":    anchor_x,
+            "confidence":  conf,
+            "anchor_type": anchor_type,
+        }
+
+    def _has_horizontal_near(self, h_lines, anchor_x: float,
+                             tolerance: float = 0.05) -> bool:
+        """Vérifie si une ligne horizontale passe près de anchor_x (indice de barre)."""
+        for hl in h_lines:
+            if hl["x_left"] <= anchor_x + tolerance and hl["x_right"] >= anchor_x - tolerance:
+                return True
+        return False
+
+    # ── DÉPRÉCIÉ BC.3A ────────────────────────────────────────────────────────
 
     def _find_goal_structures(self, v_lines, h_lines, w, h,
                               debug: bool = False) -> Optional[dict]:
         """
-        Cherche une paire de poteaux verticaux formant un but.
-        Retourne {"left_x", "right_x", "confidence"} ou None.
+        DÉPRÉCIÉ BC.3A — utiliser _find_vertical_anchors().
+
+        Conservé pour compatibilité mais n'est plus appelé par extract().
+        Cherchait une paire de poteaux (goal_left_x / goal_right_x) —
+        approche abandonnée car sémantiquement incorrecte sur caméra latérale.
         """
         if len(v_lines) < 2:
             if debug:
-                print(f"  [GEOM_DEBUG]   → no_goal: <2 v_lines ({len(v_lines)})")
+                print(f"  [GEOM]   → [DEPRECATED] no_goal: <2 v_lines ({len(v_lines)})")
             return None
 
         best = None
@@ -334,7 +489,6 @@ class GeometryExtractor:
         reject_width = 0
         reject_overlap = 0
 
-        # Trier par x
         v_sorted = sorted(v_lines, key=lambda l: l["x_mean"])
 
         for i in range(len(v_sorted)):
@@ -347,15 +501,12 @@ class GeometryExtractor:
                     reject_width += 1
                     continue
 
-                # Les deux poteaux doivent avoir des y similaires (même hauteur)
                 y_overlap = min(left["y_bot"], right["y_bot"]) - max(left["y_top"], right["y_top"])
                 if y_overlap < 0.05:
                     reject_overlap += 1
                     continue
 
-                # Chercher une barre transversale horizontale entre eux
                 crossbar = self._find_crossbar(h_lines, left["x_mean"], right["x_mean"])
-
                 conf = 0.5
                 if crossbar:
                     conf += 0.3
@@ -368,31 +519,6 @@ class GeometryExtractor:
                         "right_x":   right["x_mean"],
                         "confidence": conf,
                     }
-
-        if debug:
-            n_pairs = len(v_sorted) * (len(v_sorted) - 1) // 2
-            if best:
-                print(f"  [GEOM_DEBUG]   → goal_pair found: "
-                      f"left={best['left_x']:.3f}({int(best['left_x']*w)}px) "
-                      f"right={best['right_x']:.3f}({int(best['right_x']*w)}px) "
-                      f"width={best['right_x']-best['left_x']:.3f} "
-                      f"conf={best['confidence']:.2f}")
-            else:
-                print(f"  [GEOM_DEBUG]   → no_goal_pair: "
-                      f"{n_pairs} paires testées | "
-                      f"rejet_width={reject_width} rejet_overlap={reject_overlap} "
-                      f"(seuil: {MIN_GOAL_WIDTH_PCT:.2f}<w<{MAX_GOAL_WIDTH_PCT:.2f})")
-                # Afficher les 3 premières paires rejetées pour width
-                if reject_width > 0 and len(v_sorted) <= 8:
-                    for i in range(min(3, len(v_sorted))):
-                        for j in range(i+1, min(i+3, len(v_sorted))):
-                            lf = v_sorted[i]
-                            rt = v_sorted[j]
-                            wd = rt["x_mean"] - lf["x_mean"]
-                            print(f"  [GEOM_DEBUG]     pair x1={int(lf['x_mean']*w)} "
-                                  f"x2={int(rt['x_mean']*w)} "
-                                  f"width={wd:.3f}({int(wd*w)}px) "
-                                  f"{'OK_width' if MIN_GOAL_WIDTH_PCT<=wd<=MAX_GOAL_WIDTH_PCT else 'BAD_width'}")
 
         return best
 
