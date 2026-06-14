@@ -962,34 +962,46 @@ def run_pipeline(
                     sideline_top_pct = _st_prior,
                     prior_conf       = 0.60,
                 )
-            # Intégrer les observations GeometryExtractor
-            for _h in (_field_model._history if _field_model else []):
-                if _h.get("goal_left") is not None:
-                    from geometry.geometry_extractor import GeometryObservation as _GO
-                    _fake = _GO(goal_left_x=_h["goal_left"],
-                                confidence=_h.get("conf", 0.4))
-                    _anchor.update_from_observation(_fake)
+            # BC.3A — Intégrer observations vertical_anchor_x depuis _geo_extractor
+            # (chemin direct, sans reconstruire des fakes depuis _field_model._history)
+            _geo_obs_src = getattr(_geo_extractor, '_observations', None) or []
+            if _geo_obs_src:
+                print(f"  [ANCHOR] observations_used={len(_geo_obs_src)} (BC.3A direct)")
+                for _obs_bc3a in _geo_obs_src:
+                    _anchor.update_from_observation(_obs_bc3a)
+            else:
+                # Fallback BC.2 legacy : _field_model._history
+                print(f"  [ANCHOR] ⚠️  _observations absent → fallback BC.2 legacy")
+                for _h in (_field_model._history if _field_model else []):
+                    if _h.get("goal_left") is not None:
+                        from geometry.geometry_extractor import GeometryObservation as _GO
+                        _fake = _GO(goal_left_x=_h["goal_left"],
+                                    confidence=_h.get("conf", 0.4))
+                        _anchor.update_from_observation(_fake)
             _anchor.summary()
 
-            # ── Log distances en mètres sur chaque candidat but ──────────
-            _goals_for_anchor = [e for e in events if e.get("type") in ("goal", "score")]
-            if _goals_for_anchor and _anchor.is_ready():
-                print(f"  [ANCHOR] ── Distances réelles (passif) ──")
-                for _eg in _goals_for_anchor:
-                    _t   = _eg.get("time", 0)
-                    _bx  = _eg.get("bx") or (
-                        _eg.get("ball_x", 0) / _frame_w if _eg.get("ball_x") else None)
-                    if _bx is None:
-                        continue
-                    _d_goal    = _anchor.distance_to_goal_m(_bx)
-                    _d_penalty = _anchor.distance_to_penalty_m(_bx)
-                    _in_goal   = _anchor.ball_in_goal(_bx)
-                    _in_pen    = _anchor.ball_in_penalty(_bx)
-                    _mm, _ss   = int(_t // 60), int(_t % 60)
-                    print(f"  [ANCHOR]   {_mm:02d}:{_ss:02d} bx={_bx:.3f} "
-                          f"dist_but={_d_goal:.1f}m "
-                          f"dist_surface={_d_penalty:.1f}m "
-                          f"in_goal={_in_goal} in_penalty={_in_pen}")
+            # BC.4 — Enrichissement events + rapport VP/FP (expérience scientifique)
+            # Objectif : tester si in_goal / dist_goal séparent VP de FP
+            # Décision BC.5 prise uniquement sur les distributions réelles, pas synthétiques
+            try:
+                from geometry.bc4_enrich import (
+                    enrich_events   as _bc4_enrich,
+                    compare_vp_fp   as _bc4_compare,
+                    print_bc4_report as _bc4_print,
+                )
+                _n_enriched = _bc4_enrich(events, _anchor, _frame_w)
+                print(f"  [BC4] {_n_enriched}/{len(events)} events enrichis avec métriques monde")
+
+                if goals_real:
+                    _bc4_result = _bc4_compare(events, goals_real, _anchor)
+                    _bc4_print(_bc4_result)
+                    # Persister dans _geom_state pour le JSON final (clé "geometry")
+                    _geom_state["bc4"] = _bc4_result
+                else:
+                    print(f"  [BC4] goals_real absent → comparaison VP/FP ignorée")
+                    print(f"  [BC4]   (passer goals_real=[140.0,587.0] à run_pipeline() pour activer)")
+            except Exception as _bc4_e:
+                print(f"  [BC4] Erreur (non bloquant) : {_bc4_e}")
         except Exception as _anc_e:
             print(f"  [ANCHOR] Erreur (non bloquant) : {_anc_e}")
 
@@ -2345,6 +2357,7 @@ def run_pipeline(
         "context_stats": ctx_stats,
         "player_entities": player_entities,
         "player_reel":     _player_reel_path,
+        "geometry":        _geom_state,   # BC.4 : anchor + bc4 VP/FP report
     }
 
     result = sanitize_for_json(result)
