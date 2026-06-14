@@ -1186,20 +1186,22 @@ def run_pipeline(
         _terminal_times_filter = [
             float(ev.get("time", 0)) for ev in (_terminal_evts or [])
         ]
+        # CORRECTION : _terminal_evts utilise la clé "type", pas "terminal_type"
+        # (terminal_type n'existe que dans build_candidate_windows, pas dans detect_terminal_events)
         _terminal_goals_times = [
             float(ev.get("time", 0)) for ev in (_terminal_evts or [])
-            if ev.get("terminal_type") in ("goal",)
+            if ev.get("type") in ("goal",)
         ]
         # Terminaux offensifs (hors goal pur — déjà couvert)
         _terminal_offensive_times = [
             float(ev.get("time", 0)) for ev in (_terminal_evts or [])
-            if ev.get("terminal_type") in _OFFENSIVE_TYPES
-            and ev.get("terminal_type") != "goal"
+            if ev.get("type") in _OFFENSIVE_TYPES
+            and ev.get("type") != "goal"
         ]
         # Terminaux défensifs — fenêtre très réduite (±5s uniquement)
         _terminal_defensive_times = [
             float(ev.get("time", 0)) for ev in (_terminal_evts or [])
-            if ev.get("terminal_type") in _DEFENSIVE_TYPES
+            if ev.get("type") in _DEFENSIVE_TYPES
         ]
 
         def _is_posthoc(e):
