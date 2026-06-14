@@ -163,9 +163,21 @@ class FieldAnchorModel:
         # Source BC.3A
         anchor_x    = getattr(obs, 'vertical_anchor_x', None)
         anchor_conf = getattr(obs, 'vertical_anchor_conf', None)
+        anchor_type = getattr(obs, 'vertical_anchor_type', 'unknown')
+
+        # Correction BC.4 — filtre ancres instables :
+        # type="unknown" + x > 0.30 → milieu de terrain probable (pas le but ni la surface)
+        # Ces obs gonflaient σ à 0.178 (supérieur à la moyenne = signal inutilisable)
+        if anchor_x is not None and anchor_type == "unknown" and anchor_x > 0.30:
+            if len(self._anchor_obs) < 5 or len(self._anchor_obs) % 20 == 0:
+                # Logger seulement périodiquement pour éviter le spam
+                print(f"  [ANCHOR] rejected type=unknown x={anchor_x:.3f}"
+                      f" conf={anchor_conf:.2f}" if anchor_conf else
+                      f"  [ANCHOR] rejected type=unknown x={anchor_x:.3f}")
+            anchor_x = None  # ne pas accumuler
 
         # Fallback BC.2 legacy
-        if anchor_x is None:
+        if anchor_x is None and getattr(obs, 'vertical_anchor_x', None) is None:
             anchor_x    = getattr(obs, 'penalty_line_x', None) or obs.goal_left_x
             anchor_conf = obs.confidence
 
