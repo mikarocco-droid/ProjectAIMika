@@ -2415,6 +2415,7 @@ def run_pipeline(
         "context_stats": ctx_stats,
         "player_entities": player_entities,
         "player_reel":     _player_reel_path,
+        "geometry":        _geom_state,   # BC.4 : anchor + bc4 VP/FP report
     }
 
     result = sanitize_for_json(result)
