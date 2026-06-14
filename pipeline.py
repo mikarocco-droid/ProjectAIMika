@@ -942,35 +942,39 @@ def run_pipeline(
             from geometry.field_anchor_model import FieldAnchorModel as _FAM
             _anchor = _FAM()
             _anchor.set_frame_size(_frame_w, _frame_h)
-            # Prior depuis camera_profile — accès direct dans le scope run_pipeline
-            # Note: locals() ne fonctionne pas dans un try imbriqué,
-            # on accède directement à _camera_profile défini plus haut
-            _cp = _camera_profile
-            # Utiliser est_goal_left réel (varie selon la caméra)
-            # vidéo 1 (low_side) : ~36px=1.9%  / vidéo 2 (low_side_zoom) : ~193px=10.1%
-            _gl_raw  = _cp.get("est_goal_left", None)
+            # Prior depuis camera_profile
+            # Correction BC.4 : lire est_goal_left depuis _camera_profile
+            # (calculé par build_camera_profile lors du scan initial)
+            _cp = _camera_profile or {}
+            _gl_raw = _cp.get("est_goal_left", None)
+            # Fallback : recalculer depuis ball_x p01 si disponible
+            if _gl_raw is None:
+                _ball_p01 = _cp.get("ball_x_p01", None)
+                if _ball_p01 is not None:
+                    _gl_raw = _ball_p01
+                    print(f"  [ANCHOR] est_goal_left via ball_x_p01 = {_gl_raw:.0f}px")
             _gl_prior = (_gl_raw / _frame_w) if _gl_raw else None
-            _st_prior = _cp.get("zone_y_min", 0.28)
+            _st_prior = _cp.get("zone_y_min", _cp.get("sideline_top", 0.28))
             if _gl_prior is None:
-                print("  [ANCHOR] ⚠️  est_goal_left absent du camera_profile → anchor désactivé")
+                print(f"  [ANCHOR] ⚠️  est_goal_left absent du camera_profile")
+                print(f"  [ANCHOR]    clés dispo : {list(_cp.keys())[:10]}")
+                print(f"  [ANCHOR]    → s_camera=0.50 (neutre) — BC.4 moins précis")
             else:
                 print(f"  [ANCHOR] goal_prior depuis camera_profile : "
                       f"{_gl_raw:.0f}px = {_gl_prior*100:.1f}%")
-            if _gl_prior is not None:
                 _anchor.set_camera_prior(
                     goal_left_pct    = _gl_prior,
                     sideline_top_pct = _st_prior,
                     prior_conf       = 0.60,
                 )
-            # BC.3A — Intégrer observations vertical_anchor_x depuis _geo_extractor
-            # (chemin direct, sans reconstruire des fakes depuis _field_model._history)
+            # BC.3A — Intégrer observations vertical_anchor_x (chemin direct)
+            # Fallback : _field_model._history (BC.2 legacy)
             _geo_obs_src = getattr(_geo_extractor, '_observations', None) or []
             if _geo_obs_src:
                 print(f"  [ANCHOR] observations_used={len(_geo_obs_src)} (BC.3A direct)")
                 for _obs_bc3a in _geo_obs_src:
                     _anchor.update_from_observation(_obs_bc3a)
             else:
-                # Fallback BC.2 legacy : _field_model._history
                 print(f"  [ANCHOR] ⚠️  _observations absent → fallback BC.2 legacy")
                 for _h in (_field_model._history if _field_model else []):
                     if _h.get("goal_left") is not None:
@@ -980,13 +984,69 @@ def run_pipeline(
                         _anchor.update_from_observation(_fake)
             _anchor.summary()
 
+            # ── Correction BC.4 : enrichissement bx sur tous les events goal/score/shot ──
+            # bx est absent des events posthoc et terminal → on le reconstruit
+            # depuis frames_data (position ballon au frame le plus proche).
+            # Sans bx, enrich_events() retourne in_goal=None, dist_goal=None.
+            _n_bx_added   = 0
+            _n_bx_missing = 0
+            for _ev in events:
+                if _ev.get("type") not in ("goal", "score", "shot"):
+                    continue
+                # Vérifier si bx déjà valide
+                _existing_bx = _ev.get("bx")
+                if _existing_bx is not None:
+                    try:
+                        if 0.0 <= float(_existing_bx) <= 1.0:
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                # Chercher la position ballon dans frames_data
+                _ev_t  = float(_ev.get("time", 0))
+                _ev_fr = _ev.get("frame") or int(_ev_t * fps)
+                _best_bx   = None
+                _best_dist = 9999
+                for _fd in frames_data:
+                    _fd_fr = _fd.get("frame_id", _fd.get("frame", 0)) or 0
+                    _d = abs(_fd_fr - _ev_fr)
+                    if _d >= _best_dist:
+                        continue
+                    _ball = _fd.get("ball") or {}
+                    if not isinstance(_ball, dict):
+                        continue
+                    # Essayer plusieurs clés de position x
+                    _cx = None
+                    if _ball.get("x") is not None:
+                        _cx = float(_ball["x"])
+                    elif _ball.get("center"):
+                        _c = _ball["center"]
+                        if isinstance(_c, (list, tuple)) and len(_c) >= 1:
+                            _cx = float(_c[0])
+                    elif _ball.get("bbox"):
+                        _b = _ball["bbox"]
+                        if isinstance(_b, (list, tuple)) and len(_b) >= 3:
+                            _cx = (float(_b[0]) + float(_b[2])) / 2
+                    if _cx is not None and _frame_w > 0:
+                        _bx_cand = _cx / _frame_w
+                        if 0.0 <= _bx_cand <= 1.0:
+                            _best_bx   = _bx_cand
+                            _best_dist = _d
+                            if _d == 0:
+                                break
+                if _best_bx is not None and _best_dist < int(fps * 2):
+                    _ev["bx"]     = round(_best_bx, 4)
+                    _ev["ball_x"] = int(_best_bx * _frame_w)
+                    _n_bx_added  += 1
+                else:
+                    _n_bx_missing += 1
+            print(f"  [BC4] bx enrichi : {_n_bx_added} events "
+                  f"| {_n_bx_missing} sans ballon détecté dans frames_data")
+
             # BC.4 — Enrichissement events + rapport VP/FP (expérience scientifique)
-            # Objectif : tester si in_goal / dist_goal séparent VP de FP
-            # Décision BC.5 prise uniquement sur les distributions réelles, pas synthétiques
             try:
                 from geometry.bc4_enrich import (
-                    enrich_events   as _bc4_enrich,
-                    compare_vp_fp   as _bc4_compare,
+                    enrich_events    as _bc4_enrich,
+                    compare_vp_fp    as _bc4_compare,
                     print_bc4_report as _bc4_print,
                 )
                 _n_enriched = _bc4_enrich(events, _anchor, _frame_w)
@@ -995,11 +1055,9 @@ def run_pipeline(
                 if goals_real:
                     _bc4_result = _bc4_compare(events, goals_real, _anchor)
                     _bc4_print(_bc4_result)
-                    # Persister dans _geom_state pour le JSON final (clé "geometry")
                     _geom_state["bc4"] = _bc4_result
                 else:
                     print(f"  [BC4] goals_real absent → comparaison VP/FP ignorée")
-                    print(f"  [BC4]   (passer goals_real=[140.0,587.0] à run_pipeline() pour activer)")
             except Exception as _bc4_e:
                 print(f"  [BC4] Erreur (non bloquant) : {_bc4_e}")
         except Exception as _anc_e:
@@ -2357,7 +2415,6 @@ def run_pipeline(
         "context_stats": ctx_stats,
         "player_entities": player_entities,
         "player_reel":     _player_reel_path,
-        "geometry":        _geom_state,   # BC.4 : anchor + bc4 VP/FP report
     }
 
     result = sanitize_for_json(result)
