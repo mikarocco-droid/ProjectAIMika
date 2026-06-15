@@ -1491,7 +1491,37 @@ def run_pipeline(
                                 "frame":            int(goal_t * fps),
                                 "shot_linked":      True,
                             }
-                            shot_goal_candidates.append(new_goal)
+
+                            # BC.4 GATE — filtre géométrique sur les buts shot→goal
+                            # Le ballon doit être dans la surface/cage au moment du but
+                            # Évite les FP (remise en touche, dégagement) que Gemini
+                            # confond avec un but via kickoff+signal faible
+                            _stg_geo_ok = True
+                            try:
+                                if "_bc4_enrich" in dir() and _anchor is not None and _anchor.ready:
+                                    # Utiliser bx du tir d'origine comme proxy si goal_t sans bx
+                                    _stg_bx = shot.get("bx") or shot.get("x", 0) / _frame_w
+                                    new_goal["bx"] = _stg_bx
+                                    _bc4_enrich([new_goal], _anchor, _frame_w)
+                                    _geo = new_goal.get("geo", {})
+                                    _in_goal    = _geo.get("in_goal", None)
+                                    _in_penalty = _geo.get("in_penalty", None)
+                                    _dist       = _geo.get("dist_goal", None)
+                                    # Rejeter si ballon clairement hors surface ET hors cage
+                                    if (_in_goal is False and _in_penalty is False
+                                            and _dist is not None and _dist > 5.0):
+                                        _stg_geo_ok = False
+                                        print(f"  [SHOT→GOAL BC4 GATE] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d}"
+                                              f" — bx={_stg_bx:.3f} in_goal=False in_pen=False dist={_dist:.1f}m")
+                                    else:
+                                        _gs = _geo.get("world_score", "?")
+                                        print(f"  [SHOT→GOAL BC4 GATE] ✅ {int(goal_t//60):02d}:{int(goal_t%60):02d}"
+                                              f" — in_goal={_in_goal} in_pen={_in_penalty} dist={_dist} world_score={_gs}")
+                            except Exception as _geo_e:
+                                print(f"  [SHOT→GOAL BC4 GATE] erreur géo (ignorée) : {_geo_e}")
+
+                            if _stg_geo_ok:
+                                shot_goal_candidates.append(new_goal)
                             existing_goal_times.append(goal_t)
                             detected_goal_times.append(goal_t)
                             print(f"  [SHOT→GOAL] ✅ BUT détecté à {int(goal_t//60):02d}:{int(goal_t%60):02d} conf={result['confidence']:.2f}")
