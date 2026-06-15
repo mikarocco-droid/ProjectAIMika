@@ -243,6 +243,7 @@ def run_pipeline(
     team_names        = None,    # {"team_0": "RSC Stavelot B", "team_1": "FC Liège"}
     user_team_id      = None,    # 0 ou 1 — équipe de l'utilisateur
     player_position   = None,    # "Gardien", "Attaquant", etc. — pour mode player
+    audit_mode        = False,   # Mode collecte données : skip highlights, PDF, commentary, heatmaps
 ):
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
@@ -2027,6 +2028,9 @@ def run_pipeline(
     print("Step 8 : Highlights...")
     reel_path = None
     try:
+        if audit_mode:
+            print("  [SKIPPED — audit_mode]")
+            raise Exception("audit_mode")
         # Limite dynamique : ~1 highlight/min, min 10, max 30
         _duration_min = total_frames / fps / 60 if fps > 0 else 15
         _max_hl = max(10, min(int(_duration_min * 1.2), 30))
@@ -2172,6 +2176,9 @@ def run_pipeline(
     print("Step 10 : Ratings + Commentary...")
     ratings = {}; mvp = None; mvp_label = None; commentary = []; story = ""
     try:
+        if audit_mode:
+            print("  [SKIPPED — audit_mode]")
+            raise Exception("audit_mode")
         for e in events:
             if not e.get("time"):
                 frame     = e.get("frame", 0) or 0
@@ -2229,6 +2236,9 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 7b : Heatmaps (events filtrés)...")
     try:
+        if audit_mode:
+            print("  [SKIPPED — audit_mode]")
+            raise Exception("audit_mode")
         # Injecter tirs highlights dans events_clean (events_clean a 0 tirs)
         _shot_events_from_hl = []
         for _h in highlights:
@@ -2373,7 +2383,9 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 12 : AI summary...")
     ai_summary = None
-    if config.CLAUDE_API_KEY:
+    if audit_mode:
+        print("  [SKIPPED — audit_mode]")
+    elif config.CLAUDE_API_KEY:
         try:
             from ai.claude import summarize
             ai_summary = summarize(
@@ -2393,7 +2405,9 @@ def run_pipeline(
     # ─────────────────────────────────────────
     print("Step 13 : PDF...")
     pdf_path = None
-    if config.PLANS.get(plan, {}).get("pdf", False):
+    if audit_mode:
+        print("  [SKIPPED — audit_mode]")
+    elif config.PLANS.get(plan, {}).get("pdf", False):
         try:
             from export.pdf import generate_pdf
             pdf_path = generate_pdf(
