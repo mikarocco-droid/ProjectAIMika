@@ -27,6 +27,52 @@ except ImportError:
 OFFSETS_POSTHOC = [0, -5, 5, 20]  # +20 ajouté : voir le kickoff après le but (signal fort)
 OFFSETS_EVENTS = [-1, 0, 2, 10]
 
+
+# ─────────────────────────────────────────
+# SCORER AUDIT — collecte calibration VP/FP
+# ─────────────────────────────────────────
+import csv as _csv
+import pathlib as _pathlib
+
+def _log_scorer_audit(event, result, accepted, output_dir="outputs/learning"):
+    """
+    Écrit une ligne dans scorer_audit.csv pour calibration du scoreur Gemini.
+    Colonnes : event_id, source, t_s, goal_votes, shot_votes,
+               best_goal_conf, max_signal, final_score, world_score, accepted
+    """
+    try:
+        _pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
+        audit_path = f"{output_dir}/scorer_audit.csv"
+        write_header = not _pathlib.Path(audit_path).exists()
+
+        t_s = event.get("time", 0.0)
+        source = event.get("detected_from", event.get("source", "?"))
+        world_score = event.get("geo", {}).get("world_score") if event.get("geo") else None
+
+        row = {
+            "event_id":       f"{source}_{t_s:.1f}",
+            "source":         source,
+            "t_s":            round(t_s, 1),
+            "t_mm":           f"{int(t_s//60):02d}:{int(t_s%60):02d}",
+            "goal_votes":     result.get("_goal_votes", 0) if result else 0,
+            "shot_votes":     result.get("_shot_votes", 0) if result else 0,
+            "best_goal_conf": round(result.get("confiance", 0.0), 3) if result else 0.0,
+            "max_signal":     round(result.get("confiance", 0.0) * 0.35, 3) if result else 0.0,
+            "final_score":    None,   # non disponible ici — loggé dans validate_event
+            "world_score":    round(world_score, 3) if world_score is not None else None,
+            "gemini_type":    result.get("type", "none") if result else "none",
+            "accepted":       int(accepted),
+        }
+
+        with open(audit_path, "a", newline="", encoding="utf-8") as f:
+            writer = _csv.DictWriter(f, fieldnames=list(row.keys()))
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
+
+    except Exception as _e:
+        pass  # audit silencieux — ne jamais bloquer le pipeline
+
 _METRICS = {
     "decode_time": 0.0,
     "gemini_time": 0.0,
@@ -1584,6 +1630,24 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
                 "_shot_votes": shot_votes,
             }
 
+        # POSTHOC RESCUE v9.9 — 1 vote goal conf >= 0.75 sur source posthoc
+        # Audit scoreur (2 runs, 15 candidats) : les VP manqués ont exactement ce profil
+        # Les FP avec 1 vote goal sont tous source=events_standard (pas posthoc)
+        # Garde final_score > 0 : si neg_score écrase → signal trop ambigu → pas de rescue
+        if ("posthoc" in str(source)
+                and goal_votes >= 1
+                and best_conf >= 0.75
+                and final_score > 0):
+            print(f"  [POSTHOC RESCUE] goal_votes={goal_votes} conf={best_conf:.2f} "
+                  f"score={final_score:.2f} → BUT accepté (v9.9)")
+            return {
+                "type": "goal",
+                "confiance": min(best_conf, 0.75),
+                "description": best_result.get("description", "") if best_result else "",
+                "_goal_votes": goal_votes,
+                "_shot_votes": shot_votes,
+            }
+
         return {
             "type": "none",
             "confiance": 0.3,
@@ -2336,6 +2400,13 @@ def validate_events_with_gemini(
                 event["_remove"] = True
                 removed += 1
                 print("    → SUPPRIMÉ (Gemini n a pas confirmé)")
+
+        # Scorer audit — collecte calibration VP/FP
+        _log_scorer_audit(
+            event    = event,
+            result   = result,
+            accepted = not event.get("_remove", False),
+        )
 
         event["gemini_validated"] = True
         event["gemini_type"]      = gemini_type
