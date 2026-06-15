@@ -24,7 +24,7 @@ except ImportError:
 # ─────────────────────────────────────────
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
 # ─────────────────────────────────────────
-OFFSETS_POSTHOC = [0, -5, 5]   # 3 offsets : 0 (instant), -5s (célébration avant), +5s (kickoff après)
+OFFSETS_POSTHOC = [0, -5, 5, 20]  # +20 ajouté : voir le kickoff après le but (signal fort)
 OFFSETS_EVENTS = [-1, 0, 2, 10]
 
 _METRICS = {
