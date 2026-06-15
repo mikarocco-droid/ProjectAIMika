@@ -906,6 +906,12 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     if not _refined:
         print(f"  [KICKOFF BALL] affinage visuel non disponible "
               f"({'pas de chemin vidéo' if not _video_path else 'aucun signal trouvé'})")
+        # Si la Passe 1 avait détecté p_motion élevée (vidéo commence en jeu)
+        # et que la détection visuelle ne confirme aucun kick off → offset=0
+        # (la vidéo commence vraiment en cours de jeu, pas de pré-match à supprimer)
+        if _p1_early_high:
+            print(f"  [KICKOFF] p_motion élevée + aucun signal visuel → vidéo commence en jeu, offset=0")
+            return 0.0, 0.0
 
     print(f"  [KICKOFF PHYS] {len(all_candidates)} candidat(s) → {selection} : "
           f"Score={best_score:.1f}/{_SCORE_THRESHOLD} "
