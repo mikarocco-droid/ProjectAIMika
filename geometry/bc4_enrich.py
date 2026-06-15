@@ -127,6 +127,39 @@ def enrich_events(events: list[dict],
             except Exception:
                 pass   # anchor partiel — geo reste à None
 
+        # ── BC.4b : world_score (Option C — logger sans décider) ──────────────
+        # w1×in_goal + w2×dist_score + w3×anchor_quality
+        # Poids conservateurs — observation pure, pas de décision avant 25 matchs
+        W_GOAL  = 0.50
+        W_DIST  = 0.35
+        W_QUAL  = 0.15
+
+        _in_g   = geo.get("in_goal")
+        _dist   = geo.get("dist_goal_m")
+        _ascore = float(geo.get("anchor_score", 0.0))
+
+        _ws_in_goal = 1.0 if _in_g is True else (0.0 if _in_g is False else 0.5)
+
+        if _dist is None:
+            _ws_dist = 0.5
+        elif _dist <= 0:
+            _ws_dist = 1.0
+        elif _dist >= 30.0:
+            _ws_dist = 0.0
+        else:
+            _ws_dist = 1.0 - (_dist / 30.0)
+
+        _ws_qual = min(1.0, max(0.0, _ascore))
+
+        _world_score = round(W_GOAL * _ws_in_goal + W_DIST * _ws_dist + W_QUAL * _ws_qual, 3)
+
+        geo["world_score"]    = _world_score
+        geo["ws_components"]  = {
+            "in_goal": round(W_GOAL * _ws_in_goal, 3),
+            "dist":    round(W_DIST * _ws_dist, 3),
+            "quality": round(W_QUAL * _ws_qual, 3),
+        }
+
         ev["geo"]       = geo
         ev["geo_debug"] = geo_debug
 
@@ -188,6 +221,16 @@ def compare_vp_fp(events: list[dict],
     vp_stats = _compute_geo_stats(vp_events)
     fp_stats = _compute_geo_stats(fp_events)
 
+    # BC.4b — world_score moyen VP vs FP
+    def _ws_mean(evs):
+        vals = [e.get("geo", {}).get("world_score") for e in evs]
+        vals = [v for v in vals if v is not None]
+        return round(sum(vals) / len(vals), 3) if vals else None
+
+    ws_vp = _ws_mean(vp_events)
+    ws_fp = _ws_mean(fp_events)
+    ws_delta = round(ws_vp - ws_fp, 3) if (ws_vp is not None and ws_fp is not None) else None
+
     # Séparation statistique — c'est la question centrale de BC.4
     ig_vp  = vp_stats["in_goal_pct"]
     ig_fp  = fp_stats["in_goal_pct"]
@@ -215,14 +258,15 @@ def compare_vp_fp(events: list[dict],
         "n_vp":  len(vp_events),
         "n_fp":  len(fp_events),
 
-        "vp":    {**vp_stats, "events": _summarize_events(vp_events)},
-        "fp":    {**fp_stats, "events": _summarize_events(fp_events)},
+        "vp":    {**vp_stats, "world_score_mean": ws_vp,  "events": _summarize_events(vp_events)},
+        "fp":    {**fp_stats, "world_score_mean": ws_fp,  "events": _summarize_events(fp_events)},
 
         "separation": {
-            "in_goal_delta":    round(ig_vp - ig_fp, 3),
-            "in_penalty_delta": round(ip_vp - ip_fp, 3),
-            "dist_goal_delta":  dist_delta,
-            "has_signal":       has_signal,
+            "in_goal_delta":     round(ig_vp - ig_fp, 3),
+            "in_penalty_delta":  round(ip_vp - ip_fp, 3),
+            "dist_goal_delta":   dist_delta,
+            "world_score_delta": ws_delta,
+            "has_signal":        has_signal,
         },
     }
 
@@ -285,6 +329,15 @@ def print_bc4_report(bc4: dict):
         print(f"  [BC4]   dist_goal σ      │  {ds_vp:>7.2f}m      │  {ds_fp:>7.2f}m      │")
     else:
         print(f"  [BC4]   dist_goal        │  (px_per_m absent) │  (px_per_m absent) │")
+
+    # BC.4b — world_score
+    ws_vp = vp.get("world_score_mean")
+    ws_fp = fp.get("world_score_mean")
+    ws_d  = sep.get("world_score_delta")
+    if ws_vp is not None and ws_fp is not None:
+        ws_flag = " ◄◄" if ws_d is not None and abs(ws_d) > 0.10 else ""
+        ws_d_str = f"{ws_d:+.3f}" if ws_d is not None else "?"
+        print(f"  [BC4]   world_score      │  {ws_vp:>7.3f}        │  {ws_fp:>7.3f}        │  {ws_d_str}{ws_flag}  ← BC.4b")
 
     print(f"  [BC4]")
     if sep.get("has_signal"):
