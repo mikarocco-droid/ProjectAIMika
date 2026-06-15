@@ -48,7 +48,7 @@ import math
 
 
 # ── Tolérance VP : ±T secondes pour matcher un but réel ──────────────────────
-VP_MATCH_TOLERANCE_S = 30.0   # fenêtre large — on est post-Gemini
+VP_MATCH_TOLERANCE_S = 15.0   # fenêtre réduite : évite dégagements/clearances en VP
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -410,12 +410,20 @@ def _split_vp_fp(candidates: list[dict],
     for ev in candidates:
         t = ev.get("time", 0.0)
         matched = False
+        best_delta = None
+        best_rt = None
         for rt in real_times:
-            if abs(t - rt) <= VP_MATCH_TOLERANCE_S:
+            delta = abs(t - rt)
+            if best_delta is None or delta < best_delta:
+                best_delta = delta
+                best_rt = rt
+            if delta <= VP_MATCH_TOLERANCE_S:
                 matched = True
-                break
         if matched:
             vp.append(ev)
+            src = ev.get("detected_from", ev.get("source", "?"))
+            print(f"  [BC4] VP matched: event_t={t:.1f}s  goal_t={best_rt:.1f}s  "
+                  f"delta_t={best_delta:.1f}s  src={src}")
         else:
             fp.append(ev)
 
