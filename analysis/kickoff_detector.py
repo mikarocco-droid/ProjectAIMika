@@ -311,10 +311,17 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             return t, conf
 
     # ── Passe 2 : score pondéré sur frames_data ───────────────────────────────
-    # Si la Passe 1 a déjà détecté que la vidéo commence en jeu → offset=0 directement
+    # Si la Passe 1 a détecté que la vidéo commence en jeu ET qu'on a un video_path,
+    # on continue quand même vers la détection visuelle du ballon (Passe 2 + Gemini).
+    # Un pré-match statique peut avoir p_motion=14 (joueurs qui marchent) sans être du jeu réel.
+    # Seul le video_path permet de discriminer via la détection visuelle du ballon au centre.
     if _p1_early_high:
-        print(f"  [KICKOFF P2] Passe 1 a détecté vidéo en jeu → offset=0, Passe 2 ignorée")
-        return 0.0, 0.0
+        if video_path:
+            print(f"  [KICKOFF P2] Passe 1 → p_motion élevée mais video_path disponible"
+                  f" — détection visuelle du ballon activée")
+        else:
+            print(f"  [KICKOFF P2] Passe 1 a détecté vidéo en jeu → offset=0, Passe 2 ignorée")
+            return 0.0, 0.0
 
     if not frames_data:
         return 0.0, 0.0
