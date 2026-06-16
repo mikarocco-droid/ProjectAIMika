@@ -947,7 +947,7 @@ def run_pipeline(
             # Correction BC.4 : lire est_goal_left depuis _camera_profile
             # (calculé par build_camera_profile lors du scan initial)
             _cp = _camera_profile or {}
-            _gl_raw = _cp.get("est_goal_left", None)
+            _gl_raw = _cp.get("est_goal_left", _cp.get("est_goal_left_px", None))
             # Fallback : recalculer depuis ball_x p01 si disponible
             if _gl_raw is None:
                 _ball_p01 = _cp.get("ball_x_p01", None)
