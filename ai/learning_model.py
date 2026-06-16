@@ -469,7 +469,8 @@ class MatchLearner:
         shots     = sum(1 for e in events if e.get("type") == "shot")
         goals_det = sum(1 for e in events if e.get("type") == "goal")
         passes    = sum(1 for e in events if e.get("type") == "pass")
-        real      = goals_real if goals_real is not None else summary.get("goals", goals_det)
+        real = (len(goals_real) if isinstance(goals_real, list) else goals_real) \
+            if goals_real is not None else summary.get("goals", goals_det)
 
         entry = {
             "match_id":        match_id,
@@ -618,7 +619,8 @@ class MatchLearner:
     # ─────────────────────────────────────────
     def _recalibrate_thresholds(self, events, summary, fps, goals_real=None):
         goals_det  = sum(1 for e in events if e.get("type") == "goal")
-        real       = goals_real if goals_real is not None else summary.get("goals", goals_det)
+        real = (len(goals_real) if isinstance(goals_real, list) else goals_real) \
+            if goals_real is not None else summary.get("goals", goals_det)
         shots_det  = sum(1 for e in events if e.get("type") == "shot")
         dur_min    = max(1, summary.get("total_frames", 15000) / fps / 60)
         bounds     = THRESHOLD_BOUNDS.get(self.sport, {})
