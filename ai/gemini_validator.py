@@ -1634,9 +1634,11 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
         # Audit scoreur (2 runs, 15 candidats) : les VP manqués ont exactement ce profil
         # Les FP avec 1 vote goal sont tous source=events_standard (pas posthoc)
         # Garde final_score > 0 : si neg_score écrase → signal trop ambigu → pas de rescue
+        # v9.10 : t < 15s → seuil durci à 0.90 (début de vidéo = zone FP)
+        _rescue_conf_min = 0.90 if (event.get("time", 0) < 15.0) else 0.75
         if ("posthoc" in str(source)
                 and goal_votes >= 1
-                and best_conf >= 0.75
+                and best_conf >= _rescue_conf_min
                 and final_score > 0):
             print(f"  [POSTHOC RESCUE] goal_votes={goal_votes} conf={best_conf:.2f} "
                   f"score={final_score:.2f} → BUT accepté (v9.9)")
