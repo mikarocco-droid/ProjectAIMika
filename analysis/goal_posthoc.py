@@ -412,6 +412,13 @@ def detect_fast_goals_from_ball(
             i += 5
             continue
 
+        # Filtre début de vidéo : posthoc non fiable dans les 15 premières secondes
+        # (vidéo démarre en plein jeu → pas de contexte avant → FP systématiques)
+        if goal_time < 15.0:
+            print(f"  [POSTHOC EARLY] t={goal_time:.1f}s < 15s → candidat ignoré (début de vidéo)")
+            i += max(stuck, 5)
+            continue
+
         confidence = round(min(0.6 + score * 0.07, 0.97), 2)
 
         # Raison principale de détection (pour diagnostic)
@@ -517,6 +524,11 @@ def detect_fast_goals_from_ball(
             continue
 
         if any(abs(goal_time - t) < 10 for t in existing):
+            continue
+
+        # Filtre début de vidéo
+        if goal_time < 15.0:
+            print(f"  [POSTHOC EARLY] t={goal_time:.1f}s < 15s → candidat ignoré (début de vidéo)")
             continue
 
         score = 6.5
