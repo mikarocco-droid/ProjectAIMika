@@ -1032,17 +1032,41 @@ def find_match_end(
     last_real_game_t = None
     last_checked_t   = 0.0
 
+    # Seuil de vitesse ballon : > 3px/frame = ballon en jeu
+    # Après le match, le ballon est absent ou immobile (ramassé, posé au sol)
+    # Les joueurs continuent de marcher → critère joueurs seul insuffisant
+    _BALL_SPEED_MIN = 3.0
+
+    # Déterminer si le ballon est bien tracké dans cette vidéo (>5% des frames)
+    _n_ball_frames = sum(
+        1 for f in frames_data
+        if (f.get("ball") or {}).get("x") is not None
+        or (f.get("ball") or {}).get("center") is not None
+    )
+    _use_ball_criterion = _n_ball_frames > len(frames_data) * 0.05
+
     for fd in frames_data:
         t       = fd.get("frame", 0) / max(fps, 1)
+        ball    = fd.get("ball") or {}
         players = fd.get("players") or []
 
-        # Joueurs avec équipe assignée (couleur connue)
-        real_players = [
-            p for p in players
-            if p.get("team") is not None and p.get("team") != -1
-        ]
+        if _use_ball_criterion:
+            # Critère ballon : présent ET en mouvement
+            ball_speed = ball.get("speed") or 0.0
+            ball_x = (
+                (ball.get("center") or [None])[0]
+                if ball.get("center") else ball.get("x")
+            )
+            game_active = (ball_x is not None and ball_speed >= _BALL_SPEED_MIN)
+        else:
+            # Fallback : ≥4 joueurs avec équipe assignée (ballon non tracké)
+            real_players = [
+                p for p in players
+                if p.get("team") is not None and p.get("team") != -1
+            ]
+            game_active = len(real_players) >= 4
 
-        if len(real_players) >= 4:
+        if game_active:
             last_real_game_t = t
 
         last_checked_t = t
