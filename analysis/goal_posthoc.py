@@ -412,18 +412,19 @@ def detect_fast_goals_from_ball(
             i += 5
             continue
 
-        # Filtre début de vidéo : posthoc non fiable dans les 15 premières secondes
-        # (vidéo démarre en plein jeu → pas de contexte avant → FP systématiques)
-        if goal_time < 15.0:
-            print(f"  [POSTHOC EARLY] t={goal_time:.1f}s < 15s → candidat ignoré (début de vidéo)")
-            i += max(stuck, 5)
-            continue
-
         confidence = round(min(0.6 + score * 0.07, 0.97), 2)
 
         # Raison principale de détection (pour diagnostic)
         _reason = "shot_strict" if recent_shot_strict else ("shot_loose" if recent_shot_loose else "no_shot")
         _side   = "left" if cross_left else "right"
+
+        # Détection posthoc tardif : ballon perdu après le but, récupéré par le gardien
+        # Profil : shot_loose + stuck >= 5 + rebound → candidat généré ~8-12s après le but réel
+        # → Gemini recevra des offsets étendus vers la gauche pour chercher le vrai moment
+        _posthoc_late = (_reason == "shot_loose" and stuck >= 5 and rebound)
+        if _posthoc_late:
+            print(f"  [POSTHOC LATE] t={goal_time:.1f}s reason={_reason} stuck={stuck} rebound={rebound} "
+                  f"→ tag posthoc_late=True (offsets étendus)")
 
         goals.append({
             "type": "goal",
@@ -438,6 +439,7 @@ def detect_fast_goals_from_ball(
             "rebound": rebound,
             "posthoc_reason": _reason,
             "posthoc_side": _side,
+            "posthoc_late": _posthoc_late,
         })
 
         print(f"⚽ GOAL {goal_time:.2f}s | score={score:.2f} | stuck={stuck} | rebound={rebound} | reason={_reason} | side={_side} | peak={peak:.0f}px/f | x={x:.0f} y={y:.0f} (x%={x/frame_w*100:.1f}%)")
@@ -524,11 +526,6 @@ def detect_fast_goals_from_ball(
             continue
 
         if any(abs(goal_time - t) < 10 for t in existing):
-            continue
-
-        # Filtre début de vidéo
-        if goal_time < 15.0:
-            print(f"  [POSTHOC EARLY] t={goal_time:.1f}s < 15s → candidat ignoré (début de vidéo)")
             continue
 
         score = 6.5
