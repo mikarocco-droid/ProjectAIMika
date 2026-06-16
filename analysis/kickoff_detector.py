@@ -311,22 +311,17 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             return t, conf
 
     # ── Passe 2 : score pondéré sur frames_data ───────────────────────────────
-    # Si la Passe 1 a détecté que la vidéo commence en jeu ET qu'on a un video_path,
-    # on continue quand même vers la détection visuelle du ballon (Passe 2 + Gemini).
-    # Un pré-match statique peut avoir p_motion=14 (joueurs qui marchent) sans être du jeu réel.
-    # Seul le video_path permet de discriminer via la détection visuelle du ballon au centre.
-    # EXCEPTION : si p_motion >= 40, c'est du jeu réel (pas un échauffement lent) → offset=0 direct
+    # Si la Passe 1 a détecté que la vidéo commence en jeu (p_motion >= 8.0),
+    # on retourne offset=0 immédiatement — peu importe si video_path est disponible.
+    #
+    # BUG CORRIGÉ : la Passe 2 visuelle était lancée quand video_path était présent,
+    # ce qui pouvait détecter un faux kickoff (ballon passant au rond central pendant
+    # le match) et appliquer un offset erroné supprimant des centaines de secondes.
+    # La p_motion >= 8.0 est suffisante pour confirmer que la vidéo commence en jeu.
     if _p1_early_high:
         _p1_avg_val = sum(_p1_frame_avgs) / len(_p1_frame_avgs) if _p1_frame_avgs else 0.0
-        if _p1_avg_val >= 40.0:
-            print(f"  [KICKOFF P2] p_motion={_p1_avg_val:.1f} >= 40 → jeu reel, offset=0 (pas de pre-match)")
-            return 0.0, 0.0
-        if video_path:
-            print(f"  [KICKOFF P2] Passe 1 → p_motion élevée mais video_path disponible"
-                  f" — détection visuelle du ballon activée")
-        else:
-            print(f"  [KICKOFF P2] Passe 1 a détecté vidéo en jeu → offset=0, Passe 2 ignorée")
-            return 0.0, 0.0
+        print(f"  [KICKOFF P2] p_motion={_p1_avg_val:.1f} >= 8.0 → vidéo commence en jeu, offset=0")
+        return 0.0, 0.0
 
     if not frames_data:
         return 0.0, 0.0
