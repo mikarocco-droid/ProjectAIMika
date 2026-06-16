@@ -1035,6 +1035,8 @@ def find_match_end(
     # Seuil de vitesse ballon : > 3px/frame = ballon en jeu
     # Après le match, le ballon est absent ou immobile (ramassé, posé au sol)
     # Les joueurs continuent de marcher → critère joueurs seul insuffisant
+    # NOTE : frames_data ne stocke PAS la vitesse du ballon — on la calcule
+    # via les positions consécutives (même méthode que find_kickoff_offset).
     _BALL_SPEED_MIN = 3.0
 
     # Déterminer si le ballon est bien tracké dans cette vidéo (>5% des frames)
@@ -1044,6 +1046,15 @@ def find_match_end(
         or (f.get("ball") or {}).get("center") is not None
     )
     _use_ball_criterion = _n_ball_frames > len(frames_data) * 0.05
+    _tracked_ratio = _n_ball_frames / max(len(frames_data), 1)
+
+    # ── DEBUG résumé avant boucle ─────────────────────────────────────────────
+    print(f"  [MATCH_END DEBUG] tracked_ratio={_tracked_ratio:.2f} "
+          f"({_n_ball_frames}/{len(frames_data)} frames) "
+          f"use_ball={_use_ball_criterion} "
+          f"speed_min={_BALL_SPEED_MIN}")
+
+    _prev_ball_end = None   # (bx, by) frame précédente — pour calculer speed
 
     for fd in frames_data:
         t       = fd.get("frame", 0) / max(fps, 1)
@@ -1051,14 +1062,31 @@ def find_match_end(
         players = fd.get("players") or []
 
         if _use_ball_criterion:
-            # Critère ballon : présent ET en mouvement
-            ball_speed = ball.get("speed") or 0.0
-            ball_x = (
-                (ball.get("center") or [None])[0]
-                if ball.get("center") else ball.get("x")
-            )
-            game_active = (ball_x is not None and ball_speed >= _BALL_SPEED_MIN)
+            # Extraire la position du ballon
+            _center = ball.get("center")
+            if _center and len(_center) >= 2 and _center[0] is not None:
+                ball_x = float(_center[0])
+                ball_y = float(_center[1])
+            else:
+                ball_x = ball.get("x")
+                ball_y = ball.get("y")
+
+            # Calculer la vitesse inter-frames (px/frame analysée)
+            if ball_x is not None and ball_y is not None:
+                if _prev_ball_end is not None:
+                    import math as _m
+                    ball_speed = _m.hypot(ball_x - _prev_ball_end[0],
+                                          ball_y - _prev_ball_end[1])
+                else:
+                    ball_speed = 0.0
+                _prev_ball_end = (ball_x, ball_y)
+                game_active = ball_speed >= _BALL_SPEED_MIN
+            else:
+                ball_x = ball_y = ball_speed = None
+                _prev_ball_end = None
+                game_active = False
         else:
+            ball_x = ball_y = ball_speed = None
             # Fallback : ≥4 joueurs avec équipe assignée (ballon non tracké)
             real_players = [
                 p for p in players
@@ -1066,10 +1094,32 @@ def find_match_end(
             ]
             game_active = len(real_players) >= 4
 
+        # ── DEBUG zone 07:00–08:20 (420s–500s) — toutes les 5s ───────────────
+        if 420.0 <= t <= 500.0 and int(t) % 5 == 0:
+            _spd_str = f"{ball_speed:.1f}" if ball_speed is not None else "None"
+            print(f"  [MATCH_END DEBUG] t={t:.1f}s "
+                  f"ball_present={ball_x is not None} "
+                  f"ball_speed={_spd_str} "
+                  f"game_active={game_active} "
+                  f"last_real={last_real_game_t:.0f}s" if last_real_game_t else
+                  f"  [MATCH_END DEBUG] t={t:.1f}s "
+                  f"ball_present={ball_x is not None} "
+                  f"ball_speed={_spd_str} "
+                  f"game_active={game_active} "
+                  f"last_real=None")
+
         if game_active:
             last_real_game_t = t
 
         last_checked_t = t
+
+    # ── DEBUG résumé après boucle ─────────────────────────────────────────────
+    print(f"  [MATCH_END DEBUG] last_real_game_t={last_real_game_t} "
+          f"last_checked_t={last_checked_t:.1f}s "
+          f"silence={last_checked_t - last_real_game_t:.1f}s"
+          if last_real_game_t is not None else
+          f"  [MATCH_END DEBUG] last_real_game_t=None "
+          f"last_checked_t={last_checked_t:.1f}s")
 
     if last_real_game_t is None:
         return None
