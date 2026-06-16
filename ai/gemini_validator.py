@@ -1379,10 +1379,17 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
     # Offsets triés (plus proches d'abord)
     # PATCH v3 : terminal_goal → offsets élargis pour voir le filet avant (-3s)
     # et le kickoff après (+5s, +20s) — les offsets courts [-1,0,+2] ratent souvent le signal
+    # PATCH v4 : posthoc_late → offsets étendus vers la gauche [-12,-10]
+    # Profil : shot_loose + stuck>=5 + rebound → ballon perdu après but, récupéré ~10s plus tard
     if "terminal_goal" in str(source):
         offsets_s = [-3, 0, 5, 20]
     elif "posthoc" in str(source):
-        offsets_s = OFFSETS_POSTHOC
+        if event.get("posthoc_late"):
+            offsets_s = [-12, -10, -5, -2, 0, 5]
+            print(f"  [POSTHOC LATE] offsets étendus {offsets_s} "
+                  f"(candidat tardif ~10s après but réel estimé)")
+        else:
+            offsets_s = OFFSETS_POSTHOC
     else:
         offsets_s = OFFSETS_EVENTS
     offsets_s = sorted(offsets_s, key=lambda x: abs(x))
@@ -1634,11 +1641,9 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
         # Audit scoreur (2 runs, 15 candidats) : les VP manqués ont exactement ce profil
         # Les FP avec 1 vote goal sont tous source=events_standard (pas posthoc)
         # Garde final_score > 0 : si neg_score écrase → signal trop ambigu → pas de rescue
-        # v9.10 : t < 15s → seuil durci à 0.90 (début de vidéo = zone FP)
-        _rescue_conf_min = 0.90 if (event.get("time", 0) < 15.0) else 0.75
         if ("posthoc" in str(source)
                 and goal_votes >= 1
-                and best_conf >= _rescue_conf_min
+                and best_conf >= 0.75
                 and final_score > 0):
             print(f"  [POSTHOC RESCUE] goal_votes={goal_votes} conf={best_conf:.2f} "
                   f"score={final_score:.2f} → BUT accepté (v9.9)")
