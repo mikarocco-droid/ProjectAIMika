@@ -244,6 +244,7 @@ def run_pipeline(
     user_team_id      = None,    # 0 ou 1 — équipe de l'utilisateur
     player_position   = None,    # "Gardien", "Attaquant", etc. — pour mode player
     audit_mode        = False,   # Mode collecte données : skip highlights, PDF, commentary, heatmaps
+    video_end_s       = None,    # Forcer la fin de la vidéo à ce timestamp (s) — utile pour couper l'après-match
 ):
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
@@ -458,6 +459,21 @@ def run_pipeline(
         jersey_map = reset_pre_kickoff_state(jersey_map, _kickoff_offset, fps=fps)
     else:
         print(f"  [KICKOFF] Pas de coup d'envoi détecté → timestamps inchangés")
+
+    # ── COUPURE FORCÉE FIN DE VIDÉO ──────────────────────────────────────────
+    # Si video_end_s est défini, on tronque events et frames_data à ce timestamp.
+    # Utile quand la vidéo contient du contenu post-match (ralentis, plateau, etc.)
+    # que la détection automatique MATCH_END ne capte pas.
+    if video_end_s is not None:
+        _end_frame = int(video_end_s * fps)
+        _n_events_before  = len(events)
+        _n_frames_before  = len(frames_data)
+        events      = [e for e in events     if e.get("time", 0) <= video_end_s]
+        frames_data = [f for f in frames_data if f.get("frame", 0) <= _end_frame]
+        print(f"  [VIDEO_END_S] Coupure forcée à {video_end_s:.0f}s "
+              f"({int(video_end_s//60):02d}:{int(video_end_s%60):02d}) | "
+              f"events {_n_events_before}→{len(events)} | "
+              f"frames {_n_frames_before}→{len(frames_data)}")
 
     # ── DÉTECTION FIN DE MATCH ───────────────────────────────────────────────
     # Cherche la fin du match dans les frames_data pour couper l'après-match.
