@@ -1255,6 +1255,29 @@ def run_pipeline(
                 g["gemini_type"]      = "goal"
                 g["gemini_conf"]      = g.get("confidence", 0.90)
 
+        # ── Filtre début de vidéo — toutes sources ────────────────────────────
+        # Vidéo démarrant en plein jeu : les premières secondes génèrent des FP
+        # (tracker instable, pas de contexte avant, posthoc et events_standard
+        #  confondent artefacts de démarrage avec un but).
+        # Rejet dur t < 15s quelle que soit la source.
+        MIN_EARLY_VIDEO_S = 15.0
+        _n_early = sum(1 for e in events_for_gemini_filtered
+                       if e.get("type") == "goal" and e.get("time", 0) < MIN_EARLY_VIDEO_S)
+        if _n_early:
+            for _e in events_for_gemini_filtered:
+                if _e.get("type") == "goal" and _e.get("time", 0) < MIN_EARLY_VIDEO_S:
+                    _t_e = _e.get("time", 0)
+                    print(f"  [EARLY REJECT] t={int(_t_e//60):02d}:{int(_t_e%60):02d} "
+                          f"({_t_e:.1f}s < {MIN_EARLY_VIDEO_S}s) source={_e.get('detected_from', _e.get('source', '?'))} "
+                          f"→ candidat ignoré (début de vidéo)")
+                    _e["_remove"] = True
+            events_for_gemini_filtered = [
+                e for e in events_for_gemini_filtered
+                if not e.get("_remove")
+            ]
+            print(f"  [EARLY REJECT] {_n_early} candidat(s) supprimé(s) avant Gemini (t < {MIN_EARLY_VIDEO_S}s)")
+        # ─────────────────────────────────────────────────────────────────────
+
         events_validated = validate_events_with_gemini(
             events        = events_for_gemini_filtered,
             video_path    = video_path,
