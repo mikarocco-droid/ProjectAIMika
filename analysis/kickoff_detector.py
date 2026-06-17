@@ -1039,8 +1039,13 @@ def find_match_end(
     _BALL_SPEED_MIN        = 3.0    # pré-filtre instantané (inchangé)
     _SLIDING_WINDOW_S      = 15.0   # fenêtre glissante en secondes
     _SLIDING_MEDIAN_MIN    = 20.0   # médiane min pour "match en cours"
-    _HIGH_SPEED_RATIO_MIN  = 0.15   # % frames > 30 px/frame min
-    _HIGH_SPEED_THRESH     = 30.0   # seuil "vitesse élevée"
+    # USE_RATIO30 : activez pour A/B test median seul vs median+ratio
+    # Observation andrimont_2 : post-match génère ratio30=0.40–0.52 (rafales réelles
+    # mais sporadiques), médiane reste 2–7 (< 20). Le ratio seul est insuffisant.
+    # Gardé dans le code pour comparaison future sur d'autres vidéos.
+    _USE_RATIO30           = False  # désactivé — median seul suffit sur cette vidéo
+    _HIGH_SPEED_RATIO_MIN  = 0.15   # seuil ratio30 (ignoré si _USE_RATIO30=False)
+    _HIGH_SPEED_THRESH     = 30.0   # seuil "vitesse élevée" (px/frame)
     _speed_window          = []     # liste (t, ball_speed) sur la fenêtre
 
     # Déterminer si le ballon est bien tracké dans cette vidéo (>5% des frames)
@@ -1112,8 +1117,8 @@ def find_match_end(
                 _high_speed_ratio   = sum(1 for sp in _speeds if sp >= _HIGH_SPEED_THRESH) / len(_speeds)
                 # Décision finale : game_active ssi activité soutenue
                 game_active = (
-                    _sliding_median   >= _SLIDING_MEDIAN_MIN
-                    or _high_speed_ratio >= _HIGH_SPEED_RATIO_MIN
+                    _sliding_median >= _SLIDING_MEDIAN_MIN
+                    or (_USE_RATIO30 and _high_speed_ratio >= _HIGH_SPEED_RATIO_MIN)
                 )
             # else : pas assez de données → garder game_active instantané
         # (si _use_ball_criterion=False, game_active vient du fallback joueurs)
