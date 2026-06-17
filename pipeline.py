@@ -1396,6 +1396,60 @@ def run_pipeline(
                 _confirmed_times.append(_t)
                 print(f"  [GOAL CONFIRMED] t={int(_t//60):02d}:{int(_t%60):02d} "
                       f"→ cooldown actif ({_GOAL_COOLDOWN_POST:.0f}s)")
+                # ── STANDARD BC4 — observation géométrique (pas de rejet encore) ──
+                # Instrumenter tous les buts events_standard confirmés par Gemini.
+                # But : mesurer world_score sur VP et FP pour calibrer un futur gate.
+                # VP typiques attendus : world_score > 0.80
+                # FP typiques attendus : world_score < 0.50, in_goal=False
+                _src_std = _e.get("source", _e.get("detected_from", ""))
+                if ("events_standard" in str(_src_std) or "terminal_goal" in str(_src_std)):
+                    try:
+                        if "_bc4_enrich" in dir() and _anchor is not None and _anchor.is_ready():
+                            _bc4_enrich([_e], _anchor, _frame_w)
+                            _geo_std = _e.get("geo", {})
+                            _in_goal_std = _geo_std.get("in_goal", None)
+                            _in_pen_std  = _geo_std.get("in_penalty", None)
+                            _dist_std    = _geo_std.get("dist_goal", None)
+                            _ws_std      = _geo_std.get("world_score", None)
+                            _would_reject = (
+                                _in_goal_std is False
+                                and _ws_std is not None and _ws_std < 0.50
+                            )
+                            _label_std = "→ aurait été REJETÉ" if _would_reject else "→ aurait été CONSERVÉ"
+                            print(f"  [STANDARD BC4] t={int(_t//60):02d}:{int(_t%60):02d}"
+                                  f" src={_src_std}"
+                                  f" bx={_e.get('bx', '?')}"
+                                  f" in_goal={_in_goal_std} in_pen={_in_pen_std}"
+                                  f" dist={_dist_std} world_score={_ws_std}"
+                                  f"  {_label_std}")
+                            # Persister dans bc4_calibration.json
+                            try:
+                                import sys as _sys_bc4
+                                _bc4_cal_dir = os.path.join(output_dir, "..", "learning")
+                                _bc4_cal_path = os.path.join(_bc4_cal_dir, "bc4_calibration.json")
+                                _bc4_mod_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "learning")
+                                if _bc4_mod_path not in _sys_bc4.path:
+                                    _sys_bc4.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                                from learning.bc4_calibration import record as _bc4_record
+                                _bc4_record(
+                                    video_name  = os.path.basename(video_path),
+                                    t_sec       = _t,
+                                    source      = str(_src_std),
+                                    vp_fp       = "unknown",  # sera mis à jour manuellement
+                                    in_goal     = _in_goal_std,
+                                    in_penalty  = _in_pen_std,
+                                    dist_goal   = _dist_std,
+                                    world_score = _ws_std,
+                                    bx          = _e.get("bx"),
+                                    desc        = _e.get("gemini_desc", _e.get("desc", "")),
+                                    path        = _bc4_cal_path,
+                                )
+                            except Exception as _bc4_save_e:
+                                pass  # non bloquant
+                        else:
+                            print(f"  [STANDARD BC4] t={int(_t//60):02d}:{int(_t%60):02d} anchor non prêt — ignoré")
+                    except Exception as _bc4_std_e:
+                        print(f"  [STANDARD BC4] erreur (ignorée) : {_bc4_std_e}")
             _goals_deduped.append(_e)
         events_validated = _goals_deduped
 
@@ -1562,10 +1616,8 @@ def run_pipeline(
                             }
 
                             # BC.4 OBS — enrichissement géométrique des buts shot→goal
-                            # Phase observation : logger la contradiction Gemini ↔ géométrie
-                            # sans rejeter automatiquement.
-                            # But : collecter des données multi-matchs pour calibrer un futur gate.
-                            # Règle de rejet à activer seulement après validation sur ≥3 matchs.
+                            # Gate actif : in_goal=False + world_score < 0.50 → rejet
+                            _gate_rejected = False
                             try:
                                 if "_bc4_enrich" in dir() and _anchor is not None and _anchor.is_ready():
                                     # bx au moment du tir d'origine — proxy pour goal_t
@@ -1608,13 +1660,32 @@ def run_pipeline(
                                           f"  ← {_gate_label}")
                                     new_goal["geo_contradiction"] = _contradiction
                                     new_goal["geo_gate_reject"] = _gate_reject
+                                    # Persister dans bc4_calibration.json
+                                    try:
+                                        _bc4_cal_path2 = os.path.join(output_dir, "..", "learning", "bc4_calibration.json")
+                                        from learning.bc4_calibration import record as _bc4_record2
+                                        _bc4_record2(
+                                            video_name  = os.path.basename(video_path),
+                                            t_sec       = goal_t,
+                                            source      = "shot_to_goal_gemini",
+                                            vp_fp       = "unknown",
+                                            in_goal     = _in_goal,
+                                            in_penalty  = _in_penalty,
+                                            dist_goal   = _dist,
+                                            world_score = _ws,
+                                            bx          = _stg_bx,
+                                            path        = _bc4_cal_path2,
+                                        )
+                                    except Exception:
+                                        pass
                                     if _gate_reject:
                                         print(f"  [SHOT→GOAL BC4] ❌ Rejeté géométriquement : in_goal=False world_score={_ws:.3f} < 0.50")
-                                        existing_goal_times.remove(goal_t)
-                                        detected_goal_times.remove(goal_t)
-                                        continue  # ne pas ajouter à shot_goal_candidates
+                                        _gate_rejected = True
                             except Exception as _geo_e:
                                 print(f"  [SHOT→GOAL BC4] erreur géo (ignorée) : {_geo_e}")
+
+                            if _gate_rejected:
+                                continue  # ne pas ajouter à shot_goal_candidates
 
                             shot_goal_candidates.append(new_goal)
                             existing_goal_times.append(goal_t)
@@ -2569,6 +2640,14 @@ def run_pipeline(
     print(f"\nPIPELINE DONE")
     print(f"  {summary['goals']} buts | {summary['shots']} tirs | "
           f"xG: {summary['total_xg']} | {summary['players']} joueurs")
+
+    # ── BC4 calibration — résumé cumulatif ───────────────────────────────────
+    try:
+        _bc4_cal_final = os.path.join(output_dir, "..", "learning", "bc4_calibration.json")
+        from learning.bc4_calibration import print_summary as _bc4_print_summary
+        _bc4_print_summary(path=_bc4_cal_final)
+    except Exception:
+        pass
 
     # Résumé player entities
     if player_entities:
