@@ -1558,20 +1558,40 @@ def run_pipeline(
                                     _in_penalty = _geo.get("in_penalty", None)
                                     _dist       = _geo.get("dist_goal", None)
                                     _ws         = _geo.get("world_score", None)
-                                    # Contradiction : Gemini dit but, géométrie dit hors surface
+                                    # Gate BC4 — deux niveaux :
+                                    # Niveau 1 (fort) : ballon clairement hors cage + world_score faible
+                                    #   → rejet direct
+                                    # Niveau 2 (ancienne règle) : hors surface ET hors cage ET dist > 15
+                                    #   → observation uniquement (gardé pour calibration future)
+                                    #
+                                    # Validation andrimont_2 :
+                                    #   FP 01:06 → in_goal=False, in_pen=True, world_score=0.418
+                                    #   L'ancienne règle (in_pen=False requis) ne rejetait pas.
+                                    #   Nouveau seuil : in_goal=False + world_score < 0.50 suffit.
+                                    #   VP typiques : world_score ≈ 0.94 → pas de risque de FN.
+                                    _gate_reject = (
+                                        _in_goal is False
+                                        and _ws is not None and _ws < 0.50
+                                    )
                                     _contradiction = (
                                         _in_goal    is False
                                         and _in_penalty is False
                                         and _dist is not None and _dist > 15.0
                                         and _ws   is not None and _ws  < 0.30
                                     )
+                                    _gate_label = "🚫 REJETÉ gate BC4" if _gate_reject else ("⚠️  FP probable" if _contradiction else "✅ cohérent")
                                     print(f"  [SHOT→GOAL BC4] t={int(goal_t//60):02d}:{int(goal_t%60):02d}"
                                           f" bx={_stg_bx:.3f} in_goal={_in_goal} in_pen={_in_penalty}"
                                           f" dist={_dist} world_score={_ws}"
-                                          f" contradiction={_contradiction}"
-                                          f"  ← {'⚠️  FP probable' if _contradiction else '✅ cohérent'}")
-                                    # Stocker dans l'event pour scorer_audit futur
+                                          f" gate={_gate_reject} contradiction={_contradiction}"
+                                          f"  ← {_gate_label}")
                                     new_goal["geo_contradiction"] = _contradiction
+                                    new_goal["geo_gate_reject"] = _gate_reject
+                                    if _gate_reject:
+                                        print(f"  [SHOT→GOAL BC4] ❌ Rejeté géométriquement : in_goal=False world_score={_ws:.3f} < 0.50")
+                                        existing_goal_times.remove(goal_t)
+                                        detected_goal_times.remove(goal_t)
+                                        continue  # ne pas ajouter à shot_goal_candidates
                             except Exception as _geo_e:
                                 print(f"  [SHOT→GOAL BC4] erreur géo (ignorée) : {_geo_e}")
 
