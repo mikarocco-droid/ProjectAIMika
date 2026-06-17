@@ -1131,14 +1131,21 @@ def find_match_end(
                 import statistics as _stats2
                 _med  = _stats2.median(_speeds_now)
                 _ratio = sum(1 for sp in _speeds_now if sp >= _HIGH_SPEED_THRESH) / len(_speeds_now)
-                _extra = f"median15s={_med:.1f} ratio30={_ratio:.2f}"
+                _ball_extra = f"median15s={_med:.1f} ratio30={_ratio:.2f}"
             else:
-                _extra = "window<3"
+                _ball_extra = "window<3"
+            # Métriques joueurs — déjà disponibles dans frames_data
+            _nb_total   = len(players)
+            _nb_team0   = sum(1 for p in players if p.get("team") == 0)
+            _nb_team1   = sum(1 for p in players if p.get("team") == 1)
+            _nb_unknown = sum(1 for p in players if p.get("team") not in (0, 1))
+            _unk_ratio  = _nb_unknown / max(_nb_total, 1)
             _lr = f"{last_real_game_t:.0f}s" if last_real_game_t else "None"
             print(f"  [MATCH_END DEBUG] t={t:.1f}s "
-                  f"ball_speed={_spd_str} "
-                  f"game_active={game_active} "
-                  f"last_real={_lr} | {_extra}")
+                  f"game_active={game_active} last_real={_lr} | "
+                  f"{_ball_extra} | "
+                  f"players={_nb_total} t0={_nb_team0} t1={_nb_team1} "
+                  f"unk={_nb_unknown} unk_ratio={_unk_ratio:.2f}")
 
         if game_active:
             last_real_game_t = t
