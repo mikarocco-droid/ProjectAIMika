@@ -1027,12 +1027,21 @@ def find_match_end(
     last_real_game_t = None
     last_checked_t   = 0.0
 
-    # Seuil de vitesse ballon : > 3px/frame = ballon en jeu
-    # Après le match, le ballon est absent ou immobile (ramassé, posé au sol)
-    # Les joueurs continuent de marcher → critère joueurs seul insuffisant
-    # NOTE : frames_data ne stocke PAS la vitesse du ballon — on la calcule
-    # via les positions consécutives (même méthode que find_kickoff_offset).
-    _BALL_SPEED_MIN = 3.0
+    # Seuil de vitesse ballon — fenêtre glissante 15s
+    # Observation andrimont_2 :
+    #   match      → vitesses 100–400 px/frame, fréquentes et soutenues
+    #   post-match → vitesses 3–96 px/frame, sporadiques, médiane ~5
+    # ball_speed > 3 frame par frame = activité ballon (pas match en cours)
+    # On utilise une fenêtre glissante : game_active ssi
+    #   median(ball_speed, 15s) >= SLIDING_MEDIAN_MIN  (ex: 20)
+    #   OU high_speed_ratio(>30 px/frame, 15s) >= HIGH_SPEED_RATIO_MIN (ex: 0.15)
+    # Le seuil instantané 3 est gardé comme pré-filtre uniquement.
+    _BALL_SPEED_MIN        = 3.0    # pré-filtre instantané (inchangé)
+    _SLIDING_WINDOW_S      = 15.0   # fenêtre glissante en secondes
+    _SLIDING_MEDIAN_MIN    = 20.0   # médiane min pour "match en cours"
+    _HIGH_SPEED_RATIO_MIN  = 0.15   # % frames > 30 px/frame min
+    _HIGH_SPEED_THRESH     = 30.0   # seuil "vitesse élevée"
+    _speed_window          = []     # liste (t, ball_speed) sur la fenêtre
 
     # Déterminer si le ballon est bien tracké dans cette vidéo (>5% des frames)
     _n_ball_frames = sum(
@@ -1089,19 +1098,42 @@ def find_match_end(
             ]
             game_active = len(real_players) >= 4
 
-        # ── DEBUG zone 07:00–08:20 (420s–500s) — toutes les 5s ───────────────
-        if 420.0 <= t <= 500.0 and int(t) % 5 == 0:
+        # ── Fenêtre glissante 15s ─────────────────────────────────────────────
+        if _use_ball_criterion and ball_speed is not None:
+            _speed_window.append((t, ball_speed))
+            # Purger les frames hors fenêtre
+            _speed_window = [(ts, sp) for ts, sp in _speed_window
+                             if t - ts <= _SLIDING_WINDOW_S]
+            # Calculer métriques agrégées
+            if len(_speed_window) >= 3:
+                import statistics as _stats
+                _speeds = [sp for _, sp in _speed_window]
+                _sliding_median     = _stats.median(_speeds)
+                _high_speed_ratio   = sum(1 for sp in _speeds if sp >= _HIGH_SPEED_THRESH) / len(_speeds)
+                # Décision finale : game_active ssi activité soutenue
+                game_active = (
+                    _sliding_median   >= _SLIDING_MEDIAN_MIN
+                    or _high_speed_ratio >= _HIGH_SPEED_RATIO_MIN
+                )
+            # else : pas assez de données → garder game_active instantané
+        # (si _use_ball_criterion=False, game_active vient du fallback joueurs)
+
+        # ── DEBUG zone 420s–520s — toutes les 5s ─────────────────────────────
+        if 420.0 <= t <= 520.0 and int(t) % 5 == 0:
             _spd_str = f"{ball_speed:.1f}" if ball_speed is not None else "None"
+            if _use_ball_criterion and len(_speed_window) >= 3:
+                _speeds_now = [sp for _, sp in _speed_window]
+                import statistics as _stats2
+                _med  = _stats2.median(_speeds_now)
+                _ratio = sum(1 for sp in _speeds_now if sp >= _HIGH_SPEED_THRESH) / len(_speeds_now)
+                _extra = f"median15s={_med:.1f} ratio30={_ratio:.2f}"
+            else:
+                _extra = "window<3"
+            _lr = f"{last_real_game_t:.0f}s" if last_real_game_t else "None"
             print(f"  [MATCH_END DEBUG] t={t:.1f}s "
-                  f"ball_present={ball_x is not None} "
                   f"ball_speed={_spd_str} "
                   f"game_active={game_active} "
-                  f"last_real={last_real_game_t:.0f}s" if last_real_game_t else
-                  f"  [MATCH_END DEBUG] t={t:.1f}s "
-                  f"ball_present={ball_x is not None} "
-                  f"ball_speed={_spd_str} "
-                  f"game_active={game_active} "
-                  f"last_real=None")
+                  f"last_real={_lr} | {_extra}")
 
         if game_active:
             last_real_game_t = t
