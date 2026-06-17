@@ -1143,6 +1143,27 @@ def run_pipeline(
                 print(f"  [LOW_ZOOM_PRE] {len(goals_pre) - len(_goals_pre_filtered)} candidat(s) filtrés avant Gemini")
             goals_pre = _goals_pre_filtered
 
+        # ── Filtre bx central — tous types de caméra ────────────────────────────
+        # Un tir valide ne part jamais du rond central (bx ∈ [0.35, 0.65]).
+        # Ce filtre élimine les coups francs / remises en jeu au milieu du terrain
+        # que events_standard classe parfois comme tirs (tracker_conf élevé mais
+        # position non offensive).
+        # Validation andrimont_2 : FP 04:52 coup franc milieu → bx ≈ 0.50
+        # VP typiques : bx < 0.20 (but gauche) ou bx > 0.80 (but droit)
+        _goals_central_filtered = []
+        for _e in goals_pre:
+            _t  = _e.get("time", 0)
+            _bx = _e.get("bx") or (_e.get("ball_x", 9999) / _frame_w if _e.get("ball_x") else None)
+            _src = _e.get("source", _e.get("detected_from", ""))
+            if _bx is not None and 0.35 <= _bx <= 0.65:
+                print(f"  [CENTRAL_BX_PRE] Candidat rejeté avant Gemini t={int(_t//60):02d}:{int(_t%60):02d}"
+                      f" bx={_bx:.3f} src={_src} — tir depuis zone centrale (coup franc / remise)")
+                continue
+            _goals_central_filtered.append(_e)
+        if len(_goals_central_filtered) < len(goals_pre):
+            print(f"  [CENTRAL_BX_PRE] {len(goals_pre) - len(_goals_central_filtered)} candidat(s) filtrés (zone centrale)")
+        goals_pre = _goals_central_filtered
+
         print(f"  [PRE-GEMINI PIPELINE] {len(goals_pre)} but(s) candidats")
         if DEBUG:
             for e in goals_pre:
