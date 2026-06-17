@@ -1546,7 +1546,7 @@ def run_pipeline(
                             # But : collecter des données multi-matchs pour calibrer un futur gate.
                             # Règle de rejet à activer seulement après validation sur ≥3 matchs.
                             try:
-                                if "_bc4_enrich" in dir() and _anchor is not None and _anchor.ready:
+                                if "_bc4_enrich" in dir() and _anchor is not None and _anchor.is_ready():
                                     # bx au moment du tir d'origine — proxy pour goal_t
                                     # Note : goal_t ≠ shot_t (peut différer de quelques secondes)
                                     # Ne pas utiliser la géométrie d'un autre event pour décider
