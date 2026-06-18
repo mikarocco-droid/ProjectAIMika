@@ -1416,6 +1416,41 @@ def run_pipeline(
                                 and _ws_std is not None and _ws_std < 0.50
                             )
                             _label_std = "→ aurait été REJETÉ" if _would_reject else "→ aurait été CONSERVÉ"
+                            # Log autopsie STANDARD BC4
+                            _std_bx_raw = _e.get("bx")
+                            _std_frame = _e.get("frame") or int(_t * fps)
+                            _std_ball_at = None
+                            _std_ball_frame_t = None
+                            _std_best_d = 9999
+                            for _fdat2 in frames_data:
+                                _fdat2_fr = _fdat2.get("frame_id", _fdat2.get("frame", 0)) or 0
+                                _d2 = abs(_fdat2_fr - _std_frame)
+                                if _d2 >= _std_best_d:
+                                    continue
+                                _ball2 = _fdat2.get("ball") or {}
+                                if not isinstance(_ball2, dict):
+                                    continue
+                                _cx2 = None
+                                if _ball2.get("x") is not None:
+                                    _cx2 = float(_ball2["x"])
+                                elif _ball2.get("center"):
+                                    _c3 = _ball2["center"]
+                                    if isinstance(_c3, (list, tuple)) and len(_c3) >= 1:
+                                        _cx2 = float(_c3[0])
+                                if _cx2 is not None and _frame_w > 0:
+                                    _bx3 = _cx2 / _frame_w
+                                    if 0.0 <= _bx3 <= 1.0:
+                                        _std_ball_at = _bx3
+                                        _std_ball_frame_t = _fdat2_fr / max(fps, 1)
+                                        _std_best_d = _d2
+                                        if _d2 == 0:
+                                            break
+                            _std_age = abs(_std_ball_frame_t - _t) if _std_ball_frame_t is not None else None
+                            print(f"  [BC4 AUTOPSY STD] t={int(_t//60):02d}:{int(_t%60):02d}"
+                                  f" event_bx={_std_bx_raw}"
+                                  f" ball_frame_t={_std_ball_frame_t}"
+                                  f" ball_age={_std_age}"
+                                  f" bx_frames={_std_ball_at}")
                             print(f"  [STANDARD BC4] t={int(_t//60):02d}:{int(_t%60):02d}"
                                   f" src={_src_std}"
                                   f" bx={_e.get('bx', '?')}"
@@ -1620,11 +1655,58 @@ def run_pipeline(
                             _gate_rejected = False
                             try:
                                 if "_bc4_enrich" in dir() and _anchor is not None and _anchor.is_ready():
-                                    # bx au moment du tir d'origine — proxy pour goal_t
-                                    # Note : goal_t ≠ shot_t (peut différer de quelques secondes)
-                                    # Ne pas utiliser la géométrie d'un autre event pour décider
-                                    _stg_bx = shot.get("bx") or shot.get("x", 0) / _frame_w
+                                    # ── AUTOPSIE BC4 ─────────────────────────────────────────────────────
+                                    # Bug constaté : _stg_bx = shot.bx (position AU TIR, pas AU BUT)
+                                    # shot_t ≠ goal_t → BC4 évalue le mauvais instant
+                                    # Les 3 FP ws=0.964 viennent probablement de shot.bx ≈ 0.047
+                                    # qui correspond à la zone du but côté gauche,
+                                    # même si le ballon réel était au milieu du terrain à goal_t.
+                                    _stg_bx_shot = shot.get("bx") or shot.get("x", 0) / _frame_w
+                                    # Chercher bx dans frames_data au frame le plus proche de goal_t
+                                    _goal_frame = int(goal_t * fps)
+                                    _ball_bx_at_goal = None
+                                    _ball_frame_t_at_goal = None
+                                    _best_d_gf = 9999
+                                    for _fdat in frames_data:
+                                        _fdat_fr = _fdat.get("frame_id", _fdat.get("frame", 0)) or 0
+                                        _d = abs(_fdat_fr - _goal_frame)
+                                        if _d >= _best_d_gf:
+                                            continue
+                                        _ball_at = _fdat.get("ball") or {}
+                                        if not isinstance(_ball_at, dict):
+                                            continue
+                                        _cx_at = None
+                                        if _ball_at.get("x") is not None:
+                                            _cx_at = float(_ball_at["x"])
+                                        elif _ball_at.get("center"):
+                                            _c2 = _ball_at["center"]
+                                            if isinstance(_c2, (list, tuple)) and len(_c2) >= 1:
+                                                _cx_at = float(_c2[0])
+                                        elif _ball_at.get("bbox"):
+                                            _b2 = _ball_at["bbox"]
+                                            if isinstance(_b2, (list, tuple)) and len(_b2) >= 3:
+                                                _cx_at = (float(_b2[0]) + float(_b2[2])) / 2
+                                        if _cx_at is not None and _frame_w > 0:
+                                            _bx_c = _cx_at / _frame_w
+                                            if 0.0 <= _bx_c <= 1.0:
+                                                _ball_bx_at_goal = _bx_c
+                                                _ball_frame_t_at_goal = _fdat_fr / max(fps, 1)
+                                                _best_d_gf = _d
+                                                if _d == 0:
+                                                    break
+                                    _ball_age = abs(_ball_frame_t_at_goal - goal_t) if _ball_frame_t_at_goal is not None else None
+                                    # Log autopsie — clé pour comprendre le bug ws=0.964
+                                    print(f"  [BC4 AUTOPSY] goal_t={goal_t:.1f}s shot_t={st:.1f}s"
+                                          f" ball_frame_t={_ball_frame_t_at_goal}"
+                                          f" ball_age={_ball_age}"
+                                          f" bx_shot={_stg_bx_shot:.3f}"
+                                          f" bx_at_goal={_ball_bx_at_goal}")
+                                    # Pour l'instant : utiliser bx_shot (comportement actuel inchangé)
+                                    # On instrumente sans changer la logique — autopsie d'abord
+                                    _stg_bx = _stg_bx_shot
                                     new_goal["bx"] = _stg_bx
+                                    new_goal["_bx_at_goal"] = _ball_bx_at_goal
+                                    new_goal["_ball_age_s"] = _ball_age
                                     _bc4_enrich([new_goal], _anchor, _frame_w)
                                     _geo        = new_goal.get("geo", {})
                                     _in_goal    = _geo.get("in_goal", None)
