@@ -1069,7 +1069,7 @@ def run_pipeline(
                 _n_enriched = _bc4_enrich(events, _anchor, _frame_w)
                 print(f"  [BC4] {_n_enriched}/{len(events)} events enrichis avec métriques monde")
 
-                if goals_real:
+                if goals_real is not None:
                     _bc4_result = _bc4_compare(events, goals_real, _anchor)
                     _bc4_print(_bc4_result)
                     _geom_state["bc4"] = _bc4_result
