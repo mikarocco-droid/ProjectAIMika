@@ -1451,12 +1451,22 @@ def run_pipeline(
                                   f" ball_frame_t={_std_ball_frame_t}"
                                   f" ball_age={_std_age}"
                                   f" bx_frames={_std_ball_at}")
+                            _geo_std_full = _e.get("geo", {})
+                            _ws_comp      = _geo_std_full.get("ws_components", {})
+                            _world_x      = _geo_std_full.get("world_x")
+                            _world_y      = _geo_std_full.get("world_y")
+                            _goal_line    = _geo_std_full.get("goal_line_x")
+                            _pen_line     = _geo_std_full.get("penalty_line_x")
                             print(f"  [STANDARD BC4] t={int(_t//60):02d}:{int(_t%60):02d}"
                                   f" src={_src_std}"
                                   f" bx={_e.get('bx', '?')}"
                                   f" in_goal={_in_goal_std} in_pen={_in_pen_std}"
                                   f" dist={_dist_std} world_score={_ws_std}"
                                   f"  {_label_std}")
+                            print(f"  [STANDARD BC4 DETAIL] ws_components={_ws_comp}"
+                                  f" world_x={_world_x} world_y={_world_y}"
+                                  f" goal_line_x={_goal_line} penalty_line_x={_pen_line}"
+                                  f" ball_age={_std_age}")
                             # Persister dans bc4_calibration.json
                             try:
                                 import sys as _sys_bc4
@@ -1742,11 +1752,15 @@ def run_pipeline(
                                         and _ws   is not None and _ws  < 0.30
                                     )
                                     _gate_label = "🚫 REJETÉ gate BC4" if _gate_reject else ("⚠️  FP probable" if _contradiction else "✅ cohérent")
+                                    _ws_comp2   = new_goal.get("geo", {}).get("ws_components", {})
                                     print(f"  [SHOT→GOAL BC4] t={int(goal_t//60):02d}:{int(goal_t%60):02d}"
                                           f" bx={_stg_bx:.3f} in_goal={_in_goal} in_pen={_in_penalty}"
                                           f" dist={_dist} world_score={_ws}"
                                           f" gate={_gate_reject} contradiction={_contradiction}"
                                           f"  ← {_gate_label}")
+                                    print(f"  [SHOT→GOAL BC4 DETAIL] ws_components={_ws_comp2}"
+                                          f" bx_shot={_stg_bx_shot:.3f} bx_at_goal={_ball_bx_at_goal}"
+                                          f" ball_age={_ball_age}")
                                     new_goal["geo_contradiction"] = _contradiction
                                     new_goal["geo_gate_reject"] = _gate_reject
                                     # Persister dans bc4_calibration.json
