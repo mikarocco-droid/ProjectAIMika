@@ -1701,9 +1701,16 @@ def run_pipeline(
                                           f" ball_age={_ball_age}"
                                           f" bx_shot={_stg_bx_shot:.3f}"
                                           f" bx_at_goal={_ball_bx_at_goal}")
-                                    # Pour l'instant : utiliser bx_shot (comportement actuel inchangé)
-                                    # On instrumente sans changer la logique — autopsie d'abord
-                                    _stg_bx = _stg_bx_shot
+                                    # Correction BC4 — utiliser bx_at_goal si ballon trouvé frais (age <= 2s)
+                                    # bx_shot = position du tir (~10-20s avant goal_t) → zone du but → in_goal=True erroné
+                                    # bx_at_goal = position réelle du ballon à goal_t → correcte
+                                    # Autopsie confirmée : ball_age=0.02s et 0.16s sur les deux FP shot_to_goal
+                                    if _ball_bx_at_goal is not None and _ball_age is not None and _ball_age <= 2.0:
+                                        _stg_bx = _ball_bx_at_goal
+                                        print(f"  [BC4 FIX] bx_at_goal utilisé : {_ball_bx_at_goal:.3f} (age={_ball_age:.2f}s) au lieu de bx_shot={_stg_bx_shot:.3f}")
+                                    else:
+                                        _stg_bx = _stg_bx_shot
+                                        print(f"  [BC4 FIX] bx_shot conservé : {_stg_bx_shot:.3f} (bx_at_goal={_ball_bx_at_goal} age={_ball_age})")
                                     new_goal["bx"] = _stg_bx
                                     new_goal["_bx_at_goal"] = _ball_bx_at_goal
                                     new_goal["_ball_age_s"] = _ball_age
