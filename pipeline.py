@@ -1071,6 +1071,14 @@ def run_pipeline(
 
                 if goals_real is not None:
                     _bc4_result = _bc4_compare(events, goals_real, _anchor)
+                    # Helper VP/FP pour _bc4_record
+                    _goal_times_real = [float(t) for t in (goals_real or [])]
+                    def _get_vp_fp_label(t_sec):
+                        if goals_real is None:
+                            return "unknown"
+                        if any(abs(t_sec - gt) <= 5.0 for gt in _goal_times_real):
+                            return "VP"
+                        return "FP"
                     _bc4_print(_bc4_result)
                     _geom_state["bc4"] = _bc4_result
                 else:
@@ -1480,7 +1488,7 @@ def run_pipeline(
                                     video_name  = os.path.basename(video_path),
                                     t_sec       = _t,
                                     source      = str(_src_std),
-                                    vp_fp       = "unknown",  # sera mis à jour manuellement
+                                    vp_fp       = _get_vp_fp_label(_t),
                                     in_goal     = _in_goal_std,
                                     in_penalty  = _in_pen_std,
                                     dist_goal   = _dist_std,
@@ -1771,7 +1779,7 @@ def run_pipeline(
                                             video_name  = os.path.basename(video_path),
                                             t_sec       = goal_t,
                                             source      = "shot_to_goal_gemini",
-                                            vp_fp       = "unknown",
+                                            vp_fp       = _get_vp_fp_label(goal_t),
                                             in_goal     = _in_goal,
                                             in_penalty  = _in_penalty,
                                             dist_goal   = _dist,
