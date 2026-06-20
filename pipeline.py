@@ -1072,11 +1072,12 @@ def run_pipeline(
                 if goals_real is not None:
                     _bc4_result = _bc4_compare(events, goals_real, _anchor)
                     # Helper VP/FP pour _bc4_record
+                    # Tolérance alignée sur VP_MATCH_TOLERANCE_S de bc4_enrich.py (30s)
                     _goal_times_real = [float(t) for t in (goals_real or [])]
                     def _get_vp_fp_label(t_sec):
                         if goals_real is None:
                             return "unknown"
-                        if any(abs(t_sec - gt) <= 5.0 for gt in _goal_times_real):
+                        if any(abs(t_sec - gt) <= 30.0 for gt in _goal_times_real):
                             return "VP"
                         return "FP"
                     _bc4_print(_bc4_result)
