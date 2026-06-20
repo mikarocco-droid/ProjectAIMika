@@ -310,14 +310,17 @@ def run_pipeline(
     calib      = None
     shot_zones = None
 
-    try:
-        from ai.sport_detector import detect_sport
-        sport_detected = detect_sport(video_path, fallback=sport)
-        if sport_detected != sport:
-            print(f"  Sport détecté : {sport_detected} (demandé : {sport})")
-            sport = sport_detected
-    except Exception as e:
-        print(f"  Sport detector ignoré : {e}")
+    if audit_mode:
+        print(f"  [AUDIT] detect_sport skippé — sport={sport}")
+    else:
+        try:
+            from ai.sport_detector import detect_sport
+            sport_detected = detect_sport(video_path, fallback=sport)
+            if sport_detected != sport:
+                print(f"  Sport détecté : {sport_detected} (demandé : {sport})")
+                sport = sport_detected
+        except Exception as e:
+            print(f"  Sport detector ignoré : {e}")
 
     try:
         from vision.calibration import calibrate
@@ -1567,27 +1570,27 @@ def run_pipeline(
                         confirmed_goal_times = existing_goal_times,
                         kickoff_offset       = _kickoff_offset,
                     )
-                    # V2 — observation pure, comparaison A/B (pas de décision finale)
-                    try:
-                        r_v2 = find_goal_after_shot_v2(
-                            video_path           = video_path,
-                            shot_time            = st,
-                            window               = window,
-                            fps                  = fps,
-                            frame_w              = _frame_w,
-                            frame_h              = _frame_h,
-                            confirmed_goal_times = existing_goal_times,
-                            kickoff_offset       = _kickoff_offset,
-                        )
-                        # Log comparatif V1 vs V2
-                        _v1_goal  = r_v1.get("is_goal", False) if r_v1 else False
-                        _v1_score = r_v1.get("goal_score", 0)  if r_v1 else 0
-                        _v2_goal  = r_v2.get("is_goal", False) if r_v2 else False
-                        _v2_score = r_v2.get("goal_score", 0)  if r_v2 else 0
-                        _t_str = f"{int(st//60):02d}:{int(st%60):02d}"
-                        print(f"  [AB] shot={_t_str} | V1 goal={_v1_goal} score={_v1_score} | V2 goal={_v2_goal} score={_v2_score:.1f}")
-                    except Exception as _ev2:
-                        print(f"  [V2] Erreur A/B : {_ev2}")
+                    # V2 — observation pure A/B : skippé en audit_mode
+                    if not audit_mode:
+                        try:
+                            r_v2 = find_goal_after_shot_v2(
+                                video_path           = video_path,
+                                shot_time            = st,
+                                window               = window,
+                                fps                  = fps,
+                                frame_w              = _frame_w,
+                                frame_h              = _frame_h,
+                                confirmed_goal_times = existing_goal_times,
+                                kickoff_offset       = _kickoff_offset,
+                            )
+                            _v1_goal  = r_v1.get("is_goal", False) if r_v1 else False
+                            _v1_score = r_v1.get("goal_score", 0)  if r_v1 else 0
+                            _v2_goal  = r_v2.get("is_goal", False) if r_v2 else False
+                            _v2_score = r_v2.get("goal_score", 0)  if r_v2 else 0
+                            _t_str = f"{int(st//60):02d}:{int(st%60):02d}"
+                            print(f"  [AB] shot={_t_str} | V1 goal={_v1_goal} score={_v1_score} | V2 goal={_v2_goal} score={_v2_score:.1f}")
+                        except Exception as _ev2:
+                            print(f"  [V2] Erreur A/B : {_ev2}")
                     return shot, st, r_v1
 
                 shot_goal_candidates = []
@@ -1887,15 +1890,19 @@ def run_pipeline(
                 prio_players_filtered = prio_players[:40]
             # ─────────────────────────────────────────────────────────────────
 
-            gemini_jerseys = read_jersey_numbers(
-                video_path          = video_path,
-                players_with_frames = prio_players_filtered,
-                fps                 = fps
-            ) if prio_players_filtered else {}
+            if audit_mode:
+                gemini_jerseys = {}
+                print("  [AUDIT] read_jersey_numbers skippé")
+            else:
+                gemini_jerseys = read_jersey_numbers(
+                    video_path          = video_path,
+                    players_with_frames = prio_players_filtered,
+                    fps                 = fps
+                ) if prio_players_filtered else {}
+                print(f"  Gemini jerseys : {len(gemini_jerseys)} nouveaux lus, "
+                      f"{len(_pim_jerseys_known)} récupérés mémoire "
+                      f"(buts+tirs 3 frames + {len(seen_general)} généraux)")
             jersey_map.update(gemini_jerseys)
-            print(f"  Gemini jerseys : {len(gemini_jerseys)} nouveaux lus, "
-                  f"{len(_pim_jerseys_known)} récupérés mémoire "
-                  f"(buts+tirs 3 frames + {len(seen_general)} généraux)")
 
         # Lecture ciblée buteurs + passeurs sur frames de buts confirmés
         # Bien plus fiable que les crops génériques
@@ -1905,7 +1912,7 @@ def run_pipeline(
                 if e.get("type") in ("goal", "score")
                 and e.get("gemini_validated", False)
             ]
-            if confirmed_goals:
+            if confirmed_goals and not audit_mode:
                 from ai.gemini_validator import read_goal_scorers, read_highlight_visuals
 
                 # Construire le dict {goal_time: clip_path} depuis les highlights
