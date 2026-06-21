@@ -447,24 +447,29 @@ Question: Is the ball clearly INSIDE the goal (behind the goal line, inside the 
 
 Rules — read carefully:
 - YES: ball is fully past the goal line, inside the net, net is VISIBLY BULGING/DEFORMED by the ball (net pushed inward)
-- YES: goalkeeper is retrieving the ball from INSIDE the net (body inside goal area)
+- YES: goalkeeper is crouching or diving to retrieve ball FROM INSIDE the net (body inside goal area, not standing upright)
 - NO: ball is near the net or in front of it but net is flat/undisturbed → answer NO
 - NO: ball is beside the post or outside the goal frame → answer NO
 - NO: goalkeeper holding/catching the ball in his hands or arms (even if inside the goal area)
-- NO: ball is BEHIND the goal (outside the net, on the other side of the goal frame) → this is a corner kick or goal kick, NOT a goal
-- NO: ball visible behind the goal structure from outside → corner kick situation
-- NO: goalkeeper picking up the ball while standing upright
+- NO: goalkeeper standing upright with or without ball → NOT retrieving from net → answer NO
+- NO: ball is BEHIND the goal (outside the net, on the other side of the goal frame) → corner kick or goal kick → answer NO
+- NO: ball visible behind the goal structure from outside → corner kick situation → answer NO
 - NO: ball in front of the goal or on the goal line
-- NO: goalkeeper holding/catching ball in front of the goal
 - NO: ball near the post but not inside
 - NO: ball anywhere outside the net
-- NO: goal kick — goalkeeper or defender kicking a stationary ball outward from the 6-yard box (ball moving AWAY from net toward midfield) → answer NO immediately
+- NO: throw-in situation — player on the sideline holding or throwing the ball → answer NO immediately
+- NO: players grouped near the SIDELINE (touchline) → throw-in, NOT a goal → answer NO immediately
+- NO: players static near the sideline or preparing a restart near the touchline → NOT a goal
+- NO: goal kick — goalkeeper or defender kicking a stationary ball outward from the 6-yard box → answer NO immediately
 - NO: goalkeeper distributing the ball (punting or throwing it outward from inside the goal) → answer NO immediately
-- NO: out-of-match content — children playing casually (small bodies, no team jerseys), empty pitch, informal game, or post-match activity → answer NO immediately
+- NO: defensive clearance — defender heading or kicking ball away from goal → answer NO immediately
+- NO: out-of-match content — children playing casually, empty pitch, informal game, post-match activity → answer NO immediately
+
+CRITICAL: If the ball and players are near the SIDELINE (touchline), this is almost certainly a throw-in or out-of-bounds situation, NOT a goal. Answer NO immediately.
 
 Return ONLY valid JSON:
-{{"is_goal": true or false, "timestamp": <seconds or null>, "confidence": <0.0-1.0>, "evidence": "<describe exactly: ball position relative to net/line>"}}
-confidence=0.95 only if ball is unmistakably inside the net.
+{{"is_goal": true or false, "timestamp": <seconds or null>, "confidence": <0.0-1.0>, "evidence": "<describe exactly: ball position relative to net/line, and any negative signals observed>"}}
+confidence=0.95 only if ball is unmistakably inside the net with visible net deformation.
 Default to is_goal=false if any doubt."""
         try:
             _resp = client.models.generate_content(
@@ -482,10 +487,18 @@ Default to is_goal=false if any doubt."""
                 if _ts is not None:
                     try:
                         _ts_f = float(_ts)
-                        if shot_time - 5 <= _ts_f <= shot_time + window + 5:
+                        # PATCH v3 (même logique que chemin principal) :
+                        # si Gemini retourne un timestamp > shot_time+10s,
+                        # c'est probablement un timestamp absolu mal interprété
+                        # ou un kickoff → recentrer sur shot_time+2
+                        _min10 = min(10, window * 0.4)
+                        if _ts_f > shot_time + _min10:
+                            print(f"    [EARLY TIMESTAMP FIX] {_ts_f:.1f}s > shot+{_min10:.0f}s → recentré sur shot+2s")
+                            _ts_validated = shot_time + 2
+                        elif shot_time - 5 <= _ts_f <= shot_time + window + 5:
                             _ts_validated = _ts_f
                         else:
-                            # Timestamp hors fenêtre (ex: Gemini renvoie mm:ss au lieu de secondes)
+                            # Timestamp hors fenêtre
                             _ts_validated = shot_time + 2
                     except (ValueError, TypeError):
                         _ts_validated = shot_time + 2
