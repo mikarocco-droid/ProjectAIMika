@@ -1620,19 +1620,14 @@ def run_pipeline(
                         too_close = any(abs(gt - goal_t) < _GOAL_COOLDOWN_POST for gt in existing_goal_times)
                         _kickoff_fp = False  # filtre retiré : rejetait de vraies actions
                         # Exiger un signal physique dans la fenêtre tir→but
-                        # Sur caméra panoramique (posthoc désactivé), utiliser
-                        # les terminal_events comme signal physique alternatif
+                        # PATCH : si goal_posthoc est désactivé (low_side_zoom / panoramique),
+                        # le filtre ±15s est bypassé — il n'y a aucun signal posthoc à attendre
+                        # par construction. BC4 gate décide seul de la validité géométrique.
                         if _posthoc_disabled:
-                            # Sur caméra panoramique, goal_posthoc est désactivé.
-                            # Les goalkeeper_save sont le seul signal physique disponible
-                            # → les inclure dans le fallback pour que _has_physical puisse valider
-                            _terminal_save_times = [
-                                float(ev.get("time", 0)) for ev in (_terminal_evts or [])
-                                if ev.get("type") == "goalkeeper_save"
-                            ]
-                            _posthoc_times = (list(_terminal_goals_times)
-                                              + list(_terminal_offensive_times)
-                                              + list(_terminal_save_times))
+                            # goal_posthoc OFF → bypass complet du filtre posthoc ±15s
+                            # Justification : demander un signal posthoc inexistant = rejet systématique
+                            _has_physical = True
+                            print(f"  [SHOT→GOAL] ✅ Bypass filtre posthoc ±15s — goal_posthoc désactivé (camera={_posthoc_camera_type})")
                         else:
                             _posthoc_times = _raw_posthoc_times if _raw_posthoc_times else [
                                 e.get("time", 0) for e in events
@@ -1640,18 +1635,18 @@ def run_pipeline(
                                 and e.get("type") in ("goal", "score")
                                 and e.get("source", "").startswith("goal_posthoc")
                             ]
-                        # Fenêtre ±15s centrée sur goal_t
-                        _video_duration = total_frames / fps if fps > 0 else 9999
-                        _posthoc_times_filtered = [
-                            pt for pt in _posthoc_times
-                            if pt > 10.0                        # pas un kickoff initial
-                            and pt < _video_duration - 5.0     # pas en fin de vidéo
-                        ]
-                        _has_physical = any(
-                            abs(pt - goal_t) <= 15 for pt in _posthoc_times_filtered
-                        )
-                        if not _has_physical:
-                            print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±15s")
+                            # Fenêtre ±15s centrée sur goal_t
+                            _video_duration = total_frames / fps if fps > 0 else 9999
+                            _posthoc_times_filtered = [
+                                pt for pt in _posthoc_times
+                                if pt > 10.0                        # pas un kickoff initial
+                                and pt < _video_duration - 5.0     # pas en fin de vidéo
+                            ]
+                            _has_physical = any(
+                                abs(pt - goal_t) <= 15 for pt in _posthoc_times_filtered
+                            )
+                            if not _has_physical:
+                                print(f"  [SHOT→GOAL] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d} — aucun signal posthoc dans ±15s")
                         if not too_close and _has_physical and not _kickoff_fp:
                             new_goal = {
                                 "type":             "goal",
