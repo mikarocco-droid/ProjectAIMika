@@ -553,6 +553,84 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
         # (else: pas de cérémonie détectée — normal sur low_side_zoom)
 
     # ─────────────────────────────────────────────────────────────────────────
+    # PROBE JOUEURS V1 : détection kickoff basée sur sep + n uniquement
+    #
+    # Sur low_side_zoom le BallTracker est inutilisable (streak_max=1.9s prouvé).
+    # On cherche dans frames_data le premier groupe long (≥20s) satisfaisant :
+    #   - sep >= _KP_SEP_MIN  (équipes bien séparées)
+    #   - n   >= _KP_N_MIN    (assez de joueurs trackés)
+    # Le début de ce groupe = candidat kickoff.
+    # Ce probe est INSTRUMENTÉ UNIQUEMENT — il loggue mais ne modifie pas
+    # _ball_kickoff_t tant que la validation multi-vidéos n'est pas faite.
+    # ─────────────────────────────────────────────────────────────────────────
+    _KP_SEP_MIN    = 0.30   # séparation inter-équipes minimale
+    _KP_N_MIN      = 12     # nombre de joueurs trackés minimal
+    _KP_MIN_DUR_S  = 20.0   # durée minimale du groupe (secondes)
+    _KP_WIN_S      = 1.0    # tolérance de gap dans un groupe (secondes)
+
+    # Collecter les frames satisfaisant les critères, dans la fenêtre de recherche
+    _kp_frames = []   # liste de (t, sep, n)
+    for _fd_kp in frames_data:
+        _t_kp = _fd_kp.get("frame", 0) / max(fps, 1)
+        if _t_kp > max_search_t + 60:
+            break
+        # sep et n sont calculés dans _score_frame → déjà dans frames_data
+        # via team_separation et players list
+        _sep_kp = _fd_kp.get("team_separation", None)
+        _n_kp   = len(_fd_kp.get("players", []))
+        if _sep_kp is not None and float(_sep_kp) >= _KP_SEP_MIN and _n_kp >= _KP_N_MIN:
+            _kp_frames.append((_t_kp, float(_sep_kp), _n_kp))
+
+    # Grouper les frames consécutives (gap toléré = _KP_WIN_S)
+    _kp_groups = []
+    if _kp_frames:
+        _cur_grp = [_kp_frames[0]]
+        for _i in range(1, len(_kp_frames)):
+            if _kp_frames[_i][0] - _kp_frames[_i-1][0] <= _KP_WIN_S:
+                _cur_grp.append(_kp_frames[_i])
+            else:
+                _kp_groups.append(_cur_grp)
+                _cur_grp = [_kp_frames[_i]]
+        _kp_groups.append(_cur_grp)
+
+    # Filtrer les groupes par durée minimale
+    _kp_long_groups = []
+    for _grp in _kp_groups:
+        _dur = _grp[-1][0] - _grp[0][0]
+        if _dur >= _KP_MIN_DUR_S:
+            _sep_avg = sum(f[1] for f in _grp) / len(_grp)
+            _n_avg   = sum(f[2] for f in _grp) / len(_grp)
+            _kp_long_groups.append({
+                "t_start": _grp[0][0],
+                "t_end":   _grp[-1][0],
+                "dur":     _dur,
+                "sep_avg": _sep_avg,
+                "n_avg":   _n_avg,
+                "len":     len(_grp),
+            })
+
+    # Log du résultat
+    if _kp_long_groups:
+        print(f"  [KICKOFF PLAYERS] {len(_kp_long_groups)} groupe(s) "
+              f"sep≥{_KP_SEP_MIN} n≥{_KP_N_MIN} dur≥{_KP_MIN_DUR_S:.0f}s :")
+        for _gi, _g in enumerate(_kp_long_groups[:6]):
+            _t0_fmt = f"{int(_g['t_start']//60)}:{int(_g['t_start']%60):02d}"
+            _t1_fmt = f"{int(_g['t_end']//60)}:{int(_g['t_end']%60):02d}"
+            print(f"    grp[{_gi}] {_t0_fmt}→{_t1_fmt} "
+                  f"dur={_g['dur']:.0f}s  sep_avg={_g['sep_avg']:.2f}  "
+                  f"n_avg={_g['n_avg']:.1f}  frames={_g['len']}")
+        # Candidat = début du premier groupe (le plus précoce dans le temps)
+        _kp_long_groups.sort(key=lambda g: g["t_start"])
+        _kp_candidate_t = _kp_long_groups[0]["t_start"]
+        _t_fmt = f"{int(_kp_candidate_t//60)}:{int(_kp_candidate_t%60):02d}"
+        print(f"  [KICKOFF PLAYERS] → candidat kickoff t={_t_fmt} "
+              f"(instrumenté, non appliqué)")
+    else:
+        print(f"  [KICKOFF PLAYERS] aucun groupe satisfaisant "
+              f"sep≥{_KP_SEP_MIN} n≥{_KP_N_MIN} dur≥{_KP_MIN_DUR_S:.0f}s "
+              f"→ signal joueurs absent")
+
+    # ─────────────────────────────────────────────────────────────────────────
     # SIGNAL PRINCIPAL : transition d'activité joueurs + ballon
     #
     # Le pré-match (échauffement) = joueurs qui marchent / statiques.
