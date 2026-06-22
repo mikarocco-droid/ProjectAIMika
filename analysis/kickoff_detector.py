@@ -373,6 +373,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     # Borne haute : min(40% durée, 900s) ET premier event de jeu - 5s
     # Le KO ne peut pas être APRÈS le premier tir/goal détecté
     max_search_t = min(max(video_duration_s * 0.40, 360.0), 900.0)
+    _kp_sep_by_t  = {}  # t → (sep, n) — accumulé par la boucle principale pour le probe joueurs
 
     # Affiner avec le premier event de jeu FIABLE si disponible
     # On ignore events_standard (xg auto=0.5 même sur FP échauffement)
@@ -641,7 +642,6 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     # ─────────────────────────────────────────────────────────────────────────
     _motion_trace = []  # (t, player_motion_px, ball_motion_px)
     _motion_by_t  = {}  # t → p_motion  (pour log des groupes)
-    _kp_sep_by_t  = {}  # t → (sep, n)  accumulé depuis _score_frame pour le probe joueurs
     _prev_player_pos = {}   # pid → (cx, cy)
     _prev_ball_pos_m = None
 
