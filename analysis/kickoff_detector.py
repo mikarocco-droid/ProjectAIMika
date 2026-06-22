@@ -438,57 +438,10 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
 
     _ball_kickoff_t = None
     if _p1_early_high:
-        # ── Diagnostic cérémonie : positions brutes du ballon 180s–320s ──
-        # Fenêtre où le ballon devrait être posé au rond central (cérémonie KO).
-        # Objectif : comprendre pourquoi streak_max=0s malgré la cérémonie réelle.
-        # Log frame par frame (pas d'agrégation) + dx/dy inter-frame pour mesurer stabilité.
-        _cprev_bx = None
-        _cprev_by = None
-        _cprev_t  = None
-        _cstreak_s   = 0.0   # durée consécutive de stabilité locale (dx<0.03 et dy<0.03)
-        _cstreak_max = 0.0
-        _cstreak_ref_bx = None
-        _cstreak_ref_by = None
-        _CSTAB = 0.03        # seuil de stabilité inter-frame (en fraction de frame)
-        for _fd_c in frames_data:
-            _tc = _fd_c.get("frame", 0) / max(fps, 1)
-            if _tc < 180.0:
-                continue
-            if _tc > 320.0:
-                break
-            _bfd_c = _fd_c.get("ball")
-            _bc_c  = _bfd_c.get("center") if _bfd_c else None
-            _has_c = (_bc_c is not None and len(_bc_c) >= 2 and _bc_c[0] is not None)
-            _dtc = (_tc - _cprev_t) if _cprev_t is not None else (1.0 / max(fps, 1))
-            _cprev_t = _tc
-            if _has_c:
-                _bxc = round(float(_bc_c[0]) / max(frame_w, 1), 3)
-                _byc = round(float(_bc_c[1]) / max(frame_h, 1), 3)
-                if _cprev_bx is not None:
-                    _dxc = round(abs(_bxc - _cprev_bx), 3)
-                    _dyc = round(abs(_byc - _cprev_by), 3)
-                    # stabilité locale ?
-                    if _dxc <= _CSTAB and _dyc <= _CSTAB:
-                        if _cstreak_ref_bx is None:
-                            _cstreak_ref_bx, _cstreak_ref_by = _bxc, _byc
-                        _cstreak_s += _dtc
-                        if _cstreak_s > _cstreak_max:
-                            _cstreak_max = _cstreak_s
-                    else:
-                        _cstreak_s = 0.0
-                        _cstreak_ref_bx = None
-                    print(f"  [KICKOFF CEREMONY PROBE] t={_tc:6.1f}s  bx={_bxc}  by={_byc}  dx={_dxc}  dy={_dyc}  streak={_cstreak_s:.1f}s")
-                else:
-                    print(f"  [KICKOFF CEREMONY PROBE] t={_tc:6.1f}s  bx={_bxc}  by={_byc}  dx=?  dy=?  streak=0.0s")
-                _cprev_bx, _cprev_by = _bxc, _byc
-            else:
-                _cstreak_s = 0.0
-                _cstreak_ref_bx = None
-                _cprev_bx = None
-                print(f"  [KICKOFF CEREMONY PROBE] t={_tc:6.1f}s  bx=none  streak_reset")
-        print(f"  [KICKOFF CEREMONY PROBE] streak_max={_cstreak_max:.1f}s (seuil_stab={_CSTAB})")
-
         # Phase 1 : trouver la fenêtre de cérémonie (ballon stable au centre ≥ 20s)
+        # NOTE : sur low_side_zoom, le BallTracker ne détecte pas le ballon au rond
+        # central (streak_max=1.9s prouvé). Cette phase reste en code pour les autres
+        # types de caméra, mais ne produira pas de signal sur low_side_zoom.
         _ceremony_start_t  = None
         _ceremony_ref_pos  = None
         _center_streak_s   = 0.0
@@ -543,8 +496,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
 
                 if _center_streak_s >= _BALL_STABLE_MIN_S:
                     # Cérémonie détectée !
-                    print(f"  [KICKOFF BALL_STABLE] Cérémonie détectée t={_ceremony_start_t:.1f}s→{_t:.1f}s"
-                          f" ({_center_streak_s:.0f}s au centre) pos=({_bx:.3f},{_by:.3f})")
+
                     break
             else:
                 # Hors centre ou mouvement brusque → reset
@@ -564,7 +516,6 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                 if _t < _ceremony_start_t:
                     continue
                 if _t > _ceremony_start_t + _BALL_STILL_MAX_S:
-                    print(f"  [KICKOFF BALL_MOVE] Délai max {_BALL_STILL_MAX_S}s dépassé → abandon")
                     break
 
                 _dt2 = (_t - _prev_t_ball2) if _prev_t_ball2 is not None else (1.0 / max(fps, 1))
@@ -593,19 +544,13 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                     _move = math.hypot(_dx, _dy)
                     if _move >= _BALL_MOVE_PX:
                         _ball_kickoff_t = _t
-                        print(f"  [KICKOFF BALL_MOVE] Mouvement depuis centre à t={_t:.1f}s"
-                              f" (move={_move:.1f}px >= {_BALL_MOVE_PX}px)"
-                              f" depuis ({_prev_ball_pos_ba[0]:.3f},{_prev_ball_pos_ba[1]:.3f})"
-                              f" → kickoff candidat")
+
                         break
                     # else: immobile → cérémonie continue
 
                 _prev_ball_pos_ba    = (_bx, _by)
                 _ball_at_center_prev = _at_center
-        else:
-            print(f"  [KICKOFF BALL_STABLE] Pas de cérémonie détectée"
-                  f" (streak_max={_center_streak_s:.0f}s < {_BALL_STABLE_MIN_S}s)"
-                  f" → signal ball_stable inutilisable")
+        # (else: pas de cérémonie détectée — normal sur low_side_zoom)
 
     # ─────────────────────────────────────────────────────────────────────────
     # SIGNAL PRINCIPAL : transition d'activité joueurs + ballon
