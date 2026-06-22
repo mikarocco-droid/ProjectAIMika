@@ -568,18 +568,15 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     _KP_MIN_DUR_S  = 20.0   # durée minimale du groupe (secondes)
     _KP_WIN_S      = 1.0    # tolérance de gap dans un groupe (secondes)
 
-    # Collecter les frames satisfaisant les critères, dans la fenêtre de recherche
+    # Collecter les frames satisfaisant les critères, depuis l'accumulateur de la boucle principale
+    # (team_separation est dans details/_kp_sep_by_t, PAS dans frames_data directement)
     _kp_frames = []   # liste de (t, sep, n)
-    for _fd_kp in frames_data:
-        _t_kp = _fd_kp.get("frame", 0) / max(fps, 1)
-        if _t_kp > max_search_t + 60:
+    for _t_kp in sorted(_kp_sep_by_t):
+        if _t_kp > max_search_t:
             break
-        # sep et n sont calculés dans _score_frame → déjà dans frames_data
-        # via team_separation et players list
-        _sep_kp = _fd_kp.get("team_separation", None)
-        _n_kp   = len(_fd_kp.get("players", []))
-        if _sep_kp is not None and float(_sep_kp) >= _KP_SEP_MIN and _n_kp >= _KP_N_MIN:
-            _kp_frames.append((_t_kp, float(_sep_kp), _n_kp))
+        _sep_kp, _n_kp = _kp_sep_by_t[_t_kp]
+        if _sep_kp >= _KP_SEP_MIN and _n_kp >= _KP_N_MIN:
+            _kp_frames.append((_t_kp, _sep_kp, _n_kp))
 
     # Grouper les frames consécutives (gap toléré = _KP_WIN_S)
     _kp_groups = []
@@ -644,6 +641,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     # ─────────────────────────────────────────────────────────────────────────
     _motion_trace = []  # (t, player_motion_px, ball_motion_px)
     _motion_by_t  = {}  # t → p_motion  (pour log des groupes)
+    _kp_sep_by_t  = {}  # t → (sep, n)  accumulé depuis _score_frame pour le probe joueurs
     _prev_player_pos = {}   # pid → (cx, cy)
     _prev_ball_pos_m = None
 
@@ -787,6 +785,8 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             ball_speed_px=_ball_speed
         )
         details["p_motion"] = _motion_by_t.get(t, 0.0)
+        # Accumuler sep+n pour le probe joueurs (team_separation est dans details, pas dans fd)
+        _kp_sep_by_t[t] = (details.get("team_separation", 0.0), len(fd.get("players", [])))
 
         # ── PROBE 250-320s : 4 champs seulement ─────────────────────────────
         if 250.0 <= t <= 320.0:
