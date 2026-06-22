@@ -1596,6 +1596,40 @@ def run_pipeline(
                 shot_goal_candidates = []
                 results_map = {}
 
+                # ── KICKOFF FP GUARD ─────────────────────────────────────────────────────
+                # Problème : si kickoff_detector rate le coup d'envoi (p_motion élevée
+                # en début de vidéo → conclut "vidéo commence en jeu"), les shots
+                # d'avant-match peuvent entrer dans shot_to_goal.
+                # Gemini confirme alors le "but" via le kickoff du match lui-même
+                # (coup d'envoi visible = preuve de but précédent → FP structurel).
+                #
+                # Garde : estimer _estimated_match_start depuis les events.
+                # Si _kickoff_offset > 0 → c'est la référence fiable.
+                # Si _kickoff_offset == 0 (non détecté) → estimer depuis les shots/events :
+                #   le premier tir ou event offensif après une longue période sans event
+                #   est un proxy du début réel du match.
+                # Tout but shot_to_goal dont le shot_t < _estimated_match_start - 30s
+                # ET dont la preuve Gemini contient "kickoff" sans signal physique
+                # est rejeté.
+                _estimated_match_start = _kickoff_offset  # 0 si non détecté
+                if _kickoff_offset == 0:
+                    # Fallback : chercher la première densité d'actions offensives
+                    # (shots, goals, dribbles dans surface) comme proxy du début de match
+                    _offensive_ts = sorted([
+                        float(e.get("time", 0)) for e in events
+                        if isinstance(e, dict)
+                        and e.get("type") in ("shot", "goal", "dribble")
+                        and float(e.get("time", 0)) > 30.0
+                    ])
+                    if len(_offensive_ts) >= 3:
+                        # Premier cluster de 3 actions offensives dans une fenêtre de 60s
+                        for _oi in range(len(_offensive_ts) - 2):
+                            if _offensive_ts[_oi + 2] - _offensive_ts[_oi] < 60.0:
+                                _estimated_match_start = _offensive_ts[_oi]
+                                break
+                print(f"  [KICKOFF GUARD] _estimated_match_start={_estimated_match_start:.1f}s"
+                      f" (kickoff_offset={_kickoff_offset:.1f}s)")
+
                 with ThreadPoolExecutor(max_workers=3) as executor:
                     futures = {executor.submit(_analyze_shot, args): args for args in shots_to_analyze}
                     for future in as_completed(futures):
@@ -1618,7 +1652,27 @@ def run_pipeline(
                             and _gv_stg >= 2):
                         goal_t = result["timestamp"]
                         too_close = any(abs(gt - goal_t) < _GOAL_COOLDOWN_POST for gt in existing_goal_times)
-                        _kickoff_fp = False  # filtre retiré : rejetait de vraies actions
+
+                        # ── KICKOFF FP GUARD ──────────────────────────────────────────────
+                        # Rejeter si le shot est avant le début estimé du match ET que
+                        # la preuve Gemini repose sur un kickoff visible (pas de signal
+                        # physique de but : ball in net, net deformation, etc.)
+                        _kickoff_fp = False
+                        if _estimated_match_start > 30.0 and st < _estimated_match_start - 20.0:
+                            _ev_desc = (result.get("desc") or result.get("evidence") or "").lower()
+                            _has_physical_goal_signal = any(
+                                kw in _ev_desc for kw in (
+                                    "ball in net", "ball inside net", "ball unmistakably inside",
+                                    "net deformation", "net bulging", "ball clearly inside",
+                                    "inside the net", "goalkeeper retrieving",
+                                )
+                            )
+                            _has_kickoff_signal = "kickoff" in _ev_desc or "kick-off" in _ev_desc
+                            if _has_kickoff_signal and not _has_physical_goal_signal:
+                                _kickoff_fp = True
+                                print(f"  [KICKOFF GUARD] ❌ Rejeté {int(goal_t//60):02d}:{int(goal_t%60):02d}"
+                                      f" — shot à {st:.1f}s avant début estimé ({_estimated_match_start:.1f}s)"
+                                      f" + preuve kickoff sans signal physique but")
                         # Exiger un signal physique dans la fenêtre tir→but
                         # PATCH : si goal_posthoc est désactivé (low_side_zoom / panoramique),
                         # le filtre ±15s est bypassé — il n'y a aucun signal posthoc à attendre
