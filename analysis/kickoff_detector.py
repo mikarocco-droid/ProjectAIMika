@@ -409,6 +409,104 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                   f" → recherche jusqu'à {max_search_t:.0f}s")
 
     # ─────────────────────────────────────────────────────────────────────────
+    # SIGNAL BALLON — PREMIÈRE APPARITION AU CENTRE + PREMIER MOUVEMENT
+    #
+    # CAS B (échauffement) : le ballon est absent pendant l'échauffement, puis
+    # apparaît au rond central pour la cérémonie (tirage au sort, etc.), puis
+    # effectue son premier mouvement au coup d'envoi réel.
+    #
+    # ATTENTION : des joueurs peuvent faire bouger le ballon avant le KO
+    # (gardien qui envoie le ballon côté gauche, joueur qui s'échauffe...).
+    # On ne valide un mouvement comme KO que si le ballon PART DU CENTRE
+    # (bx ≈ 0.5 ± _CENTER_TOL_X, by dans la moitié du terrain).
+    # Un ballon qui bouge loin du centre (côté défensif, près des buts) est
+    # ignoré — seul le mouvement depuis le rond central compte.
+    # ─────────────────────────────────────────────────────────────────────────
+    _BALL_ABSENT_MIN_S = 30.0   # Au moins 30s sans ballon avant l'apparition
+    _BALL_MOVE_PX      = 15.0   # Mouvement minimal pour valider le coup d'envoi
+    _BALL_STILL_MAX_S  = 300.0  # Le ballon peut rester immobile jusqu'à 5min après apparition
+    _CENTER_TOL_X      = 0.20   # Tolérance horizontale autour du centre (bx ∈ [0.30, 0.70])
+    _CENTER_TOL_Y      = 0.25   # Tolérance verticale autour du centre (by ∈ [0.25, 0.75])
+
+    _ball_kickoff_t = None
+    if _p1_early_high:
+        _ball_absent_streak  = 0.0
+        _ball_appeared_t     = None
+        _ball_appeared_pos   = None
+        _prev_t_ball         = None
+        _prev_ball_pos_ba    = None
+        _ball_at_center_prev = False  # Le ballon était-il au centre à la frame précédente ?
+
+        for _fd in frames_data:
+            _t = _fd.get("frame", 0) / max(fps, 1)
+            if _t > max_search_t + 30:
+                break
+
+            _dt = (_t - _prev_t_ball) if _prev_t_ball is not None else (1.0 / max(fps, 1))
+            _prev_t_ball = _t
+
+            _bfd = _fd.get("ball")
+            _bc  = _bfd.get("center") if _bfd else None
+            _has_ball = (
+                _bc is not None and len(_bc) >= 2
+                and _bc[0] is not None
+            )
+
+            if not _has_ball:
+                if _ball_appeared_t is None:
+                    _ball_absent_streak += _dt
+                _prev_ball_pos_ba    = None
+                _ball_at_center_prev = False
+                continue
+
+            # Ballon présent
+            _bx = float(_bc[0]) / max(frame_w, 1)
+            _by = float(_bc[1]) / max(frame_h, 1)
+
+            # Est-il au centre ?
+            _at_center = (
+                abs(_bx - 0.50) <= _CENTER_TOL_X
+                and 0.5 - _CENTER_TOL_Y <= _by <= 0.5 + _CENTER_TOL_Y
+            )
+
+            if _ball_appeared_t is None:
+                # Première apparition
+                if _ball_absent_streak >= _BALL_ABSENT_MIN_S:
+                    _ball_appeared_t   = _t
+                    _ball_appeared_pos = (_bx, _by)
+                    print(f"  [KICKOFF BALL_APPEAR] Ballon apparu à t={_t:.1f}s"
+                          f" (absent {_ball_absent_streak:.0f}s)"
+                          f" pos=({_bx:.3f},{_by:.3f}) centre={_at_center}")
+                else:
+                    print(f"  [KICKOFF BALL_APPEAR] Ballon déjà présent à t={_t:.1f}s"
+                          f" (absent seulement {_ball_absent_streak:.0f}s < {_BALL_ABSENT_MIN_S}s)"
+                          f" → signal ball_appear inutilisable")
+                    break
+            else:
+                # Ballon apparu — chercher le premier mouvement depuis le centre
+                if _t - _ball_appeared_t > _BALL_STILL_MAX_S:
+                    print(f"  [KICKOFF BALL_APPEAR] Délai max {_BALL_STILL_MAX_S}s dépassé → abandon")
+                    break
+
+                if _prev_ball_pos_ba is not None and _ball_at_center_prev:
+                    # Le ballon était au centre à la frame précédente
+                    _dx = (_bx - _prev_ball_pos_ba[0]) * frame_w
+                    _dy = (_by - _prev_ball_pos_ba[1]) * frame_h
+                    _move = math.hypot(_dx, _dy)
+                    if _move >= _BALL_MOVE_PX:
+                        _ball_kickoff_t = _t
+                        print(f"  [KICKOFF BALL_MOVE] Mouvement depuis centre à t={_t:.1f}s"
+                              f" (move={_move:.1f}px >= {_BALL_MOVE_PX}px)"
+                              f" depuis ({_prev_ball_pos_ba[0]:.3f},{_prev_ball_pos_ba[1]:.3f})"
+                              f" → kickoff candidat")
+                        break
+                    # else: ballon au centre mais immobile → normal (cérémonie)
+                # else: ballon hors centre → mouvement d'échauffement, ignorer
+
+            _prev_ball_pos_ba    = (_bx, _by)
+            _ball_at_center_prev = _at_center
+
+    # ─────────────────────────────────────────────────────────────────────────
     # SIGNAL PRINCIPAL : transition d'activité joueurs + ballon
     #
     # Le pré-match (échauffement) = joueurs qui marchent / statiques.
@@ -922,6 +1020,14 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     if not _refined:
         print(f"  [KICKOFF BALL] affinage visuel non disponible "
               f"({'pas de chemin vidéo' if not _video_path else 'aucun signal trouvé'})")
+
+        # ── Signal BALL_APPEAR prioritaire (CAS B échauffement) ──────────────
+        # Si on a détecté le premier mouvement du ballon après une longue
+        # absence, c'est le kickoff le plus fiable pour les vidéos d'échauffement.
+        if _ball_kickoff_t is not None:
+            print(f"  [KICKOFF] Signal ball_appear → offset={_ball_kickoff_t:.1f}s conf=0.85")
+            return _ball_kickoff_t, 0.85
+
         # Si la Passe 1 avait détecté p_motion élevée (vidéo commence en jeu)
         # et que la détection visuelle ne confirme aucun kick off → offset=0
         # (la vidéo commence vraiment en cours de jeu, pas de pré-match à supprimer)
