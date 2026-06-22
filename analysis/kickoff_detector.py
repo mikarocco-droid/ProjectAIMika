@@ -409,37 +409,66 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                   f" → recherche jusqu'à {max_search_t:.0f}s")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SIGNAL BALLON — PREMIÈRE APPARITION AU CENTRE + PREMIER MOUVEMENT
+    # SIGNAL BALLON — BALLON STABLE AU CENTRE PUIS PREMIER MOUVEMENT
     #
-    # CAS B (échauffement) : le ballon est absent pendant l'échauffement, puis
-    # apparaît au rond central pour la cérémonie (tirage au sort, etc.), puis
-    # effectue son premier mouvement au coup d'envoi réel.
+    # CAS B (échauffement) : le ballon est posé au rond central pour la
+    # cérémonie (tirage au sort, serrage de mains). Il y reste immobile
+    # pendant plusieurs minutes, puis part au coup d'envoi réel.
     #
-    # ATTENTION : des joueurs peuvent faire bouger le ballon avant le KO
-    # (gardien qui envoie le ballon côté gauche, joueur qui s'échauffe...).
-    # On ne valide un mouvement comme KO que si le ballon PART DU CENTRE
-    # (bx ≈ 0.5 ± _CENTER_TOL_X, by dans la moitié du terrain).
-    # Un ballon qui bouge loin du centre (côté défensif, près des buts) est
-    # ignoré — seul le mouvement depuis le rond central compte.
+    # Problème connu : le BallTracker génère des faux positifs dès t=0
+    # (ballon "détecté" sur des formes circulaires hors terrain), donc
+    # on NE peut PAS se fier à l'absence initiale du ballon.
+    #
+    # Solution : chercher la PREMIÈRE période prolongée (_BALL_STABLE_MIN_S)
+    # où le ballon est détecté de façon continue et stable au centre.
+    # Cette période correspond à la cérémonie pré-match. Le premier
+    # mouvement significatif qui part du centre est le kickoff.
+    #
+    # Filtre clé : les mouvements hors centre (gardien qui envoie le ballon
+    # dans sa moitié, joueur qui s'échauffe) sont ignorés — seul un mouvement
+    # DEPUIS le rond central compte.
     # ─────────────────────────────────────────────────────────────────────────
-    _BALL_ABSENT_MIN_S = 30.0   # Au moins 30s sans ballon avant l'apparition
-    _BALL_MOVE_PX      = 15.0   # Mouvement minimal pour valider le coup d'envoi
-    _BALL_STILL_MAX_S  = 300.0  # Le ballon peut rester immobile jusqu'à 5min après apparition
-    _CENTER_TOL_X      = 0.20   # Tolérance horizontale autour du centre (bx ∈ [0.30, 0.70])
-    _CENTER_TOL_Y      = 0.25   # Tolérance verticale autour du centre (by ∈ [0.25, 0.75])
+    _BALL_STABLE_MIN_S  = 20.0  # Ballon doit rester au centre pendant >= 20s (cérémonie)
+    _BALL_STABLE_TOL_PX = 30.0  # Tolérance de mouvement pour "immobile" (pixels)
+    _BALL_MOVE_PX       = 20.0  # Mouvement minimal pour valider le coup d'envoi
+    _BALL_STILL_MAX_S   = 600.0 # Le ballon peut rester immobile jusqu'à 10min après cérémonie
+    _CENTER_TOL_X       = 0.22  # Tolérance horizontale autour du centre (bx ∈ [0.28, 0.72])
+    _CENTER_TOL_Y       = 0.25  # Tolérance verticale autour du centre (by ∈ [0.25, 0.75])
+
 
     _ball_kickoff_t = None
     if _p1_early_high:
-        _ball_absent_streak  = 0.0
-        _ball_appeared_t     = None
-        _ball_appeared_pos   = None
-        _prev_t_ball         = None
-        _prev_ball_pos_ba    = None
-        _ball_at_center_prev = False  # Le ballon était-il au centre à la frame précédente ?
+        # ── Diagnostic : positions brutes du ballon sur les 120 premières secondes ──
+        # Permet de distinguer FP fixes (rond central), FP bruit, ou vrai ballon.
+        # Log toutes les 5s pour ne pas noyer les logs.
+        _ball_raw_last_log = -5.0
+        for _fd_diag in frames_data:
+            _t_diag = _fd_diag.get("frame", 0) / max(fps, 1)
+            if _t_diag > 120.0:
+                break
+            if _t_diag - _ball_raw_last_log < 5.0:
+                continue
+            _bfd_diag = _fd_diag.get("ball")
+            _bc_diag  = _bfd_diag.get("center") if _bfd_diag else None
+            if _bc_diag and len(_bc_diag) >= 2 and _bc_diag[0] is not None:
+                _bx_d = round(float(_bc_diag[0]) / max(frame_w, 1), 3)
+                _by_d = round(float(_bc_diag[1]) / max(frame_h, 1), 3)
+                print(f"  [KICKOFF BALL RAW] t={_t_diag:5.1f}s  bx={_bx_d}  by={_by_d}")
+            else:
+                print(f"  [KICKOFF BALL RAW] t={_t_diag:5.1f}s  bx=none")
+            _ball_raw_last_log = _t_diag
+
+        # Phase 1 : trouver la fenêtre de cérémonie (ballon stable au centre ≥ 20s)
+        _ceremony_start_t  = None
+        _ceremony_ref_pos  = None
+        _center_streak_s   = 0.0
+        _prev_t_ball       = None
+        _prev_bx_stable    = None
+        _prev_by_stable    = None
 
         for _fd in frames_data:
             _t = _fd.get("frame", 0) / max(fps, 1)
-            if _t > max_search_t + 30:
+            if _t > max_search_t + 60:
                 break
 
             _dt = (_t - _prev_t_ball) if _prev_t_ball is not None else (1.0 / max(fps, 1))
@@ -447,49 +476,88 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
 
             _bfd = _fd.get("ball")
             _bc  = _bfd.get("center") if _bfd else None
-            _has_ball = (
-                _bc is not None and len(_bc) >= 2
-                and _bc[0] is not None
-            )
+            _has_ball = (_bc is not None and len(_bc) >= 2 and _bc[0] is not None)
 
             if not _has_ball:
-                if _ball_appeared_t is None:
-                    _ball_absent_streak += _dt
-                _prev_ball_pos_ba    = None
-                _ball_at_center_prev = False
+                _center_streak_s = 0.0
+                _ceremony_start_t = None
+                _prev_bx_stable = None
+                _prev_by_stable = None
                 continue
 
-            # Ballon présent
             _bx = float(_bc[0]) / max(frame_w, 1)
             _by = float(_bc[1]) / max(frame_h, 1)
 
-            # Est-il au centre ?
+            # Au centre ?
             _at_center = (
                 abs(_bx - 0.50) <= _CENTER_TOL_X
                 and 0.5 - _CENTER_TOL_Y <= _by <= 0.5 + _CENTER_TOL_Y
             )
 
-            if _ball_appeared_t is None:
-                # Première apparition
-                if _ball_absent_streak >= _BALL_ABSENT_MIN_S:
-                    _ball_appeared_t   = _t
-                    _ball_appeared_pos = (_bx, _by)
-                    print(f"  [KICKOFF BALL_APPEAR] Ballon apparu à t={_t:.1f}s"
-                          f" (absent {_ball_absent_streak:.0f}s)"
-                          f" pos=({_bx:.3f},{_by:.3f}) centre={_at_center}")
-                else:
-                    print(f"  [KICKOFF BALL_APPEAR] Ballon déjà présent à t={_t:.1f}s"
-                          f" (absent seulement {_ball_absent_streak:.0f}s < {_BALL_ABSENT_MIN_S}s)"
-                          f" → signal ball_appear inutilisable")
+            # Stable ? (bruit BallTracker ≤ _BALL_STABLE_TOL_PX)
+            _is_stable = False
+            if _at_center and _prev_bx_stable is not None:
+                _dx_stab = (_bx - _prev_bx_stable) * frame_w
+                _dy_stab = (_by - _prev_by_stable) * frame_h
+                _is_stable = math.hypot(_dx_stab, _dy_stab) <= _BALL_STABLE_TOL_PX
+            elif _at_center and _prev_bx_stable is None:
+                _is_stable = True  # Première frame au centre → on commence le streak
+
+            if _at_center and _is_stable:
+                if _ceremony_start_t is None:
+                    _ceremony_start_t = _t
+                    _ceremony_ref_pos = (_bx, _by)
+                _center_streak_s += _dt
+                _prev_bx_stable = _bx
+                _prev_by_stable = _by
+
+                if _center_streak_s >= _BALL_STABLE_MIN_S:
+                    # Cérémonie détectée !
+                    print(f"  [KICKOFF BALL_STABLE] Cérémonie détectée t={_ceremony_start_t:.1f}s→{_t:.1f}s"
+                          f" ({_center_streak_s:.0f}s au centre) pos=({_bx:.3f},{_by:.3f})")
                     break
             else:
-                # Ballon apparu — chercher le premier mouvement depuis le centre
-                if _t - _ball_appeared_t > _BALL_STILL_MAX_S:
-                    print(f"  [KICKOFF BALL_APPEAR] Délai max {_BALL_STILL_MAX_S}s dépassé → abandon")
+                # Hors centre ou mouvement brusque → reset
+                _center_streak_s  = 0.0
+                _ceremony_start_t = None
+                _prev_bx_stable   = None
+                _prev_by_stable   = None
+
+        # Phase 2 : si cérémonie trouvée, chercher le premier mouvement depuis le centre
+        if _ceremony_start_t is not None and _center_streak_s >= _BALL_STABLE_MIN_S:
+            _prev_t_ball2       = None
+            _prev_ball_pos_ba   = None
+            _ball_at_center_prev = False
+
+            for _fd in frames_data:
+                _t = _fd.get("frame", 0) / max(fps, 1)
+                if _t < _ceremony_start_t:
+                    continue
+                if _t > _ceremony_start_t + _BALL_STILL_MAX_S:
+                    print(f"  [KICKOFF BALL_MOVE] Délai max {_BALL_STILL_MAX_S}s dépassé → abandon")
                     break
 
+                _dt2 = (_t - _prev_t_ball2) if _prev_t_ball2 is not None else (1.0 / max(fps, 1))
+                _prev_t_ball2 = _t
+
+                _bfd = _fd.get("ball")
+                _bc  = _bfd.get("center") if _bfd else None
+                _has_ball = (_bc is not None and len(_bc) >= 2 and _bc[0] is not None)
+
+                if not _has_ball:
+                    _prev_ball_pos_ba    = None
+                    _ball_at_center_prev = False
+                    continue
+
+                _bx = float(_bc[0]) / max(frame_w, 1)
+                _by = float(_bc[1]) / max(frame_h, 1)
+
+                _at_center = (
+                    abs(_bx - 0.50) <= _CENTER_TOL_X
+                    and 0.5 - _CENTER_TOL_Y <= _by <= 0.5 + _CENTER_TOL_Y
+                )
+
                 if _prev_ball_pos_ba is not None and _ball_at_center_prev:
-                    # Le ballon était au centre à la frame précédente
                     _dx = (_bx - _prev_ball_pos_ba[0]) * frame_w
                     _dy = (_by - _prev_ball_pos_ba[1]) * frame_h
                     _move = math.hypot(_dx, _dy)
@@ -500,11 +568,14 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                               f" depuis ({_prev_ball_pos_ba[0]:.3f},{_prev_ball_pos_ba[1]:.3f})"
                               f" → kickoff candidat")
                         break
-                    # else: ballon au centre mais immobile → normal (cérémonie)
-                # else: ballon hors centre → mouvement d'échauffement, ignorer
+                    # else: immobile → cérémonie continue
 
-            _prev_ball_pos_ba    = (_bx, _by)
-            _ball_at_center_prev = _at_center
+                _prev_ball_pos_ba    = (_bx, _by)
+                _ball_at_center_prev = _at_center
+        else:
+            print(f"  [KICKOFF BALL_STABLE] Pas de cérémonie détectée"
+                  f" (streak_max={_center_streak_s:.0f}s < {_BALL_STABLE_MIN_S}s)"
+                  f" → signal ball_stable inutilisable")
 
     # ─────────────────────────────────────────────────────────────────────────
     # SIGNAL PRINCIPAL : transition d'activité joueurs + ballon
