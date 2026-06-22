@@ -438,25 +438,55 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
 
     _ball_kickoff_t = None
     if _p1_early_high:
-        # ── Diagnostic : positions brutes du ballon sur les 120 premières secondes ──
-        # Permet de distinguer FP fixes (rond central), FP bruit, ou vrai ballon.
-        # Log toutes les 5s pour ne pas noyer les logs.
-        _ball_raw_last_log = -5.0
-        for _fd_diag in frames_data:
-            _t_diag = _fd_diag.get("frame", 0) / max(fps, 1)
-            if _t_diag > 120.0:
-                break
-            if _t_diag - _ball_raw_last_log < 5.0:
+        # ── Diagnostic cérémonie : positions brutes du ballon 180s–320s ──
+        # Fenêtre où le ballon devrait être posé au rond central (cérémonie KO).
+        # Objectif : comprendre pourquoi streak_max=0s malgré la cérémonie réelle.
+        # Log frame par frame (pas d'agrégation) + dx/dy inter-frame pour mesurer stabilité.
+        _cprev_bx = None
+        _cprev_by = None
+        _cprev_t  = None
+        _cstreak_s   = 0.0   # durée consécutive de stabilité locale (dx<0.03 et dy<0.03)
+        _cstreak_max = 0.0
+        _cstreak_ref_bx = None
+        _cstreak_ref_by = None
+        _CSTAB = 0.03        # seuil de stabilité inter-frame (en fraction de frame)
+        for _fd_c in frames_data:
+            _tc = _fd_c.get("frame", 0) / max(fps, 1)
+            if _tc < 180.0:
                 continue
-            _bfd_diag = _fd_diag.get("ball")
-            _bc_diag  = _bfd_diag.get("center") if _bfd_diag else None
-            if _bc_diag and len(_bc_diag) >= 2 and _bc_diag[0] is not None:
-                _bx_d = round(float(_bc_diag[0]) / max(frame_w, 1), 3)
-                _by_d = round(float(_bc_diag[1]) / max(frame_h, 1), 3)
-                print(f"  [KICKOFF BALL RAW] t={_t_diag:5.1f}s  bx={_bx_d}  by={_by_d}")
+            if _tc > 320.0:
+                break
+            _bfd_c = _fd_c.get("ball")
+            _bc_c  = _bfd_c.get("center") if _bfd_c else None
+            _has_c = (_bc_c is not None and len(_bc_c) >= 2 and _bc_c[0] is not None)
+            _dtc = (_tc - _cprev_t) if _cprev_t is not None else (1.0 / max(fps, 1))
+            _cprev_t = _tc
+            if _has_c:
+                _bxc = round(float(_bc_c[0]) / max(frame_w, 1), 3)
+                _byc = round(float(_bc_c[1]) / max(frame_h, 1), 3)
+                if _cprev_bx is not None:
+                    _dxc = round(abs(_bxc - _cprev_bx), 3)
+                    _dyc = round(abs(_byc - _cprev_by), 3)
+                    # stabilité locale ?
+                    if _dxc <= _CSTAB and _dyc <= _CSTAB:
+                        if _cstreak_ref_bx is None:
+                            _cstreak_ref_bx, _cstreak_ref_by = _bxc, _byc
+                        _cstreak_s += _dtc
+                        if _cstreak_s > _cstreak_max:
+                            _cstreak_max = _cstreak_s
+                    else:
+                        _cstreak_s = 0.0
+                        _cstreak_ref_bx = None
+                    print(f"  [KICKOFF CEREMONY PROBE] t={_tc:6.1f}s  bx={_bxc}  by={_byc}  dx={_dxc}  dy={_dyc}  streak={_cstreak_s:.1f}s")
+                else:
+                    print(f"  [KICKOFF CEREMONY PROBE] t={_tc:6.1f}s  bx={_bxc}  by={_byc}  dx=?  dy=?  streak=0.0s")
+                _cprev_bx, _cprev_by = _bxc, _byc
             else:
-                print(f"  [KICKOFF BALL RAW] t={_t_diag:5.1f}s  bx=none")
-            _ball_raw_last_log = _t_diag
+                _cstreak_s = 0.0
+                _cstreak_ref_bx = None
+                _cprev_bx = None
+                print(f"  [KICKOFF CEREMONY PROBE] t={_tc:6.1f}s  bx=none  streak_reset")
+        print(f"  [KICKOFF CEREMONY PROBE] streak_max={_cstreak_max:.1f}s (seuil_stab={_CSTAB})")
 
         # Phase 1 : trouver la fenêtre de cérémonie (ballon stable au centre ≥ 20s)
         _ceremony_start_t  = None
