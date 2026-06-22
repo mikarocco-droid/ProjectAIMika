@@ -1748,9 +1748,21 @@ def run_pipeline(
                                     #   L'ancienne règle (in_pen=False requis) ne rejetait pas.
                                     #   Nouveau seuil : in_goal=False + world_score < 0.50 suffit.
                                     #   VP typiques : world_score ≈ 0.94 → pas de risque de FN.
+                                    #
+                                    # PATCH BC4 low_side_zoom (expérimental) :
+                                    #   Sur caméra latérale, bx ne traverse pas goal_line_x=0.017
+                                    #   VP observés andrimont_0 : ws=0.244-0.439
+                                    #   FP observés andrimont_0 : ws=0.112-0.308
+                                    #   Seuil 0.50 → rejetait tous les VP (FN total)
+                                    #   Seuil 0.20 → laisse passer ws>0.20, rejette ws<0.20
+                                    #   FP connus < 0.20 : ws=0.112, 0.151 → toujours rejetés
+                                    #   FP connus 0.20-0.31 : ws=0.228, 0.268, 0.308 → passeraient
+                                    #   À VALIDER sur run expérimental avant commit définitif.
+                                    _bc4_gate_threshold = 0.20 if _posthoc_disabled else 0.50
+                                    print(f"  [SHOT→GOAL BC4 THRESHOLD] seuil={'0.20 (low_side_zoom expérimental)' if _posthoc_disabled else '0.50 (standard)'}")
                                     _gate_reject = (
                                         _in_goal is False
-                                        and _ws is not None and _ws < 0.50
+                                        and _ws is not None and _ws < _bc4_gate_threshold
                                     )
                                     _contradiction = (
                                         _in_goal    is False
