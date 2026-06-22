@@ -311,17 +311,31 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             return t, conf
 
     # ── Passe 2 : score pondéré sur frames_data ───────────────────────────────
-    # Si la Passe 1 a détecté que la vidéo commence en jeu (p_motion >= 8.0),
-    # on retourne offset=0 immédiatement — peu importe si video_path est disponible.
+    # Si la Passe 1 a détecté p_motion élevée dès 0-60s (_p1_early_high),
+    # deux cas sont possibles :
     #
-    # BUG CORRIGÉ : la Passe 2 visuelle était lancée quand video_path était présent,
-    # ce qui pouvait détecter un faux kickoff (ballon passant au rond central pendant
-    # le match) et appliquer un offset erroné supprimant des centaines de secondes.
-    # La p_motion >= 8.0 est suffisante pour confirmer que la vidéo commence en jeu.
+    #   CAS A — vidéo commence en cours de match (pas d'avant-match) :
+    #     p_motion élevée dès 0s, reste élevée → offset=0 correct
+    #
+    #   CAS B — vidéo commence à l'échauffement :
+    #     p_motion élevée dès 0s (joueurs qui s'échauffent), puis transition
+    #     vers le vrai coup d'envoi → offset > 0 nécessaire
+    #     Exemple : andrimont_0, kickoff réel à 308s
+    #
+    # Ancien comportement : court-circuit systématique → offset=0 dans les deux cas.
+    # Problème : CAS B non géré → tous les events d'avant-match entraient dans
+    # le pipeline comme s'ils appartenaient au match (FP structurels).
+    #
+    # Correctif : si video_path est disponible, laisser la Passe 2 chercher
+    # une transition faible→fort. Sans video_path → conservateur, offset=0.
     if _p1_early_high:
         _p1_avg_val = sum(_p1_frame_avgs) / len(_p1_frame_avgs) if _p1_frame_avgs else 0.0
-        print(f"  [KICKOFF P2] p_motion={_p1_avg_val:.1f} >= 8.0 → vidéo commence en jeu, offset=0")
-        return 0.0, 0.0
+        if not video_path:
+            print(f"  [KICKOFF P2] p_motion={_p1_avg_val:.1f} >= 8.0, pas de video_path"
+                  f" → offset=0 (match supposé en cours)")
+            return 0.0, 0.0
+        print(f"  [KICKOFF P2] p_motion={_p1_avg_val:.1f} >= 8.0 + video_path disponible"
+              f" → recherche transition échauffement→match (CAS B)")
 
     if not frames_data:
         return 0.0, 0.0
@@ -697,19 +711,21 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             # On collecte tous ceux confirmés par Gemini, puis on retient
             # celui avec la p_motion la plus élevée (vrai KO = mouvement maximal).
             # ── Vérification : la vidéo commence-t-elle déjà en jeu ? ──────────
-            # Si la p_motion moyenne des 60 premières secondes est élevée (>= 8.0),
-            # la vidéo commence en cours de match → pas de KO à trouver, offset = 0.
+            # Même logique que Passe 1 : si video_path disponible, on laisse
+            # la vérification Gemini chercher un KO même si p_motion élevée dès 0s
+            # (CAS B : échauffement). Sans video_path → offset=0 conservateur.
             _early_motions = [v for t, v in _motion_by_t.items() if t <= 60.0]
             _early_pm_avg  = sum(_early_motions) / max(len(_early_motions), 1) if _early_motions else 0.0
             print(f"  [KICKOFF EARLY] p_motion moy 0-60s = {_early_pm_avg:.1f}")
-            if _early_pm_avg >= 8.0:
-                print(f"  [KICKOFF EARLY] ⚠️  Vidéo commence en cours de jeu → offset=0 (pas de KO initial)")
+            if _early_pm_avg >= 8.0 and not video_path:
+                print(f"  [KICKOFF EARLY] ⚠️  p_motion élevée, pas de video_path → offset=0")
                 best_t     = 0.0
                 best_score = 0.0
                 best_det   = {}
                 selection  = "no_kickoff_video_starts_in_play"
-                # Forcer offset=0 et sortir
                 return 0.0, 0.0
+            if _early_pm_avg >= 8.0:
+                print(f"  [KICKOFF EARLY] p_motion élevée + video_path → vérification Gemini continue (CAS B échauffement)")
 
             _top_grps = sorted(groups, key=lambda g: min(x[0] for x in g))
             _gemini_confirmed_candidates = []  # (cand_t, score, details, conf, pm_avg)
