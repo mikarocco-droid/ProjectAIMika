@@ -821,6 +821,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
 
     if not all_candidates:
         print(f"  [KICKOFF] Aucun coup d'envoi détecté dans les {max_search_t:.0f}s initiales")
+        print(f"  [KICKOFF FINAL] source=none offset=0.0s (aucun candidat)")
         return 0.0, 0.0
 
     # ── Validation par activité dans les 30s suivant le candidat ─────────────
@@ -948,6 +949,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                 best_score = 0.0
                 best_det   = {}
                 selection  = "no_kickoff_video_starts_in_play"
+                print(f"  [KICKOFF FINAL] source=none offset=0.0s (vidéo commence en jeu, sans video_path)")
                 return 0.0, 0.0
             if _early_pm_avg >= 8.0:
                 print(f"  [KICKOFF EARLY] p_motion élevée + video_path → vérification Gemini continue (CAS B échauffement)")
@@ -1153,6 +1155,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
         # absence, c'est le kickoff le plus fiable pour les vidéos d'échauffement.
         if _ball_kickoff_t is not None:
             print(f"  [KICKOFF] Signal ball_appear → offset={_ball_kickoff_t:.1f}s conf=0.85")
+            print(f"  [KICKOFF FINAL] source=ball_appear offset={_ball_kickoff_t:.1f}s conf=0.85")
             return _ball_kickoff_t, 0.85
 
         # Si la Passe 1 avait détecté p_motion élevée (vidéo commence en jeu)
@@ -1160,6 +1163,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
         # (la vidéo commence vraiment en cours de jeu, pas de pré-match à supprimer)
         if _p1_early_high:
             print(f"  [KICKOFF] p_motion élevée + aucun signal visuel → vidéo commence en jeu, offset=0")
+            print(f"  [KICKOFF FINAL] source=none offset=0.0s (vidéo commence en jeu)")
             return 0.0, 0.0
 
     print(f"  [KICKOFF PHYS] {len(all_candidates)} candidat(s) → {selection} : "
@@ -1168,6 +1172,33 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
           f"(sep={best_det.get('team_separation',0):.2f} "
           f"n_team={best_det.get('n_with_team',0)} "
           f"ball={'✓' if best_det.get('ball_center') else '✗'})")
+
+    # ── Fallback signal joueurs ───────────────────────────────────────────────
+    # Si le kickoff physique n'a pas trouvé d'offset convaincant (best_t == 0)
+    # ET que la vidéo commence avant le match (_p1_early_high=False)
+    # ET qu'un candidat joueurs existe → l'utiliser.
+    #
+    # Conditions de brancher validées sur 3 vidéos :
+    #   andrimont_0 : _p1_early_high=False → candidat 5:07 (KO réel 5:08) ✅
+    #   andrimont_2 : _p1_early_high=True  → probe désactivé ✅
+    #   Bullange    : _p1_early_high=True  → probe désactivé ✅
+    #
+    # Le probe est dans le else de _p1_early_high donc _kp_candidate_t
+    # n'est défini que si la vidéo commence avant le match.
+    if (not best_t or best_t <= 0.0) and not _p1_early_high:
+        try:
+            if _kp_candidate_t and _kp_candidate_t > 0:
+                print(f"  [KICKOFF PLAYERS FALLBACK] kickoff physique absent → "
+                      f"utilisation du signal joueurs "
+                      f"t={int(_kp_candidate_t//60)}:{int(_kp_candidate_t%60):02d} "
+                      f"(validé sur andrimont_0 à 1s)")
+                print(f"  [KICKOFF FINAL] source=players_fallback "
+                      f"offset={_kp_candidate_t:.1f}s conf=0.70")
+                return _kp_candidate_t, 0.70
+        except NameError:
+            pass  # _kp_candidate_t non défini si probe n'a trouvé aucun groupe
+
+    print(f"  [KICKOFF FINAL] source=physical offset={best_t:.1f}s conf={conf:.2f}")
     return best_t, conf
 
 
