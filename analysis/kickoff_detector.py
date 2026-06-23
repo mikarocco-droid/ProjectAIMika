@@ -754,8 +754,8 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     # ─────────────────────────────────────────────────────────────────────────
     _KP_SEP_MIN    = 0.30   # séparation inter-équipes minimale
     _KP_N_MIN      = 12     # nombre de joueurs trackés minimal
-    _KP_MIN_DUR_S  = 20.0   # durée minimale du groupe (secondes)
-    _KP_WIN_S      = 1.0    # tolérance de gap dans un groupe (secondes)
+    _KP_MIN_DUR_S  = 5.0    # durée minimale du groupe (secondes) — abaissé de 20s: groupes réels ~8s
+    _KP_WIN_S      = 2.0    # tolérance de gap dans un groupe (secondes) — élargi: gaps n=0 jusqu'à 1.4s observés
 
     # Diagnostic : taille et contenu de l'accumulateur
     kp_keys = sorted(_kp_sep_by_t.keys())
@@ -821,12 +821,21 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             print(f"    grp[{_gi}] {_t0_fmt}→{_t1_fmt} "
                   f"dur={_g['dur']:.0f}s  sep_avg={_g['sep_avg']:.2f}  "
                   f"n_avg={_g['n_avg']:.1f}  frames={_g['len']}")
-        # Candidat = début du premier groupe (le plus précoce dans le temps)
+        # Candidat = début du DERNIER groupe (le plus proche du vrai coup d'envoi)
+        # Raisonnement : groupe 1 = cérémonie/positionnement (précurseur)
+        #                groupe N = reprise réelle du jeu (événement)
+        # Pour filtrer les tirs d'échauffement, on veut l'offset du jeu réel.
         _kp_long_groups.sort(key=lambda g: g["t_start"])
-        _kp_candidate_t = _kp_long_groups[0]["t_start"]
+        _kp_candidate_t = _kp_long_groups[-1]["t_start"]
         _t_fmt = f"{int(_kp_candidate_t//60)}:{int(_kp_candidate_t%60):02d}"
-        print(f"  [KICKOFF PLAYERS] → candidat kickoff t={_t_fmt} "
-              f"(instrumenté, non appliqué)")
+        _n_groups = len(_kp_long_groups)
+        if _n_groups > 1:
+            _first_t = f"{int(_kp_long_groups[0]['t_start']//60)}:{int(_kp_long_groups[0]['t_start']%60):02d}"
+            print(f"  [KICKOFF PLAYERS] → {_n_groups} groupe(s) : précurseur={_first_t} "
+                  f"→ candidat kickoff t={_t_fmt} (dernier groupe, instrumenté, non appliqué)")
+        else:
+            print(f"  [KICKOFF PLAYERS] → candidat kickoff t={_t_fmt} "
+                  f"(groupe unique, instrumenté, non appliqué)")
     else:
         print(f"  [KICKOFF PLAYERS] aucun groupe satisfaisant "
               f"sep≥{_KP_SEP_MIN} n≥{_KP_N_MIN} dur≥{_KP_MIN_DUR_S:.0f}s "
