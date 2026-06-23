@@ -294,7 +294,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             if _p1_frame_avgs:
                 _p1_avg = sum(_p1_frame_avgs) / len(_p1_frame_avgs)
                 print(f"  [KICKOFF P1] p_motion moy 0-60s = {_p1_avg:.1f}")
-                if _p1_avg >= 8.0:
+                if _p1_avg >= 30.0:
                     _p1_early_high = True
                     print(f"  [KICKOFF P1] p_motion moy 0-60s = {_p1_avg:.1f} → vidéo commence en jeu, passe 1 ignorée")
 
@@ -331,10 +331,10 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     if _p1_early_high:
         _p1_avg_val = sum(_p1_frame_avgs) / len(_p1_frame_avgs) if _p1_frame_avgs else 0.0
         if not video_path:
-            print(f"  [KICKOFF P2] p_motion={_p1_avg_val:.1f} >= 8.0, pas de video_path"
+            print(f"  [KICKOFF P2] p_motion={_p1_avg_val:.1f} >= 30.0, pas de video_path"
                   f" → offset=0 (match supposé en cours)")
             return 0.0, 0.0
-        print(f"  [KICKOFF P2] p_motion={_p1_avg_val:.1f} >= 8.0 + video_path disponible"
+        print(f"  [KICKOFF P2] p_motion={_p1_avg_val:.1f} >= 30.0 + video_path disponible"
               f" → recherche transition échauffement→match (CAS B)")
 
     if not frames_data:
@@ -943,7 +943,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             _early_motions = [v for t, v in _motion_by_t.items() if t <= 60.0]
             _early_pm_avg  = sum(_early_motions) / max(len(_early_motions), 1) if _early_motions else 0.0
             print(f"  [KICKOFF EARLY] p_motion moy 0-60s = {_early_pm_avg:.1f}")
-            if _early_pm_avg >= 8.0 and not video_path:
+            if _early_pm_avg >= 30.0 and not video_path:
                 print(f"  [KICKOFF EARLY] ⚠️  p_motion élevée, pas de video_path → offset=0")
                 best_t     = 0.0
                 best_score = 0.0
@@ -951,7 +951,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                 selection  = "no_kickoff_video_starts_in_play"
                 print(f"  [KICKOFF FINAL] source=none offset=0.0s (vidéo commence en jeu, sans video_path)")
                 return 0.0, 0.0
-            if _early_pm_avg >= 8.0:
+            if _early_pm_avg >= 30.0:
                 print(f"  [KICKOFF EARLY] p_motion élevée + video_path → vérification Gemini continue (CAS B échauffement)")
 
             _top_grps = sorted(groups, key=lambda g: min(x[0] for x in g))
