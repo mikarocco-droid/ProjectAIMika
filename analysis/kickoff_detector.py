@@ -1173,19 +1173,34 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
           f"n_team={best_det.get('n_with_team',0)} "
           f"ball={'✓' if best_det.get('ball_center') else '✗'})")
 
-    # ── Log conflit physical vs players ──────────────────────────────────────
-    # Instrumentation pure — ne modifie pas le comportement.
-    # Objectif : construire le tableau physical/players/réel sur 4+ vidéos
-    # pour décider si le signal joueurs doit devenir source primaire.
+    # ── Conflit physical vs players → sélection de la meilleure source ────────
+    # Si les deux sources divergent de plus de 60s ET que la vidéo commence
+    # avant le match (_p1_early_high=False), le signal joueurs gagne.
+    #
+    # Raisonnement validé sur andrimont_0 :
+    #   physical = 181s (3:01) → cérémonie/positionnement pré-match (faux)
+    #   players  = 307s (5:07) → vrai coup d'envoi (KO réel = 5:08, delta=1s)
+    #   Le physique prend le groupe le plus long (51f à 3:01 = cérémonie)
+    #   Les joueurs prennent le DERNIER groupe (5:07 = positionnement réel KO)
+    #
+    # Condition : _p1_early_high=False garantit qu'on est dans le cas
+    #   "vidéo commence avant match" → le signal joueurs est pertinent
     try:
         if best_t and best_t > 0 and _kp_candidate_t and _kp_candidate_t > 0:
             _delta = abs(best_t - _kp_candidate_t)
             _phys_fmt   = f"{int(best_t//60)}:{int(best_t%60):02d}"
             _player_fmt = f"{int(_kp_candidate_t//60)}:{int(_kp_candidate_t%60):02d}"
-            if _delta > 60:
+            if _delta > 60 and not _p1_early_high:
                 print(f"  [KICKOFF CONFLICT] physical={_phys_fmt} ({best_t:.0f}s) "
                       f"players={_player_fmt} ({_kp_candidate_t:.0f}s) "
-                      f"delta={_delta:.0f}s — sources divergent de plus de 60s")
+                      f"delta={_delta:.0f}s → signal joueurs prioritaire (cérémonie détectée)")
+                print(f"  [KICKOFF FINAL] source=players_conflict "
+                      f"offset={_kp_candidate_t:.1f}s conf=0.75")
+                return _kp_candidate_t, 0.75
+            elif _delta > 60:
+                print(f"  [KICKOFF CONFLICT] physical={_phys_fmt} ({best_t:.0f}s) "
+                      f"players={_player_fmt} ({_kp_candidate_t:.0f}s) "
+                      f"delta={_delta:.0f}s — conflit mais _p1_early_high=True, physique conservé")
             else:
                 print(f"  [KICKOFF SOURCES] physical={_phys_fmt} ({best_t:.0f}s) "
                       f"players={_player_fmt} ({_kp_candidate_t:.0f}s) "
