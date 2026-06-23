@@ -1173,6 +1173,29 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
           f"n_team={best_det.get('n_with_team',0)} "
           f"ball={'✓' if best_det.get('ball_center') else '✗'})")
 
+    # ── Log conflit physical vs players ──────────────────────────────────────
+    # Instrumentation pure — ne modifie pas le comportement.
+    # Objectif : construire le tableau physical/players/réel sur 4+ vidéos
+    # pour décider si le signal joueurs doit devenir source primaire.
+    try:
+        if best_t and best_t > 0 and _kp_candidate_t and _kp_candidate_t > 0:
+            _delta = abs(best_t - _kp_candidate_t)
+            _phys_fmt   = f"{int(best_t//60)}:{int(best_t%60):02d}"
+            _player_fmt = f"{int(_kp_candidate_t//60)}:{int(_kp_candidate_t%60):02d}"
+            if _delta > 60:
+                print(f"  [KICKOFF CONFLICT] physical={_phys_fmt} ({best_t:.0f}s) "
+                      f"players={_player_fmt} ({_kp_candidate_t:.0f}s) "
+                      f"delta={_delta:.0f}s — sources divergent de plus de 60s")
+            else:
+                print(f"  [KICKOFF SOURCES] physical={_phys_fmt} ({best_t:.0f}s) "
+                      f"players={_player_fmt} ({_kp_candidate_t:.0f}s) "
+                      f"delta={_delta:.0f}s — sources cohérentes")
+        elif best_t and best_t > 0:
+            print(f"  [KICKOFF SOURCES] physical={int(best_t//60)}:{int(best_t%60):02d} "
+                  f"({best_t:.0f}s) players=absent")
+    except NameError:
+        pass  # _kp_candidate_t non défini si probe désactivé (_p1_early_high)
+
     # ── Fallback signal joueurs ───────────────────────────────────────────────
     # Si le kickoff physique n'a pas trouvé d'offset convaincant (best_t == 0)
     # ET que la vidéo commence avant le match (_p1_early_high=False)
