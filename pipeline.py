@@ -1555,6 +1555,19 @@ def run_pipeline(
                     window = max(25, min(45, next_shot_t - st - 5))
                     shots_to_analyze.append((shot, st, window))
 
+                # ── Log GOAL DEBUG : mapping relatif → absolu pour chaque candidat ──────
+                # Permet de vérifier que la fenêtre Gemini contient bien l'action réelle.
+                # st = timestamp relatif (après apply_kickoff_offset)
+                # st + _kickoff_offset = timestamp absolu dans la vidéo originale
+                _ko = _kickoff_offset if _kickoff_offset else 0.0
+                print(f"  [GOAL DEBUG] {len(shots_to_analyze)} shot(s) → analyse Gemini | kickoff_offset={_ko:.1f}s")
+                for _s, _st, _win in shots_to_analyze:
+                    _abs_start = _st + _ko
+                    _abs_end   = _st + _win + _ko
+                    _xg = float(_s.get("xg", 0) or 0)
+                    print(f"  [GOAL DEBUG] shot={_st:.1f}s  window=[{_st:.1f}→{_st+_win:.1f}]  "
+                          f"abs=[{_abs_start:.1f}→{_abs_end:.1f}]  xG={_xg:.2f}")
+
                 from concurrent.futures import ThreadPoolExecutor, as_completed
 
                 def _analyze_shot(args):
