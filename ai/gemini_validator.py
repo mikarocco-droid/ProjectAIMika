@@ -369,12 +369,18 @@ def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
     # Frame 6 : t+18s — remise en jeu commence
     # Frame 7 : t+25s — kickoff au centre ou corner/touche visible
     # Frame 8 : t+window — confirmation finale
+    # ── Correction offset kickoff ────────────────────────────────────────────
+    # shot_time est en temps RELATIF (après apply_kickoff_offset).
+    # La vidéo est le fichier ORIGINAL, non découpé.
+    # → Il faut lire à shot_time + kickoff_offset pour trouver la bonne frame.
+    _abs_origin = shot_time + (kickoff_offset or 0)
+
     offsets = [0, 2, 4, 7, 12, 18, 25, window]
     sample_times = []
     seen = set()
     for off in offsets:
-        t = round(shot_time + off, 1)
-        if t not in seen and t <= shot_time + window:
+        t = round(_abs_origin + off, 1)
+        if t not in seen and t <= _abs_origin + window:
             sample_times.append(t)
             seen.add(t)
 
@@ -885,12 +891,15 @@ def find_goal_after_shot_v2(video_path, shot_time, window=30, fps=25,
         return None
 
     # ── Extraction frames (identique V1) ──────────────────────────────────
+    # Même correction V1 : shot_time est relatif, vidéo est originale.
+    _abs_origin = shot_time + (kickoff_offset or 0)
+
     offsets = [0, 2, 4, 7, 12, 18, 25, window]
     sample_times = []
     seen = set()
     for off in offsets:
-        t = round(shot_time + off, 1)
-        if t not in seen and t <= shot_time + window:
+        t = round(_abs_origin + off, 1)
+        if t not in seen and t <= _abs_origin + window:
             sample_times.append(t)
             seen.add(t)
 
