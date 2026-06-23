@@ -1670,8 +1670,13 @@ def run_pipeline(
                         # Rejeter si le shot est avant le début estimé du match ET que
                         # la preuve Gemini repose sur un kickoff visible (pas de signal
                         # physique de but : ball in net, net deformation, etc.)
+                        # ── Correction référentiel ──────────────────────────────────────
+                        # st est en temps RELATIF (après apply_kickoff_offset).
+                        # _estimated_match_start est en temps ABSOLU (= kickoff_offset).
+                        # → Comparer st + kickoff_offset vs _estimated_match_start.
+                        _st_abs = st + (_kickoff_offset or 0)
                         _kickoff_fp = False
-                        if _estimated_match_start > 30.0 and st < _estimated_match_start - 20.0:
+                        if _estimated_match_start > 30.0 and _st_abs < _estimated_match_start - 20.0:
                             _ev_desc = (result.get("desc") or result.get("evidence") or "").lower()
                             _has_physical_goal_signal = any(
                                 kw in _ev_desc for kw in (
@@ -1825,11 +1830,26 @@ def run_pipeline(
                                     #   FP connus < 0.20 : ws=0.112, 0.151 → toujours rejetés
                                     #   FP connus 0.20-0.31 : ws=0.228, 0.268, 0.308 → passeraient
                                     #   À VALIDER sur run expérimental avant commit définitif.
-                                    _bc4_gate_threshold = 0.20 if _posthoc_disabled else 0.50
-                                    print(f"  [SHOT→GOAL BC4 THRESHOLD] seuil={'0.20 (low_side_zoom expérimental)' if _posthoc_disabled else '0.50 (standard)'}")
+                                    # Seuil BC4 adaptatif selon type de caméra :
+                                    #   low_side_zoom (posthoc désactivé) : 0.20 — caméra très latérale
+                                    #   low_side                          : 0.25 — caméra latérale, but loin du centre
+                                    #   standard (derrière)               : 0.50 — caméra centrée sur le but
+                                    # Sur low_side, le penalty à bx=0.22 donne world_score≈0.25
+                                    # → seuil 0.50 standard le rejette à tort.
+                                    _is_low_side = _posthoc_camera_type in ("low_side", "low_side_zoom")
+                                    _bc4_gate_threshold = 0.20 if _posthoc_disabled else (0.25 if _is_low_side else 0.50)
+                                    _bc4_label = ("0.20 (low_side_zoom)" if _posthoc_disabled
+                                                  else ("0.25 (low_side)" if _is_low_side else "0.50 (standard)"))
+                                    print(f"  [SHOT→GOAL BC4 THRESHOLD] seuil={_bc4_label}")
+                                    # Override BC4 gate si Gemini a un signal physique fort
+                                    # (filet + gardien + célébration = score ≥ 12).
+                                    # Sur caméra latérale, BC4 ne voit pas le but par construction
+                                    # (but à x%=2% du cadre → world_score faible même pour un VP).
+                                    _gemini_score_strong = result.get("goal_score", 0) >= 12
                                     _gate_reject = (
                                         _in_goal is False
                                         and _ws is not None and _ws < _bc4_gate_threshold
+                                        and not (_is_low_side and _gemini_score_strong)
                                     )
                                     _contradiction = (
                                         _in_goal    is False
