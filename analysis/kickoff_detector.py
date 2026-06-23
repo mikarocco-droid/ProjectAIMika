@@ -714,23 +714,6 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
         _kp_sep_by_t[t] = (details.get("team_separation", 0.0), len(fd.get("players", [])))
 
         # ── PROBE 250-320s : 4 champs seulement ─────────────────────────────
-        if 250.0 <= t <= 320.0:
-            sep  = details.get("team_separation", 0.0)
-            n    = len(fd.get("players", []))
-            ball_fd = fd.get("ball")
-            if ball_fd:
-                bc = ball_fd.get("center")
-                if bc and len(bc) >= 2 and bc[0] is not None and frame_w and frame_h:
-                    bx_n = round(float(bc[0]) / frame_w, 2)
-                    by_n = round(float(bc[1]) / frame_h, 2)
-                    spd  = f"{_ball_speed:.0f}" if _ball_speed is not None else "?"
-                    ball_str = f"{bx_n},{by_n} spd={spd}"
-                else:
-                    ball_str = "none"
-            else:
-                ball_str = "none"
-            print(f"  [KO_PROBE] t={t:6.1f}s sep={sep:.2f} n={n:2d} ball={ball_str} pm={_motion_by_t.get(t,0.0):.1f}")
-
         if score >= _SCORE_THRESHOLD:
             consecutive += 1
             if consecutive == 1:
@@ -757,22 +740,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     _KP_MIN_DUR_S  = 5.0    # durée minimale du groupe (secondes) — abaissé de 20s: groupes réels ~8s
     _KP_WIN_S      = 2.0    # tolérance de gap dans un groupe (secondes) — élargi: gaps n=0 jusqu'à 1.4s observés
 
-    # Diagnostic : taille et contenu de l'accumulateur
-    kp_keys = sorted(_kp_sep_by_t.keys())
-    kp_285_320 = [(t, sep, n) for t, (sep, n) in _kp_sep_by_t.items() if 285.0 <= t <= 320.0]
-    kp_qual = [(t, sep, n) for t, sep, n in kp_285_320 if sep >= 0.30 and n >= 12]
-    print(f"  [KICKOFF PLAYERS] probe start : len={len(_kp_sep_by_t)}"
-          f" t_range=[{kp_keys[0]:.1f}s,{kp_keys[-1]:.1f}s]" if kp_keys else
-          f"  [KICKOFF PLAYERS] probe start : len={len(_kp_sep_by_t)} (vide)")
-    print(f"  [KICKOFF PLAYERS] dans 285-320s: {len(kp_285_320)} frames"
-          f" | sep>=0.30 n>=12: {len(kp_qual)}")
-    if kp_285_320:
-        sep_vals = [sep for _, sep, _ in kp_285_320]
-        n_vals   = [n   for _, _, n   in kp_285_320]
-        print(f"  [KICKOFF PLAYERS]   sep max={max(sep_vals):.3f} mean={sum(sep_vals)/len(sep_vals):.3f}"
-              f" | n max={max(n_vals)} mean={sum(n_vals)/len(n_vals):.1f}")
-    if kp_qual:
-        print(f"  [KICKOFF PLAYERS]   première qualif: t={kp_qual[0][0]:.1f}s sep={kp_qual[0][1]:.2f} n={kp_qual[0][2]}")
+    print(f"  [KICKOFF PLAYERS] probe start : len={len(_kp_sep_by_t)}")
     # Collecter les frames satisfaisant les critères, depuis l'accumulateur de la boucle principale
     # (team_separation est dans details/_kp_sep_by_t, PAS dans frames_data directement)
     _kp_frames = []   # liste de (t, sep, n)
@@ -1328,11 +1296,6 @@ def find_match_end(
     _use_ball_criterion = _n_ball_frames > len(frames_data) * 0.05
     _tracked_ratio = _n_ball_frames / max(len(frames_data), 1)
 
-    # ── DEBUG résumé avant boucle ─────────────────────────────────────────────
-    print(f"  [MATCH_END DEBUG] tracked_ratio={_tracked_ratio:.2f} "
-          f"({_n_ball_frames}/{len(frames_data)} frames) "
-          f"use_ball={_use_ball_criterion} "
-          f"speed_min={_BALL_SPEED_MIN}")
 
     _prev_ball_end = None   # (bx, by) frame précédente — pour calculer speed
 
@@ -1411,25 +1374,12 @@ def find_match_end(
             _nb_team1   = sum(1 for p in players if p.get("team") == 1)
             _nb_unknown = sum(1 for p in players if p.get("team") not in (0, 1))
             _unk_ratio  = _nb_unknown / max(_nb_total, 1)
-            _lr = f"{last_real_game_t:.0f}s" if last_real_game_t else "None"
-            print(f"  [MATCH_END DEBUG] t={t:.1f}s "
-                  f"game_active={game_active} last_real={_lr} | "
-                  f"{_ball_extra} | "
-                  f"players={_nb_total} t0={_nb_team0} t1={_nb_team1} "
-                  f"unk={_nb_unknown} unk_ratio={_unk_ratio:.2f}")
 
         if game_active:
             last_real_game_t = t
 
         last_checked_t = t
 
-    # ── DEBUG résumé après boucle ─────────────────────────────────────────────
-    print(f"  [MATCH_END DEBUG] last_real_game_t={last_real_game_t} "
-          f"last_checked_t={last_checked_t:.1f}s "
-          f"silence={last_checked_t - last_real_game_t:.1f}s"
-          if last_real_game_t is not None else
-          f"  [MATCH_END DEBUG] last_real_game_t=None "
-          f"last_checked_t={last_checked_t:.1f}s")
 
     if last_real_game_t is None:
         return None
