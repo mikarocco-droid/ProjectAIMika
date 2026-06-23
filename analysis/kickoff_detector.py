@@ -757,8 +757,22 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     _KP_MIN_DUR_S  = 20.0   # durée minimale du groupe (secondes)
     _KP_WIN_S      = 1.0    # tolérance de gap dans un groupe (secondes)
 
-    # Diagnostic : taille de l'accumulateur au démarrage du probe
-    print(f"  [KICKOFF PLAYERS] probe start : len(_kp_sep_by_t)={len(_kp_sep_by_t)}")
+    # Diagnostic : taille et contenu de l'accumulateur
+    kp_keys = sorted(_kp_sep_by_t.keys())
+    kp_285_320 = [(t, sep, n) for t, (sep, n) in _kp_sep_by_t.items() if 285.0 <= t <= 320.0]
+    kp_qual = [(t, sep, n) for t, sep, n in kp_285_320 if sep >= 0.30 and n >= 12]
+    print(f"  [KICKOFF PLAYERS] probe start : len={len(_kp_sep_by_t)}"
+          f" t_range=[{kp_keys[0]:.1f}s,{kp_keys[-1]:.1f}s]" if kp_keys else
+          f"  [KICKOFF PLAYERS] probe start : len={len(_kp_sep_by_t)} (vide)")
+    print(f"  [KICKOFF PLAYERS] dans 285-320s: {len(kp_285_320)} frames"
+          f" | sep>=0.30 n>=12: {len(kp_qual)}")
+    if kp_285_320:
+        sep_vals = [sep for _, sep, _ in kp_285_320]
+        n_vals   = [n   for _, _, n   in kp_285_320]
+        print(f"  [KICKOFF PLAYERS]   sep max={max(sep_vals):.3f} mean={sum(sep_vals)/len(sep_vals):.3f}"
+              f" | n max={max(n_vals)} mean={sum(n_vals)/len(n_vals):.1f}")
+    if kp_qual:
+        print(f"  [KICKOFF PLAYERS]   première qualif: t={kp_qual[0][0]:.1f}s sep={kp_qual[0][1]:.2f} n={kp_qual[0][2]}")
     # Collecter les frames satisfaisant les critères, depuis l'accumulateur de la boucle principale
     # (team_separation est dans details/_kp_sep_by_t, PAS dans frames_data directement)
     _kp_frames = []   # liste de (t, sep, n)
