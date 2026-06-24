@@ -1236,6 +1236,21 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
         except NameError:
             pass  # _kp_candidate_t non défini si probe n'a trouvé aucun groupe
 
+    # ── Guard _p1_early_high : kickoff post-but ────────────────────────────
+    # Si la vidéo commence déjà en jeu (_p1_early_high=True) ET que le meilleur
+    # candidat physique est > 60s, deux cas :
+    #   1. Vidéo commence sur le KO (<15s) : le candidat est un KO post-but → offset=0
+    #   2. Résumé / vidéo en cours de jeu : pas de pré-match → offset=0
+    # _detect_ball_played_in_center peut générer un faux positif sur un KO post-but
+    # (ex: match_test détecte 157.4s = KO après le 1er but).
+    # On ignore _refined ici : si _p1_early_high=True, aucun offset > 60s n'est légitime.
+    _EARLY_HIGH_MAX_T = 60.0
+    if _p1_early_high and best_t > _EARLY_HIGH_MAX_T:
+        print(f"  [KICKOFF EARLY_HIGH] best_t={best_t:.1f}s > {_EARLY_HIGH_MAX_T}s"
+              f" (_refined={_refined}) → kickoff post-but ou résumé, offset forcé à 0.0s")
+        print(f"  [KICKOFF FINAL] source=early_high_guard offset=0.0s conf=1.00")
+        return 0.0, 1.00
+
     print(f"  [KICKOFF FINAL] source=physical offset={best_t:.1f}s conf={conf:.2f}")
     return best_t, conf
 
