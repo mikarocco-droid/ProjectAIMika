@@ -2252,6 +2252,10 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # 3. STATS
     # ─────────────────────────────────────────
+    from collections import Counter
+    team_dist = Counter(e.get("team") for e in events)
+    print(f"  [TEAM DIST] {dict(team_dist)}")
+    
     print("Step 3 : Stats...")
     stats = compute_stats(events, jersey_map=jersey_map)
     print(f"  OK {len(stats)} joueurs")
