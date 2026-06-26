@@ -24,7 +24,7 @@ except ImportError:
 # ─────────────────────────────────────────
 # SEUILS DYNAMIQUES (depuis gemini_validation.py)
 # ─────────────────────────────────────────
-OFFSETS_POSTHOC = [-5, -2, 0, 5, 20]  # +20 ajouté : voir le kickoff après le but (signal fort)
+OFFSETS_POSTHOC = [-5, -2, 0, 3, 5, 20]  # +3 ajouté : capturer tir bout portant (ballon dans filet ~3s après candidat posthoc)
 OFFSETS_EVENTS = [-1, 0, 2, 10]
 
 
