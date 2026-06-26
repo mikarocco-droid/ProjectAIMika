@@ -152,11 +152,28 @@ def compute_stats(events, jersey_map=None, frame_w=1920):
 # POSSESSION CORRIGÉE
 # ─────────────────────────────────────────
 def compute_possession_from_stats(events, stats):
+    # Construire pid_to_team depuis stats filtrées
     pid_to_team = {
         pid: s["team"]
         for pid, s in stats.items()
         if s.get("team") is not None
     }
+
+    # Si stats vides (pas d'events "possession"), reconstruire
+    # pid_to_team directement depuis les events bruts
+    if not pid_to_team:
+        _team_votes = {}
+        for e in events:
+            pid  = str(e.get("player", e.get("from", "")))
+            team = e.get("team")
+            if pid and team is not None:
+                _team_votes.setdefault(pid, {})
+                _team_votes[pid][team] = _team_votes[pid].get(team, 0) + 1
+        pid_to_team = {
+            pid: max(votes, key=votes.get)
+            for pid, votes in _team_votes.items()
+            if votes
+        }
 
     possession = defaultdict(float)
     all_sorted = sorted(events, key=lambda x: x.get("time", 0))
