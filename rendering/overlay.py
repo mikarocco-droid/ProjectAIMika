@@ -503,40 +503,52 @@ class TeamColorDetector:
     Accepte tous les kwargs pour compatibilité avec main.py.
     """
     def __init__(self, teams_data=None, sample_frames=60, **kwargs):
-        self.teams_data   = teams_data or {}
+        self.teams_data    = teams_data or {}
         self.sample_frames = sample_frames
-        self.score        = {0: 0, 1: 0}
-        self._goals_seen  = set()
-        self._samples     = []      # frames collectées pour calibration
-        self._calibrated  = False
-        self._centroids   = None
+        self.score         = {0: 0, 1: 0}
+        self._goals_seen   = set()
+        self._jersey_colors = []   # couleurs de torses collectées (maillots)
+        self._n_frames     = 0     # frames vues pour calibration
+        self._calibrated   = False
+        self._centroids    = None
 
     def add_frame(self, frame):
-        """Collecte une frame pour la calibration des couleurs équipes."""
-        if self._calibrated or frame is None:
-            return
-        self._samples.append(frame)
-        if len(self._samples) >= self.sample_frames:
-            self._calibrate()
+        """Obsolète — la calibration se fait via update() sur les torses joueurs."""
+        pass
 
-    def _calibrate(self):
-        """KMeans sur les frames collectées pour trouver les 2 couleurs équipes."""
+    def _extract_jersey_color(self, frame, bbox):
+        """Extrait la couleur dominante du torse d'un joueur (zone maillot)."""
         try:
             import numpy as np
-            all_colors = []
-            for frame in self._samples:
-                h, w = frame.shape[:2]
-                # Zone centrale du terrain (évite tribunes)
-                crop = frame[int(h*0.2):int(h*0.8), int(w*0.1):int(w*0.9)]
-                # Sample aléatoire de pixels
-                pixels = crop.reshape(-1, 3).astype(np.float32)
-                idx = np.random.choice(len(pixels), min(500, len(pixels)), replace=False)
-                all_colors.extend(pixels[idx])
+            h_f, w_f = frame.shape[:2]
+            x1, y1, x2, y2 = map(int, bbox)
+            x1 = max(0, x1); y1 = max(0, y1)
+            x2 = min(w_f, x2); y2 = min(h_f, y2)
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                return None
+            ch = crop.shape[0]
+            # Zone torse : 15%-45% de la hauteur du joueur
+            torse = crop[int(ch * 0.15):int(ch * 0.45), :]
+            if torse.size == 0:
+                return None
+            hsv  = cv2.cvtColor(torse, cv2.COLOR_BGR2HSV)
+            mask = hsv[:, :, 1] > 60   # pixels saturés = couleur maillot
+            if mask.sum() >= 10:
+                color = torse[mask].mean(axis=0).astype(np.float32)
+            else:
+                color = torse.mean(axis=(0, 1)).astype(np.float32)
+            return color
+        except Exception:
+            return None
 
-            if len(all_colors) < 20:
+    def _calibrate(self):
+        """KMeans sur les couleurs de torses collectées — 2 centroides = 2 équipes."""
+        try:
+            import numpy as np
+            if len(self._jersey_colors) < 20:
                 return
-
-            samples = np.array(all_colors, dtype=np.float32)
+            samples  = np.array(self._jersey_colors, dtype=np.float32)
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
             _, labels, centroids = cv2.kmeans(
                 samples, 2, None, criteria, 5, cv2.KMEANS_RANDOM_CENTERS
@@ -545,7 +557,7 @@ class TeamColorDetector:
             self._calibrated = True
             c0 = tuple(int(x) for x in centroids[0])
             c1 = tuple(int(x) for x in centroids[1])
-            print(f"  [TeamColorDetector] calibré : team0={c0} team1={c1}")
+            print(f"  [TeamColorDetector] calibré sur maillots : team0={c0} team1={c1}")
         except Exception as e:
             print(f"  [TeamColorDetector] calibration ignorée : {e}")
 
@@ -587,46 +599,39 @@ class TeamColorDetector:
     def update(self, frame, tracked):
         """
         Appelé par main.py à chaque frame.
-        Collecte des samples de couleur et assigne les équipes aux joueurs trackés.
-        tracked : liste de dicts avec 'bbox' et éventuellement 'team'
+        Phase 1 (frames 0→sample_frames) : collecte les couleurs de torses
+        pour calibrer les 2 centroides équipes.
+        Phase 2 (après calibration) : assigne team=0 ou team=1 à chaque joueur.
         """
         if frame is None:
             return
 
-        # Collecter la frame pour calibration
-        self.add_frame(frame)
-
+        # ── Phase 1 : collecte pour calibration ──────────────────────
         if not self._calibrated:
+            self._n_frames += 1
+            for p in (tracked or []):
+                bbox = p.get("bbox") or p.get("box")
+                if not bbox:
+                    continue
+                color = self._extract_jersey_color(frame, bbox)
+                if color is not None:
+                    self._jersey_colors.append(color)
+
+            if self._n_frames >= self.sample_frames:
+                self._calibrate()
             return
 
-        # Assigner une équipe à chaque joueur tracké
+        # ── Phase 2 : assignation équipe ─────────────────────────────
         try:
-            import numpy as np
-            h_f, w_f = frame.shape[:2]
             for p in (tracked or []):
                 if p.get("team") is not None:
                     continue
                 bbox = p.get("bbox") or p.get("box")
                 if not bbox:
                     continue
-                x1, y1, x2, y2 = map(int, bbox)
-                x1 = max(0, x1); y1 = max(0, y1)
-                x2 = min(w_f, x2); y2 = min(h_f, y2)
-                crop = frame[y1:y2, x1:x2]
-                if crop.size == 0:
-                    continue
-                ch = crop.shape[0]
-                torse = crop[int(ch*0.15):int(ch*0.45), :]
-                if torse.size == 0:
-                    continue
-                # Filtre saturation
-                hsv = cv2.cvtColor(torse, cv2.COLOR_BGR2HSV)
-                mask = hsv[:, :, 1] > 60
-                if mask.sum() >= 10:
-                    color = torse[mask].mean(axis=0).astype(np.float32)
-                else:
-                    color = torse.mean(axis=(0, 1)).astype(np.float32)
-                p["team"] = self.get_team(color)
+                color = self._extract_jersey_color(frame, bbox)
+                if color is not None:
+                    p["team"] = self.get_team(color)
         except Exception:
             pass
 
