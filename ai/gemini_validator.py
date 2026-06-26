@@ -643,12 +643,22 @@ Only award +3 if the net is clearly DEFORMED (pushed inward) by the ball, provin
 If the net appears flat/undisturbed and the ball is near it → score 0 for that signal, not +3.
 
 DECISION:
-- total_score >= 5 → is_goal=true ONLY IF at least one physical signal is also present.
-  Physical signals = net deformation (+3), ball unmistakably in net (+3), celebration (+4 or +2), players walking back to center (+3).
-  CRITICAL EXCEPTION: if the ONLY positive signal is center kickoff (+5) with NO physical signal → is_goal=false.
-  Reason: a kickoff can follow any stoppage (foul, corner, free kick), not only goals.
-  Example: kickoff +5, ball outside net -2 = score 3 → is_goal=false (kickoff alone, negative physical signal)
-  Example: kickoff +5, net deformation +3 = score 8 → is_goal=true (physical signal present)
+- total_score >= 5 → is_goal=true ONLY IF at least one DIRECT PHYSICAL signal is present.
+  DIRECT PHYSICAL signals (mandatory, at least one required):
+    - ball unmistakably INSIDE the net (+3)
+    - net visibly deformed/bulging by the ball (+3)
+    - goalkeeper crouching/diving to retrieve ball FROM INSIDE the net (+3)
+    - unambiguous multi-player celebration (+4)
+  CONTEXTUAL signals (never sufficient alone):
+    - center kickoff (+5) — can follow ANY stoppage, not only goals
+    - players walking/jogging back toward center (+3) — can follow ANY restart
+  CRITICAL EXCEPTION — CAUSALITY RULE:
+    A center kickoff + players walking back, WITHOUT any direct physical signal, is NEVER sufficient.
+    is_goal=false if the ONLY positive signals are kickoff and/or walking_back.
+    Reason: these signals confirm SOME goal happened somewhere in the sequence, NOT that this specific shot caused it.
+    Example: kickoff +5 + walking_back +3 = 8 → is_goal=false (no physical signal, causality not established)
+    Example: kickoff +5 + ball_in_net +3 = 8 → is_goal=true (physical signal present, causality established)
+    Example: ball_in_net +3 alone = 3 → is_goal=true (direct physical proof, no kickoff needed)
 - total_score == 4 → is_goal=true if celebration (+4) OR net deformation (+3) is present
 - total_score 3 → is_goal=true ONLY if net deformation clearly confirmed (+3 signal present)
 - total_score <= 2 → is_goal=false
@@ -715,13 +725,16 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
                 "walking back", "walking/jogging back", "jogging back",
                 "toward center circle", "back toward center",
             ])
-            _has_physical_signal = (
-                _has_net_signal
-                or (_has_walking_back and "+5" in evidence and "+3" in evidence)
-            )
+            # walking_back + kickoff ne constitue PAS une preuve physique
+            # Seul _has_net_signal ou celebration constitute une preuve directe
+            _has_celebration = any(kw in _evidence_lower for kw in [
+                "celebrat", "joy", "arms raised", "jubilat",
+            ])
+            _has_physical_signal = _has_net_signal or _has_celebration
+            # Causality rule : kickoff+walking_back sans preuve physique → rejeté
             _kickoff_only = (
-                "+5" in evidence
-                and not _has_physical_signal
+                not _has_physical_signal
+                and ("+5" in evidence or _has_walking_back)
             )
             if _kickoff_only:
                 _recent_goal = any(
