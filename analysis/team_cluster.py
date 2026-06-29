@@ -2,29 +2,57 @@ from collections import defaultdict
 import numpy as np
 
 
-def assign_teams_by_color(events):
+def assign_teams_by_color(events, team_colors=None):
     """
-    Assigne team=0 ou team=1 sur chaque event en utilisant les centroides
-    de couleur calibrés par TeamColorDetector (via player_reid).
+    Assigne team=0 ou team=1 sur chaque event.
 
-    Si player_reid n'est pas disponible, fallback sur la logique RGB simple.
+    Priorité des sources de centroides :
+      1. team_colors passé en paramètre (depuis pipeline._captured_team_colors)
+      2. player_reid.get_team_colors() (si disponible après tracking)
+      3. Fallback RGB (bleu > rouge → team 0)
     """
-    # ── Récupérer les centroides calibrés depuis player_reid ─────────────────
+    # ── Source 1 : centroides passés explicitement depuis pipeline.py ─────────
     team_centroids = None
-    try:
-        from analysis.player_reid import get_team_colors as _gtc
-        raw = _gtc()
-        if raw and len(raw) >= 2:
-            # raw = {0: (B,G,R), 1: (B,G,R)}
+    _source = "fallback RGB"
+
+    if team_colors and len(team_colors) >= 2:
+        try:
             team_centroids = {
                 int(k): np.array(v, dtype=np.float32)
-                for k, v in raw.items()
+                for k, v in team_colors.items()
                 if v is not None and len(v) == 3
             }
             if len(team_centroids) < 2:
                 team_centroids = None
-    except Exception:
-        team_centroids = None
+            else:
+                _source = "centroides pipeline"
+        except Exception:
+            team_centroids = None
+
+    # ── Source 2 : player_reid (fallback si team_colors absent) ──────────────
+    if team_centroids is None:
+        try:
+            from analysis.player_reid import get_team_colors as _gtc
+            raw = _gtc()
+            if raw and len(raw) >= 2:
+                team_centroids = {
+                    int(k): np.array(v, dtype=np.float32)
+                    for k, v in raw.items()
+                    if v is not None and len(v) == 3
+                }
+                if len(team_centroids) < 2:
+                    team_centroids = None
+                else:
+                    _source = "centroides player_reid"
+        except Exception:
+            team_centroids = None
+
+    if team_centroids:
+        c0 = tuple(int(x) for x in team_centroids[0])
+        c1 = tuple(int(x) for x in team_centroids[1])
+        print(f"  [TEAM_CLUSTER] centroides : team0={c0} team1={c1} (src={_source})")
+    else:
+        print(f"  [TEAM_CLUSTER] aucun centroide disponible → {_source}")
 
     # ── Construire pid → team depuis les couleurs sur les events ─────────────
     pid_color_votes = defaultdict(lambda: defaultdict(int))
@@ -37,7 +65,6 @@ def assign_teams_by_color(events):
         color = tuple(color[:3])
 
         if team_centroids:
-            # Distance L2 aux deux centroides calibrés
             c = np.array(color, dtype=np.float32)
             dists = {
                 team_id: float(np.linalg.norm(c - centroid))
@@ -61,7 +88,6 @@ def assign_teams_by_color(events):
     # ── Propager sur les events ───────────────────────────────────────────────
     for e in events:
         pid = e.get("player")
-        # Ne pas écraser si déjà renseigné
         if e.get("team") is not None:
             continue
         if pid in pid_to_team:
@@ -69,7 +95,6 @@ def assign_teams_by_color(events):
 
     n_assigned = sum(1 for e in events if e.get("team") is not None)
     n_total    = len(events)
-    print(f"  [TEAM_CLUSTER] {n_assigned}/{n_total} events avec team "
-          f"({'centroides calibrés' if team_centroids else 'fallback RGB'})")
+    print(f"  [TEAM_CLUSTER] {n_assigned}/{n_total} events avec team ({_source})")
 
     return events
