@@ -245,6 +245,7 @@ def run_pipeline(
     player_position   = None,    # "Gardien", "Attaquant", etc. — pour mode player
     audit_mode        = False,   # Mode collecte données : skip highlights, PDF, commentary, heatmaps
     video_end_s       = None,    # Forcer la fin de la vidéo à ce timestamp (s) — utile pour couper l'après-match
+    _match_data       = None,    # Replay Engine : dict depuis replay.load_cache() — skip YOLO/tracking si fourni
 ):
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
@@ -420,7 +421,26 @@ def run_pipeline(
             print(f"  ⚠️  Segment extractor échoué ({_e}) — fallback full pass")
             candidate_segments = None  # fallback ci-dessous
 
-    if not candidate_segments:
+    if _match_data is not None:
+        # ── REPLAY : données chargées par build_match_data() ─────────────
+        print("Step 1 : [REPLAY] YOLO/tracking skippé — données depuis cache")
+        events                = _match_data["events"]
+        frames_data           = _match_data["frames_data"]
+        jersey_map            = _match_data["jersey_map"]
+        fps                   = _match_data["fps"]
+        total_frames          = _match_data["total_frames"]
+        _kickoff_offset       = _match_data.get("kickoff_offset", 0.0)
+        _captured_team_colors = _match_data.get("team_colors") or {}
+        _video_duration_s     = total_frames / max(fps, 1)
+        if frames_data:
+            _frame_w = int(frames_data[0].get("frame_w") or 1920)
+            _frame_h = int(frames_data[0].get("frame_h") or 1080)
+        else:
+            _frame_w, _frame_h = 1920, 1080
+        print(f"  [REPLAY] {len(events)} events | {len(frames_data)} frames | fps={fps}")
+        print(f"  [REPLAY] kickoff_offset={_kickoff_offset:.1f}s | team_colors={_captured_team_colors}")
+
+    elif not candidate_segments:
         # ── FALLBACK : process_video() complet ───────────────────────────
         print("Step 1 : Tracking + Events (full pass)...")
         events, jersey_map, fps, total_frames, frames_data = process_video(
@@ -434,156 +454,160 @@ def run_pipeline(
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
-    # ── DÉTECTION COUP D'ENVOI ────────────────────────────────────────────────
-    # Le coup d'envoi est détecté par terminal_events pendant le tracking
-    # (event type="kickoff" : ballon au rond central + joueurs symétriques).
-    # On cherche le premier kickoff pour corriger tous les timestamps.
-    _video_duration_s = total_frames / max(fps, 1)
-    _kickoff_offset, _kickoff_conf = find_kickoff_offset(
-        events, _video_duration_s,
-        frames_data = frames_data,   # V9.8 : score pondéré sans dépendre du ballon
-        fps         = fps,        
-        video_path  = video_path,   # ← ligne ajoutée
-    )
+    # ── KICKOFF / MATCH_END / TEAM_COLORS ────────────────────────────────────
+    # En mode replay (_match_data fourni), ce bloc est skippé :
+    # kickoff_offset et team_colors viennent déjà du cache.
+    if _match_data is None:
+        # ── DÉTECTION COUP D'ENVOI ────────────────────────────────────────────────
+        # Le coup d'envoi est détecté par terminal_events pendant le tracking
+        # (event type="kickoff" : ballon au rond central + joueurs symétriques).
+        # On cherche le premier kickoff pour corriger tous les timestamps.
+        _video_duration_s = total_frames / max(fps, 1)
+        _kickoff_offset, _kickoff_conf = find_kickoff_offset(
+            events, _video_duration_s,
+            frames_data = frames_data,   # V9.8 : score pondéré sans dépendre du ballon
+            fps         = fps,        
+            video_path  = video_path,   # ← ligne ajoutée
+        )
 
-    if _kickoff_offset > 0:
-        print(f"  [KICKOFF] Application offset={_kickoff_offset:.1f}s "
-              f"(conf={_kickoff_conf:.2f}) — suppression pré-match")
+        if _kickoff_offset > 0:
+            print(f"  [KICKOFF] Application offset={_kickoff_offset:.1f}s "
+                  f"(conf={_kickoff_conf:.2f}) — suppression pré-match")
 
-        # 1. Corriger timestamps + supprimer events avant le coup d'envoi
-        events, _n_removed = apply_kickoff_offset(events, _kickoff_offset, fps=fps)
-        print(f"  [KICKOFF] {len(events)} events après correction "
-              f"({_n_removed} events pré-match supprimés)")
+            # 1. Corriger timestamps + supprimer events avant le coup d'envoi
+            events, _n_removed = apply_kickoff_offset(events, _kickoff_offset, fps=fps)
+            print(f"  [KICKOFF] {len(events)} events après correction "
+                  f"({_n_removed} events pré-match supprimés)")
 
-        # 2. Supprimer les frames_data avant le coup d'envoi
-        frames_data = apply_kickoff_offset_frames(frames_data, _kickoff_offset, fps=fps)
+            # 2. Supprimer les frames_data avant le coup d'envoi
+            frames_data = apply_kickoff_offset_frames(frames_data, _kickoff_offset, fps=fps)
 
-        # 3. Nettoyer le jersey_map (joueurs vus seulement à l'échauffement)
-        jersey_map = reset_pre_kickoff_state(jersey_map, _kickoff_offset, fps=fps)
-    else:
-        print(f"  [KICKOFF] Pas de coup d'envoi détecté → timestamps inchangés")
+            # 3. Nettoyer le jersey_map (joueurs vus seulement à l'échauffement)
+            jersey_map = reset_pre_kickoff_state(jersey_map, _kickoff_offset, fps=fps)
+        else:
+            print(f"  [KICKOFF] Pas de coup d'envoi détecté → timestamps inchangés")
 
-    # ── COUPURE FORCÉE FIN DE VIDÉO ──────────────────────────────────────────
-    # Si video_end_s est défini, on tronque events et frames_data à ce timestamp.
-    # Utile quand la vidéo contient du contenu post-match (ralentis, plateau, etc.)
-    # que la détection automatique MATCH_END ne capte pas.
-    if video_end_s is not None:
-        _end_frame = int(video_end_s * fps)
-        _n_events_before  = len(events)
-        _n_frames_before  = len(frames_data)
-        events      = [e for e in events     if e.get("time", 0) <= video_end_s]
-        frames_data = [f for f in frames_data if f.get("frame", 0) <= _end_frame]
-        print(f"  [VIDEO_END_S] Coupure forcée à {video_end_s:.0f}s "
-              f"({int(video_end_s//60):02d}:{int(video_end_s%60):02d}) | "
-              f"events {_n_events_before}→{len(events)} | "
-              f"frames {_n_frames_before}→{len(frames_data)}")
+        # ── COUPURE FORCÉE FIN DE VIDÉO ──────────────────────────────────────────
+        # Si video_end_s est défini, on tronque events et frames_data à ce timestamp.
+        # Utile quand la vidéo contient du contenu post-match (ralentis, plateau, etc.)
+        # que la détection automatique MATCH_END ne capte pas.
+        if video_end_s is not None:
+            _end_frame = int(video_end_s * fps)
+            _n_events_before  = len(events)
+            _n_frames_before  = len(frames_data)
+            events      = [e for e in events     if e.get("time", 0) <= video_end_s]
+            frames_data = [f for f in frames_data if f.get("frame", 0) <= _end_frame]
+            print(f"  [VIDEO_END_S] Coupure forcée à {video_end_s:.0f}s "
+                  f"({int(video_end_s//60):02d}:{int(video_end_s%60):02d}) | "
+                  f"events {_n_events_before}→{len(events)} | "
+                  f"frames {_n_frames_before}→{len(frames_data)}")
 
-    # ── DÉTECTION FIN DE MATCH ───────────────────────────────────────────────
-    # Cherche la fin du match dans les frames_data pour couper l'après-match.
-    # Prolongation et tirs au but sont couverts (seuil silence = 25 min).
-    # Les gamins sans vareuse après le match ne seront pas comptés comme joueurs.
-    _team_colors = None
-    try:
-        _team_colors = {
-            int(k): v.get("color_bgr") or v.get("color")
-            for k, v in teams.items()
-            if v.get("color_bgr") or v.get("color")
-        } if teams else None
-    except Exception:
-        pass
-
-    _match_end_s = find_match_end(
-        frames_data          = frames_data,
-        fps                  = fps,
-        team_colors          = _team_colors,
-        silence_threshold_s  = 1500.0,   # 25 min sans jeu = fin du match
-        min_match_duration_s = 2700.0,   # chercher fin seulement après 45 min de jeu
-        video_duration_s     = _video_duration_s,  # adaptatif selon durée vidéo
-    )
-
-    if _match_end_s is not None:
-        events, frames_data = apply_match_end(events, frames_data, _match_end_s, fps=fps)
-
-    # ── Alimenter le bootstrapper depuis frames_data ────────────────────────
-    if _team_bootstrapper is not None and frames_data:
+        # ── DÉTECTION FIN DE MATCH ───────────────────────────────────────────────
+        # Cherche la fin du match dans les frames_data pour couper l'après-match.
+        # Prolongation et tirs au but sont couverts (seuil silence = 25 min).
+        # Les gamins sans vareuse après le match ne seront pas comptés comme joueurs.
+        _team_colors = None
         try:
-            _bootstrap_seconds = 120.0
-            for _fd in frames_data:
-                _t = _fd.get("frame", 0) / max(fps, 1)
-                if _t > _bootstrap_seconds:
-                    break
-                _frame_orig = _fd.get("_frame_orig")
-                # frames_data n'a plus _frame_orig (supprimé après rendu)
-                # Utiliser les couleurs déjà extraites par player_reid
-                for _p in _fd.get("players", []):
-                    _pid   = _p.get("id") or _p.get("player_id")
-                    _color = _p.get("color")  # couleur extraite par PlayerReID
-                    _bbox  = _p.get("bbox")
-                    if _pid is None or _color is None or _bbox is None:
-                        continue
-                    # Injecter directement la couleur sans re-extraire
-                    _color_arr = np.array(_color, dtype=np.float32)
-                    if np.any(_color_arr > 10):
-                        pid_str = str(_pid)
-                        _team_bootstrapper._pid_colors[pid_str].append(_color_arr)
-                        if pid_str not in _team_bootstrapper._pid_first_seen:
-                            _team_bootstrapper._pid_first_seen[pid_str] = _t
-                        _team_bootstrapper._pid_last_seen[pid_str] = _t
-                        _team_bootstrapper._n_frames += 1
-        except Exception as _efb:
-            print(f"  [BOOTSTRAP] Alimentation échouée : {_efb}")
+            _team_colors = {
+                int(k): v.get("color_bgr") or v.get("color")
+                for k, v in teams.items()
+                if v.get("color_bgr") or v.get("color")
+            } if teams else None
+        except Exception:
+            pass
 
-    # ── Finaliser le bootstrapper d'équipes ──────────────────────────────────
-    if _team_bootstrapper is not None:
+        _match_end_s = find_match_end(
+            frames_data          = frames_data,
+            fps                  = fps,
+            team_colors          = _team_colors,
+            silence_threshold_s  = 1500.0,   # 25 min sans jeu = fin du match
+            min_match_duration_s = 2700.0,   # chercher fin seulement après 45 min de jeu
+            video_duration_s     = _video_duration_s,  # adaptatif selon durée vidéo
+        )
+
+        if _match_end_s is not None:
+            events, frames_data = apply_match_end(events, frames_data, _match_end_s, fps=fps)
+
+        # ── Alimenter le bootstrapper depuis frames_data ────────────────────────
+        if _team_bootstrapper is not None and frames_data:
+            try:
+                _bootstrap_seconds = 120.0
+                for _fd in frames_data:
+                    _t = _fd.get("frame", 0) / max(fps, 1)
+                    if _t > _bootstrap_seconds:
+                        break
+                    _frame_orig = _fd.get("_frame_orig")
+                    # frames_data n'a plus _frame_orig (supprimé après rendu)
+                    # Utiliser les couleurs déjà extraites par player_reid
+                    for _p in _fd.get("players", []):
+                        _pid   = _p.get("id") or _p.get("player_id")
+                        _color = _p.get("color")  # couleur extraite par PlayerReID
+                        _bbox  = _p.get("bbox")
+                        if _pid is None or _color is None or _bbox is None:
+                            continue
+                        # Injecter directement la couleur sans re-extraire
+                        _color_arr = np.array(_color, dtype=np.float32)
+                        if np.any(_color_arr > 10):
+                            pid_str = str(_pid)
+                            _team_bootstrapper._pid_colors[pid_str].append(_color_arr)
+                            if pid_str not in _team_bootstrapper._pid_first_seen:
+                                _team_bootstrapper._pid_first_seen[pid_str] = _t
+                            _team_bootstrapper._pid_last_seen[pid_str] = _t
+                            _team_bootstrapper._n_frames += 1
+            except Exception as _efb:
+                print(f"  [BOOTSTRAP] Alimentation échouée : {_efb}")
+
+        # ── Finaliser le bootstrapper d'équipes ──────────────────────────────────
+        if _team_bootstrapper is not None:
+            try:
+                _bs_summary = _team_bootstrapper.summary()
+                print(f"  [BOOTSTRAP] {_bs_summary['n_pids_total']} pids vus | "
+                      f"{_bs_summary['n_stable']} stables")
+                if _team_bootstrapper.is_ready() or _bs_summary['n_stable'] >= 4:
+                    _bs_result = _team_bootstrapper.finalize()
+                    if _bs_result:
+                        # Injecter dans teams (priorité sur KMeans du Step 4)
+                        for _tid, _tdata in _bs_result.items():
+                            if _tid not in teams:
+                                teams[_tid] = {}
+                            teams[_tid]["color_bgr"]    = _tdata["color_bgr"]
+                            teams[_tid]["color_name"]   = _tdata["color_name"]
+                            teams[_tid]["_bootstrap_conf"] = _tdata["confidence"]
+                        print(f"  [BOOTSTRAP] Couleurs injectées dans teams ✅")
+            except Exception as _ebs:
+                print(f"  [BOOTSTRAP] Finalisation échouée : {_ebs}")
+
+        # Récupérer les couleurs équipes depuis le module tracker (source la plus fiable)
         try:
-            _bs_summary = _team_bootstrapper.summary()
-            print(f"  [BOOTSTRAP] {_bs_summary['n_pids_total']} pids vus | "
-                  f"{_bs_summary['n_stable']} stables")
-            if _team_bootstrapper.is_ready() or _bs_summary['n_stable'] >= 4:
-                _bs_result = _team_bootstrapper.finalize()
-                if _bs_result:
-                    # Injecter dans teams (priorité sur KMeans du Step 4)
-                    for _tid, _tdata in _bs_result.items():
-                        if _tid not in teams:
-                            teams[_tid] = {}
-                        teams[_tid]["color_bgr"]    = _tdata["color_bgr"]
-                        teams[_tid]["color_name"]   = _tdata["color_name"]
-                        teams[_tid]["_bootstrap_conf"] = _tdata["confidence"]
-                    print(f"  [BOOTSTRAP] Couleurs injectées dans teams ✅")
-        except Exception as _ebs:
-            print(f"  [BOOTSTRAP] Finalisation échouée : {_ebs}")
+            from vision import tracker as _tracker_mod
+            if hasattr(_tracker_mod, "_LAST_TEAM_COLORS") and _tracker_mod._LAST_TEAM_COLORS:
+                _captured_team_colors = dict(_tracker_mod._LAST_TEAM_COLORS)
+                print(f"  Couleurs equipes depuis tracker : {_captured_team_colors}")
+        except Exception:
+            pass
 
-    # Récupérer les couleurs équipes depuis le module tracker (source la plus fiable)
-    try:
-        from vision import tracker as _tracker_mod
-        if hasattr(_tracker_mod, "_LAST_TEAM_COLORS") and _tracker_mod._LAST_TEAM_COLORS:
-            _captured_team_colors = dict(_tracker_mod._LAST_TEAM_COLORS)
-            print(f"  Couleurs equipes depuis tracker : {_captured_team_colors}")
-    except Exception:
-        pass
-
-    # Capturer les couleurs équipes depuis le tracker dès le Step 1
-    # Elles sont dans frames_data[*].players[*].color ou team_color
-    _captured_team_colors = {}
-    try:
-        _color_votes = {}  # {team_id: [bgr_tuples]}
-        for _fd in frames_data[:300]:
-            for _pp in (_fd.get("players") or []):
-                _t  = _pp.get("team")
-                _c  = _pp.get("color") or _pp.get("team_color") or _pp.get("jersey_color")
-                if _t is not None and _c is not None:
-                    if isinstance(_c, (list, tuple)) and len(_c) == 3:
-                        _color_votes.setdefault(_t, []).append(_c)
-        for _t, _cols in _color_votes.items():
-            # Moyenne des couleurs pour l'équipe
-            _b = int(sum(c[0] for c in _cols) / len(_cols))
-            _g = int(sum(c[1] for c in _cols) / len(_cols))
-            _r = int(sum(c[2] for c in _cols) / len(_cols))
-            _captured_team_colors[_t] = (_b, _g, _r)
-        if _captured_team_colors:
-            print(f"  Couleurs équipes capturées : {_captured_team_colors}")
-    except Exception as _ect:
-        pass
+        # Capturer les couleurs équipes depuis le tracker dès le Step 1
+        # Elles sont dans frames_data[*].players[*].color ou team_color
+        _captured_team_colors = {}
+        try:
+            _color_votes = {}  # {team_id: [bgr_tuples]}
+            for _fd in frames_data[:300]:
+                for _pp in (_fd.get("players") or []):
+                    _t  = _pp.get("team")
+                    _c  = _pp.get("color") or _pp.get("team_color") or _pp.get("jersey_color")
+                    if _t is not None and _c is not None:
+                        if isinstance(_c, (list, tuple)) and len(_c) == 3:
+                            _color_votes.setdefault(_t, []).append(_c)
+            for _t, _cols in _color_votes.items():
+                # Moyenne des couleurs pour l'équipe
+                _b = int(sum(c[0] for c in _cols) / len(_cols))
+                _g = int(sum(c[1] for c in _cols) / len(_cols))
+                _r = int(sum(c[2] for c in _cols) / len(_cols))
+                _captured_team_colors[_t] = (_b, _g, _r)
+            if _captured_team_colors:
+                print(f"  Couleurs équipes capturées : {_captured_team_colors}")
+        except Exception as _ect:
+            pass
 
     for e in events:
         if not e.get("time"):
