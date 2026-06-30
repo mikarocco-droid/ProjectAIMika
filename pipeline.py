@@ -42,7 +42,6 @@ from analysis.highlight_ranker import rank_highlights
 from analysis.player_rating import compute_player_ratings, get_mvp, tag_key_passes
 from analysis.match_story import generate_match_story
 from ai.commentary import generate_commentary
-from ai.gemini_validator import gemini_verify_kickoff
 from ai.learning import cluster_actions, learn_action_importance, detect_key_moments
 from sports.config import get_sport_config, compute_xg_sport, get_owner_confidence_min
 from analysis.event_validator import detect_real_shots
@@ -466,14 +465,9 @@ def run_pipeline(
         _video_duration_s = total_frames / max(fps, 1)
         _kickoff_offset, _kickoff_conf = find_kickoff_offset(
             events, _video_duration_s,
-            frames_data       = frames_data,   # V9.8 : score pondéré sans dépendre du ballon
-            fps               = fps,
-            video_path        = video_path,
-            gemini_verify_fn  = gemini_verify_kickoff,  # FIX : active le filtre p_motion
-                                                         # + validation visuelle Gemini
-                                                         # (sinon sélection brute par longueur
-                                                         # de séquence — casse sur vidéos avec
-                                                         # cérémonie longue)
+            frames_data = frames_data,   # V9.8 : score pondéré sans dépendre du ballon
+            fps         = fps,        
+            video_path  = video_path,   # ← ligne ajoutée
         )
 
         if _kickoff_offset > 0:
@@ -2191,7 +2185,7 @@ def run_pipeline(
         from analysis.tactical_v2 import detect_pressing_intensity, detect_play_style
 
         events         = reidentify_players(events)
-        events         = assign_teams_by_color(events)
+        events         = assign_teams_by_color(events, team_colors=_captured_team_colors)
         real_pass      = detect_passes(events)
         events.extend(real_pass)
         events         = compute_xa(events)
