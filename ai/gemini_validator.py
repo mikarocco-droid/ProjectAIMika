@@ -2480,4 +2480,100 @@ def validate_events_with_gemini(
     # Libérer les containers PyAV en fin de validation
     close_all_av_containers()
 
-    return events
+    return events# ─────────────────────────────────────────────────────────────────────────────
+# GEMINI VERIFY KICKOFF — vérification visuelle d'un candidat coup d'envoi
+# ─────────────────────────────────────────────────────────────────────────────
+# Appelé depuis kickoff_detector.py via le paramètre gemini_verify_fn.
+# Signature attendue : gemini_verify_fn(video_path, cand_t, offsets=[...])
+#                       → (confirmed: bool, confidence: float)
+#
+# Sans cette fonction câblée, kickoff_detector.py saute silencieusement
+# tout le bloc de filtrage p_motion + validation visuelle (lignes ~931-999)
+# et retombe sur la sélection brute par longueur de séquence — ce qui casse
+# sur les vidéos avec cérémonie longue (le faux candidat le plus long/tardif
+# l'emporte sur le vrai coup d'envoi, plus bref mais avec séparation nette).
+
+def gemini_verify_kickoff(video_path, cand_t, offsets=None, fps=25):
+    """
+    Vérifie visuellement si cand_t correspond à un coup d'envoi (engagement
+    officiel : ballon au rond central, joueurs alignés de part et d'autre
+    de la ligne médiane, arbitre prêt à siffler) — par opposition à :
+      - une phase de jeu normale (joueurs dispersés, ballon en mouvement)
+      - une cérémonie / rassemblement (joueurs en cercle, pas alignés sur le terrain)
+      - un échauffement (joueurs dispersés en exercices, pas en formation)
+
+    Retourne (confirmed: bool, confidence: float).
+    """
+    try:
+        client = get_client()
+    except Exception as e:
+        print(f"  [KICKOFF GEMINI] client indisponible : {e}")
+        return False, 0.0
+
+    if offsets is None:
+        offsets = [-2.0, 0.0, 2.0, 5.0]
+
+    frame_id = int(round(cand_t * fps))
+    frames_window = extract_frames_around(video_path, frame_id, fps=fps)
+
+    if not frames_window:
+        print(f"  [KICKOFF GEMINI] aucune frame extraite à t={cand_t:.1f}s")
+        return False, 0.0
+
+    # Garder uniquement les frames proches des offsets demandés (en secondes)
+    selected = []
+    for off_s in offsets:
+        off_frames_equiv = int(round(off_s * fps))
+        # extract_frames_around retourne des offsets en FRAMES, pas en secondes
+        closest = min(frames_window, key=lambda fo: abs(fo[0] - off_frames_equiv))
+        if closest not in selected:
+            selected.append(closest)
+
+    if not selected:
+        selected = frames_window[:3]
+
+    selected.sort(key=lambda fo: fo[0])
+
+    prompt = (
+        "Tu analyses des frames d'une vidéo de football amateur pour identifier "
+        "un COUP D'ENVOI (kickoff) précis.\n\n"
+        "Un vrai coup d'envoi se reconnaît à TOUS ces signes réunis :\n"
+        "- le ballon est posé immobile au rond central du terrain\n"
+        "- les deux équipes sont alignées chacune dans leur propre moitié de terrain\n"
+        "- les joueurs sont globalement statiques, prêts à s'élancer\n"
+        "- l'arbitre est visible, prêt à siffler ou vient de siffler\n\n"
+        "Ce N'EST PAS un coup d'envoi si :\n"
+        "- les joueurs sont en plein jeu actif (course, dribble, passes, défense)\n"
+        "- les joueurs sont regroupés en cercle (rassemblement d'équipe, "
+        "consignes du coach, échauffement collectif)\n"
+        "- le ballon n'est pas au centre du terrain\n"
+        "- c'est une remise en jeu, un corner, un coup franc, ou une touche\n\n"
+        "Réponds UNIQUEMENT en JSON strict, sans texte autour :\n"
+        '{"is_kickoff": true ou false, "confidence": 0.0 à 1.0, '
+        '"reason": "courte explication en français"}'
+    )
+
+    parts = [text_to_part(prompt)]
+    for off, frame in selected:
+        parts.append(frame_to_part(frame))
+
+    response = _call_gemini(client, parts)
+    if response is None:
+        return False, 0.0
+
+    text = extract_response_text(response)
+    data = _safe_json_load(text)
+
+    if not data:
+        print(f"  [KICKOFF GEMINI] t={int(cand_t//60)}:{int(cand_t%60):02d} "
+              f"→ réponse Gemini non parsable")
+        return False, 0.0
+
+    is_kickoff = bool(data.get("is_kickoff", False))
+    confidence = float(data.get("confidence", 0.0))
+    reason     = data.get("reason", "")
+
+    print(f"  [KICKOFF GEMINI] t={int(cand_t//60)}:{int(cand_t%60):02d} "
+          f"→ is_kickoff={is_kickoff} conf={confidence:.2f} — {reason}")
+
+    return is_kickoff, confidence
