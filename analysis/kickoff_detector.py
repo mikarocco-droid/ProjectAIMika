@@ -1190,13 +1190,23 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             _delta = abs(best_t - _kp_candidate_t)
             _phys_fmt   = f"{int(best_t//60)}:{int(best_t%60):02d}"
             _player_fmt = f"{int(_kp_candidate_t//60)}:{int(_kp_candidate_t%60):02d}"
-            if _delta > 60 and not _p1_early_high:
+            # FIX : si best_t a déjà été confirmé visuellement par Gemini, le signal
+            # players (jamais vérifié, simple "dernier groupe long") ne peut plus l'override.
+            # Sans cette garde, players_conflict écrase systématiquement un candidat
+            # physique pourtant validé par Gemini (cas vérifié sur andrimont_0 8min).
+            _best_t_gemini_confirmed = selection.startswith("gemini_confirmed")
+            if _delta > 60 and not _p1_early_high and not _best_t_gemini_confirmed:
                 print(f"  [KICKOFF CONFLICT] physical={_phys_fmt} ({best_t:.0f}s) "
                       f"players={_player_fmt} ({_kp_candidate_t:.0f}s) "
                       f"delta={_delta:.0f}s → signal joueurs prioritaire (cérémonie détectée)")
                 print(f"  [KICKOFF FINAL] source=players_conflict "
                       f"offset={_kp_candidate_t:.1f}s conf=0.75")
                 return _kp_candidate_t, 0.75
+            elif _delta > 60 and _best_t_gemini_confirmed:
+                print(f"  [KICKOFF CONFLICT] physical={_phys_fmt} ({best_t:.0f}s) "
+                      f"players={_player_fmt} ({_kp_candidate_t:.0f}s) "
+                      f"delta={_delta:.0f}s — physical déjà confirmé par Gemini → conservé "
+                      f"(players non vérifié visuellement)")
             elif _delta > 60:
                 print(f"  [KICKOFF CONFLICT] physical={_phys_fmt} ({best_t:.0f}s) "
                       f"players={_player_fmt} ({_kp_candidate_t:.0f}s) "
