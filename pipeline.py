@@ -609,6 +609,28 @@ def run_pipeline(
         except Exception as _ect:
             pass
 
+        # ── Sauvegarde cache (fin Step 1, avant Gemini) ───────────────────────
+        # Permet de rejouer ce match avec _match_data sans refaire YOLO/tracking.
+        try:
+            from replay import save_cache as _save_cache
+            _save_cache(
+                output_dir     = output_dir,
+                events         = events,
+                frames_data    = frames_data,
+                jersey_map     = jersey_map,
+                fps            = fps,
+                total_frames   = total_frames,
+                frame_w        = locals().get("_frame_w", 1920),
+                frame_h        = locals().get("_frame_h", 1080),
+                sport          = sport,
+                video_path     = video_path,
+                team_colors    = _captured_team_colors,
+                kickoff_offset = _kickoff_offset,
+                camera_profile = locals().get("_camera_profile", {}),
+            )
+        except Exception as _ecache:
+            print(f"  [REPLAY] Cache non sauvegardé : {_ecache}")
+
     for e in events:
         if not e.get("time"):
             frame     = e.get("frame", 0) or 0
