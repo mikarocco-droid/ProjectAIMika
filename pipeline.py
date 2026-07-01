@@ -42,6 +42,10 @@ from analysis.highlight_ranker import rank_highlights
 from analysis.player_rating import compute_player_ratings, get_mvp, tag_key_passes
 from analysis.match_story import generate_match_story
 from ai.commentary import generate_commentary
+try:
+    from shot_profiler import ShotProfiler as _ShotProfiler
+except ImportError:
+    _ShotProfiler = None
 from ai.learning import cluster_actions, learn_action_importance, detect_key_moments
 from sports.config import get_sport_config, compute_xg_sport, get_owner_confidence_min
 from analysis.event_validator import detect_real_shots
@@ -1591,6 +1595,7 @@ def run_pipeline(
                 existing_goal_times = list(_confirmed_goal_times)
                 shots_to_analyze = []
                 detected_goal_times = []
+                _profiler = _ShotProfiler(output_dir, video_path) if _ShotProfiler else None
 
                 for i, shot in enumerate(shots_on_target_sorted):
                     st = shot.get("time", 0)
@@ -1607,6 +1612,16 @@ def run_pipeline(
                 # st + _kickoff_offset = timestamp absolu dans la vidéo originale
                 _ko = _kickoff_offset if _kickoff_offset else 0.0
                 print(f"  [GOAL DEBUG] {len(shots_to_analyze)} shot(s) → analyse Gemini | kickoff_offset={_ko:.1f}s")
+                if _profiler:
+                    for _ps, _pst, _pw in shots_to_analyze:
+                        _profiler.observe(
+                            shot             = _ps,
+                            frames_data      = frames_data,
+                            fps              = fps,
+                            camera_type      = _posthoc_camera_type,
+                            candidate_source = _ps.get("detected_from", "unknown"),
+                            posthoc_score    = _ps.get("posthoc_score"),
+                        )
                 for _s, _st, _win in shots_to_analyze:
                     _abs_start = _st + _ko
                     _abs_end   = _st + _win + _ko
@@ -1942,6 +1957,13 @@ def run_pipeline(
                             if _gate_rejected:
                                 continue  # ne pas ajouter à shot_goal_candidates
 
+                            if _profiler:
+                                _profiler.update_gemini(
+                                    shot_t      = _st,
+                                    gemini_called = True,
+                                    gemini_yes  = True,
+                                    goal_score  = result.get("goal_score") if result else None,
+                                )
                             shot_goal_candidates.append(new_goal)
                             existing_goal_times.append(goal_t)
                             detected_goal_times.append(goal_t)
@@ -1950,6 +1972,8 @@ def run_pipeline(
                 if shot_goal_candidates:
                     events_validated = events_validated + shot_goal_candidates
                     print(f"  [SHOT→GOAL] {len(shot_goal_candidates)} but(s) ajouté(s) via analyse tirs")
+                if _profiler:
+                    _profiler.finish()
                 else:
                     print(f"  [SHOT→GOAL] Aucun but confirmé")
 
@@ -2185,7 +2209,7 @@ def run_pipeline(
         from analysis.tactical_v2 import detect_pressing_intensity, detect_play_style
 
         events         = reidentify_players(events)
-        events         = assign_teams_by_color(events, team_colors=_captured_team_colors)
+        events         = assign_teams_by_color(events)
         real_pass      = detect_passes(events)
         events.extend(real_pass)
         events         = compute_xa(events)
