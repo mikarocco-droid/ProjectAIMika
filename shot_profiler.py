@@ -226,6 +226,12 @@ class ShotProfiler:
             "density_box":       density,
             "candidate_source":  candidate_source,
             "posthoc_score":     posthoc_score,
+            "stuck_frames":      None,       # alimenté par update_posthoc()
+            "rebound":           None,       # alimenté par update_posthoc()
+            "has_terminal":      None,       # alimenté par update_posthoc()
+            "posthoc_rejected":  None,       # alimenté par update_posthoc()
+            "reject_reason":     None,       # alimenté par update_posthoc()
+            "candidate_stage":   "raw",      # raw→posthoc→pre_gemini→gemini→validated
             "xG":                round(xg, 4),
             "on_target":         shot.get("on_target", False),
             "gemini_called":     gemini_called,
@@ -242,6 +248,29 @@ class ShotProfiler:
                 row["gemini_called"] = gemini_called
                 if gemini_yes  is not None: row["gemini_yes"]  = gemini_yes
                 if goal_score  is not None: row["goal_score"]  = goal_score
+                if gemini_called:
+                    row["candidate_stage"] = "gemini"
+                break
+
+    def update_posthoc(self, shot_t, posthoc_score=None, stuck_frames=None,
+                       rebound=None, has_terminal=None,
+                       rejected=None, reject_reason=None):
+        """Mise à jour filtre posthoc — appelé depuis pipeline.py après [FILTRE POSTHOC].
+        
+        Permet de savoir exactement pourquoi un candidat a été rejeté avant Gemini.
+        Clé de jointure : shot_t (linked_shot_t du posthoc → shot_t_s du tir).
+        """
+        for row in self.rows:
+            if abs(row["shot_t_s"] - shot_t) < 2.0:   # fenêtre de 2s pour la jointure
+                if posthoc_score is not None: row["posthoc_score"]   = posthoc_score
+                if stuck_frames  is not None: row["stuck_frames"]    = stuck_frames
+                if rebound       is not None: row["rebound"]         = rebound
+                if has_terminal  is not None: row["has_terminal"]    = has_terminal
+                if rejected      is not None: row["posthoc_rejected"]= rejected
+                if reject_reason is not None: row["reject_reason"]   = reject_reason
+                if rejected is False:
+                    row["candidate_stage"] = "posthoc"  # passé le filtre
+                # Si rejected=True, candidate_stage reste "raw" — mort au filtre
                 break
 
     def finish(self):
