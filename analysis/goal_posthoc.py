@@ -335,6 +335,7 @@ def detect_fast_goals_from_ball(
         # ── V9.6 — Hard filter hybride : tir strict ou loose+signal fort ──
         recent_shot_strict = False
         recent_shot_loose  = False
+        _linked_shot_t     = None   # temps exact du tir lié — pour traçabilité
 
         for s in reversed(shots):
             dt = goal_time - s.get("time", 0)
@@ -342,9 +343,11 @@ def detect_fast_goals_from_ball(
                 continue
             if dt <= SHOT_LOOKBACK_STRICT:
                 recent_shot_strict = True
+                _linked_shot_t     = s.get("time", 0)
                 break
             if dt <= SHOT_LOOKBACK_LOOSE:
                 recent_shot_loose = True
+                _linked_shot_t    = s.get("time", 0)
             else:
                 break  # trié par temps → inutile de chercher plus loin
 
@@ -418,40 +421,6 @@ def detect_fast_goals_from_ball(
         _reason = "shot_strict" if recent_shot_strict else ("shot_loose" if recent_shot_loose else "no_shot")
         _side   = "left" if cross_left else "right"
 
-        # Détection posthoc tardif : ballon perdu après le but, récupéré par le gardien
-        # Profil : shot_loose + stuck >= 5 + rebound → candidat généré ~8-12s après le but réel
-        # → Gemini recevra des offsets étendus vers la gauche pour chercher le vrai moment
-        _posthoc_late = (_reason == "shot_loose" and stuck >= 5 and rebound)
-        if _posthoc_late:
-            print(f"  [POSTHOC LATE] t={goal_time:.1f}s reason={_reason} stuck={stuck} rebound={rebound} "
-                  f"→ tag posthoc_late=True (offsets étendus)")
-
-        # ── LOG AUTOPSIE candidat posthoc ────────────────────────────────────
-        # Dernier timestamp où le ballon était visible avant le crossing
-        _last_ball_seen_t = None
-        for _j in range(i, max(0, i - 60), -1):
-            _bc = _get_ball_center(frames_data[_j].get("ball"))
-            if _bc is not None:
-                _last_ball_seen_t = frames_data[_j].get("frame", _j) / fps
-                break
-        # Tir le plus récent avant ce candidat
-        _linked_shot_t = None
-        for s in reversed(shots):
-            if s.get("time", 0) <= goal_time:
-                _linked_shot_t = s.get("time")
-                break
-        _shot_delay = round(goal_time - _linked_shot_t, 1) if _linked_shot_t else None
-        print(f"  [POSTHOC AUDIT] candidate_t={goal_time:.2f}s "
-              f"reason={_reason} "
-              f"stuck={stuck} "
-              f"rebound={rebound} "
-              f"disappear={disappear} "
-              f"score={score:.1f} "
-              f"last_ball_seen_t={round(_last_ball_seen_t, 2) if _last_ball_seen_t else None} "
-              f"linked_shot_t={_linked_shot_t} "
-              f"shot_delay={_shot_delay}s "
-              f"posthoc_late={_posthoc_late}")
-
         goals.append({
             "type": "goal",
             "time": round(goal_time, 2),
@@ -462,10 +431,10 @@ def detect_fast_goals_from_ball(
             "score": round(score, 2),
             "detected_from": "goal_posthoc_v9.6",
             "shot_linked": recent_shot_strict or recent_shot_loose,
+            "linked_shot_t": round(_linked_shot_t, 3) if _linked_shot_t is not None else None,
             "rebound": rebound,
             "posthoc_reason": _reason,
             "posthoc_side": _side,
-            "posthoc_late": _posthoc_late,
         })
 
         print(f"⚽ GOAL {goal_time:.2f}s | score={score:.2f} | stuck={stuck} | rebound={rebound} | reason={_reason} | side={_side} | peak={peak:.0f}px/f | x={x:.0f} y={y:.0f} (x%={x/frame_w*100:.1f}%)")
@@ -570,6 +539,7 @@ def detect_fast_goals_from_ball(
             "players_near": _players_near,
             "detected_from": "goal_posthoc_disappear",
             "shot_linked": True,
+            "linked_shot_t": None,
             "rebound": False,
         })
 
@@ -695,6 +665,7 @@ def detect_fast_goals_from_ball(
                             "players_near":  _players_near,
                             "detected_from": "ball_appears_in_goal",
                             "shot_linked":   False,
+                            "linked_shot_t": None,
                             "rebound":       False,
                         })
                         existing.append(t_curr)
