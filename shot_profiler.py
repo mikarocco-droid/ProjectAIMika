@@ -313,22 +313,28 @@ class ShotProfiler:
                        rejected=None, reject_reason=None):
         """Mise à jour filtre posthoc — appelé depuis pipeline.py après [FILTRE POSTHOC].
 
-        Permet de savoir exactement pourquoi un candidat a été rejeté avant Gemini.
-        Clé de jointure : shot_t (linked_shot_t du posthoc → shot_t_s du tir).
+        Clé de jointure : shot_t (linked_shot_t du posthoc -> shot_t_s du tir).
 
         Args:
+            shot_t       : linked_shot_t depuis goal_posthoc (round(...,3))
             n_terminal   : nombre de terminaux dans le voisinage (int, pas bool)
             reject_reason: doit être dans REJECT_REASONS (None si accepté)
+
+        Note sur la tolérance :
+            goal_posthoc stocke round(s["time"], 3) ; observe() stocke s["time"]
+            directement. Les deux proviennent du meme event mais peuvent differer de
+            quelques ms (ex. 31.398 vs 31.4). EPS=10ms est sans ambiguïté : le
+            cooldown minimum entre deux tirs est 3s. A terme, remplacer par shot_id.
         """
+        EPS = 0.01  # 10 ms — tolerance jointure linked_shot_t <-> shot_t_s
+
         # Validation enum
         if reject_reason not in REJECT_REASONS:
-            reject_reason = "missing_terminal"   # fallback sûr
+            reject_reason = "missing_terminal"   # fallback sur
 
         matched = False
         for row in self.rows:
-            # Comparaison exacte à 3 décimales (linked_shot_t est round(..., 3))
-            # Pas de fenêtre temporelle — shot_t provient directement de goal_posthoc.linked_shot_t
-            if round(row["shot_t_s"], 3) == round(shot_t, 3):
+            if abs(row["shot_t_s"] - shot_t) <= EPS:
                 matched = True
                 if posthoc_score is not None: row["posthoc_score"]    = posthoc_score
                 if stuck_frames  is not None: row["stuck_frames"]     = stuck_frames
