@@ -324,8 +324,10 @@ class ShotProfiler:
         if reject_reason not in REJECT_REASONS:
             reject_reason = "missing_terminal"   # fallback sûr
 
+        matched = False
         for row in self.rows:
             if abs(row["shot_t_s"] - shot_t) < 2.0:
+                matched = True
                 if posthoc_score is not None: row["posthoc_score"]    = posthoc_score
                 if stuck_frames  is not None: row["stuck_frames"]     = stuck_frames
                 if rebound       is not None: row["rebound"]          = rebound
@@ -340,7 +342,17 @@ class ShotProfiler:
                     row["candidate_stage"] = "posthoc"
                 elif rejected is True and row["candidate_stage"] == "raw":
                     row["candidate_stage"] = "posthoc_rejected"
+                print(
+                    f"  [PROFILER UPDATE] shot_t={shot_t:.2f}s matched row={row['shot_t_s']:.2f}s "
+                    f"delta={abs(row['shot_t_s']-shot_t):.3f}s "
+                    f"stage={row['candidate_stage']}"
+                )
                 break
+        if not matched:
+            print(
+                f"  [PROFILER UPDATE] shot_t={shot_t:.2f}s → NO MATCH "
+                f"(rows={[round(r['shot_t_s'],2) for r in self.rows]})"
+            )
 
     def finish(self):
         """Sauvegarde le CSV final. Appelé une seule fois en fin de pipeline."""

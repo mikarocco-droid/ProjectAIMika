@@ -1329,7 +1329,6 @@ def run_pipeline(
         _n_before = sum(1 for e in events_for_gemini if e.get("type") == "goal")
         _events_for_gemini_new = []
         # _posthoc_filter_log : [(goal_t, posthoc_score, rebound, n_terminal, rejected, reason)]
-        # goal_t = temps du candidat posthoc (clé de jointure vers shot profiler via shot_linked)
         _posthoc_filter_log = []
         _n_term_total = len(_terminal_times_filter)
         for e in events_for_gemini:
@@ -1337,7 +1336,6 @@ def run_pipeline(
             if not _is_goal_cand or _near_terminal(e):
                 _events_for_gemini_new.append(e)
                 if _is_goal_cand:
-                    # Candidat posthoc ACCEPTÉ
                     _ps  = float(e.get("score", e.get("danger", 0)))
                     _reb = bool(e.get("rebound", False))
                     _gt  = float(e.get("time", 0))
@@ -1349,7 +1347,6 @@ def run_pipeline(
                     )
                     _posthoc_filter_log.append((_gt, _ps, _reb, _n_term_total, False, None))
             else:
-                # Candidat posthoc REJETÉ — log détaillé instrumentation Phase B
                 _ps  = float(e.get("score", e.get("danger", 0)))
                 _reb = bool(e.get("rebound", False))
                 _gt  = float(e.get("time", 0))
@@ -1626,31 +1623,6 @@ def run_pipeline(
                 detected_goal_times = []
                 _profiler = _ShotProfiler(output_dir, video_path) if _ShotProfiler else None
 
-                # Alimenter le profiler avec les décisions du filtre posthoc
-                # Jointure : pour chaque candidat posthoc (goal_t), trouver le tir
-                # dont le temps précède goal_t de moins de 25s (fenêtre shot_lookback)
-                if _profiler and _posthoc_filter_log:
-                    _shot_times_for_join = sorted([
-                        e.get("time", 0) for e in events_validated
-                        if e.get("type") == "shot"
-                    ])
-                    for _gt, _pf_score, _pf_reb, _pf_nterm, _pf_rejected, _pf_reason in _posthoc_filter_log:
-                        # Tir lié = dernier tir avant goal_t dans une fenêtre de 25s
-                        _linked = None
-                        for _sht in reversed(_shot_times_for_join):
-                            if 0 < _gt - _sht <= 25.0:
-                                _linked = _sht
-                                break
-                        if _linked is not None:
-                            _profiler.update_posthoc(
-                                shot_t        = _linked,
-                                posthoc_score = _pf_score,
-                                rebound       = _pf_reb,
-                                n_terminal    = _pf_nterm,
-                                rejected      = _pf_rejected,
-                                reject_reason = _pf_reason,
-                            )
-
                 for i, shot in enumerate(shots_on_target_sorted):
                     st = shot.get("time", 0)
                     already_covered = any(abs(gt - st) < 45 for gt in existing_goal_times)
@@ -1676,6 +1648,37 @@ def run_pipeline(
                             candidate_source = _ps.get("detected_from", "unknown"),
                             posthoc_score    = _ps.get("posthoc_score"),
                         )
+                    # Diagnostic — aide à confirmer que la jointure fonctionne
+                    print(
+                        f"  [PROFILER] observe={len(_profiler.rows)} rows | "
+                        f"posthoc_log={len(_posthoc_filter_log)} candidats"
+                    )
+                    # Alimenter le profiler avec les décisions du filtre posthoc.
+                    # Jointure : linked_shot_t exact disponible dans [POSTHOC AUDIT] via
+                    # goal_posthoc.py. Pour l'instant on utilise le shot_t le plus proche
+                    # dans la fenêtre 0–25s. La fenêtre est intentionnellement conservative
+                    # pour éviter les collisions entre tirs rapprochés.
+                    if _posthoc_filter_log:
+                        for _gt, _pf_score, _pf_reb, _pf_nterm, _pf_rejected, _pf_reason in _posthoc_filter_log:
+                            _linked = None
+                            for _sht in reversed(shot_times_all):
+                                if 0 < _gt - _sht <= 25.0:
+                                    _linked = _sht
+                                    break
+                            print(
+                                f"  [PROFILER MATCH] posthoc_t={_gt:.2f}s "
+                                f"→ linked_shot={_linked if _linked is not None else 'NONE'} "
+                                f"rejected={_pf_rejected} reason={_pf_reason}"
+                            )
+                            if _linked is not None:
+                                _profiler.update_posthoc(
+                                    shot_t        = _linked,
+                                    posthoc_score = _pf_score,
+                                    rebound       = _pf_reb,
+                                    n_terminal    = _pf_nterm,
+                                    rejected      = _pf_rejected,
+                                    reject_reason = _pf_reason,
+                                )
                 for _s, _st, _win in shots_to_analyze:
                     _abs_start = _st + _ko
                     _abs_end   = _st + _win + _ko
