@@ -1328,8 +1328,8 @@ def run_pipeline(
 
         _n_before = sum(1 for e in events_for_gemini if e.get("type") == "goal")
         _events_for_gemini_new = []
-        # _posthoc_filter_log : [(shot_t, score, stuck, rebound, n_terminal, rejected, reason)]
-        # utilisé pour alimenter le Shot Profiler (update_posthoc)
+        # _posthoc_filter_log : [(goal_t, posthoc_score, rebound, n_terminal, rejected, reason)]
+        # goal_t = temps du candidat posthoc (clé de jointure vers shot profiler via shot_linked)
         _posthoc_filter_log = []
         _n_term_total = len(_terminal_times_filter)
         for e in events_for_gemini:
@@ -1337,32 +1337,30 @@ def run_pipeline(
             if not _is_goal_cand or _near_terminal(e):
                 _events_for_gemini_new.append(e)
                 if _is_goal_cand:
-                    # Candidat posthoc ACCEPTÉ — log + profiler
+                    # Candidat posthoc ACCEPTÉ
                     _ps  = float(e.get("score", e.get("danger", 0)))
-                    _stk = int(e.get("stuck_frames", e.get("stuck", 0)))
                     _reb = bool(e.get("rebound", False))
-                    _sht = float(e.get("linked_shot_t", e.get("shot_t", 0)))
+                    _gt  = float(e.get("time", 0))
                     print(
-                        f"  [POSTHOC PASS] t={float(e.get('time',0)):.1f}s "
-                        f"score={_ps:.1f} stuck={_stk} rebound={_reb} "
+                        f"  [POSTHOC PASS] t={_gt:.1f}s "
+                        f"score={_ps:.1f} rebound={_reb} "
                         f"n_terminal={_n_term_total} "
                         f"camera={_posthoc_camera_type}"
                     )
-                    _posthoc_filter_log.append((_sht, _ps, _stk, _reb, _n_term_total, False, None))
+                    _posthoc_filter_log.append((_gt, _ps, _reb, _n_term_total, False, None))
             else:
                 # Candidat posthoc REJETÉ — log détaillé instrumentation Phase B
                 _ps  = float(e.get("score", e.get("danger", 0)))
-                _stk = int(e.get("stuck_frames", e.get("stuck", 0)))
                 _reb = bool(e.get("rebound", False))
-                _sht = float(e.get("linked_shot_t", e.get("shot_t", 0)))
+                _gt  = float(e.get("time", 0))
                 print(
-                    f"  [POSTHOC FILTER] t={float(e.get('time',0)):.1f}s "
-                    f"score={_ps:.1f} stuck={_stk} rebound={_reb} "
+                    f"  [POSTHOC FILTER] t={_gt:.1f}s "
+                    f"score={_ps:.1f} rebound={_reb} "
                     f"n_terminal={_n_term_total} "
-                    f"camera={_posthoc_camera_type} shot_t={_sht:.1f}s "
+                    f"camera={_posthoc_camera_type} "
                     f"reason=missing_terminal"
                 )
-                _posthoc_filter_log.append((_sht, _ps, _stk, _reb, _n_term_total, True, "missing_terminal"))
+                _posthoc_filter_log.append((_gt, _ps, _reb, _n_term_total, True, "missing_terminal"))
         events_for_gemini = _events_for_gemini_new
         _n_after = sum(1 for e in events_for_gemini if e.get("type") == "goal")
         if _n_before != _n_after:
@@ -1629,17 +1627,29 @@ def run_pipeline(
                 _profiler = _ShotProfiler(output_dir, video_path) if _ShotProfiler else None
 
                 # Alimenter le profiler avec les décisions du filtre posthoc
+                # Jointure : pour chaque candidat posthoc (goal_t), trouver le tir
+                # dont le temps précède goal_t de moins de 25s (fenêtre shot_lookback)
                 if _profiler and _posthoc_filter_log:
-                    for _pf_shot_t, _pf_score, _pf_stuck, _pf_reb, _pf_nterm, _pf_rejected, _pf_reason in _posthoc_filter_log:
-                        _profiler.update_posthoc(
-                            shot_t        = _pf_shot_t,
-                            posthoc_score = _pf_score,
-                            stuck_frames  = _pf_stuck,
-                            rebound       = _pf_reb,
-                            n_terminal    = _pf_nterm,
-                            rejected      = _pf_rejected,
-                            reject_reason = _pf_reason,
-                        )
+                    _shot_times_for_join = sorted([
+                        e.get("time", 0) for e in events_validated
+                        if e.get("type") == "shot"
+                    ])
+                    for _gt, _pf_score, _pf_reb, _pf_nterm, _pf_rejected, _pf_reason in _posthoc_filter_log:
+                        # Tir lié = dernier tir avant goal_t dans une fenêtre de 25s
+                        _linked = None
+                        for _sht in reversed(_shot_times_for_join):
+                            if 0 < _gt - _sht <= 25.0:
+                                _linked = _sht
+                                break
+                        if _linked is not None:
+                            _profiler.update_posthoc(
+                                shot_t        = _linked,
+                                posthoc_score = _pf_score,
+                                rebound       = _pf_reb,
+                                n_terminal    = _pf_nterm,
+                                rejected      = _pf_rejected,
+                                reject_reason = _pf_reason,
+                            )
 
                 for i, shot in enumerate(shots_on_target_sorted):
                     st = shot.get("time", 0)
