@@ -140,6 +140,8 @@ class ShotProfiler:
         self.rows         = []
         self._started     = time.time()
         self._cand_index  = 0   # compteur pour candidate_id unique
+        self._match_deltas   = []   # delta abs pour validation C6
+        self._no_match_count = 0    # compteur NO MATCH pour validation C6
         os.makedirs(os.path.join(output_dir, "shot_profiles"), exist_ok=True)
 
     def _shot_id(self, shot_t, fps):
@@ -350,6 +352,7 @@ class ShotProfiler:
                     row["candidate_stage"] = "posthoc"
                 elif rejected is True and row["candidate_stage"] == "raw":
                     row["candidate_stage"] = "posthoc_rejected"
+                self._match_deltas.append(abs(row["shot_t_s"] - shot_t))
                 print(
                     f"  [PROFILER UPDATE] shot_t={shot_t:.2f}s matched row={row['shot_t_s']:.2f}s "
                     f"delta={abs(row['shot_t_s']-shot_t):.3f}s "
@@ -357,13 +360,15 @@ class ShotProfiler:
                 )
                 break
         if not matched:
+            self._no_match_count += 1
             print(
                 f"  [PROFILER UPDATE] shot_t={shot_t:.2f}s → NO MATCH "
                 f"(rows={[round(r['shot_t_s'],2) for r in self.rows]})"
             )
 
     def finish(self):
-        """Sauvegarde le CSV final. Appelé une seule fois en fin de pipeline."""
+        """Sauvegarde le CSV final et lance la validation Phase B.
+        Appelé une seule fois en fin de pipeline."""
         if not self.rows:
             return None
         name     = os.path.splitext(os.path.basename(self.video_path))[0]
@@ -375,4 +380,100 @@ class ShotProfiler:
             writer.writerows(self.rows)
         elapsed = round(time.time() - self._started, 1)
         print(f"  [SHOT_PROFILER] {len(self.rows)} tirs → {csv_path} ({elapsed}s)")
+        self._validate(csv_path)
         return csv_path
+
+    def _validate(self, csv_path):
+        """Checklist d'acceptation Phase B — 8 critères, affichés dans les logs."""
+        EPS           = 0.01
+        VALID_STAGES  = {"raw", "posthoc", "posthoc_rejected", "gemini", "validated", ""}
+        VALID_REASONS = {"missing_terminal", "cooldown", "low_score",
+                         "camera_gate", "duplicate", ""}
+        rows     = self.rows
+        errors   = 0
+        warnings = 0
+
+        def _ok(msg):   print(f"  [PROFILER VAL] ✅ {msg}")
+        def _fail(msg): print(f"  [PROFILER VAL] ❌ {msg}")
+        def _warn(msg): print(f"  [PROFILER VAL] ⚠️  {msg}")
+
+        print(f"  [PROFILER VAL] ── Validation Phase B ({len(rows)} tirs) ──")
+
+        # C1 — pas de doublons
+        times = [r["shot_t_s"] for r in rows]
+        dupes = [t for t in times if times.count(t) > 1]
+        if dupes:
+            _fail(f"C1 — {len(set(dupes))} shot_t_s dupliqué(s)"); errors += 1
+        else:
+            _ok(f"C1 — Aucun doublon")
+
+        # C2 — pas de ligne vide
+        empty = [r for r in rows if r.get("shot_t_s") is None]
+        if empty:
+            _fail(f"C2 — {len(empty)} ligne(s) sans shot_t_s"); errors += 1
+        else:
+            _ok("C2 — Aucune ligne vide")
+
+        # C3 — candidate_stage valide
+        bad = [r for r in rows if r.get("candidate_stage", "") not in VALID_STAGES]
+        if bad:
+            _fail(f"C3 — stages inconnus : {[r['candidate_stage'] for r in bad]}"); errors += 1
+        else:
+            from collections import Counter
+            dist = dict(Counter(r.get("candidate_stage", "") for r in rows))
+            _ok(f"C3 — stages valides {dist}")
+
+        # C4/C5/C7/C8 — critères sur posthoc_rejected
+        rejected = [r for r in rows if r.get("posthoc_rejected") is True]
+        if not rejected:
+            _ok("C4-C8 — Aucun posthoc_rejected (pas de posthoc sur ce match)")
+        else:
+            # C4 — posthoc_score présent
+            no_score = [r for r in rejected if r.get("posthoc_score") is None]
+            if no_score:
+                _warn(f"C4 — {len(no_score)} posthoc_rejected sans posthoc_score"); warnings += 1
+            else:
+                _ok(f"C4 — posthoc_score présent ({len(rejected)} lignes)")
+
+            # C5 — reject_reason connue
+            bad_r = [r for r in rejected if r.get("reject_reason","") not in VALID_REASONS]
+            if bad_r:
+                _fail(f"C5 — reason inconnue : {[r['reject_reason'] for r in bad_r]}"); errors += 1
+            else:
+                _ok(f"C5 — reject_reason valides")
+
+            # C6 — delta EPS (via self._match_deltas enregistrés dans update_posthoc)
+            deltas = [d for d in self._match_deltas if d is not None]
+            no_match_count = self._no_match_count
+            if no_match_count:
+                _fail(f"C6 — {no_match_count} linked_shot_t sans match (NO MATCH)"); errors += 1
+            elif deltas:
+                max_d = max(deltas)
+                if max_d > EPS:
+                    _fail(f"C6 — delta max={max_d:.4f}s > EPS={EPS}s"); errors += 1
+                else:
+                    _ok(f"C6 — delta max={max_d*1000:.1f}ms < {EPS*1000:.0f}ms ({len(deltas)} match(es))")
+            else:
+                _warn("C6 — Aucun delta enregistré"); warnings += 1
+
+            # C7 — cohérence rejected ↔ stage
+            bad_s = [r for r in rejected if r.get("candidate_stage") != "posthoc_rejected"]
+            if bad_s:
+                _fail(f"C7 — {len(bad_s)} posthoc_rejected avec stage incorrect"); errors += 1
+            else:
+                _ok("C7 — Cohérence rejected ↔ stage")
+
+            # C8 — gemini_called=False pour posthoc_rejected
+            bad_g = [r for r in rejected if r.get("gemini_called") is True]
+            if bad_g:
+                _fail(f"C8 — {len(bad_g)} posthoc_rejected avec gemini_called=True"); errors += 1
+            else:
+                _ok("C8 — gemini_called=False pour tous les posthoc_rejected")
+
+        # Verdict
+        if errors == 0 and warnings == 0:
+            print(f"  [PROFILER VAL] ✅ PASS — 0 erreur, 0 warning")
+        elif errors == 0:
+            print(f"  [PROFILER VAL] ⚠️  PASS avec {warnings} warning(s)")
+        else:
+            print(f"  [PROFILER VAL] ❌ FAIL — {errors} erreur(s), {warnings} warning(s)")
