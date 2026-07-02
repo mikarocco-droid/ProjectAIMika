@@ -326,7 +326,9 @@ class ShotProfiler:
 
         matched = False
         for row in self.rows:
-            if abs(row["shot_t_s"] - shot_t) < 2.0:
+            # Comparaison exacte à 3 décimales (linked_shot_t est round(..., 3))
+            # Pas de fenêtre temporelle — shot_t provient directement de goal_posthoc.linked_shot_t
+            if round(row["shot_t_s"], 3) == round(shot_t, 3):
                 matched = True
                 if posthoc_score is not None: row["posthoc_score"]    = posthoc_score
                 if stuck_frames  is not None: row["stuck_frames"]     = stuck_frames
