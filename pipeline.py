@@ -1328,9 +1328,10 @@ def run_pipeline(
 
         _n_before = sum(1 for e in events_for_gemini if e.get("type") == "goal")
         _events_for_gemini_new = []
-        # _posthoc_filter_log : [(shot_t, score, stuck, rebound, rejected, reason)]
+        # _posthoc_filter_log : [(shot_t, score, stuck, rebound, n_terminal, rejected, reason)]
         # utilisé pour alimenter le Shot Profiler (update_posthoc)
         _posthoc_filter_log = []
+        _n_term_total = len(_terminal_times_filter)
         for e in events_for_gemini:
             _is_goal_cand = (e.get("type") == "goal" and _is_posthoc(e))
             if not _is_goal_cand or _near_terminal(e):
@@ -1344,10 +1345,10 @@ def run_pipeline(
                     print(
                         f"  [POSTHOC PASS] t={float(e.get('time',0)):.1f}s "
                         f"score={_ps:.1f} stuck={_stk} rebound={_reb} "
-                        f"terminal_goal={bool(_terminal_goals_times)} "
+                        f"n_terminal={_n_term_total} "
                         f"camera={_posthoc_camera_type}"
                     )
-                    _posthoc_filter_log.append((_sht, _ps, _stk, _reb, False, "none"))
+                    _posthoc_filter_log.append((_sht, _ps, _stk, _reb, _n_term_total, False, None))
             else:
                 # Candidat posthoc REJETÉ — log détaillé instrumentation Phase B
                 _ps  = float(e.get("score", e.get("danger", 0)))
@@ -1357,12 +1358,11 @@ def run_pipeline(
                 print(
                     f"  [POSTHOC FILTER] t={float(e.get('time',0)):.1f}s "
                     f"score={_ps:.1f} stuck={_stk} rebound={_reb} "
-                    f"terminal_goal={bool(_terminal_goals_times)} "
-                    f"n_terminal={len(_terminal_times_filter)} "
+                    f"n_terminal={_n_term_total} "
                     f"camera={_posthoc_camera_type} shot_t={_sht:.1f}s "
                     f"reason=missing_terminal"
                 )
-                _posthoc_filter_log.append((_sht, _ps, _stk, _reb, True, "missing_terminal"))
+                _posthoc_filter_log.append((_sht, _ps, _stk, _reb, _n_term_total, True, "missing_terminal"))
         events_for_gemini = _events_for_gemini_new
         _n_after = sum(1 for e in events_for_gemini if e.get("type") == "goal")
         if _n_before != _n_after:
@@ -1630,13 +1630,13 @@ def run_pipeline(
 
                 # Alimenter le profiler avec les décisions du filtre posthoc
                 if _profiler and _posthoc_filter_log:
-                    for _pf_shot_t, _pf_score, _pf_stuck, _pf_reb, _pf_rejected, _pf_reason in _posthoc_filter_log:
+                    for _pf_shot_t, _pf_score, _pf_stuck, _pf_reb, _pf_nterm, _pf_rejected, _pf_reason in _posthoc_filter_log:
                         _profiler.update_posthoc(
                             shot_t        = _pf_shot_t,
                             posthoc_score = _pf_score,
                             stuck_frames  = _pf_stuck,
                             rebound       = _pf_reb,
-                            has_terminal  = not _pf_rejected,
+                            n_terminal    = _pf_nterm,
                             rejected      = _pf_rejected,
                             reject_reason = _pf_reason,
                         )

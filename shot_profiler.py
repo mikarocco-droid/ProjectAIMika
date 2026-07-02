@@ -6,14 +6,24 @@
 # Usage :
 #   profiler = ShotProfiler(output_dir, video_path)
 #   profiler.observe(shot, frames_data, fps, camera_type, ...)
+#   profiler.update_posthoc(shot_t, posthoc_score, stuck_frames, ...)
 #   profiler.update_gemini(shot_t, gemini_called=True, gemini_yes=True, ...)
+#   profiler.mark_validated(shot_t)
 #   profiler.finish()
 #
 # Produit :
 #   outputs/shot_profiles/{video_name}_shots.csv
 #
-# shot_id = {video_hash}_{frame_index}  — joinable avec BC4.csv, Gemini.csv
-# REAL_LABEL est absent du CSV — enrichissement offline via ground_truth.csv
+# shot_id      = {video_hash}_{frame_index}  — joinable avec BC4.csv, Gemini.csv
+# candidate_id = {video_hash}_{int(shot_t*10)}_{index}  — stable dans les logs
+# REAL_LABEL   = absent du CSV — enrichissement offline via ground_truth.csv
+#
+# candidate_stage lifecycle (sens unique) :
+#   raw → posthoc → pre_gemini → gemini → validated
+#   raw → posthoc_rejected   (mort au filtre posthoc)
+#
+# reject_reason enum :
+#   None | "missing_terminal" | "cooldown" | "low_score" | "camera_gate" | "duplicate"
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -21,6 +31,22 @@ import csv
 import math
 import hashlib
 import time
+
+
+# Valeurs autorisées pour reject_reason — facilite df.groupby("reject_reason")
+REJECT_REASONS = frozenset({
+    "missing_terminal",
+    "cooldown",
+    "low_score",
+    "camera_gate",
+    "duplicate",
+    None,
+})
+
+# Version du pipeline — à incrémenter à chaque changement de logique métier.
+# Permet de retrouver avec quel pipeline un CSV a été produit.
+# Format : YYYY-MM-DD-description
+PIPELINE_VERSION = "2026-07-02-posthoc-instrumentation"
 
 
 def _ball_positions(frames_data, t_start, t_end, fps):
@@ -113,10 +139,17 @@ class ShotProfiler:
         ).hexdigest()[:8]
         self.rows         = []
         self._started     = time.time()
+        self._cand_index  = 0   # compteur pour candidate_id unique
         os.makedirs(os.path.join(output_dir, "shot_profiles"), exist_ok=True)
 
     def _shot_id(self, shot_t, fps):
         return f"{self.video_hash}_{int(round(shot_t * fps)):06d}"
+
+    def _candidate_id(self, shot_t):
+        """ID stable et lisible dans les logs, le CSV et les sorties Gemini."""
+        cid = f"{self.video_hash}_{int(shot_t * 10):05d}_{self._cand_index:03d}"
+        self._cand_index += 1
+        return cid
 
     def observe(self, shot, frames_data, fps,
                 camera_type="unknown",
@@ -197,8 +230,10 @@ class ShotProfiler:
         frame_refs = [str(p[3]) for p in all_pos[::step]][:self.MAX_FRAME_REFS]
 
         self.rows.append({
+            "candidate_id":      self._candidate_id(st),   # stable dans logs+CSV+Gemini
             "shot_id":           self._shot_id(st, fps),
             "video":             os.path.basename(self.video_path),
+            "pipeline_version":  PIPELINE_VERSION,
             "shot_t_s":          round(st, 2),
             "shot_t_fmt":        f"{int(st//60):02d}:{int(st%60):02d}",
             "camera_type":       camera_type,
@@ -228,9 +263,10 @@ class ShotProfiler:
             "posthoc_score":     posthoc_score,
             "stuck_frames":      None,       # alimenté par update_posthoc()
             "rebound":           None,       # alimenté par update_posthoc()
-            "has_terminal":      None,       # alimenté par update_posthoc()
-            "posthoc_rejected":  None,       # alimenté par update_posthoc()
-            "reject_reason":     None,       # alimenté par update_posthoc()
+            "n_terminal":        None,       # nb terminaux dans voisinage (0/1/2/3...)
+            "has_terminal":      None,       # True/False raccourci de n_terminal > 0
+            "posthoc_rejected":  None,       # True si filtré avant Gemini
+            "reject_reason":     None,       # voir REJECT_REASONS enum
             "candidate_stage":   "raw",      # raw→posthoc→pre_gemini→gemini→validated
             "xG":                round(xg, 4),
             "on_target":         shot.get("on_target", False),
@@ -242,35 +278,68 @@ class ShotProfiler:
 
     def update_gemini(self, shot_t, gemini_called=True,
                       gemini_yes=None, goal_score=None):
-        """Mise à jour post-Gemini — cherche le profil par shot_t."""
+        """Mise à jour post-Gemini — cherche le profil par shot_t.
+
+        Machine d'états : posthoc_rejected est un état terminal.
+        Un candidat mort au filtre posthoc ne peut pas transiter vers gemini.
+        """
         for row in self.rows:
             if abs(row["shot_t_s"] - shot_t) < 1.0:
+                if row["candidate_stage"] == "posthoc_rejected":
+                    return  # état terminal — aucune modification
                 row["gemini_called"] = gemini_called
                 if gemini_yes  is not None: row["gemini_yes"]  = gemini_yes
                 if goal_score  is not None: row["goal_score"]  = goal_score
-                if gemini_called:
+                if gemini_called and row["candidate_stage"] == "posthoc":
                     row["candidate_stage"] = "gemini"
                 break
 
-    def update_posthoc(self, shot_t, posthoc_score=None, stuck_frames=None,
-                       rebound=None, has_terminal=None,
-                       rejected=None, reject_reason=None):
-        """Mise à jour filtre posthoc — appelé depuis pipeline.py après [FILTRE POSTHOC].
-        
-        Permet de savoir exactement pourquoi un candidat a été rejeté avant Gemini.
-        Clé de jointure : shot_t (linked_shot_t du posthoc → shot_t_s du tir).
+    def mark_validated(self, shot_t):
+        """Marque le candidat comme validé (but confirmé). Étape finale.
+
+        Machine d'états : validated n'est accessible que depuis gemini.
+        posthoc_rejected → validated est impossible.
         """
         for row in self.rows:
-            if abs(row["shot_t_s"] - shot_t) < 2.0:   # fenêtre de 2s pour la jointure
-                if posthoc_score is not None: row["posthoc_score"]   = posthoc_score
-                if stuck_frames  is not None: row["stuck_frames"]    = stuck_frames
-                if rebound       is not None: row["rebound"]         = rebound
-                if has_terminal  is not None: row["has_terminal"]    = has_terminal
-                if rejected      is not None: row["posthoc_rejected"]= rejected
-                if reject_reason is not None: row["reject_reason"]   = reject_reason
-                if rejected is False:
-                    row["candidate_stage"] = "posthoc"  # passé le filtre
-                # Si rejected=True, candidate_stage reste "raw" — mort au filtre
+            if abs(row["shot_t_s"] - shot_t) < 1.0:
+                if row["candidate_stage"] == "posthoc_rejected":
+                    return  # état terminal — aucune modification
+                if row["candidate_stage"] == "gemini":
+                    row["candidate_stage"] = "validated"
+                break
+
+    def update_posthoc(self, shot_t, posthoc_score=None, stuck_frames=None,
+                       rebound=None, n_terminal=None,
+                       rejected=None, reject_reason=None):
+        """Mise à jour filtre posthoc — appelé depuis pipeline.py après [FILTRE POSTHOC].
+
+        Permet de savoir exactement pourquoi un candidat a été rejeté avant Gemini.
+        Clé de jointure : shot_t (linked_shot_t du posthoc → shot_t_s du tir).
+
+        Args:
+            n_terminal   : nombre de terminaux dans le voisinage (int, pas bool)
+            reject_reason: doit être dans REJECT_REASONS (None si accepté)
+        """
+        # Validation enum
+        if reject_reason not in REJECT_REASONS:
+            reject_reason = "missing_terminal"   # fallback sûr
+
+        for row in self.rows:
+            if abs(row["shot_t_s"] - shot_t) < 2.0:
+                if posthoc_score is not None: row["posthoc_score"]    = posthoc_score
+                if stuck_frames  is not None: row["stuck_frames"]     = stuck_frames
+                if rebound       is not None: row["rebound"]          = rebound
+                if n_terminal    is not None:
+                    row["n_terminal"]  = int(n_terminal)
+                    row["has_terminal"] = int(n_terminal) > 0
+                if rejected      is not None: row["posthoc_rejected"] = rejected
+                # reject_reason : toujours écrire (None pour les acceptés)
+                row["reject_reason"] = reject_reason
+                # candidate_stage : sens unique seulement
+                if rejected is False and row["candidate_stage"] == "raw":
+                    row["candidate_stage"] = "posthoc"
+                elif rejected is True and row["candidate_stage"] == "raw":
+                    row["candidate_stage"] = "posthoc_rejected"
                 break
 
     def finish(self):
