@@ -183,6 +183,17 @@ def _detect_goal(frames, fps, last_t):
     REBOUND_DROP   = 0.4
     FAST_SHOT_SPEED = 0.06   # PATCH v2 : était 0.08
 
+    # ── DIAGNOSTIC PENALTY ────────────────────────────────────────────────────
+    # Trace ciblée sur la zone temporelle du penalty (t_abs ≈ 382–386s)
+    # Permet de comprendre pourquoi _detect_goal ne produit pas de terminal_goal.
+    # À retirer une fois le bug identifié.
+    _TRACE_T_MIN = 380.0   # t_abs (frame_id/fps)
+    _TRACE_T_MAX = 392.0
+    def _should_trace(fd):
+        t_abs = fd.get("frame", fd.get("frame_id", 0)) / max(fps, 1)
+        return _TRACE_T_MIN <= t_abs <= _TRACE_T_MAX
+    # ──────────────────────────────────────────────────────────────────────────
+
     speeds_n = [0.0]
     for k in range(1, len(frames)):
         p1 = _ball_norm(frames[k])
@@ -197,7 +208,95 @@ def _detect_goal(frames, fps, last_t):
         fd  = frames[i]
         t   = _frame_t(fd, fps)
         pos = _ball_norm(fd)
+
+        # ── Trace ball brut (toutes frames de la fenêtre, ball=None inclus) ──
+        if _should_trace(fd):
+            t_abs    = fd.get("frame", fd.get("frame_id", 0)) / max(fps, 1)
+            prev_pos = _ball_norm(frames[i-1]) if i > 0 else None
+            bx_prev  = f"{prev_pos[0]:.3f}" if prev_pos else "None"
+            bx_str   = f"{pos[0]:.3f}" if pos else "None"
+            by_str   = f"{pos[1]:.3f}" if pos else "None"
+            in_y_str = f"{GOAL_Y_MIN <= pos[1] <= GOAL_Y_MAX}" if pos else "—"
+            if pos and prev_pos:
+                cl = prev_pos[0] > GOAL_X_LINE + LINE_MARGIN and pos[0] <= GOAL_X_LINE
+                cr = prev_pos[0] < (1-GOAL_X_LINE-LINE_MARGIN) and pos[0] >= (1-GOAL_X_LINE)
+            else:
+                cl = cr = False
+            print(f"  [GOAL TRACE] t_abs={t_abs:.2f}s "
+                  f"bx_prev={bx_prev} bx={bx_str} by={by_str} "
+                  f"speed={speeds_n[i]:.3f} in_y={in_y_str} "
+                  f"cross_L={cl} cross_R={cr}")
+
         if pos is None: i += 1; continue
+
+        bx_n, by_n = pos
+        if not (GOAL_Y_MIN <= by_n <= GOAL_Y_MAX): i += 1; continue
+
+        pos_prev = _ball_norm(frames[i-1])
+        if pos_prev is None: i += 1; continue
+        bx_prev = pos_prev[0]
+
+        cross_left  = (bx_prev > GOAL_X_LINE + LINE_MARGIN and bx_n <= GOAL_X_LINE)
+        cross_right = (bx_prev < (1-GOAL_X_LINE-LINE_MARGIN) and bx_n >= (1-GOAL_X_LINE))
+        if not (cross_left or cross_right): i += 1; continue
+
+        peak_speed = max(speeds_n[max(0, i-8):i+1])
+        if peak_speed < SPEED_MIN: i += 1; continue
+
+        stuck = 0
+        for j in range(i, min(i+15, len(frames))):
+            pj = _ball_norm(frames[j])
+            if pj is None: break
+            in_left  = pj[0] <= GOAL_X_LINE + LINE_MARGIN
+            in_right = pj[0] >= (1-GOAL_X_LINE-LINE_MARGIN)
+            if (cross_left and in_left) or (cross_right and in_right):
+                stuck += 1
+            else:
+                break
+
+        next_frames_none = sum(
+            1 for j in range(i+1, min(i+4, len(frames)))
+            if _ball_norm(frames[j]) is None
+        )
+        fast_disappear = (peak_speed >= FAST_SHOT_SPEED and next_frames_none >= 2 and stuck <= 2)
+        stuck_min_effective = 2 if fast_disappear else STUCK_MIN
+
+        # ── Trace décision (uniquement si cross détecté dans la fenêtre) ─────
+        if _should_trace(fd):
+            t_abs = fd.get("frame", fd.get("frame_id", 0)) / max(fps, 1)
+            pre_speed_  = max(speeds_n[max(0, i-5):i]) if i > 0 else 0
+            post_speed_ = max(speeds_n[i:min(i+5, len(speeds_n))])
+            rebound_    = (pre_speed_ > 1e-4 and post_speed_/pre_speed_ < REBOUND_DROP)
+            score_      = (3.0
+                           + (2.0 if stuck >= 6 else 1.0 if stuck >= 4 else 0)
+                           + (1.5 if rebound_ else 0)
+                           + (0.5 if peak_speed > SPEED_MIN * 2 else 0)
+                           + (2.0 if fast_disappear else 0))
+            reject_     = ("stuck<min" if stuck < stuck_min_effective else
+                           "score<4.0" if score_ < 4.0 else
+                           "cooldown"  if not _cooldown_ok(last_t, "goal", t) else
+                           "→TERMINAL")
+            print(f"  [GOAL DECISION] t_abs={t_abs:.2f}s "
+                  f"cross_L={cross_left} cross_R={cross_right} "
+                  f"peak={peak_speed:.3f} stuck={stuck} stuck_min={stuck_min_effective} "
+                  f"next_none={next_frames_none} fast_disappear={fast_disappear} "
+                  f"score={score_:.1f} → {reject_}")
+
+        if stuck < stuck_min_effective: i += 1; continue
+
+        pre_speed  = max(speeds_n[max(0, i-5):i]) if i > 0 else 0
+        post_speed = max(speeds_n[i:min(i+5, len(speeds_n))])
+        rebound    = (pre_speed > 1e-4 and post_speed/pre_speed < REBOUND_DROP)
+
+        score = 3.0
+        if stuck >= 6:   score += 2.0
+        elif stuck >= 4: score += 1.0
+        if rebound:      score += 1.5
+        if peak_speed > SPEED_MIN * 2: score += 0.5
+        if fast_disappear: score += 2.0
+
+        if score < 4.0:  # PATCH v2 : était 4.5
+            i += 1; continue
 
         bx_n, by_n = pos
         if not (GOAL_Y_MIN <= by_n <= GOAL_Y_MAX): i += 1; continue
