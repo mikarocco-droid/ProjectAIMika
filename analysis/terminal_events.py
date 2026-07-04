@@ -7,6 +7,7 @@ PATCH v2 (2026-05-24) :
 """
 
 from __future__ import annotations
+from functools import partial
 from typing import List, Dict, Any, Optional
 
 TERMINAL_EVENTS_BY_SPORT = {
@@ -165,7 +166,7 @@ def _detect_clearance(frames, fps, last_t):
     return events
 
 
-def _detect_goal(frames, fps, last_t):
+def _detect_goal(frames, fps, last_t, camera_type="unknown"):
     """
     PATCH v2 :
       SPEED_MIN      0.04  → 0.025   (drift ball tracker sur vidéo longue 85 min)
@@ -175,23 +176,18 @@ def _detect_goal(frames, fps, last_t):
     events = []
 
     GOAL_X_LINE    = 0.05
-    GOAL_Y_MIN     = 0.45
+    GOAL_Y_MIN     = 0.45   # valeur globale — peut être surchargée par camera_type
     GOAL_Y_MAX     = 0.85
+
+    # Adaptation caméra : en low_side le but gauche est dans la zone haute du cadre
+    # (by ≈ 0.30–0.45), ce qui est en dehors de GOAL_Y_MIN=0.45.
+    # Démontré par [GOAL TRACE] andrimont_0 : tous les cross_L ont by ∈ [0.31, 0.45[.
+    goal_y_min = 0.25 if camera_type in ("low_side", "low_side_zoom") else GOAL_Y_MIN
     LINE_MARGIN    = 0.02
     STUCK_MIN      = 4
     SPEED_MIN      = 0.025   # PATCH v2 : était 0.04
     REBOUND_DROP   = 0.4
     FAST_SHOT_SPEED = 0.06   # PATCH v2 : était 0.08
-
-    # ── DIAGNOSTIC PENALTY ────────────────────────────────────────────────────
-    # Fenêtre en temps RELATIF post-kickoff : apply_kickoff_offset_frames soustrait
-    # l'offset de fd["frame"] avant l'appel. Penalty FN à t_rel≈75.4s → [68, 85]s.
-    # À retirer une fois le scénario identifié (A=tracking perdu / B=score / C=aval).
-    _TRACE_T_MIN = 68.0
-    _TRACE_T_MAX = 85.0
-    def _should_trace(fd):
-        return _TRACE_T_MIN <= fd.get("frame", 0) / max(fps, 1) <= _TRACE_T_MAX
-    # ──────────────────────────────────────────────────────────────────────────
 
     speeds_n = [0.0]
     for k in range(1, len(frames)):
@@ -207,27 +203,10 @@ def _detect_goal(frames, fps, last_t):
         fd  = frames[i]
         t   = _frame_t(fd, fps)
         pos = _ball_norm(fd)
-
-        # ── Trace ball brut (toutes frames, ball=None inclus) ─────────────────
-        if _should_trace(fd):
-            t_rel   = fd.get("frame", 0) / max(fps, 1)
-            pp      = _ball_norm(frames[i-1]) if i > 0 else None
-            bxp_s   = f"{pp[0]:.3f}" if pp else "None"
-            bx_s    = f"{pos[0]:.3f}" if pos else "None"
-            by_s    = f"{pos[1]:.3f}" if pos else "None"
-            in_y_s  = str(GOAL_Y_MIN <= pos[1] <= GOAL_Y_MAX) if pos else "—"
-            cl = cr = False
-            if pos and pp:
-                cl = pp[0] > GOAL_X_LINE + LINE_MARGIN and pos[0] <= GOAL_X_LINE
-                cr = pp[0] < (1-GOAL_X_LINE-LINE_MARGIN) and pos[0] >= (1-GOAL_X_LINE)
-            print(f"  [GOAL TRACE] t_rel={t_rel:.2f}s bx_prev={bxp_s} bx={bx_s} "
-                  f"by={by_s} speed={speeds_n[i]:.3f} in_y={in_y_s} "
-                  f"cross_L={cl} cross_R={cr}")
-
         if pos is None: i += 1; continue
 
         bx_n, by_n = pos
-        if not (GOAL_Y_MIN <= by_n <= GOAL_Y_MAX): i += 1; continue
+        if not (goal_y_min <= by_n <= GOAL_Y_MAX): i += 1; continue
 
         pos_prev = _ball_norm(frames[i-1])
         if pos_prev is None: i += 1; continue
@@ -239,44 +218,6 @@ def _detect_goal(frames, fps, last_t):
 
         peak_speed = max(speeds_n[max(0, i-8):i+1])
         if peak_speed < SPEED_MIN: i += 1; continue
-
-        stuck = 0
-        for j in range(i, min(i+15, len(frames))):
-            pj = _ball_norm(frames[j])
-            if pj is None: break
-            in_left  = pj[0] <= GOAL_X_LINE + LINE_MARGIN
-            in_right = pj[0] >= (1-GOAL_X_LINE-LINE_MARGIN)
-            if (cross_left and in_left) or (cross_right and in_right):
-                stuck += 1
-            else:
-                break
-
-        next_frames_none = sum(
-            1 for j in range(i+1, min(i+4, len(frames)))
-            if _ball_norm(frames[j]) is None
-        )
-        fast_disappear = (peak_speed >= FAST_SHOT_SPEED and next_frames_none >= 2 and stuck <= 2)
-        stuck_min_effective = 2 if fast_disappear else STUCK_MIN
-
-        # ── Trace décision (si cross détecté dans la fenêtre) ─────────────────
-        if _should_trace(fd):
-            t_rel = fd.get("frame", 0) / max(fps, 1)
-            psp   = max(speeds_n[max(0, i-5):i]) if i > 0 else 0
-            psp2  = max(speeds_n[i:min(i+5, len(speeds_n))])
-            reb_  = psp > 1e-4 and psp2/psp < REBOUND_DROP
-            sc_   = (3.0
-                     + (2.0 if stuck >= 6 else 1.0 if stuck >= 4 else 0)
-                     + (1.5 if reb_ else 0)
-                     + (0.5 if peak_speed > SPEED_MIN * 2 else 0)
-                     + (2.0 if fast_disappear else 0))
-            rej_  = ("stuck<min" if stuck < stuck_min_effective else
-                     "score<4.0" if sc_ < 4.0 else
-                     "cooldown"  if not _cooldown_ok(last_t, "goal", t) else
-                     "→TERMINAL")
-            print(f"  [GOAL DECISION] t_rel={t_rel:.2f}s cross_L={cross_left} "
-                  f"cross_R={cross_right} peak={peak_speed:.3f} stuck={stuck} "
-                  f"stuck_min={stuck_min_effective} next_none={next_frames_none} "
-                  f"fast_disappear={fast_disappear} score={sc_:.1f} → {rej_}")
 
         stuck = 0
         for j in range(i, min(i+15, len(frames))):
@@ -464,7 +405,7 @@ def detect_action_start_for_event(frames_data, terminal_event, fps):
     return detect_action_start(frames_data, et, fps, max_r, min_r)
 
 
-def detect_terminal_events(frames_data, fps=25.0, frame_w=1920, frame_h=1080, goal_box=None, sport="football"):
+def detect_terminal_events(frames_data, fps=25.0, frame_w=1920, frame_h=1080, goal_box=None, sport="football", camera_type="unknown"):
     if not frames_data:
         return []
     sport_key = sport.lower().strip()
@@ -473,7 +414,8 @@ def detect_terminal_events(frames_data, fps=25.0, frame_w=1920, frame_h=1080, go
     all_events = []
     for detector in detectors:
         try:
-            all_events += detector(frames_data, fps, last_t)
+            _det = partial(detector, camera_type=camera_type) if detector is _detect_goal else detector
+            all_events += _det(frames_data, fps, last_t)
         except Exception as e:
             print(f"  [TERMINAL] {detector.__name__} ignoré : {e}")
     all_events.sort(key=lambda e: e["time"])
