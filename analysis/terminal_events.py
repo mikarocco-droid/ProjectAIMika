@@ -179,9 +179,8 @@ def _detect_goal(frames, fps, last_t, camera_type="unknown"):
     GOAL_Y_MIN     = 0.45   # valeur globale — peut être surchargée par camera_type
     GOAL_Y_MAX     = 0.85
 
-    # Adaptation caméra : en low_side le but gauche est dans la zone haute du cadre
-    # (by ≈ 0.30–0.45), ce qui est en dehors de GOAL_Y_MIN=0.45.
-    # Démontré par [GOAL TRACE] andrimont_0 : tous les cross_L ont by ∈ [0.31, 0.45[.
+    # En low_side le but gauche est en zone haute du cadre (by ≈ 0.30–0.45).
+    # Démontré par [CROSS TRACE] andrimont_0 : tous les cross_L ont by ∈ [0.31, 0.45[.
     goal_y_min = 0.25 if camera_type in ("low_side", "low_side_zoom") else GOAL_Y_MIN
     LINE_MARGIN    = 0.02
     STUCK_MIN      = 4
@@ -237,6 +236,21 @@ def _detect_goal(frames, fps, last_t, camera_type="unknown"):
         fast_disappear = (peak_speed >= FAST_SHOT_SPEED and next_frames_none >= 2 and stuck <= 2)
         stuck_min_effective = 2 if fast_disappear else STUCK_MIN
 
+        # ── DIAGNOSTIC delta_bx ──────────────────────────────────────────────
+        # Loggué à chaque cross détecté (avant toute décision de rejet).
+        # Objectif : mesurer delta_bx sur VP et FP pour choisir un seuil discriminant.
+        # À retirer après validation.
+        _delta_bx = abs(bx_prev - bx_n)
+        _reject    = ("stuck<min"    if stuck < stuck_min_effective else
+                      "speed<min"    if peak_speed < SPEED_MIN else
+                      "→candidat")
+        mm_t = int(t//60); ss_t = int(t%60)
+        print(f"  [CROSS TRACE] t={mm_t:02d}:{ss_t:02d} "
+              f"bx_prev={bx_prev:.3f} bx={bx_n:.3f} delta_bx={_delta_bx:.3f} "
+              f"by={by_n:.3f} speed={peak_speed:.3f} stuck={stuck} "
+              f"stuck_min={stuck_min_effective} → {_reject}")
+        # ─────────────────────────────────────────────────────────────────────
+
         if stuck < stuck_min_effective: i += 1; continue
 
         pre_speed  = max(speeds_n[max(0, i-5):i]) if i > 0 else 0
@@ -258,7 +272,9 @@ def _detect_goal(frames, fps, last_t, camera_type="unknown"):
             conf = min(0.70 + score*0.04, 0.90)
             mm = int(t//60); ss = int(t%60)
             side = "gauche" if cross_left else "droite"
-            print(f"  [TERMINAL] goal à {mm:02d}:{ss:02d} | {side} bx={bx_n:.2f} by={by_n:.2f} stuck={stuck}f peak={peak_speed:.3f} rebound={rebound} conf={conf:.2f}")
+            print(f"  [TERMINAL] goal à {mm:02d}:{ss:02d} | {side} bx={bx_n:.2f} by={by_n:.2f} "
+                  f"stuck={stuck}f peak={peak_speed:.3f} delta_bx={_delta_bx:.3f} "
+                  f"rebound={rebound} conf={conf:.2f}  ← terminal=True")
             events.append({"type":"goal","time":t,"confidence":conf})
             i += max(stuck, 8)
         else:
