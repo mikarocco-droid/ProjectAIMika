@@ -828,10 +828,18 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     # Le vrai KO déclenche une activité réelle : le ballon parcourt de longues
     # distances dans les 30s qui suivent.
     # Faux positifs (placement temporaire) → peu d'activité ensuite.
-    def _post_activity(candidate_t, frames_data, fps, window=30.0, min_dist=200.0):
-        """Distance totale parcourue par le ballon dans les 30s après candidate_t."""
+    def _post_activity(candidate_t, frames_data, fps, window=30.0, min_dist=0.10):
+        """Distance totale parcourue par le ballon dans les 30s après candidate_t.
+
+        Retourne une valeur NORMALISÉE (indépendante de l'échelle des coordonnées) :
+          - si les centres sont en [0,1]  → division par 1  (déjà normalisé)
+          - si les centres sont en pixels → division par frame_w (~1920)
+        Le seuil de comparaison doit être exprimé en unités normalisées (~0.10).
+        """
         total_dist = 0.0
-        prev_c = None
+        prev_c     = None
+        first_c    = None
+        _samples   = 0
         import math as _mact
         for fd in frames_data:
             t = fd.get("frame", 0) / max(fps, 1)
@@ -848,10 +856,21 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                 prev_c = None
                 continue
             cx, cy = float(center[0]), float(center[1])
+            if first_c is None:
+                first_c = (cx, cy)
             if prev_c is not None:
                 total_dist += _mact.hypot(cx - prev_c[0], cy - prev_c[1])
+                _samples += 1
             prev_c = (cx, cy)
-        return total_dist
+
+        # Normalisation : si les coords sont en pixels (cx > 2.0), diviser par frame_w
+        # frame_w est capturé depuis le scope parent (frames_data[0]["frame_w"])
+        _fw = 1.0
+        if first_c is not None and abs(first_c[0]) > 2.0:
+            # Coordonnées en pixels absolus
+            _fw = float((frames_data[0].get("frame_w") or 1920))
+        total_dist_norm = total_dist / max(_fw, 1.0)
+        return total_dist_norm
 
     # Trier les candidats par score décroissant
     scored_candidates = sorted(all_candidates, key=lambda x: x[1], reverse=True)
@@ -916,19 +935,19 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
             best_in_grp = max(grp, key=lambda x: x[1])
             cand_t, cand_score, cand_details = best_in_grp
             activity = _post_activity(cand_t, frames_data, fps)
-            if activity >= 200.0:
+            if activity >= 0.10:   # normalisé [0-1] — équiv. ~192px sur 1920px
                 best_t     = cand_t
                 best_score = cand_score
                 best_det   = cand_details
                 selection  = (f"sep≥0.45 séquence={len(grp)}f "
-                              f"validé (activité={activity:.0f}px)")
+                              f"validé (activité={activity:.3f})")
                 break
 
         # ── Vérification Gemini des top candidats ────────────────────────────
         # Si un callback gemini_verify_fn est fourni ET video_path disponible,
         # on vérifie visuellement les top-5 groupes par score.
         # Le premier confirmé par Gemini remplace la sélection physique.
-        if gemini_verify_fn and video_path and groups and not _p1_early_high:
+        if gemini_verify_fn and video_path and groups:
             print(f"  [KICKOFF GEMINI] Vérification visuelle des top groupes...")
             # Trier par timestamp croissant : le premier KO dans le temps est le bon.
             # On vérifie TOUS les groupes — pas seulement les plus longs.
@@ -966,7 +985,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                     print(f"  [KICKOFF GEMINI] t={int(cand_t//60)}:{int(cand_t%60):02d} → ⏭️  ignoré (p_motion={pm_avg:.1f} trop bas)")
                     continue
                 activity = _post_activity(cand_t, frames_data, fps)
-                if activity < 200.0:
+                if activity < 0.10:    # normalisé [0-1]
                     continue
                 offsets = [-2.0, 0.0, 2.0, 5.0]
                 confirmed, conf_gemini = gemini_verify_fn(
@@ -1003,17 +1022,17 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
     if best_t is None:
         for cand_t, cand_score, cand_details in scored_candidates[:5]:
             activity = _post_activity(cand_t, frames_data, fps)
-            if activity >= 200.0:
+            if activity >= 0.10:   # normalisé [0-1] — équiv. ~192px sur 1920px
                 best_t     = cand_t
                 best_score = cand_score
                 best_det   = cand_details
-                selection  = f"meilleur score validé (activité={activity:.0f}px)"
+                selection  = f"meilleur score validé (activité={activity:.3f})"
                 break
 
     if best_t is None:
         best_t, best_score, best_det = scored_candidates[0]
         activity = _post_activity(best_t, frames_data, fps)
-        selection = f"meilleur score sans validation (activité={activity:.0f}px)"
+        selection = f"meilleur score sans validation (activité={activity:.3f})"
 
     conf = min(0.95, 0.60 + (best_score - _SCORE_THRESHOLD) * 0.05)
 
