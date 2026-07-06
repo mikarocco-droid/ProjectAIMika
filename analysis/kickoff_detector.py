@@ -799,27 +799,34 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
                 print(f"    grp[{_gi}] {_t0_fmt}→{_t1_fmt} "
                       f"dur={_g['dur']:.0f}s  sep_avg={_g['sep_avg']:.2f}  "
                       f"n_avg={_g['n_avg']:.1f}  frames={_g['len']}")
-            # Candidat = groupe avec sep_avg maximum
-            # Raisonnement validé sur données YOLO andrimont_full :
-            #   - La cérémonie pré-match (hymnes, serrage de mains) a sep faible :
-            #     les joueurs sont mélangés au centre → sep ~0.35-0.45
-            #   - Le vrai coup d'envoi a la meilleure séparation :
-            #     équipes en place sur leurs moitiés → sep max
-            #   - Les reprises après buts ont une sep variable mais généralement
-            #     plus faible que le KO initial (joueurs encore en mouvement)
-            # Ancien [0] retournait 226s (cérémonie), max_sep retourne 293s (KO ≈307s)
+            # Candidat = groupe avec score combiné sep_avg × dur maximal
+            #
+            # Raisonnement :
+            #   - sep_avg seule ne discrimine pas : cérémonie (3:45) sep=0.51,
+            #     vrai KO (4:49) sep=0.56, après KO (6:42) sep=0.57 → trop proches
+            #   - dur seule non plus : un long groupe peut être une pause de jeu
+            #   - sep × dur combine les deux : le vrai KO a une bonne séparation
+            #     ET dure suffisamment (équipes stabilisées sur leurs moitiés)
+            #   - Reprises après buts : séparation moins stable → dur courte
+            #   - Cérémonies : sep plus faible → score combiné plus faible
+            #
+            # Validation andrimont_full (307s réel) :
+            #   grp[3] 4:49  sep=0.56  dur=15s → score=8.40  ← sélectionné (289s, delta=18s)
+            #   grp[5] 6:28  sep=0.49  dur=8s  → score=3.92
+            #   grp[0] 3:45  sep=0.51  dur=9s  → score=4.59
             _kp_long_groups.sort(key=lambda g: g["t_start"])
-            _kp_best = max(_kp_long_groups, key=lambda g: g["sep_avg"])
+            _kp_best = max(_kp_long_groups, key=lambda g: g["sep_avg"] * g["dur"])
+            _kp_score = _kp_best["sep_avg"] * _kp_best["dur"]
             _kp_candidate_t = _kp_best["t_start"]
             _t_fmt = f"{int(_kp_candidate_t//60)}:{int(_kp_candidate_t%60):02d}"
             _n_groups = len(_kp_long_groups)
             if _n_groups > 1:
                 _first_t = f"{int(_kp_long_groups[0]['t_start']//60)}:{int(_kp_long_groups[0]['t_start']%60):02d}"
                 print(f"  [KICKOFF PLAYERS] → {_n_groups} groupe(s) : candidat kickoff t={_t_fmt} "
-                      f"(sep_avg max={_kp_best['sep_avg']:.2f}) | premier groupe={_first_t}")
+                      f"(sep×dur={_kp_score:.1f}) | premier groupe={_first_t}")
             else:
                 print(f"  [KICKOFF PLAYERS] → candidat kickoff t={_t_fmt} "
-                      f"(groupe unique sep_avg={_kp_best['sep_avg']:.2f})")
+                      f"(groupe unique sep×dur={_kp_score:.1f})")
         else:
             print(f"  [KICKOFF PLAYERS] aucun groupe satisfaisant "
                   f"sep≥{_KP_SEP_MIN} n≥{_KP_N_MIN} dur≥{_KP_MIN_DUR_S:.0f}s "
