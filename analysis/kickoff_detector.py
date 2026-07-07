@@ -793,7 +793,7 @@ def find_kickoff_offset(events, video_duration_s, frames_data=None, fps=25,
         if _kp_long_groups:
             print(f"  [KICKOFF PLAYERS] {len(_kp_long_groups)} groupe(s) "
                   f"sep≥{_KP_SEP_MIN} n≥{_KP_N_MIN} dur≥{_KP_MIN_DUR_S:.0f}s :")
-            for _gi, _g in enumerate(_kp_long_groups[:6]):
+            for _gi, _g in enumerate(_kp_long_groups):
                 _t0_fmt = f"{int(_g['t_start']//60)}:{int(_g['t_start']%60):02d}"
                 _t1_fmt = f"{int(_g['t_end']//60)}:{int(_g['t_end']%60):02d}"
                 print(f"    grp[{_gi}] {_t0_fmt}→{_t1_fmt} "
