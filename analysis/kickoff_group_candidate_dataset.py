@@ -251,8 +251,18 @@ def build_dataframe(groups: list[dict], parsed: dict,
         # Sélection par l'algorithme original
         is_selected = (selected_t is not None and abs(t0 - selected_t) < 3.0)
 
-        # Distance au vrai kickoff
-        dist = round(abs(t0 - kickoff_real), 1) if kickoff_real is not None else None
+        # Distance au vrai kickoff — mesurée à l'INTERVALLE [t_start, t_end] du groupe,
+        # pas seulement à t_start. Un groupe qui dure 227s (ex: raeren grp[6] 5:57→9:45)
+        # peut contenir le vrai kickoff même si son t_start en est à 53s — la distance
+        # doit être 0 dans ce cas, pas 53.
+        t_end_g = g["t_end"]
+        if kickoff_real is not None:
+            if t0 <= kickoff_real <= t_end_g:
+                dist = 0.0
+            else:
+                dist = round(min(abs(t0 - kickoff_real), abs(t_end_g - kickoff_real)), 1)
+        else:
+            dist = None
         within_30 = (dist <= 30.0) if dist is not None else None
 
         row = dict(
