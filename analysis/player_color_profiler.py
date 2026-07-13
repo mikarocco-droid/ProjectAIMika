@@ -145,10 +145,19 @@ def _hue_diff(h1, h2):
 
 # ── Détection blobs (masque morphologique) ──────────────────────────────────
 
-def detect_blobs(img, frame_w, frame_h):
-    """Détection des blobs joueurs par masque morphologique."""
+def detect_blobs(img, frame_w, frame_h, h_min=30):
+    """
+    Détection des blobs joueurs par masque morphologique.
+
+    h_min : borne basse de Hue pour le masque pelouse/foreground.
+        Valeur historique = 30 (pelouse d'été). Sur les matchs à pelouse
+        d'hiver/brune, une valeur plus basse (ex: 20) capture beaucoup
+        plus de pelouse — mais dégrade la détection sur pelouse d'été
+        (mesuré : -70% de blobs joueurs sur Ster-Wanze avec h_min=20).
+        Ne pas changer la valeur par défaut sans validation multi-matchs.
+    """
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    mask = cv2.bitwise_not(cv2.inRange(hsv, np.array([30,40,40]),
+    mask = cv2.bitwise_not(cv2.inRange(hsv, np.array([h_min,40,40]),
                                              np.array([90,255,255])))
     mask[:int(frame_h*0.08), :] = 0
     mask[int(frame_h*0.90):, :] = 0
@@ -169,7 +178,7 @@ def detect_blobs(img, frame_w, frame_h):
 # ── Profiler principal ───────────────────────────────────────────────────────
 
 def profile_video(video_path, output_csv, sample_fps=1.0, max_minutes=30,
-                  max_blobs_per_frame=40):
+                  max_blobs_per_frame=40, h_min=30):
     """
     Analyse une vidéo frame par frame et produit un CSV de diagnostics couleur.
 
@@ -227,7 +236,7 @@ def profile_video(video_path, output_csv, sample_fps=1.0, max_minutes=30,
             if t_s > max_s: break
 
             if frame_idx % step == 0:
-                blobs = detect_blobs(img, fw, fh)
+                blobs = detect_blobs(img, fw, fh, h_min=h_min)
 
                 if len(blobs) <= max_blobs_per_frame:
                     for pi, (x1, y1, x2, y2, area) in enumerate(blobs):
