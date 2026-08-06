@@ -122,6 +122,17 @@ def _whistle_series_full_match(video_path, video_duration_s,
     return tt, band_energy
 
 
+def _whistle_score_at(tt, band_energy, t):
+    """Z-score (baseline GLOBAL sur tout le match, cf. note plus haut sur
+    l'approximation vs le baseline local de ko_features.whistle_score) au
+    temps t. Retourne None si pas de série audio (vidéo sans son)."""
+    if tt is None or len(tt) == 0:
+        return None
+    baseline, std = np.median(band_energy), (np.std(band_energy) or 1.0)
+    idx = int(np.argmin(np.abs(tt - t)))
+    return round(float((band_energy[idx] - baseline) / std), 2)
+
+
 def _whistle_peaks(tt, band_energy, top_n, min_distance_s=3.0):
     """Z-score GLOBAL sur tout le match (approximation : ko_features.py
     utilise un baseline LOCAL de 8s par candidat, plus précis mais trop
@@ -231,6 +242,7 @@ def mine_candidates(frames_data, fps, frame_w, video_path, match_name,
         if t < 3 or t > video_duration_s - 3:
             continue  # trop près des bords, features non fiables
         row = extract_features(frames_data, fps, frame_w, video_path, t, include_audio=False)
+        row["whistle_score"] = _whistle_score_at(tt_audio, band_energy, t)
         row["match"] = match_name
         row["sources"] = "+".join(cand["sources"])
         row["label_auto"] = _auto_label(t, true_kickoff_t, terminal_events,
@@ -246,6 +258,27 @@ def mine_candidates(frames_data, fps, frame_w, video_path, match_name,
     n_a_verifier = (df["label_auto"] == "a_verifier").sum() if len(df) else 0
     print(f"[{match_name}] TERMINÉ : {len(df)} candidats — "
           f"KO={n_ko}, connus(auto)={n_connus}, à_vérifier={n_a_verifier}")
+    return df
+
+
+def refine_whistle_scores(df, video_path):
+    """À appeler sur le dataset FINAL (après review humaine, candidats
+    retenus seulement) — remplace le whistle_score approximatif (baseline
+    global, utilisé pendant le mining pour éviter 69 appels ffmpeg) par le
+    score précis de ko_features.whistle_score (baseline local 8s), pour
+    que cette colonne ait le même sens que dans features_ko.csv.
+
+    Coût : un appel ffmpeg par ligne du df passé en argument — à faire sur
+    un sous-ensemble réduit (candidats retenus), pas sur les 69 bruts."""
+    from analysis.ko_features import whistle_score as _precise_whistle_score
+    scores, peaks = [], []
+    for t in df["t"]:
+        s, p = _precise_whistle_score(video_path, float(t))
+        scores.append(s)
+        peaks.append(p)
+    df = df.copy()
+    df["whistle_score"] = scores
+    df["whistle_peak_t"] = peaks
     return df
 
 
