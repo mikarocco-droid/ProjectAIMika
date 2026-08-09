@@ -107,34 +107,69 @@ def _cluster_isolated_group(hors_equipe, team0, team1, max_group_size=6,
     return False, None
 
 
-def find_C_candidates(frames_data, fps, max_group_size=6, min_isolation_ratio=2.0):
+def _team_spread(players):
+    """Dispersion moyenne d'une équipe autour de son propre centroïde
+    (distance moyenne de chaque joueur au centre du groupe)."""
+    if len(players) < 3:
+        return None
+    positions = np.array([p["center"] for p in players])
+    centroid = positions.mean(axis=0)
+    return float(np.mean(np.linalg.norm(positions - centroid, axis=1)))
+
+
+def find_C_candidates(frames_data, fps, max_group_size=6, min_isolation_ratio=2.0,
+                       compact_percentile=25.0):
     """
     Scanne toutes les frames_data et retourne les instants où le motif C
-    (petit groupe isolé avec au moins 1 personne hors équipe) est détecté.
-
-    Retourne une liste de dicts : {"t":, "taille_groupe":, "isolement_ratio":, "centre_groupe":}
+    est détecté, avec un critère à DEUX contraintes (pas une seule) :
+      1. Les deux équipes sont elles-mêmes compactes à cet instant
+         (dispersion interne <= compact_percentile de la distribution du
+         MATCH LUI-MÊME, pas un seuil fixe en pixels — chaque match a sa
+         propre échelle caméra) ;
+      2. ET il existe un petit groupe isolé (2-6 pers.) avec au moins une
+         personne hors équipe, nettement séparé des deux masses.
+    Sans la contrainte 1, un simple sous-groupe compact d'une équipe en
+    jeu normal (ex: ligne défensive resserrée) peut être confondu avec C
+    (cf. diagnostic Andrimont t=200s : team0=22/team1=4, faux positif).
     """
-    results = []
+    # Passe 1 : calcul de la dispersion de chaque équipe à chaque instant
+    raw = []
     for fd in frames_data:
         t = fd.get("frame", 0) / fps
         players = _players_with_team(fd, fd.get("frame_w"), fd.get("frame_h"))
-        if len(players) < 2:
-            continue
-
         team0 = [p for p in players if p["team"] == 0]
         team1 = [p for p in players if p["team"] == 1]
         hors_equipe = [p for p in players if p["team"] not in (0, 1)]
+        raw.append({
+            "t": t, "team0": team0, "team1": team1, "hors_equipe": hors_equipe,
+            "spread0": _team_spread(team0), "spread1": _team_spread(team1),
+        })
 
-        if not hors_equipe:
+    spreads0 = [r["spread0"] for r in raw if r["spread0"] is not None]
+    spreads1 = [r["spread1"] for r in raw if r["spread1"] is not None]
+    if not spreads0 or not spreads1:
+        return []
+    seuil0 = np.percentile(spreads0, compact_percentile)
+    seuil1 = np.percentile(spreads1, compact_percentile)
+
+    # Passe 2 : application des deux contraintes
+    results = []
+    for r in raw:
+        if r["spread0"] is None or r["spread1"] is None:
             continue
-        if len(team0) < 2 or len(team1) < 2:
-            continue  # pas assez de joueurs des 2 équipes pour juger l'isolement
+        if r["spread0"] > seuil0 or r["spread1"] > seuil1:
+            continue  # au moins une équipe n'est pas compacte -> pas C
+        if not r["hors_equipe"]:
+            continue
+        if len(r["team0"]) < 2 or len(r["team1"]) < 2:
+            continue
 
         found, info = _cluster_isolated_group(
-            hors_equipe, team0, team1, max_group_size, min_isolation_ratio
+            r["hors_equipe"], r["team0"], r["team1"], max_group_size, min_isolation_ratio
         )
         if found:
-            results.append({"t": t, **info})
+            results.append({"t": r["t"], "spread0": round(r["spread0"],1),
+                             "spread1": round(r["spread1"],1), **info})
 
     return results
 
