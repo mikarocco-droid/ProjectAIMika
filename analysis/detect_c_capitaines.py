@@ -23,13 +23,22 @@ Définition retenue (validée par vérification visuelle sur 9 matchs) :
 import numpy as np
 
 
-def _players_with_team(frame_data):
-    """Extrait les joueurs d'une frame avec leur team (0/1/None) et leur centre."""
+def _players_with_team(frame_data, frame_w=None, frame_h=None):
+    """Extrait les joueurs d'une frame avec leur team (0/1/None) et leur centre.
+    Filtre les détections dont la position est hors du cadre réel de l'image
+    (traces fantômes du tracker après occlusion prolongée, cf. diagnostic
+    Andrimont t=200s : coordonnées jusqu'à x=2774 sur une image de 960px)."""
+    fw = frame_w or frame_data.get("frame_w")
+    fh = frame_h or frame_data.get("frame_h")
     players = []
     for p in (frame_data.get("players") or []):
         center = p.get("center")
         if center is None:
             continue
+        x, y = center
+        if fw is not None and fh is not None:
+            if not (0 <= x <= fw and 0 <= y <= fh):
+                continue  # position impossible -> trace fantôme, on l'ignore
         team = p.get("team")
         players.append({"team": team, "center": center})
     return players
@@ -108,7 +117,7 @@ def find_C_candidates(frames_data, fps, max_group_size=6, min_isolation_ratio=2.
     results = []
     for fd in frames_data:
         t = fd.get("frame", 0) / fps
-        players = _players_with_team(fd)
+        players = _players_with_team(fd, fd.get("frame_w"), fd.get("frame_h"))
         if len(players) < 2:
             continue
 
