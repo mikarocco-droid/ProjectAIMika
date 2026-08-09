@@ -58,6 +58,19 @@ def _kmeans_2(colors):
     return centroids, dist
 
 
+def _valid_bbox(bbox, frame_w, frame_h):
+    """Rejette un bbox entièrement hors du cadre réel de l'image — trace
+    fantôme du tracker après occlusion prolongée (même bug diagnostiqué
+    sur Andrimont t=200s dans detect_c_capitaines.py : bbox jusqu'à
+    x=2774 sur une image de 1920px)."""
+    if bbox is None or frame_w is None or frame_h is None:
+        return True  # pas assez d'info pour juger, on laisse passer
+    x1, y1, x2, y2 = bbox
+    if x2 < 0 or x1 > frame_w or y2 < 0 or y1 > frame_h:
+        return False
+    return True
+
+
 def scan_calibration_windows(video_path, frames_data, fps, min_players=10,
                                window_s=15.0, step_s=5.0):
     """
@@ -77,7 +90,9 @@ def scan_calibration_windows(video_path, frames_data, fps, min_players=10,
     """
     frames_by_num = {}
     for fd in frames_data:
-        players = fd.get("players") or []
+        frame_w, frame_h = fd.get("frame_w"), fd.get("frame_h")
+        players = [p for p in (fd.get("players") or [])
+                   if _valid_bbox(p.get("bbox"), frame_w, frame_h)]
         if len(players) < min_players:
             continue
         frames_by_num[fd["frame"]] = players
@@ -166,13 +181,14 @@ def apply_calibration(video_path, frames_data, centroids):
         players = fd.get("players") or []
         if not players:
             continue
+        frame_w, frame_h = fd.get("frame_w"), fd.get("frame_h")
         cap.set(cv2.CAP_PROP_POS_FRAMES, fd["frame"])
         ret, frame = cap.read()
         if not ret:
             continue
         for p in players:
             bbox = p.get("bbox")
-            if not bbox:
+            if not bbox or not _valid_bbox(bbox, frame_w, frame_h):
                 p["team"] = None
                 continue
             color = _extract_jersey_color(frame, bbox)
