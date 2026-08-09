@@ -23,12 +23,24 @@ import numpy as np
 
 def _extract_jersey_color(frame, bbox):
     """Identique à TeamColorDetector._extract_jersey_color (overlay.py),
-    dupliqué ici pour ne pas dépendre du pipeline de production."""
+    dupliqué ici pour ne pas dépendre du pipeline de production.
+
+    FIX important : x1/x2/y1/y2 bornés à [0, largeur/hauteur] AVANT le
+    slicing — sinon une coordonnée négative (trace fantôme hors cadre)
+    déclenche l'indexation négative de NumPy (compte depuis la fin du
+    tableau), produisant un crop qui couvre presque toute l'image au
+    lieu d'un tout petit bout de rien. Diagnostiqué sur Andrimont :
+    bbox=(-83,483,-56,558) → crop de 1865px de large au lieu de 27px."""
     try:
         h_f, w_f = frame.shape[:2]
-        x1, y1, x2, y2 = map(int, bbox)
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w_f, x2), min(h_f, y2)
+        x1, y1, x2, y2 = bbox
+        x1 = max(0, min(x1, w_f))
+        x2 = max(0, min(x2, w_f))
+        y1 = max(0, min(y1, h_f))
+        y2 = max(0, min(y2, h_f))
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        if x2 <= x1 or y2 <= y1:
+            return None
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             return None
@@ -36,6 +48,8 @@ def _extract_jersey_color(frame, bbox):
         torse = crop[int(ch * 0.15):int(ch * 0.45), :]
         if torse.size == 0:
             return None
+        if torse.shape[0] < 6 or torse.shape[1] < 10:
+            return None  # crop trop petit, couleur non fiable
         hsv = cv2.cvtColor(torse, cv2.COLOR_BGR2HSV)
         mask = hsv[:, :, 1] > 60
         if mask.sum() >= 10:
