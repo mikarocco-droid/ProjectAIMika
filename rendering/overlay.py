@@ -513,6 +513,13 @@ class TeamColorDetector:
     # étaient jaune/rouge).
     MIN_PLAYERS_PER_FRAME_FOR_CALIBRATION = 10   # frame comptée seulement si assez de joueurs présents
     MIN_CENTROID_DISTANCE = 40.0                  # distance BGR mini entre les 2 couleurs trouvées
+    UNCLASSIFIED_DISTANCE_FACTOR = 2.5            # cf. get_team() : au-delà de ce multiple de la
+                                                    # dispersion intra-équipe mesurée, une couleur
+                                                    # n'est classée dans AUCUNE équipe (probable
+                                                    # arbitre/autre) plutôt que forcée dans la plus
+                                                    # proche des deux. Valeur de départ raisonnable,
+                                                    # PAS ENCORE validée visuellement sur des cas réels
+                                                    # — à ajuster si besoin après vérification.
 
     def __init__(self, teams_data=None, sample_frames=60, **kwargs):
         self.teams_data    = teams_data or {}
@@ -525,6 +532,8 @@ class TeamColorDetector:
         self._centroids    = None
         self._calibration_attempts = 0   # nb de tentatives de calibration rejetées (diagnostic)
         self._total_frames_seen = 0      # compteur total (soupape de sécurité anti-blocage)
+        self._max_classification_dist = None  # cf. get_team() : seuil au-delà duquel une couleur
+                                                # n'est classée dans aucune équipe
 
     def add_frame(self, frame):
         """Obsolète — la calibration se fait via update() sur les torses joueurs."""
@@ -607,10 +616,33 @@ class TeamColorDetector:
 
             self._centroids  = centroids
             self._calibrated = True
+
+            # Dispersion intra-équipe mesurée (pas devinée) : à quel point les
+            # couleurs d'une même équipe varient naturellement (éclairage,
+            # angle...). Sert de référence pour get_team() : une couleur trop
+            # loin des DEUX centroïdes (au-delà de UNCLASSIFIED_DISTANCE_FACTOR
+            # fois cette dispersion) ne sera classée dans aucune équipe,
+            # plutôt que forcée dans la plus proche des deux — nécessaire pour
+            # qu'un arbitre à la couleur nettement différente soit repérable
+            # comme tel (cf. diagnostic Andrimont : get_team() forçait TOUJOURS
+            # 0 ou 1, rendant la détection de l'arbitre structurellement
+            # impossible dans detect_c_capitaines.py).
+            labels_flat = labels.flatten()
+            dist_intra = []
+            for k in (0, 1):
+                pts = samples[labels_flat == k]
+                if len(pts) > 0:
+                    dist_intra.extend(np.linalg.norm(pts - centroids[k], axis=1).tolist())
+            self._max_classification_dist = (
+                float(np.mean(dist_intra)) * self.UNCLASSIFIED_DISTANCE_FACTOR
+                if dist_intra else None
+            )
+
             c0 = tuple(int(x) for x in centroids[0])
             c1 = tuple(int(x) for x in centroids[1])
             print(f"  [TeamColorDetector] calibré sur maillots : team0={c0} team1={c1} "
-                  f"(distance={centroid_distance:.1f}, {len(self._jersey_colors)} échantillons)")
+                  f"(distance={centroid_distance:.1f}, {len(self._jersey_colors)} échantillons, "
+                  f"seuil_non_classe={self._max_classification_dist:.1f})")
         except Exception as e:
             print(f"  [TeamColorDetector] calibration ignorée : {e}")
 
@@ -637,7 +669,15 @@ class TeamColorDetector:
             return None
 
     def get_team(self, color):
-        """Retourne 0 ou 1 selon la couleur BGR la plus proche."""
+        """Retourne 0 ou 1 selon la couleur BGR la plus proche — ou None si
+        la couleur est trop éloignée des DEUX équipes (probable arbitre ou
+        autre), plutôt que de forcer systématiquement un choix binaire.
+
+        FIX important : l'ancienne version retournait toujours 0 ou 1,
+        jamais None pour une couleur valide — rendant structurellement
+        impossible la détection d'un arbitre à couleur distincte (diagnostic
+        Andrimont : le champ 'hors équipe' ne contenait alors que des
+        échecs d'extraction, jamais de vraies couleurs différentes)."""
         if not self._calibrated or self._centroids is None:
             return None
         try:
@@ -645,6 +685,9 @@ class TeamColorDetector:
             c = np.array(color, dtype=np.float32)
             d0 = np.linalg.norm(c - self._centroids[0])
             d1 = np.linalg.norm(c - self._centroids[1])
+            min_d = min(d0, d1)
+            if self._max_classification_dist is not None and min_d > self._max_classification_dist:
+                return None  # couleur trop loin des 2 équipes -> non classée
             return 0 if d0 < d1 else 1
         except Exception:
             return None
