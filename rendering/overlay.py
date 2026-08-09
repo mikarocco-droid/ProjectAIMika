@@ -662,7 +662,13 @@ class TeamColorDetector:
         # ── Phase 1 : collecte pour calibration ──────────────────────
         if not self._calibrated:
             self._total_frames_seen = getattr(self, "_total_frames_seen", 0) + 1
-            n_joueurs_frame = len(tracked or [])
+            # Ne garder que les joueurs RÉELLEMENT détectés cette frame
+            # (pas une position purement prédite par Kalman après perte de
+            # la détection — diagnostiqué sur Andrimont : bbox "confirmées"
+            # mais dérivées de plusieurs dizaines de pixels à côté du vrai
+            # joueur pendant le rassemblement, faussant la couleur captée).
+            joueurs_frais = [p for p in (tracked or []) if p.get("time_since_update", 0) == 0]
+            n_joueurs_frame = len(joueurs_frais)
             # Ne compte cette frame pour la calibration que si assez de
             # joueurs sont présents (signe qu'on est bien en configuration
             # de match, pas sur un terrain vide/quasi-vide en début de clip).
@@ -673,7 +679,7 @@ class TeamColorDetector:
                 # calibration — on assouplit après un long moment plutôt
                 # que de ne jamais assigner aucune équipe.
                 if self._total_frames_seen >= 10 * self.sample_frames:
-                    for p in (tracked or []):
+                    for p in joueurs_frais:
                         bbox = p.get("bbox") or p.get("box")
                         if not bbox:
                             continue
@@ -685,7 +691,7 @@ class TeamColorDetector:
                         self._calibrate()
                 return
             self._n_frames += 1
-            for p in (tracked or []):
+            for p in joueurs_frais:
                 bbox = p.get("bbox") or p.get("box")
                 if not bbox:
                     continue
@@ -698,9 +704,15 @@ class TeamColorDetector:
             return
 
         # ── Phase 2 : assignation équipe ─────────────────────────────
+        # Seuls les joueurs RÉELLEMENT détectés cette frame reçoivent une
+        # couleur/équipe. Une position purement prédite (Kalman) sans
+        # confirmation reste team=None plutôt que de deviner sur une bbox
+        # qui a pu dériver loin du vrai joueur.
         try:
             for p in (tracked or []):
                 if p.get("team") is not None:
+                    continue
+                if p.get("time_since_update", 0) != 0:
                     continue
                 bbox = p.get("bbox") or p.get("box")
                 if not bbox:
