@@ -57,7 +57,15 @@ class Tracker:
                 "id":     t.track_id,
                 "bbox":   [x1, y1, x2, y2],
                 "center": [(x1+x2)/2, (y1+y2)/2],
-                "conf":   1.0
+                "conf":   1.0,
+                # FIX : expose la fraîcheur de la piste. time_since_update=0
+                # signifie une VRAIE détection YOLO cette frame ; >0 signifie
+                # une position purement prédite par Kalman (le joueur n'a pas
+                # été redétecté depuis N frames — occlusion, rassemblement
+                # dense...). Diagnostiqué sur Andrimont : des bbox "confirmées"
+                # mais dérivées de plusieurs dizaines de pixels à côté du
+                # vrai joueur, faussant l'extraction de couleur de maillot.
+                "time_since_update": t.time_since_update,
             })
         return results
 
