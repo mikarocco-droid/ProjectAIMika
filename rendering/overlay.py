@@ -502,28 +502,55 @@ class TeamColorDetector:
     Maintient le score en temps réel et les noms d'équipes.
     Accepte tous les kwargs pour compatibilité avec main.py.
     """
+
+    # Garde-fous ajoutés suite au bug diagnostiqué sur Andrimont :
+    # la calibration se faisait sur les 60 premières frames ANALYSÉES du
+    # clip fourni, sans vérifier leur contenu — sur un clip découpé depuis
+    # le tout début de la vidéo (terrain vide / échauffement dispersé), ces
+    # frames ne contiennent pas assez de vrais joueurs en configuration de
+    # match, produisant des centroïdes KMeans sur du bruit (ex: deux teintes
+    # bleu-vert quasi identiques, écart ~14, alors que les vraies couleurs
+    # étaient jaune/rouge).
+    MIN_PLAYERS_PER_FRAME_FOR_CALIBRATION = 10   # frame comptée seulement si assez de joueurs présents
+    MIN_CENTROID_DISTANCE = 40.0                  # distance BGR mini entre les 2 couleurs trouvées
+
     def __init__(self, teams_data=None, sample_frames=60, **kwargs):
         self.teams_data    = teams_data or {}
         self.sample_frames = sample_frames
         self.score         = {0: 0, 1: 0}
         self._goals_seen   = set()
         self._jersey_colors = []   # couleurs de torses collectées (maillots)
-        self._n_frames     = 0     # frames vues pour calibration
+        self._n_frames     = 0     # frames "valides" vues pour calibration
         self._calibrated   = False
         self._centroids    = None
+        self._calibration_attempts = 0   # nb de tentatives de calibration rejetées (diagnostic)
+        self._total_frames_seen = 0      # compteur total (soupape de sécurité anti-blocage)
 
     def add_frame(self, frame):
         """Obsolète — la calibration se fait via update() sur les torses joueurs."""
         pass
 
     def _extract_jersey_color(self, frame, bbox):
-        """Extrait la couleur dominante du torse d'un joueur (zone maillot)."""
+        """Extrait la couleur dominante du torse d'un joueur (zone maillot).
+
+        FIX important : x1/x2/y1/y2 doivent être bornés à [0, largeur/hauteur]
+        AVANT le slicing — sinon une valeur négative (trace fantôme hors
+        cadre) déclenche le comportement d'indexation négative de NumPy
+        (compte depuis la fin du tableau), produisant un crop qui couvre
+        presque toute l'image au lieu d'un tout petit bout de rien.
+        Diagnostiqué sur Andrimont : bbox=(-83,483,-56,558) → crop de
+        1865px de large au lieu des 27px attendus."""
         try:
             import numpy as np
             h_f, w_f = frame.shape[:2]
-            x1, y1, x2, y2 = map(int, bbox)
-            x1 = max(0, x1); y1 = max(0, y1)
-            x2 = min(w_f, x2); y2 = min(h_f, y2)
+            x1, y1, x2, y2 = bbox
+            x1 = max(0, min(x1, w_f))
+            x2 = max(0, min(x2, w_f))
+            y1 = max(0, min(y1, h_f))
+            y2 = max(0, min(y2, h_f))
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            if x2 <= x1 or y2 <= y1:
+                return None
             crop = frame[y1:y2, x1:x2]
             if crop.size == 0:
                 return None
@@ -531,6 +558,11 @@ class TeamColorDetector:
             # Zone torse : 15%-45% de la hauteur du joueur
             torse = crop[int(ch * 0.15):int(ch * 0.45), :]
             if torse.size == 0:
+                return None
+            # Filtre taille minimale : un crop trop petit donne une couleur
+            # non fiable (quelques pixels de bord/pelouse), à écarter plutôt
+            # qu'à faire semblant qu'elle est exploitable.
+            if torse.shape[0] < 6 or torse.shape[1] < 10:
                 return None
             hsv  = cv2.cvtColor(torse, cv2.COLOR_BGR2HSV)
             mask = hsv[:, :, 1] > 60   # pixels saturés = couleur maillot
@@ -543,7 +575,11 @@ class TeamColorDetector:
             return None
 
     def _calibrate(self):
-        """KMeans sur les couleurs de torses collectées — 2 centroides = 2 équipes."""
+        """KMeans sur les couleurs de torses collectées — 2 centroides = 2 équipes.
+        Rejette la calibration si les deux couleurs trouvées sont trop
+        proches (signe que l'échantillon ne contenait pas 2 vraies équipes
+        distinctes, ex: terrain vide/quasi-vide) — continue alors à
+        collecter plutôt que de verrouiller un résultat probablement faux."""
         try:
             import numpy as np
             if len(self._jersey_colors) < 20:
@@ -553,11 +589,28 @@ class TeamColorDetector:
             _, labels, centroids = cv2.kmeans(
                 samples, 2, None, criteria, 5, cv2.KMEANS_RANDOM_CENTERS
             )
+
+            centroid_distance = float(np.linalg.norm(centroids[0] - centroids[1]))
+            if centroid_distance < self.MIN_CENTROID_DISTANCE:
+                self._calibration_attempts += 1
+                print(f"  [TeamColorDetector] calibration rejetée "
+                      f"(couleurs trop proches, distance={centroid_distance:.1f} "
+                      f"< {self.MIN_CENTROID_DISTANCE}) — poursuite de la collecte "
+                      f"(tentative {self._calibration_attempts})")
+                # On ne verrouille pas : on continue à accumuler des échantillons.
+                # Repousse le prochain essai de sample_frames supplémentaires.
+                self._n_frames = 0
+                # Garde-fou anti-boucle infinie : au-delà de 5 tentatives,
+                # on accepte quand même le résultat pour ne pas bloquer le pipeline.
+                if self._calibration_attempts < 5:
+                    return
+
             self._centroids  = centroids
             self._calibrated = True
             c0 = tuple(int(x) for x in centroids[0])
             c1 = tuple(int(x) for x in centroids[1])
-            print(f"  [TeamColorDetector] calibré sur maillots : team0={c0} team1={c1}")
+            print(f"  [TeamColorDetector] calibré sur maillots : team0={c0} team1={c1} "
+                  f"(distance={centroid_distance:.1f}, {len(self._jersey_colors)} échantillons)")
         except Exception as e:
             print(f"  [TeamColorDetector] calibration ignorée : {e}")
 
@@ -608,6 +661,29 @@ class TeamColorDetector:
 
         # ── Phase 1 : collecte pour calibration ──────────────────────
         if not self._calibrated:
+            self._total_frames_seen = getattr(self, "_total_frames_seen", 0) + 1
+            n_joueurs_frame = len(tracked or [])
+            # Ne compte cette frame pour la calibration que si assez de
+            # joueurs sont présents (signe qu'on est bien en configuration
+            # de match, pas sur un terrain vide/quasi-vide en début de clip).
+            if n_joueurs_frame < self.MIN_PLAYERS_PER_FRAME_FOR_CALIBRATION:
+                # Soupape de sécurité : si on n'atteint jamais assez de
+                # joueurs simultanés (match avec occlusions fréquentes,
+                # cadrage serré...), ne pas bloquer indéfiniment la
+                # calibration — on assouplit après un long moment plutôt
+                # que de ne jamais assigner aucune équipe.
+                if self._total_frames_seen >= 10 * self.sample_frames:
+                    for p in (tracked or []):
+                        bbox = p.get("bbox") or p.get("box")
+                        if not bbox:
+                            continue
+                        color = self._extract_jersey_color(frame, bbox)
+                        if color is not None:
+                            self._jersey_colors.append(color)
+                    self._n_frames += 1
+                    if self._n_frames >= self.sample_frames:
+                        self._calibrate()
+                return
             self._n_frames += 1
             for p in (tracked or []):
                 bbox = p.get("bbox") or p.get("box")
