@@ -71,13 +71,27 @@ class PlayerReID:
         Feature couleur 19D = [hist_H_maillot(16D), LAB_mean(3D)×4].
         Torse uniquement (20-55%), masque elliptique central.
         LAB canal A discrimine vert vs rouge/bordeaux indépendamment lumière.
+
+        FIX : x1/x2/y1/y2 bornés à [0, largeur/hauteur] AVANT le slicing.
+        Sans ça, une bbox partiellement hors cadre (trace fantôme du
+        tracker, ex: x2=-56) déclenche l'indexation négative de NumPy
+        (frame[:, 0:-56] compte depuis la fin du tableau), produisant un
+        crop d'environ 1864px de large au lieu de quelques pixels — assez
+        large pour passer le contrôle `w < 8` sans être détecté, corrompant
+        le vecteur couleur utilisé pour la réidentification. Même bug
+        diagnostiqué et corrigé dans rendering/overlay.py.
         """
         import cv2 as _cv2
         try:
-            x1, y1, x2, y2 = map(int, bbox)
-            x1 = max(0, x1); y1 = max(0, y1)
-            x2 = min(frame.shape[1], x2)
-            y2 = min(frame.shape[0], y2)
+            h_f, w_f = frame.shape[:2]
+            x1, y1, x2, y2 = bbox
+            x1 = max(0, min(x1, w_f))
+            x2 = max(0, min(x2, w_f))
+            y1 = max(0, min(y1, h_f))
+            y2 = max(0, min(y2, h_f))
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            if x2 <= x1 or y2 <= y1:
+                return np.zeros(19, dtype=np.float32)
             crop = frame[y1:y2, x1:x2]
             if crop.size == 0:
                 return np.zeros(19, dtype=np.float32)
@@ -179,10 +193,18 @@ class PlayerReID:
     # EMBEDDING HISTOGRAMME
     # ─────────────────────────────────────────
     def _extract_embedding(self, frame, bbox):
-        x1, y1, x2, y2 = map(int, bbox)
-        x1 = max(0, x1); y1 = max(0, y1)
-        x2 = min(frame.shape[1], x2)
-        y2 = min(frame.shape[0], y2)
+        """FIX : même bornage correct que _extract_color (voir plus haut) —
+        x1/x2/y1/y2 bornés à [0, largeur/hauteur] avant slicing, pour éviter
+        l'indexation négative de NumPy sur les bbox partiellement hors cadre."""
+        h_f, w_f = frame.shape[:2]
+        x1, y1, x2, y2 = bbox
+        x1 = max(0, min(x1, w_f))
+        x2 = max(0, min(x2, w_f))
+        y1 = max(0, min(y1, h_f))
+        y2 = max(0, min(y2, h_f))
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        if x2 <= x1 or y2 <= y1:
+            return np.zeros(512)
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             return np.zeros(512)
