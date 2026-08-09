@@ -27,11 +27,21 @@ def _players_with_team(frame_data, frame_w=None, frame_h=None):
     """Extrait les joueurs d'une frame avec leur team (0/1/None) et leur centre.
     Filtre les détections dont la position est hors du cadre réel de l'image
     (traces fantômes du tracker après occlusion prolongée, cf. diagnostic
-    Andrimont t=200s : coordonnées jusqu'à x=2774 sur une image de 960px)."""
+    Andrimont t=200s : coordonnées jusqu'à x=2774 sur une image de 960px).
+
+    Filtre AUSSI les joueurs non fraîchement détectés cette frame
+    (time_since_update != 0 : position purement prédite par Kalman après
+    perte de la détection). Important : team=None peut désormais signifier
+    soit "arbitre/hors équipe" (ce qu'on veut détecter), soit "couleur pas
+    évaluée car détection pas fraîche" (à ne pas confondre avec le premier
+    cas, sinon un joueur en dérive pourrait être pris à tort pour
+    l'arbitre)."""
     fw = frame_w or frame_data.get("frame_w")
     fh = frame_h or frame_data.get("frame_h")
     players = []
     for p in (frame_data.get("players") or []):
+        if p.get("time_since_update", 0) != 0:
+            continue  # position pas fraîche -> exclu, pas mis dans "hors_equipe"
         center = p.get("center")
         if center is None:
             continue

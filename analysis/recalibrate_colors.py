@@ -106,7 +106,8 @@ def scan_calibration_windows(video_path, frames_data, fps, min_players=10,
     for fd in frames_data:
         frame_w, frame_h = fd.get("frame_w"), fd.get("frame_h")
         players = [p for p in (fd.get("players") or [])
-                   if _valid_bbox(p.get("bbox"), frame_w, frame_h)]
+                   if _valid_bbox(p.get("bbox"), frame_w, frame_h)
+                   and p.get("time_since_update", 0) == 0]
         if len(players) < min_players:
             continue
         frames_by_num[fd["frame"]] = players
@@ -202,7 +203,8 @@ def apply_calibration(video_path, frames_data, centroids):
             continue
         for p in players:
             bbox = p.get("bbox")
-            if not bbox or not _valid_bbox(bbox, frame_w, frame_h):
+            if (not bbox or not _valid_bbox(bbox, frame_w, frame_h)
+                    or p.get("time_since_update", 0) != 0):
                 p["team"] = None
                 continue
             color = _extract_jersey_color(frame, bbox)
