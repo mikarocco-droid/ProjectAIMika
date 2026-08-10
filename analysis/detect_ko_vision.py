@@ -81,21 +81,22 @@ def _frame_to_base64(frame):
 
 PROMPT_KO_VISION = """Tu vas voir 3 images d'un match de football amateur, extraites à 2 secondes d'intervalle (image 1 = t-2s, image 2 = instant candidat, image 3 = t+2s).
 
-Le motif caractéristique d'un VRAI coup d'envoi est :
-- image 1 : joueurs des deux équipes globalement statiques, en position, ballon visible et immobile (souvent proche du centre du terrain)
-- image 2 : un joueur vient de jouer/frapper le ballon (le ballon a disparu de sa position initiale, joueur en plein geste)
-- image 3 : le ballon est visible en mouvement (au sol ou en l'air), et PLUSIEURS joueurs se sont mis à courir/se disperser en même temps
+Regarde ces 3 images comme les 3 étapes d'UNE SEULE histoire courte (4 secondes), pas comme 3 vérifications indépendantes. La question est : "est-ce que ces 3 images, prises ensemble, racontent le début d'un match (coup d'envoi) ?" — pas "est-ce que chaque image, séparément, coche toutes les cases d'une checklist".
 
-Attention aux pièges déjà identifiés :
-- Un simple rassemblement (joueurs en cercle serré, ballon au sol) qui reste statique sur les 3 images n'est PAS un coup d'envoi, même si la scène semble organisée.
-- Un "faux départ" peut ressembler au début de la séquence mais ne montre PAS de vraie dispersion générale en image 3 (parfois juste un joueur qui ajuste son équipement).
-- Le motif peut être moins nettement marqué selon l'angle de caméra ou si les deux équipes ont des couleurs de maillot proches — dans ce cas, base-toi sur le mouvement du ballon et la dispersion des joueurs plutôt que sur les couleurs.
+L'histoire caractéristique d'un VRAI coup d'envoi se lit ainsi : les joueurs des deux équipes sont globalement en position (proche de leur moitié de terrain) au début → un mouvement de jeu démarre au centre → plusieurs joueurs se mettent en mouvement ensemble vers la fin. Le ballon fait partie de cette histoire mais n'a pas besoin d'être visible avec une netteté parfaite sur chaque image individuelle : il peut être petit, partiellement caché par un joueur, ou peu contrasté (éclairage nocturne, plan large) sur une image sans que ça invalide l'histoire globale si le mouvement collectif qui suit est cohérent avec une reprise de jeu.
+
+Ne rejette PAS une séquence uniquement parce qu'un détail précis (comme la position exacte du ballon) n'est pas parfaitement visible sur une seule des 3 images — utilise le contexte des 2 autres images et la cohérence du mouvement général pour juger.
+
+Attention aux pièges déjà identifiés, à lire aussi comme des histoires globales, pas des checklists :
+- Un simple rassemblement (joueurs en cercle serré) qui reste une scène statique sur l'ensemble des 3 images, sans qu'aucun mouvement collectif ne démarre, n'est PAS un coup d'envoi.
+- Un "faux départ" ressemble au début de l'histoire mais l'histoire ne se termine pas par une vraie dispersion générale (parfois juste un joueur qui ajuste son équipement, rien d'autre ne change).
+- Si les deux équipes ont des couleurs de maillot proches ou que l'angle de caméra est peu favorable, base ton jugement sur la trajectoire globale du mouvement plutôt que sur des détails visuels fins impossibles à vérifier avec certitude.
 
 Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
 {
   "transition_visible": true/false,
   "confidence": 0.0 à 1.0,
-  "raisonnement": "1-2 phrases sur ce qui justifie la réponse"
+  "raisonnement": "1-2 phrases sur ce qui justifie la réponse, en te basant sur l'histoire globale des 3 images plutôt que sur un détail isolé"
 }
 """
 
