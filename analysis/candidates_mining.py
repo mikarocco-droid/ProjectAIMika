@@ -40,6 +40,7 @@ Usage prévu (dans un notebook Kaggle, après process_video en cache) :
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
+import os
 
 try:
     from analysis.ko_features import (
@@ -51,6 +52,39 @@ except ImportError:
         extract_features, score_geometrie, _window_features,
         _camera_motion_series,
     )
+
+
+# ---------------------------------------------------------------------------
+# 0. Durée max de recherche du KO — configurable via param.env
+# ---------------------------------------------------------------------------
+# Justification (mesurée sur les 9 matchs de référence) : le KO connu le
+# plus tardif est Goe à 1081s (18,0 min). 1800s (30 min) donne une marge
+# de sécurité de 12 min au-dessus du pire cas observé, sans laisser le
+# mining dériver sur un match complet (risque de capter un KO de reprise
+# après but, cf. cas Raeren, ou tout simplement de gonfler le top-10
+# avec du bruit qui n'a plus de raison d'y être).
+#
+# Pour changer cette valeur, ajouter dans param.env :
+#   DUREE_MAX_RECHERCHE_KO_S=1800
+# (en secondes ; 1800 = 30 minutes, la valeur par défaut si absente ou
+# invalide dans le fichier).
+
+DUREE_MAX_RECHERCHE_KO_S_DEFAUT = 1800.0
+
+
+def _get_duree_max_recherche_ko_s():
+    """Lit DUREE_MAX_RECHERCHE_KO_S depuis les variables d'environnement
+    (typiquement chargées depuis param.env), avec repli sur la valeur
+    par défaut si absente ou non convertible en nombre."""
+    valeur_brute = os.environ.get("DUREE_MAX_RECHERCHE_KO_S")
+    if valeur_brute is None:
+        return DUREE_MAX_RECHERCHE_KO_S_DEFAUT
+    try:
+        return float(valeur_brute)
+    except (TypeError, ValueError):
+        print(f"  [mining] DUREE_MAX_RECHERCHE_KO_S='{valeur_brute}' invalide "
+              f"dans param.env — repli sur {DUREE_MAX_RECHERCHE_KO_S_DEFAUT}s")
+        return DUREE_MAX_RECHERCHE_KO_S_DEFAUT
 
 
 # ---------------------------------------------------------------------------
@@ -196,33 +230,52 @@ def _merge_candidates(*groups, dedup_tolerance_s=3.0):
 def mine_candidates(frames_data, fps, frame_w, video_path, match_name,
                      video_duration_s, true_kickoff_t=None, terminal_events=None,
                      top_n_geo=15, top_n_speed=15, top_n_whistle=10,
-                     event_window_s=8.0, grid_step_s=4.0):
+                     event_window_s=8.0, grid_step_s=4.0,
+                     duree_max_recherche_ko_s=None):
     """Génère un DataFrame de candidats pour UN match, avec features
     complètes (ko_features.extract_features, gelé) et label_auto.
 
     Ne modifie AUCUN seuil de ko_features.py. N'écrit aucune nouvelle
     heuristique de décision — seulement de la génération de candidats.
+
+    duree_max_recherche_ko_s : borne la recherche du coup d'envoi aux
+    N premières secondes de la vidéo (voir _get_duree_max_recherche_ko_s
+    pour la justification et la valeur par défaut, configurable via
+    param.env : DUREE_MAX_RECHERCHE_KO_S=1800). Utile sur un match
+    complet (90+ min) pour éviter que le mining ne capte un coup
+    d'envoi de reprise après but ou ne se noie dans du bruit hors sujet.
+    Si None, la valeur est lue depuis param.env (ou 1800s par défaut).
+    Sans effet si la vidéo est déjà plus courte que cette borne.
     """
-    print(f"[{match_name}] grille geo/vitesse sur {video_duration_s:.0f}s (pas={grid_step_s}s)...")
+    if duree_max_recherche_ko_s is None:
+        duree_max_recherche_ko_s = _get_duree_max_recherche_ko_s()
+
+    duree_effective = min(video_duration_s, duree_max_recherche_ko_s)
+    if duree_effective < video_duration_s:
+        print(f"[{match_name}] vidéo de {video_duration_s:.0f}s, recherche du KO bornée "
+              f"aux {duree_effective:.0f}s premières secondes "
+              f"(DUREE_MAX_RECHERCHE_KO_S={duree_max_recherche_ko_s:.0f}s)")
+
+    print(f"[{match_name}] grille geo/vitesse sur {duree_effective:.0f}s (pas={grid_step_s}s)...")
     times, geo_vals, speed_vals, n_players_vals = _geo_and_speed_grid(
-        frames_data, fps, frame_w, video_duration_s, step_s=grid_step_s
+        frames_data, fps, frame_w, duree_effective, step_s=grid_step_s
     )
 
     geo_candidates = _peaks(times, geo_vals, top_n_geo, min_distance_s=20.0, step_s=grid_step_s)
     speed_candidates = _peaks(times, speed_vals, top_n_speed, min_distance_s=20.0, step_s=grid_step_s)
 
     print(f"[{match_name}] extraction audio complète pour le sifflet...")
-    tt_audio, band_energy = _whistle_series_full_match(video_path, video_duration_s)
+    tt_audio, band_energy = _whistle_series_full_match(video_path, duree_effective)
     whistle_candidates = _whistle_peaks(tt_audio, band_energy, top_n_whistle)
 
     event_candidates = []
     if terminal_events:
         for ev in terminal_events:
             ev_t = ev.get("t") or ev.get("time") or ev.get("frame_time")
-            if ev_t is not None:
+            if ev_t is not None and ev_t <= duree_effective:
                 event_candidates.append(ev_t)
 
-    ko_candidates = [true_kickoff_t] if true_kickoff_t is not None else []
+    ko_candidates = [true_kickoff_t] if true_kickoff_t is not None and true_kickoff_t <= duree_effective else []
 
     merged = _merge_candidates(
         ("geo_peak", geo_candidates),
@@ -239,7 +292,7 @@ def mine_candidates(frames_data, fps, frame_w, video_path, match_name,
     rows = []
     for i, cand in enumerate(merged):
         t = cand["t"]
-        if t < 3 or t > video_duration_s - 3:
+        if t < 3 or t > duree_effective - 3:
             continue  # trop près des bords, features non fiables
         row = extract_features(frames_data, fps, frame_w, video_path, t, include_audio=False)
         row["whistle_score"] = _whistle_score_at(tt_audio, band_energy, t)
@@ -258,6 +311,16 @@ def mine_candidates(frames_data, fps, frame_w, video_path, match_name,
     n_a_verifier = (df["label_auto"] == "a_verifier").sum() if len(df) else 0
     print(f"[{match_name}] TERMINÉ : {len(df)} candidats — "
           f"KO={n_ko}, connus(auto)={n_connus}, à_vérifier={n_a_verifier}")
+
+    if len(df) == 0 or (n_ko == 0 and true_kickoff_t is None):
+        print(f"[{match_name}] ⚠️ AUCUN CANDIDAT DE KO TROUVÉ dans les "
+              f"{duree_effective:.0f} premières secondes. Ceci n'est PAS un vrai "
+              f"coup d'envoi détecté — c'est un repli faute de mieux. Le pipeline "
+              f"appelant doit traiter ce cas avec confidence='faible' et "
+              f"ambiguity=True (cf. contrat fonctionnel), et peut proposer "
+              f"t={duree_effective:.0f}s comme point de reprise pour une analyse "
+              f"manuelle ou une recherche étendue au-delà de cette borne.")
+
     return df
 
 
