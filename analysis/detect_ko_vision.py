@@ -37,16 +37,26 @@ import json
 # EXTRACTION DES SÉQUENCES À 3 IMAGES
 # ─────────────────────────────────────────
 
-def extraire_sequence_candidat(video_path, t_candidat, fps_source=None):
+def extraire_sequence_candidat(video_path, t_candidat, fps_source=None, offset_s=2.0):
     """
     Extrait 3 images autour d'un instant candidat :
-      juste_avant (t-2s), candidat (t0), juste_apres (t+2s)
+      juste_avant (t-offset_s), candidat (t0), juste_apres (t+offset_s)
 
-    Protocole validé (jalon section 18) : suffisant dans la grande
-    majorité des cas. Limite connue : deux candidats à moins de 5-6s
-    l'un de l'autre peuvent avoir des fenêtres qui se chevauchent
+    Protocole validé (jalon section 18) avec offset_s=2.0 (valeur par
+    défaut, comportement de production INCHANGÉ) : suffisant dans la
+    grande majorité des cas. Limite connue : deux candidats à moins de
+    5-6s l'un de l'autre peuvent avoir des fenêtres qui se chevauchent
     (cf. l'erreur sur Stembert) — à surveiller si le top-10 contient
     des candidats très rapprochés temporellement.
+
+    offset_s : PARAMÈTRE DE TEST — cf. cas Raeren où le candidat retenu
+    (404.8s) était décalé d'environ 4s par rapport au vrai KO (~409s,
+    pas 410s comme indiqué dans le référentiel historique). Avec
+    offset_s=2.0, la fenêtre (402.8/404.8/406.8) ratait presque
+    entièrement le plateau de mouvement réel (406-410s). Un offset plus
+    large (ex. 4.0) pourrait capter la bascule même avec ce genre de
+    décalage — À VALIDER par benchmark contrôlé avant tout changement
+    du défaut de production (cf. jalon, benchmark ±2 vs ±4).
 
     Retourne un dict {"juste_avant": np.array, "candidat": np.array,
     "juste_apres": np.array} (frames BGR, format OpenCV), ou None pour
@@ -56,7 +66,7 @@ def extraire_sequence_candidat(video_path, t_candidat, fps_source=None):
     if fps_source is None:
         fps_source = cap.get(cv2.CAP_PROP_FPS)
 
-    offsets = {"juste_avant": -2.0, "candidat": 0.0, "juste_apres": 2.0}
+    offsets = {"juste_avant": -offset_s, "candidat": 0.0, "juste_apres": offset_s}
     frames = {}
     for label, offset in offsets.items():
         t = max(0, t_candidat + offset)
@@ -200,7 +210,7 @@ def voter_transition(images_dict, client, model="gemini-2.5-flash", max_appels=3
 
 def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
                              model="gemini-2.5-flash", seuil_ambiguite_secondes=10.0,
-                             max_appels_par_candidat=3):
+                             max_appels_par_candidat=3, offset_s=2.0):
     """
     Point d'entrée principal. Prend le top-N candidats déjà produit par
     le RandomForest (ko_features.py + le modèle entraîné), départage-les
@@ -214,25 +224,29 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
     coups d'envoi (l'initial + des reprises après but) — dans ce cas,
     seul le plus ancien temporellement est retenu comme timestamp_final.
 
-    OPTIMISATION COÛT — VERSION HYBRIDE : les candidats sont traités par
-    PROBABILITÉ RF DÉCROISSANTE (le plus probable d'abord, rapide dans
-    le cas fréquent où le RF classe déjà bien le vrai KO en tête), avec
-    une garantie de correction : dès qu'un candidat positif est trouvé,
-    tous les candidats ANTÉRIEURS À LUI DANS LE TEMPS et pas encore
-    évalués sont vérifiés avant de conclure (un candidat mal classé par
-    le RF mais chronologiquement plus tôt doit pouvoir primer — cf. cas
-    MineroisSter où le vrai KO est rang RF #1 mais 9e chronologiquement,
-    contre Andrimont où l'ordre RF et chronologique coïncident). Une
-    fois cette vérification faite, les candidats dans la fenêtre
-    d'ambiguïté autour du résultat retenu sont aussi vérifiés ; tout le
-    reste n'est jamais évalué.
+    TRI CHRONOLOGIQUE PUR (pas par proba RF) : les candidats sont traités
+    par ORDRE CHRONOLOGIQUE CROISSANT. Une version hybride (tri par proba
+    RF décroissante, avec vérification des antérieurs) a été testée et
+    ABANDONNÉE : plus chère (16-20 appels/match contre 8-23 en
+    chronologique) sans gain de qualité, car la probabilité RF ne
+    corrèle pas avec la position temporelle (jalon section 23). Dès
+    qu'un candidat positif est trouvé, seuls les candidats dans la
+    fenêtre d'ambiguïté (seuil_ambiguite_secondes) sont encore vérifiés,
+    le reste n'est jamais évalué.
 
     top_n_candidats : liste de dicts [{"t": float, "categorie": str,
     "proba": float}, ...] — l'ordre d'entrée n'importe pas, la fonction
-    trie elle-même par proba décroissante pour l'ordre de traitement.
+    trie elle-même par t croissant.
 
     seuil_ambiguite_secondes : si un 2e candidat positif existe à moins
     de ce nombre de secondes du premier retenu, l'ambiguïté est signalée.
+
+    offset_s : décalage (en secondes) des images juste_avant/juste_apres
+    par rapport au candidat, transmis à extraire_sequence_candidat.
+    Défaut 2.0 = comportement de production validé (jalon section 18-23).
+    Valeur PLUS GRANDE en test uniquement (cf. cas Raeren, jalon section
+    26) — ne pas changer le défaut avant validation par benchmark
+    contrôlé ±2 vs ±4 sur plusieurs matchs.
 
     Retourne :
     {
@@ -266,7 +280,7 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
         }
 
     def _evaluer(c):
-        images = extraire_sequence_candidat(video_path, c["t"], fps_source=fps_source)
+        images = extraire_sequence_candidat(video_path, c["t"], fps_source=fps_source, offset_s=offset_s)
         vote = voter_transition(images, client, model=model, max_appels=max_appels_par_candidat)
         return {
             "t": c["t"], "categorie_rf": c.get("categorie"), "proba_rf": c.get("proba"),
@@ -278,60 +292,32 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
             } if vote else None),
         }
 
-    tous = list(top_n_candidats)
-    ordre_proba = sorted(tous, key=lambda c: c.get("proba", 0), reverse=True)
+    # Tri chronologique croissant — condition nécessaire à l'arrêt anticipé
+    candidats_tries = sorted(top_n_candidats, key=lambda c: c["t"])
 
-    evalues_par_t = {}  # t -> résultat, pour savoir ce qui a déjà été fait
-
-    # --- Phase 1 : parcours par probabilité RF décroissante ---
-    for c in ordre_proba:
-        evalues_par_t[c["t"]] = _evaluer(c)
-
-        positifs_t = [t for t, r in evalues_par_t.items()
-                      if r["vote"] is not None and r["vote"]["decision"]]
-        if not positifs_t:
-            continue
-
-        premier_positif_t = min(positifs_t)
-        # A-t-on évalué TOUS les candidats antérieurs à ce positif ?
-        non_evalues_anterieurs = [
-            cand for cand in tous
-            if cand["t"] < premier_positif_t and cand["t"] not in evalues_par_t
-        ]
-        if not non_evalues_anterieurs:
-            break  # rien d'antérieur ne peut plus changer le résultat -> fin de la phase 1
-
-    # --- Phase 2 : vérifier les antérieurs manquants + la fenêtre d'ambiguïté ---
-    positifs_t = [t for t, r in evalues_par_t.items()
-                  if r["vote"] is not None and r["vote"]["decision"]]
-    if positifs_t:
-        premier_positif_t = min(positifs_t)
-        a_verifier = [
-            cand for cand in tous
-            if cand["t"] not in evalues_par_t and (
-                cand["t"] < premier_positif_t or
-                abs(cand["t"] - premier_positif_t) < seuil_ambiguite_secondes
-            )
-        ]
-        for c in sorted(a_verifier, key=lambda c: c["t"]):
-            evalues_par_t[c["t"]] = _evaluer(c)
-
-    # Construire la liste finale, dans l'ordre chronologique, avec les
-    # candidats jamais évalués marqués comme tels
     resultats = []
-    for c in sorted(tous, key=lambda c: c["t"]):
-        if c["t"] in evalues_par_t:
-            resultats.append(evalues_par_t[c["t"]])
-        else:
+    candidats_positifs = []
+    premier_positif_t = None
+
+    for c in candidats_tries:
+        # Arrêt anticipé : au-delà de la fenêtre d'ambiguïté autour du
+        # premier positif trouvé, plus rien ne peut changer la décision.
+        if premier_positif_t is not None and (c["t"] - premier_positif_t) >= seuil_ambiguite_secondes:
             resultats.append({
                 "t": c["t"], "categorie_rf": c.get("categorie"), "proba_rf": c.get("proba"),
                 "evalue": False, "vote": None,
             })
+            continue
 
-    candidats_positifs = [r for r in resultats if r["evalue"] and r["vote"] and r["vote"]["decision"]]
+        resultats.append(_evaluer(c))
+
+        if resultats[-1]["vote"] is not None and resultats[-1]["vote"]["decision"]:
+            candidats_positifs.append(resultats[-1])
+            if premier_positif_t is None:
+                premier_positif_t = c["t"]
 
     if not candidats_positifs:
-        meilleur_rf = max(top_n_candidats, key=lambda c: c.get("proba", 0)) if top_n_candidats else None
+        meilleur_rf = top_n_candidats[0] if top_n_candidats else None
         return {
             "timestamp_final": meilleur_rf["t"] if meilleur_rf else None,
             "confidence": "faible",
@@ -340,9 +326,7 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
             "note": "Aucune transition claire détectée par l'IA vision — repli sur le meilleur candidat RF, à traiter avec prudence.",
         }
 
-    # Parmi les positifs (déjà garantis exhaustifs sur tout ce qui est
-    # antérieur), le plus ancien l'emporte toujours.
-    candidats_positifs.sort(key=lambda r: r["t"])
+    # Déjà trié par t croissant -> le premier positif trouvé est le bon
     meilleur = candidats_positifs[0]
 
     ambiguity = False
