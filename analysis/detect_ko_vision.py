@@ -143,27 +143,101 @@ def demander_gemini_ko(images_dict, client, model="gemini-2.5-flash"):
 
 
 # ─────────────────────────────────────────
+# VOTE MAJORITAIRE (jusqu'à 3 appels, avec arrêt anticipé)
+# ─────────────────────────────────────────
+# Justifié par le test de répétabilité (jalon, test 270 appels sur 9
+# matchs) : 92% des candidats sont parfaitement stables (3/3 ou 0/3), et
+# le vote majoritaire corrige les rares cas de bruit sans jamais valider
+# à tort un candidat clairement négatif. Un seul appel suffit dans la
+# grande majorité des cas — d'où l'arrêt anticipé après 2 appels dès que
+# la majorité est déjà mathématiquement jouée (2 accords sur 2), pour ne
+# pas payer un 3e appel inutile.
+
+def voter_transition(images_dict, client, model="gemini-2.5-flash", max_appels=3):
+    """
+    Fait jusqu'à max_appels appels indépendants à demander_gemini_ko sur
+    les MÊMES images, avec arrêt anticipé dès que la majorité est
+    acquise (2 votes identiques sur les 2 premiers -> inutile de payer
+    un 3e appel, il ne peut plus changer la décision).
+
+    Retourne {"decision": bool, "confidence": float, "n_appels": int,
+    "votes": [...détail de chaque appel...]} ou None si le premier appel
+    échoue déjà (image manquante notamment).
+    """
+    votes = []
+    for _ in range(max_appels):
+        jugement = demander_gemini_ko(images_dict, client, model=model)
+        if jugement is None:
+            if not votes:
+                return None  # échec dès le 1er appel -> pas d'avis du tout
+            break  # on garde ce qu'on a déjà obtenu
+        votes.append(jugement)
+
+        # Arrêt anticipé : dès 2 votes, si accord total, la majorité sur
+        # 3 est déjà acquise quel que soit le 3e appel -> inutile de le payer.
+        if len(votes) == 2 and votes[0]["transition_visible"] == votes[1]["transition_visible"]:
+            break
+
+    n_true = sum(1 for v in votes if v["transition_visible"])
+    n_total = len(votes)
+    decision = n_true > n_total / 2  # majorité stricte (2/3, 2/2, ou 1/1 en cas d'échec partiel)
+
+    # Confiance retenue : moyenne des votes allant dans le sens de la décision finale
+    confs_majoritaires = [v["confidence"] for v in votes if v["transition_visible"] == decision]
+    confidence_moyenne = sum(confs_majoritaires) / len(confs_majoritaires) if confs_majoritaires else 0.0
+
+    return {
+        "decision": decision,
+        "confidence": confidence_moyenne,
+        "n_appels": n_total,
+        "votes": votes,
+    }
+
+
+# ─────────────────────────────────────────
 # FONCTION PRINCIPALE — CONTRAT candidate + confidence + ambiguity
 # ─────────────────────────────────────────
 
 def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
-                             model="gemini-2.5-flash", seuil_ambiguite=0.15):
+                             model="gemini-2.5-flash", seuil_ambiguite_secondes=10.0,
+                             max_appels_par_candidat=3):
     """
     Point d'entrée principal. Prend le top-N candidats déjà produit par
     le RandomForest (ko_features.py + le modèle entraîné), départage-les
-    par IA vision, retourne le contrat fonctionnel V1.
+    par IA vision (vote majoritaire jusqu'à 3 appels par candidat),
+    retourne le contrat fonctionnel V1.
+
+    Objectif du projet : le PREMIER coup d'envoi du match (pas "tous les
+    KO", pas "le candidat le plus confiant"). Sur une vidéo qui couvre
+    plus que la seule phase pré-match (ex. match complet avec but(s)
+    marqué(s)), plusieurs candidats peuvent légitimement être de vrais
+    coups d'envoi (l'initial + des reprises après but) — dans ce cas,
+    seul le plus ancien temporellement est retenu comme timestamp_final.
+
+    OPTIMISATION COÛT (validée sur le raisonnement suivant, pas encore
+    sur un vrai run à grande échelle — à surveiller) : les candidats
+    sont traités PAR ORDRE CHRONOLOGIQUE CROISSANT, pas par proba RF
+    décroissante. Dès qu'un candidat obtient une majorité positive, les
+    candidats suivants ne sont évalués QUE s'ils sont à moins de
+    seuil_ambiguite_secondes de celui-ci (pour détecter une ambiguïté
+    réelle) ; au-delà, l'évaluation s'arrête complètement, car aucun
+    candidat plus tardif ne pourra jamais être sélectionné (la règle de
+    sélection prend toujours le plus ancien parmi les positifs).
 
     top_n_candidats : liste de dicts [{"t": float, "categorie": str,
-    "proba": float}, ...] déjà triée par proba RF décroissante — c'est
-    exactement le format déjà produit par les scripts d'évaluation du
-    projet (cf. notebook_extraction_images_top10.py et similaires).
+    "proba": float}, ...] — l'ordre d'entrée n'importe pas, la fonction
+    trie elle-même par t croissant.
+
+    seuil_ambiguite_secondes : si un 2e candidat positif existe à moins
+    de ce nombre de secondes du premier retenu, l'ambiguïté est signalée.
 
     Retourne :
     {
         "timestamp_final": float ou None,
         "confidence": "élevée" / "moyenne" / "faible",
         "ambiguity": bool,
-        "candidats_evalues": [...détail par candidat...],
+        "candidats_evalues": [...détail des candidats RÉELLEMENT évalués,
+                               les autres sont listés avec evalue=False...],
     }
 
     Ne transforme jamais une ambiguïté réelle en confiance élevée
@@ -188,27 +262,43 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
             "erreur": str(e),
         }
 
+    # Tri chronologique croissant — condition nécessaire à l'arrêt anticipé
+    candidats_tries = sorted(top_n_candidats, key=lambda c: c["t"])
+
     resultats = []
-    for c in top_n_candidats:
+    candidats_positifs = []
+    premier_positif_t = None
+
+    for c in candidats_tries:
+        # Arrêt anticipé : au-delà de la fenêtre d'ambiguïté autour du
+        # premier positif trouvé, plus rien ne peut changer la décision.
+        if premier_positif_t is not None and (c["t"] - premier_positif_t) >= seuil_ambiguite_secondes:
+            resultats.append({
+                "t": c["t"], "categorie_rf": c.get("categorie"), "proba_rf": c.get("proba"),
+                "evalue": False, "vote": None,
+            })
+            continue
+
         images = extraire_sequence_candidat(video_path, c["t"], fps_source=fps_source)
-        jugement = demander_gemini_ko(images, client, model=model)
+        vote = voter_transition(images, client, model=model, max_appels=max_appels_par_candidat)
+
         resultats.append({
-            "t": c["t"],
-            "categorie_rf": c.get("categorie"),
-            "proba_rf": c.get("proba"),
-            "jugement_vision": jugement,
+            "t": c["t"], "categorie_rf": c.get("categorie"), "proba_rf": c.get("proba"),
+            "evalue": True, "vote": vote,
+            # rétro-compatibilité avec l'ancien format (un seul jugement) :
+            "jugement_vision": ({
+                "transition_visible": vote["decision"],
+                "confidence": vote["confidence"],
+                "raisonnement": f"vote majoritaire {sum(1 for v in vote['votes'] if v['transition_visible'])}/{vote['n_appels']}",
+            } if vote else None),
         })
 
-    # Ne garder que les candidats où l'IA vision voit effectivement la transition
-    candidats_positifs = [
-        r for r in resultats
-        if r["jugement_vision"] is not None and r["jugement_vision"]["transition_visible"]
-    ]
+        if vote is not None and vote["decision"]:
+            candidats_positifs.append(resultats[-1])
+            if premier_positif_t is None:
+                premier_positif_t = c["t"]
 
     if not candidats_positifs:
-        # Aucun candidat ne montre la transition -> ambiguïté réelle,
-        # pas de faux positif à fabriquer. Repli sur le meilleur RF pur,
-        # avec confiance explicitement faible.
         meilleur_rf = top_n_candidats[0] if top_n_candidats else None
         return {
             "timestamp_final": meilleur_rf["t"] if meilleur_rf else None,
@@ -218,17 +308,15 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
             "note": "Aucune transition claire détectée par l'IA vision — repli sur le meilleur candidat RF, à traiter avec prudence.",
         }
 
-    # Parmi les candidats positifs, prendre celui à la confiance vision la plus haute
-    candidats_positifs.sort(key=lambda r: r["jugement_vision"]["confidence"], reverse=True)
+    # Déjà trié par t croissant -> le premier positif trouvé est le bon
     meilleur = candidats_positifs[0]
 
-    # Ambiguïté : plusieurs candidats positifs avec confiance proche
     ambiguity = False
     if len(candidats_positifs) > 1:
-        ecart = meilleur["jugement_vision"]["confidence"] - candidats_positifs[1]["jugement_vision"]["confidence"]
-        ambiguity = ecart < seuil_ambiguite
+        ecart_temporel = candidats_positifs[1]["t"] - meilleur["t"]
+        ambiguity = ecart_temporel < seuil_ambiguite_secondes
 
-    conf_valeur = meilleur["jugement_vision"]["confidence"]
+    conf_valeur = meilleur["vote"]["confidence"]
     if ambiguity:
         confidence_label = "moyenne"
     elif conf_valeur >= 0.75:
