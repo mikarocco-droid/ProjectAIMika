@@ -210,7 +210,8 @@ def voter_transition(images_dict, client, model="gemini-2.5-flash", max_appels=3
 
 def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
                              model="gemini-2.5-flash", seuil_ambiguite_secondes=10.0,
-                             max_appels_par_candidat=3, offset_s=2.0):
+                             max_appels_par_candidat=3, offset_s=2.0,
+                             candidats_deja_evalues=None):
     """
     Point d'entrée principal. Prend le top-N candidats déjà produit par
     le RandomForest (ko_features.py + le modèle entraîné), départage-les
@@ -248,6 +249,13 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
     26) — ne pas changer le défaut avant validation par benchmark
     contrôlé ±2 vs ±4 sur plusieurs matchs.
 
+    candidats_deja_evalues : dict optionnel {t: résultat_évaluation}
+    (même structure qu'une entrée de "candidats_evalues" en sortie).
+    Si fourni, les candidats déjà présents dans ce dict ne sont PAS
+    ré-évalués par Gemini — leur résultat est simplement réutilisé.
+    Sert à l'élargissement adaptatif du pool sans jamais payer deux fois
+    le même appel (cf. detecter_ko_par_vision_adaptatif ci-dessous).
+
     Retourne :
     {
         "timestamp_final": float ou None,
@@ -279,7 +287,15 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
             "erreur": str(e),
         }
 
+    candidats_deja_evalues = candidats_deja_evalues or {}
+
     def _evaluer(c):
+        # Si ce candidat a déjà été évalué lors d'une passe précédente
+        # (mode adaptatif), réutiliser le résultat SANS rappeler Gemini —
+        # évite tout appel redondant lors d'un élargissement de pool.
+        if c["t"] in candidats_deja_evalues:
+            return candidats_deja_evalues[c["t"]]
+
         images = extraire_sequence_candidat(video_path, c["t"], fps_source=fps_source, offset_s=offset_s)
         vote = voter_transition(images, client, model=model, max_appels=max_appels_par_candidat)
         return {
@@ -350,3 +366,70 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
         "ambiguity": ambiguity,
         "candidats_evalues": resultats,
     }
+
+
+def detecter_ko_par_vision_adaptatif(video_path, top_n_complet, fps_source=None,
+                                       model="gemini-2.5-flash", seuil_ambiguite_secondes=10.0,
+                                       max_appels_par_candidat=3, offset_s=2.0,
+                                       taille_pool_initial=10, taille_pool_max=30):
+    """
+    ASTUCE DE COÛT : mode adaptatif à 2 passes, pour élargir le pool de
+    candidats (top-10 -> top-30) SANS payer le surcoût dans les cas où
+    le top-10 suffit déjà (la majorité des matchs, cf. jalon).
+
+    Passe 1 : detecter_ko_par_vision() sur les `taille_pool_initial`
+    premiers candidats (défaut 10, comportement de production actuel,
+    coût inchangé).
+
+    Passe 2 : SEULEMENT SI la passe 1 échoue (ambiguity=True et
+    confidence='faible', c'est-à-dire aucun positif franc trouvé),
+    élargir aux candidats classés jusqu'à `taille_pool_max` (défaut 30).
+    Les candidats déjà évalués en passe 1 sont réutilisés tels quels
+    (via candidats_deja_evalues) — AUCUN appel Gemini n'est répété.
+
+    Le tri chronologique + arrêt anticipé déjà présents dans
+    detecter_ko_par_vision() s'appliquent normalement sur le pool
+    élargi : si le bon candidat est proche chronologiquement du début,
+    le coût de la passe 2 reste faible même avec un pool à 30.
+
+    top_n_complet : liste COMPLÈTE des candidats disponibles, DÉJÀ
+    triée par proba RF décroissante (comme la sortie habituelle du
+    scoring RF) — au moins `taille_pool_max` éléments si possible.
+
+    Retourne le même contrat que detecter_ko_par_vision(), avec deux
+    clés ajoutées pour la traçabilité :
+      "pool_final_utilise" : taille_pool_initial ou taille_pool_max
+      "passe2_declenchee" : bool
+    """
+    pool_initial = top_n_complet[:taille_pool_initial]
+
+    resultat = detecter_ko_par_vision(
+        video_path, pool_initial, fps_source=fps_source, model=model,
+        seuil_ambiguite_secondes=seuil_ambiguite_secondes,
+        max_appels_par_candidat=max_appels_par_candidat, offset_s=offset_s,
+    )
+
+    echec_passe1 = (resultat.get("confidence") == "faible" and resultat.get("ambiguity") is True)
+
+    if not echec_passe1 or len(top_n_complet) <= taille_pool_initial:
+        resultat["pool_final_utilise"] = len(pool_initial)
+        resultat["passe2_declenchee"] = False
+        return resultat
+
+    print(f"  [adaptatif] Passe 1 (top-{taille_pool_initial}) non concluante — "
+          f"élargissement à top-{taille_pool_max}...")
+
+    # Réutiliser les résultats déjà obtenus en passe 1, indexés par t,
+    # pour ne jamais rappeler Gemini sur les mêmes candidats.
+    cache = {r["t"]: r for r in resultat["candidats_evalues"] if r.get("evalue")}
+
+    pool_elargi = top_n_complet[:taille_pool_max]
+    resultat_final = detecter_ko_par_vision(
+        video_path, pool_elargi, fps_source=fps_source, model=model,
+        seuil_ambiguite_secondes=seuil_ambiguite_secondes,
+        max_appels_par_candidat=max_appels_par_candidat, offset_s=offset_s,
+        candidats_deja_evalues=cache,
+    )
+    resultat_final["pool_final_utilise"] = len(pool_elargi)
+    resultat_final["passe2_declenchee"] = True
+    return resultat_final
