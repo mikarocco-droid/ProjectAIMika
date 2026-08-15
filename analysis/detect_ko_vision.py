@@ -111,6 +111,81 @@ Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
 """
 
 
+# ─────────────────────────────────────────
+# PRÉ-FILTRE RAPIDE (1 image, avant le vote à 3 images)
+# ─────────────────────────────────────────
+# Objectif de coût : rejeter à bas prix (1 seul appel, pas 2-3) les
+# candidats clairement hors sujet (tir, remise en jeu localisée,
+# célébration, plan de banc de touche...), sans jamais risquer de
+# rejeter à tort un vrai KO. Conçu délibérément PERMISSIF — un faux
+# positif ici ne coûte que 2-3 appels de vote en plus (le vote
+# tranchera correctement) ; un faux négatif ferait perdre le candidat
+# définitivement, sans recours. Asymétrie de coût assumée.
+#
+# Vérifié visuellement (jalon) : le ballon peut être invisible même sur
+# un vrai KO (cas Raeren, candidat t=408s) — donc le ballon n'est
+# JAMAIS un critère bloquant ici, exactement comme pour le vote à 3
+# images.
+
+PROMPT_PREFILTRE_RAPIDE = """Tu vas voir UNE SEULE image d'un match de football amateur. C'est un premier tri RAPIDE, PAS une décision finale — en cas de doute, réponds "oui" (un examen plus approfondi sur plusieurs images suivra de toute façon).
+
+Question : cette image pourrait-elle correspondre à un instant proche d'un coup d'envoi (début de match, début de mi-temps, ou reprise après un but) ?
+
+Signal typique à rechercher : les joueurs des deux équipes semblent organisés de part et d'autre d'une zone centrale du terrain (pas besoin d'un alignement parfait), et/ou un arbitre est visible sur le terrain. Les joueurs sont généralement immobiles ou en attente.
+
+IMPORTANT : le ballon n'a PAS besoin d'être visible — il est souvent petit, caché par un joueur, ou peu contrasté (éclairage nocturne, plan large). Son absence NE DOIT JAMAIS, à elle seule, faire répondre "non".
+
+Ce filtre doit être PERMISSIF : en cas de doute, d'image ambiguë, de mauvais angle, de mauvaise qualité, ou de joueurs partiellement visibles, réponds "oui". Réponds "non" SEULEMENT si l'image montre CLAIREMENT autre chose : une seule équipe visible (pas de formation à deux camps), une célébration de but, un arrêt de jeu localisé dans un coin du terrain (touche, corner, coup franc excentré), un plan de banc de touche ou de tribune sans vue d'ensemble du terrain, etc.
+
+Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
+{
+  "formation_plausible": true/false,
+  "raisonnement": "1 phrase courte"
+}
+"""
+
+
+def demander_gemini_prefiltre(image, client, model="gemini-2.5-flash"):
+    """
+    Envoie UNE SEULE image (typiquement "juste_avant") à Gemini pour un
+    tri rapide et permissif, avant le vote complet à 3 images.
+
+    image : frame OpenCV BGR unique (pas un dict, contrairement à
+    demander_gemini_ko).
+
+    Retourne {"formation_plausible": bool, "raisonnement": str}, ou
+    None si l'appel échoue — à traiter comme "pas d'avis", donc ne
+    JAMAIS bloquer sur un None (cf. utilisation dans _evaluer :
+    en cas de None, on procède quand même au vote complet, jamais
+    l'inverse).
+    """
+    if image is None:
+        return None
+
+    parts = [{"text": PROMPT_PREFILTRE_RAPIDE}]
+    img_b64 = _frame_to_base64(image)
+    parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img_b64}})
+
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=[{"parts": parts}]
+        )
+        text = response.text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        result = json.loads(text.strip())
+        return {
+            "formation_plausible": bool(result.get("formation_plausible", True)),  # défaut permissif si clé manquante
+            "raisonnement": result.get("raisonnement", ""),
+        }
+    except Exception as e:
+        print(f"  [detect_ko_vision] Erreur Gemini (pré-filtre) : {e}")
+        return None
+
+
 def demander_gemini_ko(images_dict, client, model="gemini-2.5-flash"):
     """
     Envoie les 3 images à Gemini avec le prompt structuré, retourne le
@@ -211,7 +286,7 @@ def voter_transition(images_dict, client, model="gemini-2.5-flash", max_appels=3
 def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
                              model="gemini-2.5-flash", seuil_ambiguite_secondes=10.0,
                              max_appels_par_candidat=3, offset_s=2.0,
-                             candidats_deja_evalues=None):
+                             candidats_deja_evalues=None, utiliser_prefiltre=False):
     """
     Point d'entrée principal. Prend le top-N candidats déjà produit par
     le RandomForest (ko_features.py + le modèle entraîné), départage-les
@@ -256,6 +331,15 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
     Sert à l'élargissement adaptatif du pool sans jamais payer deux fois
     le même appel (cf. detecter_ko_par_vision_adaptatif ci-dessous).
 
+    utiliser_prefiltre : bool, défaut False (comportement de production
+    INCHANGÉ si non spécifié). Si True, un pré-filtre à 1 image (image
+    "juste_avant" seule) est appelé AVANT le vote complet à 3 images,
+    pour rejeter à bas coût (1 appel au lieu de 2-3) les candidats
+    clairement hors sujet. Conçu délibérément permissif (cf.
+    PROMPT_PREFILTRE_RAPIDE) — en cas de doute ou d'échec technique,
+    procède quand même au vote complet, jamais l'inverse. À valider par
+    benchmark avant adoption en défaut de production.
+
     Retourne :
     {
         "timestamp_final": float ou None,
@@ -297,6 +381,25 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
             return candidats_deja_evalues[c["t"]]
 
         images = extraire_sequence_candidat(video_path, c["t"], fps_source=fps_source, offset_s=offset_s)
+
+        # Pré-filtre optionnel (1 appel), pour rejeter à bas coût les
+        # candidats clairement hors sujet avant le vote complet (2-3
+        # appels). Permissif par construction : un échec technique ou un
+        # doute ("formation_plausible" absent/True) laisse TOUJOURS
+        # passer au vote complet — jamais de rejet basé sur ce seul
+        # pré-filtre.
+        if utiliser_prefiltre and images.get("juste_avant") is not None:
+            prefiltre = demander_gemini_prefiltre(images["juste_avant"], client, model=model)
+            if prefiltre is not None and prefiltre["formation_plausible"] is False:
+                return {
+                    "t": c["t"], "categorie_rf": c.get("categorie"), "proba_rf": c.get("proba"),
+                    "evalue": True, "vote": None,
+                    "jugement_vision": {
+                        "transition_visible": False, "confidence": 0.9,
+                        "raisonnement": f"[pré-filtre] {prefiltre['raisonnement']}",
+                    },
+                }
+
         vote = voter_transition(images, client, model=model, max_appels=max_appels_par_candidat)
         return {
             "t": c["t"], "categorie_rf": c.get("categorie"), "proba_rf": c.get("proba"),
