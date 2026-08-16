@@ -291,6 +291,212 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         return {"success": False, "error": "Détection impossible"}
 
 
+def detect_teams_preview_rapide(video_path, output_dir="outputs/preview",
+                                  timestamps_min=None, sport="football"):
+    """
+    Version rapide de detect_teams_preview() : au lieu de scanner les 3
+    premieres minutes avec YOLO pour choisir les meilleures frames (couteux -
+    charge le detecteur, tourne l'inference sur ~18 frames), va chercher
+    directement 3 frames a des timestamps calcules a partir de la duree
+    REELLE du match, ou les joueurs sont naturellement disperses sur le
+    terrain (contrairement au coup d'envoi ou ils sont regroupes au centre,
+    plus difficile a distinguer pour Gemini).
+
+    CALCUL AUTOMATIQUE DES TIMESTAMPS (si timestamps_min=None, le defaut) :
+        t1 = duree_totale/2 - 5min   (un peu avant la mi-temps)
+        t2 = t1 + 20min
+        t3 = t1 + 40min
+    Pour un match de 90min : 40/60/80min (les valeurs fixes d'origine).
+    Pour un match plus court, les 3 timestamps se resserrent proportion-
+    nellement au lieu de viser des minutes fixes qui n'existeraient pas.
+
+    Si un timestamp calcule (t2 ou t3) depasse quand meme la duree reelle
+    (matchs tres courts), il est ramene juste avant la fin plutot que
+    d'etre purement ignore - pour eviter de se retrouver avec une seule
+    frame exploitable (pas de vote majoritaire possible).
+
+    Compromis assume : pas de garantie qu'un instant donne montre des
+    joueurs bien visibles (arret de jeu, plan large, remplacement, replay...)
+    - attenue par un petit retry (+5s/+10s/-5s) si la frame est quasi noire
+    ou si Gemini renvoie une confiance faible / n'identifie pas 2 equipes.
+
+    IMPORTANT : video_path doit etre la video COMPLETE du match (pas un
+    extrait tronque comme ceux utilises pour les tests KO).
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    gemini_client = None
+    try:
+        from google import genai
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if api_key:
+            gemini_client = genai.Client(api_key=api_key)
+            print(f"  [PREVIEW-RAPIDE] Gemini Vision disponible")
+        else:
+            print(f"  [PREVIEW-RAPIDE] GEMINI_API_KEY manquante - impossible sans Gemini")
+            return {"success": False, "error": "GEMINI_API_KEY manquante"}
+    except Exception as e:
+        print(f"  [PREVIEW-RAPIDE] Gemini non disponible : {e}")
+        return {"success": False, "error": f"Gemini non disponible: {e}"}
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return {"success": False, "error": "Impossible d'ouvrir la video"}
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duree_s = total_frames / fps if fps else 0
+    duree_min = duree_s / 60.0
+    print(f"  [PREVIEW-RAPIDE] Duree video : {duree_min:.1f} min")
+
+    # ---- Calcul automatique des 3 timestamps a partir de la duree reelle ----
+    if timestamps_min is None:
+        t1 = duree_min / 2.0 - 5.0
+        t1 = max(t1, 0.5)  # jamais negatif (matchs tres courts)
+        timestamps_min = [t1, t1 + 20.0, t1 + 40.0]
+        print(f"  [PREVIEW-RAPIDE] Timestamps calcules automatiquement : "
+              f"{[round(t,1) for t in timestamps_min]} min (duree/2-5, +20, +40)")
+
+        # Si un timestamp depasse la duree reelle (match court), le ramener
+        # juste avant la fin plutot que de le perdre completement - sauf
+        # s'il finit par coincider avec un timestamp deja retenu.
+        marge_fin_s = 3.0
+        timestamps_ajustes = []
+        deja_pris_s = set()
+        for t_min in timestamps_min:
+            t_s = t_min * 60.0
+            if t_s >= duree_s:
+                t_s_ajuste = max(0, duree_s - marge_fin_s)
+                if round(t_s_ajuste) in deja_pris_s:
+                    print(f"  [PREVIEW-RAPIDE] t={t_min:.1f}min hors bornes et fin de "
+                          f"video deja utilisee par un autre timestamp - ignore")
+                    continue
+                print(f"  [PREVIEW-RAPIDE] t={t_min:.1f}min hors bornes "
+                      f"({duree_min:.1f}min disponibles) - ramene a "
+                      f"{t_s_ajuste/60:.1f}min (fin de video)")
+                timestamps_ajustes.append(t_s_ajuste / 60.0)
+                deja_pris_s.add(round(t_s_ajuste))
+            else:
+                timestamps_ajustes.append(t_min)
+                deja_pris_s.add(round(t_s))
+        timestamps_min = timestamps_ajustes
+
+    OFFSETS_RETRY_S = [0, 5, 10, -5]  # timestamp exact, puis +5s/+10s/-5s
+
+    def _extraire_frame_valide(t_cible_s):
+        """Essaie le timestamp exact puis quelques offsets proches si la
+        frame est illisible (fin de fichier, image quasi noire...)."""
+        for offset in OFFSETS_RETRY_S:
+            t_essai = t_cible_s + offset
+            if t_essai < 0 or t_essai >= duree_s:
+                continue
+            frame_num = int(t_essai * fps)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+            ret, frame = cap.read()
+            if ret and frame is not None and frame.mean() > 5:  # evite les frames quasi noires
+                return frame, t_essai
+        return None, None
+
+    frames_a_analyser = []  # (t_reel_s, frame)
+    for t_min in timestamps_min:
+        t_cible_s = t_min * 60.0
+        if t_cible_s >= duree_s:
+            print(f"  [PREVIEW-RAPIDE] t={t_min}min hors de la video "
+                  f"({duree_s/60:.1f}min disponibles) - ignore")
+            continue
+        frame, t_reel = _extraire_frame_valide(t_cible_s)
+        if frame is not None:
+            frames_a_analyser.append((t_reel, frame))
+            print(f"  [PREVIEW-RAPIDE] Frame recuperee a t={t_reel:.0f}s "
+                  f"(cible {t_cible_s:.0f}s)")
+        else:
+            print(f"  [PREVIEW-RAPIDE] Aucune frame exploitable autour de t={t_min}min")
+
+    cap.release()
+
+    if not frames_a_analyser:
+        return {"success": False, "error": "Aucune frame exploitable aux timestamps demandes"}
+
+    print(f"  [PREVIEW-RAPIDE] Analyse Gemini sur {len(frames_a_analyser)} frame(s)...")
+    results = []
+    frames_ok = []
+    for t_reel, frame in frames_a_analyser:
+        result = _ask_gemini_colors(frame, gemini_client)
+        if result and result.get("confidence") in ("high", "medium"):
+            if result.get("team_a") and result.get("team_b"):
+                results.append(result)
+                frames_ok.append((t_reel, frame))
+                print(f"  [PREVIEW-RAPIDE] t={t_reel:.0f}s : "
+                      f"A={result['team_a']['jersey']}/{result['team_a']['short']} | "
+                      f"B={result['team_b']['jersey']}/{result['team_b']['short']} "
+                      f"({result['confidence']})")
+            else:
+                print(f"  [PREVIEW-RAPIDE] t={t_reel:.0f}s : confiance {result.get('confidence')} "
+                      f"mais equipes non identifiees - ecarte")
+        else:
+            print(f"  [PREVIEW-RAPIDE] t={t_reel:.0f}s : reponse Gemini inexploitable - ecarte")
+
+    if not results:
+        return {"success": False,
+                "error": "Gemini n'a identifie aucune equipe sur les frames disponibles"}
+
+    if len(results) < 2:
+        print(f"  [PREVIEW-RAPIDE] ATTENTION : un seul resultat exploitable sur "
+              f"{len(frames_a_analyser)} frames - pas de vote majoritaire possible, "
+              f"resultat moins fiable")
+
+    from collections import Counter
+
+    def majority_color(key, subkey):
+        votes = [r[key][subkey].lower() for r in results if r.get(key) and r[key].get(subkey)]
+        if not votes:
+            return "inconnu"
+        return Counter(votes).most_common(1)[0][0]
+
+    j_a = majority_color("team_a", "jersey")
+    s_a = majority_color("team_a", "short")
+    j_b = majority_color("team_b", "jersey")
+    s_b = majority_color("team_b", "short")
+
+    name_a = f"{j_a}/{s_a}" if s_a and s_a != j_a else j_a
+    name_b = f"{j_b}/{s_b}" if s_b and s_b != j_b else j_b
+
+    print(f"  [PREVIEW-RAPIDE] Resultat : Team A={name_a} | Team B={name_b} "
+          f"({len(results)}/{len(frames_a_analyser)} frames exploitees)")
+
+    hex_a = _color_name_to_hex(j_a)
+    hex_b = _color_name_to_hex(j_b)
+
+    preview_0 = preview_1 = None
+    try:
+        _, best_frame = frames_ok[0]
+        cv2.imwrite(os.path.join(output_dir, "team_0_preview.jpg"), best_frame)
+        cv2.imwrite(os.path.join(output_dir, "team_1_preview.jpg"), best_frame)
+        preview_0 = os.path.join(output_dir, "team_0_preview.jpg")
+        preview_1 = os.path.join(output_dir, "team_1_preview.jpg")
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "n_frames_exploitees": len(results),
+        "n_frames_tentees": len(frames_a_analyser),
+        "method": "gemini_rapide",
+        "team_0": {
+            "color_bgr": _hex_to_bgr(hex_a),
+            "color_name": name_a,
+            "short_bgr": _hex_to_bgr(_color_name_to_hex(s_a)),
+            "preview_frame": preview_0,
+        },
+        "team_1": {
+            "color_bgr": _hex_to_bgr(hex_b),
+            "color_name": name_b,
+            "short_bgr": _hex_to_bgr(_color_name_to_hex(s_b)),
+            "preview_frame": preview_1,
+        },
+    }
+
+
 def _hex_to_bgr(hex_color):
     """Convertit hex en liste BGR."""
     try:
