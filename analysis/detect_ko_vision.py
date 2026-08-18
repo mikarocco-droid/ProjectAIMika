@@ -88,25 +88,155 @@ def _frame_to_base64(frame):
 # ─────────────────────────────────────────
 # APPEL IA VISION (GEMINI)
 # ─────────────────────────────────────────
+#
+# ⚠️ HISTORIQUE CRITIQUE — NE JAMAIS REFORMULER CE PROMPT EN "HISTOIRE
+# GLOBALE" SANS RE-VALIDER SUR LES 9 MATCHS AVEC gemini-2.5-flash ⚠️
+#
+# Ce prompt "checklist" (vérification image par image : image1=statique,
+# image2=frappe, image3=dispersion) A DÉJÀ ÉTÉ reformulé une fois en
+# version "histoire globale" (jugement holistique des 3 images comme un
+# seul récit, plutôt qu'une vérification stricte critère par critère).
+# Testé empiriquement sur gemini-2.5-flash (session antérieure), le
+# résultat était netament PIRE, pas meilleur :
+#
+#   Match          | Checklist (ancien) | Histoire globale (testé)
+#   Andrimont      | ~2-3 faux positifs/10 | 5 faux positifs/10
+#   Stembert       | ~2 faux positifs/10   | 4 faux positifs/10 (+ vrai KO raté)
+#   MineroisSter   | ~3 faux positifs/10   | 7 faux positifs/10
+#
+# Cause : assouplir le critère donne au modèle la permission implicite
+# de rationaliser presque n'importe quelle action de jeu comme
+# "cohérente avec un début de match", puisque la plupart des
+# tirs/contre-attaques ont un moment où plusieurs joueurs avancent
+# ensemble. Sur gemini-3.1-pro-preview, le même prompt "histoire
+# globale" donnait un résultat different (trop conservateur, pas trop
+# permissif) — donc l'effet dépend fortement du modèle, jamais neutre.
+#
+# CETTE LEÇON A ÉTÉ OUBLIÉE UNE FOIS DÉJÀ pendant cette investigation
+# (la version "histoire globale" s'est retrouvée réintroduite dans ce
+# fichier sans que quiconque se souvienne du test qui l'avait invalidée
+# — découvert seulement après coup, en fouillant les transcripts d'une
+# session antérieure). Le prompt "checklist" a été restauré comme
+# référence stable.
+#
+# ITÉRATION SUIVANTE (celle ci-dessous, actuellement en place) :
+# structure "OBLIGATOIRE vs SECONDAIRE" explicite, différente à la fois
+# du "checklist" original ET de la version "histoire globale" qui avait
+# échoué. Motivée par une confabulation précise observée (Andrimont
+# t=194.9s : Gemini affirmait "les deux équipes se dispersent" alors
+# qu'une seule équipe était présente, probablement un regroupement
+# après un but). Distinction clé avec la version qui avait échoué :
+# celle-ci donnait la permission d'IGNORER un détail peu clair
+# ("ne rejette pas... parce qu'un détail n'est pas parfaitement
+# visible") ; celle-ci au contraire liste explicitement 3 faits
+# OBLIGATOIRES (deux équipes distinctes, chacune organisée séparément
+# en image 1, vraie mise en mouvement des DEUX équipes en image 3) à
+# répondre "non" si non vérifiables, et seulement 5 détails SECONDAIRES
+# (ballon, couleurs imparfaites, arbitre) qui ne doivent jamais bloquer
+# un "oui". Le critère "franchir la ligne médiane" testé dans une
+# itération intermédiaire a été retiré (jugé possiblement trop strict
+# pour une fenêtre de 2s) au profit d'un critère de mise en mouvement
+# réelle des deux équipes, plus réaliste.
+#
+# ⚠️ CETTE ITÉRATION N'A PAS ENCORE ÉTÉ VALIDÉE EMPIRIQUEMENT — testée
+# uniquement par relecture, pas encore relancée sur les 18 candidats de
+# référence (10 faux positifs connus avec le prompt checklist simple).
+# NE PAS considérer comme acquise avant ce test.
+# ─────────────────────────────────────────
 
-PROMPT_KO_VISION = """Tu vas voir 3 images d'un match de football amateur, extraites à 2 secondes d'intervalle (image 1 = t-2s, image 2 = instant candidat, image 3 = t+2s).
+PROMPT_KO_VISION = """Tu vas voir 3 images consécutives d'un match de football amateur.
 
-Regarde ces 3 images comme les 3 étapes d'UNE SEULE histoire courte (4 secondes), pas comme 3 vérifications indépendantes. La question est : "est-ce que ces 3 images, prises ensemble, racontent le début d'un match (coup d'envoi) ?" — pas "est-ce que chaque image, séparément, coche toutes les cases d'une checklist".
+- Image 1 = environ 2 secondes AVANT le candidat
+- Image 2 = instant du candidat
+- Image 3 = environ 2 secondes APRÈS le candidat
 
-L'histoire caractéristique d'un VRAI coup d'envoi se lit ainsi : les joueurs des deux équipes sont globalement en position (proche de leur moitié de terrain) au début → un mouvement de jeu démarre au centre → plusieurs joueurs se mettent en mouvement ensemble vers la fin. Le ballon fait partie de cette histoire mais n'a pas besoin d'être visible avec une netteté parfaite sur chaque image individuelle : il peut être petit, partiellement caché par un joueur, ou peu contrasté (éclairage nocturne, plan large) sur une image sans que ça invalide l'histoire globale si le mouvement collectif qui suit est cohérent avec une reprise de jeu.
+Ta tâche est UNIQUEMENT de déterminer si ces 3 images montrent une
+séquence de COUP D'ENVOI suivie du début du jeu.
 
-Ne rejette PAS une séquence uniquement parce qu'un détail précis (comme la position exacte du ballon) n'est pas parfaitement visible sur une seule des 3 images — utilise le contexte des 2 autres images et la cohérence du mouvement général pour juger.
+Ne cherche PAS à déterminer s'il s'agit du premier coup d'envoi du match.
+Ne cherche PAS à déterminer s'il s'agit d'un coup d'envoi après un but.
+Tu dois uniquement juger la séquence visuelle qui t'est présentée.
 
-Attention aux pièges déjà identifiés, à lire aussi comme des histoires globales, pas des checklists :
-- Un simple rassemblement (joueurs en cercle serré) qui reste une scène statique sur l'ensemble des 3 images, sans qu'aucun mouvement collectif ne démarre, n'est PAS un coup d'envoi.
-- Un "faux départ" ressemble au début de l'histoire mais l'histoire ne se termine pas par une vraie dispersion générale (parfois juste un joueur qui ajuste son équipement, rien d'autre ne change).
-- Si les deux équipes ont des couleurs de maillot proches ou que l'angle de caméra est peu favorable, base ton jugement sur la trajectoire globale du mouvement plutôt que sur des détails visuels fins impossibles à vérifier avec certitude.
+IMPORTANT :
+Tu dois regarder les 3 images comme UNE SEULE séquence temporelle.
+Ne juge pas l'image 1, l'image 2 et l'image 3 séparément.
 
-Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
+Pour répondre OUI, il faut que les éléments suivants soient réellement
+visibles dans les images :
+
+1. AVANT LE DÉMARRAGE
+Dans l'image 1, la scène doit être compatible avec une situation de
+coup d'envoi :
+- les deux équipes sont reconnaissables ;
+- les joueurs sont principalement répartis dans leurs deux moitiés
+  de terrain ;
+- la scène ne doit pas être un simple attroupement compact ;
+- la disposition générale doit ressembler à une situation précédant
+  le démarrage du jeu.
+
+2. TRANSITION
+Entre l'image 1 et l'image 3, il doit être visible que le jeu commence :
+- plusieurs joueurs des DEUX équipes changent réellement de position ;
+- il y a une évolution collective de la disposition des joueurs ;
+- il ne suffit pas qu'un seul joueur bouge ;
+- une simple différence de position entre les images ne suffit pas si
+  elle peut être due à un déplacement individuel ou à une scène statique.
+
+3. COUP D'ENVOI
+La position du ballon peut aider à confirmer le coup d'envoi, notamment
+s'il est visible près du centre du terrain.
+
+MAIS :
+- le ballon n'est PAS un critère obligatoire ;
+- si le ballon est caché par un joueur, difficile à voir ou absent du
+  cadrage, cela ne suffit PAS à répondre NON ;
+- ne suppose jamais que le ballon est au centre s'il n'est pas visible.
+
+À L'INVERSE, si le ballon est clairement visible ailleurs sur le terrain
+et que la scène correspond manifestement à une phase de jeu, cela constitue
+un indice important contre un coup d'envoi.
+
+FAUX POSITIFS À ÉVITER :
+- célébration après un but ;
+- discussion ou rassemblement de joueurs ;
+- photo d'équipe ;
+- échauffement ;
+- coup franc ;
+- remise en jeu ;
+- dégagement de but ;
+- corner ;
+- simple déplacement des joueurs pendant une phase de jeu ;
+- toute scène où les joueurs sont déjà en train de jouer.
+
+POINT TRÈS IMPORTANT :
+Une scène peut ressembler fortement à un coup d'envoi sans être le début
+du match. Ce n'est PAS à toi de résoudre cette distinction.
+
+Si la scène présentée ressemble visuellement à un coup d'envoi suivi du
+début du jeu, réponds OUI, même si tu ne peux pas savoir si c'est le
+premier coup d'envoi du match.
+
+Ne transforme jamais une supposition en fait observable.
+
+Le raisonnement doit expliquer les éléments VISIBLES qui ont conduit à
+la décision. N'utilise pas de phrases génériques comme "cela indique un
+début de jeu" sans expliquer ce qui est réellement visible.
+
+Réponds UNIQUEMENT avec ce JSON valide :
+
 {
-  "transition_visible": true/false,
-  "confidence": 0.0 à 1.0,
-  "raisonnement": "1-2 phrases sur ce qui justifie la réponse, en te basant sur l'histoire globale des 3 images plutôt que sur un détail isolé"
+  "transition_visible": true,
+  "confidence": 0.0,
+  "raisonnement": "..."
+}
+
+"transition_visible" = true uniquement si la séquence montre réellement
+une organisation compatible avec un coup d'envoi suivie d'une mise en jeu. sinon false.
+
+"confidence" doit représenter ta confiance dans l'observation visuelle
+de cette transition, pas ta confiance qu'il s'agit du premier coup
+d'envoi du match. de 0.0 à 1.0
+"raisonnement": "1-2 phrases décrivant uniquement les éléments visuellement observables qui justifient la décision"
 }
 """
 
@@ -286,7 +416,8 @@ def voter_transition(images_dict, client, model="gemini-2.5-flash", max_appels=3
 def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
                              model="gemini-2.5-flash", seuil_ambiguite_secondes=10.0,
                              max_appels_par_candidat=3, offset_s=2.0,
-                             candidats_deja_evalues=None, utiliser_prefiltre=False):
+                             candidats_deja_evalues=None, utiliser_prefiltre=False,
+                             desactiver_arret_anticipe=False):
     """
     Point d'entrée principal. Prend le top-N candidats déjà produit par
     le RandomForest (ko_features.py + le modèle entraîné), départage-les
@@ -339,6 +470,18 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
     PROMPT_PREFILTRE_RAPIDE) — en cas de doute ou d'échec technique,
     procède quand même au vote complet, jamais l'inverse. À valider par
     benchmark avant adoption en défaut de production.
+
+    desactiver_arret_anticipe : bool, défaut False (comportement de
+    production INCHANGÉ). Si True, DIAGNOSTIC UNIQUEMENT — évalue TOUS
+    les candidats du pool, même après qu'un premier positif ait été
+    trouvé (ignore la fenêtre d'ambiguïté pour le SKIP, pas pour le
+    choix final). Découverte majeure (jalon section 18) : sur 3 matchs
+    testés, le vrai KO n'a JAMAIS été atteint par la politique
+    "premier positif = stop", à cause de faux positifs précoces
+    (probablement des formations d'avant-match) — ce mode permet de
+    vérifier si le vrai KO aurait été correctement accepté s'il avait
+    eu l'occasion d'être examiné. Coût : jusqu'à N appels au lieu de
+    l'arrêt anticipé habituel, NE PAS utiliser en production.
 
     Retourne :
     {
@@ -421,7 +564,9 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
     for c in candidats_tries:
         # Arrêt anticipé : au-delà de la fenêtre d'ambiguïté autour du
         # premier positif trouvé, plus rien ne peut changer la décision.
-        if premier_positif_t is not None and (c["t"] - premier_positif_t) >= seuil_ambiguite_secondes:
+        # DESACTIVABLE en mode diagnostic (desactiver_arret_anticipe=True).
+        if (not desactiver_arret_anticipe and premier_positif_t is not None
+                and (c["t"] - premier_positif_t) >= seuil_ambiguite_secondes):
             resultats.append({
                 "t": c["t"], "categorie_rf": c.get("categorie"), "proba_rf": c.get("proba"),
                 "evalue": False, "vote": None,
