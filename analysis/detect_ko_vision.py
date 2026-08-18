@@ -144,99 +144,223 @@ def _frame_to_base64(frame):
 # NE PAS considérer comme acquise avant ce test.
 # ─────────────────────────────────────────
 
-PROMPT_KO_VISION = """Tu vas voir 3 images consécutives d'un match de football amateur.
+PROMPT_KO_VISION = """Tu vas voir 3 images d'un match de football amateur, extraites à 2 secondes
+d'intervalle :
 
-- Image 1 = environ 2 secondes AVANT le candidat
-- Image 2 = instant du candidat
-- Image 3 = environ 2 secondes APRÈS le candidat
+- Image 1 = t-2 secondes
+- Image 2 = instant candidat
+- Image 3 = t+2 secondes
 
-Ta tâche est UNIQUEMENT de déterminer si ces 3 images montrent une
-séquence de COUP D'ENVOI suivie du début du jeu.
+Lis obligatoirement les 3 images comme UNE SEULE séquence temporelle
+continue.
 
-Ne cherche PAS à déterminer s'il s'agit du premier coup d'envoi du match.
-Ne cherche PAS à déterminer s'il s'agit d'un coup d'envoi après un but.
-Tu dois uniquement juger la séquence visuelle qui t'est présentée.
+OBJECTIF
+========
+Déterminer si cette séquence montre réellement le DÉBUT D'UN COUP
+D'ENVOI, et non simplement une autre phase de jeu ou une autre reprise
+de jeu qui lui ressemble.
 
 IMPORTANT :
-Tu dois regarder les 3 images comme UNE SEULE séquence temporelle.
-Ne juge pas l'image 1, l'image 2 et l'image 3 séparément.
+Tu ne connais PAS le temps de jeu du match.
+Tu ne disposes d'AUCUN chronomètre.
+Tu ne dois donc jamais utiliser une supposition du type
+"c'est probablement le début du match" ou "cela doit être le coup d'envoi".
 
-Pour répondre OUI, il faut que les éléments suivants soient réellement
-visibles dans les images :
+Ta décision doit être fondée UNIQUEMENT sur ce qui est visible dans
+les 3 images.
 
-1. AVANT LE DÉMARRAGE
-Dans l'image 1, la scène doit être compatible avec une situation de
-coup d'envoi :
-- les deux équipes sont reconnaissables ;
-- les joueurs sont principalement répartis dans leurs deux moitiés
-  de terrain ;
-- la scène ne doit pas être un simple attroupement compact ;
-- la disposition générale doit ressembler à une situation précédant
-  le démarrage du jeu.
+------------------------------------------------------------
+ÉTAPE 1 — EXAMINER L'ÉTAT INITIAL
+------------------------------------------------------------
 
-2. TRANSITION
-Entre l'image 1 et l'image 3, il doit être visible que le jeu commence :
-- plusieurs joueurs des DEUX équipes changent réellement de position ;
-- il y a une évolution collective de la disposition des joueurs ;
-- il ne suffit pas qu'un seul joueur bouge ;
-- une simple différence de position entre les images ne suffit pas si
-  elle peut être due à un déplacement individuel ou à une scène statique.
+Commence par examiner l'IMAGE 1.
 
-3. COUP D'ENVOI
-La position du ballon peut aider à confirmer le coup d'envoi, notamment
-s'il est visible près du centre du terrain.
+Cherche à déterminer si la scène présente réellement une configuration
+précédant un coup d'envoi.
 
-MAIS :
-- le ballon n'est PAS un critère obligatoire ;
-- si le ballon est caché par un joueur, difficile à voir ou absent du
-  cadrage, cela ne suffit PAS à répondre NON ;
-- ne suppose jamais que le ballon est au centre s'il n'est pas visible.
+Observe notamment :
 
-À L'INVERSE, si le ballon est clairement visible ailleurs sur le terrain
-et que la scène correspond manifestement à une phase de jeu, cela constitue
-un indice important contre un coup d'envoi.
+- Les deux équipes doivent être identifiables.
+- Les joueurs doivent présenter une organisation compatible avec une
+  mise en jeu depuis le centre du terrain.
+- Le ballon doit, lorsqu'il est visible, être dans la zone centrale
+  correspondant au coup d'envoi.
+- Observe la position relative des joueurs par rapport à la ligne
+  médiane.
+- Observe si la scène semble être une organisation de départ plutôt
+  qu'une phase de jeu déjà commencée.
 
-FAUX POSITIFS À ÉVITER :
-- célébration après un but ;
-- discussion ou rassemblement de joueurs ;
-- photo d'équipe ;
-- échauffement ;
+ATTENTION :
+Une équipe regroupée près du centre ne constitue PAS automatiquement
+une formation de coup d'envoi.
+
+Une scène avec un ballon au centre ne constitue PAS automatiquement
+un coup d'envoi.
+
+Deux équipes visibles sur des côtés différents du terrain ne constituent
+PAS automatiquement un coup d'envoi.
+
+------------------------------------------------------------
+ÉTAPE 2 — EXAMINER LA TRANSITION
+------------------------------------------------------------
+
+Compare ensuite les images 1, 2 et 3 comme une séquence.
+
+Cherche un véritable DÉCLENCHEMENT de l'action.
+
+Indices particulièrement utiles lorsqu'ils sont VISIBLES :
+
+- un joueur joue effectivement le ballon depuis la zone centrale ;
+- le ballon commence à se déplacer entre les images ;
+- un joueur démarre son déplacement immédiatement après avoir joué
+  le ballon ;
+- plusieurs joueurs des deux équipes commencent à quitter leur
+  organisation initiale ;
+- un arbitre semble déclencher ou autoriser la mise en jeu ;
+- la transition entre l'organisation initiale et le jeu actif est
+  cohérente et temporellement progressive.
+
+Ces éléments sont des INDICES de confirmation.
+
+Ils ne doivent PAS être inventés s'ils ne sont pas visibles.
+
+L'absence d'un indice particulier ne suffit donc pas, à elle seule,
+à répondre "non".
+
+------------------------------------------------------------
+ÉTAPE 3 — CHERCHER ACTIVEMENT UNE EXPLICATION ALTERNATIVE
+------------------------------------------------------------
+
+C'est une étape OBLIGATOIRE.
+
+Avant de répondre "oui", essaie volontairement de démontrer que la
+séquence pourrait être AUTRE CHOSE qu'un coup d'envoi.
+
+Cherche notamment les possibilités suivantes :
+
 - coup franc ;
 - remise en jeu ;
-- dégagement de but ;
 - corner ;
-- simple déplacement des joueurs pendant une phase de jeu ;
-- toute scène où les joueurs sont déjà en train de jouer.
+- dégagement ;
+- reprise après un arrêt de jeu ;
+- reprise après un but ;
+- joueurs qui se regroupent momentanément ;
+- célébration ;
+- discussion ou rassemblement tactique ;
+- échauffement ;
+- phase de jeu déjà commencée ;
+- autre situation dans laquelle le ballon et les joueurs se retrouvent
+  temporairement au centre.
 
-POINT TRÈS IMPORTANT :
-Une scène peut ressembler fortement à un coup d'envoi sans être le début
-du match. Ce n'est PAS à toi de résoudre cette distinction.
+Ne réponds pas "oui" simplement parce que la scène est compatible avec
+un coup d'envoi.
 
-Si la scène présentée ressemble visuellement à un coup d'envoi suivi du
-début du jeu, réponds OUI, même si tu ne peux pas savoir si c'est le
-premier coup d'envoi du match.
+La question à te poser est :
 
-Ne transforme jamais une supposition en fait observable.
+"Est-ce que les 3 images montrent suffisamment d'éléments spécifiques
+pour privilégier un véritable coup d'envoi plutôt qu'une autre
+situation de football qui lui ressemble ?"
 
-Le raisonnement doit expliquer les éléments VISIBLES qui ont conduit à
-la décision. N'utilise pas de phrases génériques comme "cela indique un
-début de jeu" sans expliquer ce qui est réellement visible.
+Si une autre explication est clairement compatible avec les images et
+qu'il est impossible de départager les deux, réponds "non".
 
-Réponds UNIQUEMENT avec ce JSON valide :
+------------------------------------------------------------
+RÈGLE IMPORTANTE — NE PAS CONFONDRE RESSEMBLANCE ET PREUVE
+------------------------------------------------------------
+
+Les éléments suivants, pris seuls ou combinés, ne constituent PAS une
+preuve suffisante :
+
+- ballon au centre ;
+- deux équipes visibles ;
+- joueurs répartis ;
+- arbitre visible ;
+- joueurs immobiles ;
+- joueurs qui commencent ensuite à courir ;
+- ballon qui commence ensuite à bouger.
+
+Une autre reprise de jeu peut présenter plusieurs de ces mêmes
+caractéristiques.
+
+Tu dois donc rechercher la COHÉRENCE DE LA SÉQUENCE COMPLÈTE, et pas
+simplement cocher une liste de caractéristiques.
+
+------------------------------------------------------------
+CE QUI DOIT ÊTRE DIRECTEMENT OBSERVABLE
+------------------------------------------------------------
+
+Chaque affirmation utilisée dans ton raisonnement doit être fondée
+sur un élément réellement visible dans l'image concernée.
+
+Ne suppose jamais :
+
+- que le match vient de commencer ;
+- qu'il s'agit de la première action du match ;
+- qu'un coup de sifflet a eu lieu s'il n'est pas visuellement identifiable ;
+- qu'un ballon est au centre s'il n'est pas clairement visible ;
+- qu'un mouvement est causé par un coup d'envoi simplement parce qu'il
+  suit une formation ressemblant à un coup d'envoi.
+
+Tu peux utiliser la relation temporelle entre les trois images pour
+constater une évolution visible, mais tu ne dois pas inventer la cause
+de cette évolution.
+
+------------------------------------------------------------
+BALLON
+------------------------------------------------------------
+
+Le ballon est un indice important, mais il ne doit pas être considéré
+comme obligatoire s'il est impossible à distinguer à cause de la
+résolution, de l'angle de caméra ou d'autres joueurs.
+
+S'il est visible, indique précisément où il se trouve et ce qu'il fait.
+
+Ne prétends jamais voir un ballon qui n'est pas clairement identifiable.
+
+------------------------------------------------------------
+DÉCISION FINALE
+------------------------------------------------------------
+
+Réponds "true" uniquement lorsque la séquence complète fournit des
+éléments visuels suffisamment cohérents pour considérer qu'il s'agit
+réellement d'un coup d'envoi.
+
+Réponds "false" lorsque :
+
+- la scène est clairement une autre phase de jeu ;
+- l'organisation initiale n'est pas compatible avec un coup d'envoi ;
+- la transition montre clairement une autre situation ;
+- ou les images ne permettent pas de distinguer suffisamment un coup
+  d'envoi d'une autre situation plausible.
+
+EN CAS D'AMBIGUÏTÉ :
+Ne transforme pas une simple compatibilité en certitude.
+Si les images ne permettent pas de privilégier raisonnablement le
+coup d'envoi par rapport à une autre explication plausible, réponds
+"false".
+
+------------------------------------------------------------
+RAISONNEMENT
+------------------------------------------------------------
+
+Le champ "raisonnement" doit expliquer en 1 à 3 phrases les éléments
+VISIBLES les plus importants qui ont conduit à la décision.
+
+Ne répète pas simplement la consigne.
+
+Ne dis pas seulement :
+"les joueurs bougent donc c'est un coup d'envoi."
+
+Explique plutôt ce qui est réellement observable dans la séquence et,
+si la réponse est "false", indique quelle caractéristique rend la
+séquence incompatible ou ambiguë.
+
+Réponds UNIQUEMENT avec du JSON valide, sans texte avant ni après :
 
 {
-  "transition_visible": true,
-  "confidence": 0.0,
-  "raisonnement": "..."
-}
-
-"transition_visible" = true uniquement si la séquence montre réellement
-une organisation compatible avec un coup d'envoi suivie d'une mise en jeu. sinon false.
-
-"confidence" doit représenter ta confiance dans l'observation visuelle
-de cette transition, pas ta confiance qu'il s'agit du premier coup
-d'envoi du match. de 0.0 à 1.0
-"raisonnement": "1-2 phrases décrivant uniquement les éléments visuellement observables qui justifient la décision"
+  "transition_visible": true/false,
+  "confidence": 0.0 à 1.0,
+  "raisonnement": "1 à 3 phrases basées uniquement sur les éléments visibles."
 }
 """
 
