@@ -399,7 +399,7 @@ Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
 """
 
 
-def demander_gemini_prefiltre(image, client, model="gemini-2.5-flash"):
+def demander_gemini_prefiltre(image, client, model="gemini-3.1-pro-preview"):
     """
     Envoie UNE SEULE image (typiquement "juste_avant") à Gemini pour un
     tri rapide et permissif, avant le vote complet à 3 images.
@@ -440,7 +440,7 @@ def demander_gemini_prefiltre(image, client, model="gemini-2.5-flash"):
         return None
 
 
-def demander_gemini_ko(images_dict, client, model="gemini-2.5-flash"):
+def demander_gemini_ko(images_dict, client, model="gemini-3.1-pro-preview"):
     """
     Envoie les 3 images à Gemini avec le prompt structuré, retourne le
     jugement (transition visible ou non, confiance, raisonnement).
@@ -492,7 +492,7 @@ def demander_gemini_ko(images_dict, client, model="gemini-2.5-flash"):
 # la majorité est déjà mathématiquement jouée (2 accords sur 2), pour ne
 # pas payer un 3e appel inutile.
 
-def voter_transition(images_dict, client, model="gemini-2.5-flash", max_appels=3):
+def voter_transition(images_dict, client, model="gemini-3.1-pro-preview", max_appels=3):
     """
     Fait jusqu'à max_appels appels indépendants à demander_gemini_ko sur
     les MÊMES images, avec arrêt anticipé dès que la majorité est
@@ -538,7 +538,7 @@ def voter_transition(images_dict, client, model="gemini-2.5-flash", max_appels=3
 # ─────────────────────────────────────────
 
 def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
-                             model="gemini-2.5-flash", seuil_ambiguite_secondes=10.0,
+                             model="gemini-3.1-pro-preview", seuil_ambiguite_secondes=10.0,
                              max_appels_par_candidat=3, offset_s=2.0,
                              candidats_deja_evalues=None, utiliser_prefiltre=False,
                              desactiver_arret_anticipe=False):
@@ -741,7 +741,7 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
 
 
 def detecter_ko_par_vision_adaptatif(video_path, top_n_complet, fps_source=None,
-                                       model="gemini-2.5-flash", seuil_ambiguite_secondes=10.0,
+                                       model="gemini-3.1-pro-preview", seuil_ambiguite_secondes=10.0,
                                        max_appels_par_candidat=3, offset_s=2.0,
                                        taille_pool_initial=10, taille_pool_max=30):
     """
