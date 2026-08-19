@@ -723,22 +723,35 @@ def demander_gemini_ko(images_dict, client, model="gemini-3.1-pro-preview"):
 
 
 # ─────────────────────────────────────────
-# VOTE MAJORITAIRE (jusqu'à 3 appels, avec arrêt anticipé)
+# VOTE MAJORITAIRE (jusqu'à 5 appels, avec arrêt anticipé généralisé)
 # ─────────────────────────────────────────
-# Justifié par le test de répétabilité (jalon, test 270 appels sur 9
-# matchs) : 92% des candidats sont parfaitement stables (3/3 ou 0/3), et
-# le vote majoritaire corrige les rares cas de bruit sans jamais valider
-# à tort un candidat clairement négatif. Un seul appel suffit dans la
-# grande majorité des cas — d'où l'arrêt anticipé après 2 appels dès que
-# la majorité est déjà mathématiquement jouée (2 accords sur 2), pour ne
-# pas payer un 3e appel inutile.
+# MISE A JOUR (suite au test de stabilité inter-runs sur 18 candidats,
+# 4 runs identiques) : contrairement à l'hypothèse initiale ("92% des
+# candidats stables 3/3 ou 0/3"), plusieurs candidats montrent une
+# vraie variance d'échantillonnage avec le prompt actuel (ex: 25%,
+# 33%, 67%, 75% de True selon le tirage, sur des images ET un prompt
+# strictement identiques). Un cas est particulièrement critique :
+# Wanze t=89.25 (33% True sur 3 runs) est chronologiquement AVANT le
+# vrai KO du match (980s) - si validé à tort, le pipeline verrouille
+# dessus (arrêt anticipé, cf. detecter_ko_par_vision) et ne teste
+# JAMAIS le vrai KO, produisant un résultat final faux avec une
+# confiance artificiellement élevée.
+#
+# max_appels passé de 3 à 5, ET la condition d'arrêt anticipé
+# généralisée : l'ancienne version s'arrêtait TOUJOURS après 2 votes
+# en accord, quelle que soit la valeur de max_appels - augmenter
+# max_appels seul n'aurait donc rien changé (le tirage malchanceux
+# vecteur du problème est justement "2 True d'affilée dès le début").
+# Nouvelle règle : s'arrêter uniquement quand le camp en tête a déjà
+# mathématiquement gagné la majorité, compte tenu des appels restants.
 
-def voter_transition(images_dict, client, model="gemini-3.1-pro-preview", max_appels=3):
+def voter_transition(images_dict, client, model="gemini-3.1-pro-preview", max_appels=5):
     """
     Fait jusqu'à max_appels appels indépendants à demander_gemini_ko sur
     les MÊMES images, avec arrêt anticipé dès que la majorité est
-    acquise (2 votes identiques sur les 2 premiers -> inutile de payer
-    un 3e appel, il ne peut plus changer la décision).
+    MATHÉMATIQUEMENT acquise (impossible pour les votes restants de
+    changer l'issue) - pas simplement "2 votes d'accord", qui ne
+    protège pas contre un tirage malchanceux initial.
 
     Retourne {"decision": bool, "confidence": float, "n_appels": int,
     "votes": [...détail de chaque appel...]} ou None si le premier appel
@@ -753,9 +766,12 @@ def voter_transition(images_dict, client, model="gemini-3.1-pro-preview", max_ap
             break  # on garde ce qu'on a déjà obtenu
         votes.append(jugement)
 
-        # Arrêt anticipé : dès 2 votes, si accord total, la majorité sur
-        # 3 est déjà acquise quel que soit le 3e appel -> inutile de le payer.
-        if len(votes) == 2 and votes[0]["transition_visible"] == votes[1]["transition_visible"]:
+        # Arrêt anticipé GÉNÉRALISÉ : s'arrêter seulement si le nombre de
+        # votes restants ne peut plus faire basculer la majorité.
+        n_true = sum(1 for v in votes if v["transition_visible"])
+        n_false = len(votes) - n_true
+        appels_restants = max_appels - len(votes)
+        if n_true > n_false + appels_restants or n_false > n_true + appels_restants:
             break
 
     n_true = sum(1 for v in votes if v["transition_visible"])
@@ -780,7 +796,7 @@ def voter_transition(images_dict, client, model="gemini-3.1-pro-preview", max_ap
 
 def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
                              model="gemini-3.1-pro-preview", seuil_ambiguite_secondes=10.0,
-                             max_appels_par_candidat=3, offset_s=2.0,
+                             max_appels_par_candidat=5, offset_s=2.0,
                              candidats_deja_evalues=None, utiliser_prefiltre=False,
                              desactiver_arret_anticipe=False):
     """
@@ -983,7 +999,7 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
 
 def detecter_ko_par_vision_adaptatif(video_path, top_n_complet, fps_source=None,
                                        model="gemini-3.1-pro-preview", seuil_ambiguite_secondes=10.0,
-                                       max_appels_par_candidat=3, offset_s=2.0,
+                                       max_appels_par_candidat=5, offset_s=2.0,
                                        taille_pool_initial=10, taille_pool_max=30):
     """
     ASTUCE DE COÛT : mode adaptatif à 2 passes, pour élargir le pool de
