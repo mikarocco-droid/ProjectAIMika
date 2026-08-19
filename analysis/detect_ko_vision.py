@@ -152,6 +152,22 @@ Les images sont espacées de 2 secondes :
 * IMAGE 2 = instant candidat
 * IMAGE 3 = environ t+2 secondes
 
+═══════════════════════════════════════════════════
+VÉRIFICATIONS PRÉALABLES OBLIGATOIRES — À FAIRE EN PREMIER, AVANT TOUTE AUTRE ANALYSE
+═══════════════════════════════════════════════════
+
+Avant de lire le reste des instructions, réponds à ces deux questions simples. Si l'une des deux donne "oui", la séquence est automatiquement REJETÉE (avant_compatible=false, transition_visible=false) — inutile d'analyser quoi que ce soit d'autre, n'essaie pas de compenser par le reste de la scène.
+
+QUESTION PRÉALABLE 1 — Un but est-il visible sur IMAGE 1 OU IMAGE 2 ?
+Regarde IMAGE 1 ET IMAGE 2 séparément. Si tu vois un cadre de but (poteaux verticaux, barre transversale, filet) dans L'UNE OU L'AUTRE de ces deux images, peu importe sa taille ou sa distance apparente, cela signifie que la scène se déroule près d'un but. La ligne au sol que tu pourrais prendre pour la ligne médiane est alors presque certainement la ligne de la surface de réparation ou de but — PAS la ligne médiane. Un vrai coup d'envoi ne montre JAMAIS un but dans le cadre, quel que soit l'angle de caméra, car il est filmé depuis le centre du terrain, loin des deux buts. Si un but est visible sur IMAGE 1 ou IMAGE 2 → réponds "oui" à cette question → rejet automatique.
+
+QUESTION PRÉALABLE 2 — Les joueurs sont-ils mélangés sur IMAGE 1 ?
+Regarde uniquement IMAGE 1. Repère les couleurs de maillots des deux équipes. Les joueurs des deux couleurs apparaissent-ils mélangés ou entremêlés entre eux (proches les uns des autres sans regroupement nettement séparé par équipe et par côté du terrain), plutôt que clairement regroupés chacun de leur côté ? Un vrai coup d'envoi montre TOUJOURS chaque équipe regroupée distinctement de son côté — jamais des joueurs des deux couleurs mélangés ensemble au même endroit. Si les maillots des deux couleurs sont mélangés sur IMAGE 1 → réponds "oui" à cette question → rejet automatique.
+
+Ces deux vérifications priment sur tout le reste de l'analyse ci-dessous. Un ballon au centre, un arbitre présent, ou une frappe visible ne compensent JAMAIS un "oui" à l'une de ces deux questions.
+
+═══════════════════════════════════════════════════
+
 OBJECTIF :
 Déterminer si ces 3 images montrent réellement le moment où le ballon est mis en jeu depuis le centre du terrain, c'est-à-dire le début effectif d'une séquence de jeu après une situation de préparation au coup d'envoi.
 
@@ -608,8 +624,28 @@ def _appeler_gemini_avec_retry(client, model, parts, max_tentatives=3, delai_bas
 
     Lève l'exception d'origine si toutes les tentatives échouent - à
     l'appelant de l'attraper (comportement inchangé pour lui).
+
+    TEMPÉRATURE = 0.0 (nouveau) : aucune configuration de génération
+    n'était appliquée auparavant - l'API utilisait donc son défaut
+    (proche de 1.0, mode "créatif"/probabiliste). Suspecté comme cause
+    possible à la fois de la confabulation observée (Gemini invente des
+    détails précis et absents de l'image, ex: Wanze t=89.25 - scène
+    d'échauffement décrite comme un coup d'envoi organisé) ET de la
+    variance inter-runs mesurée (mêmes images, même prompt, résultats
+    différents selon le tirage). Une tâche d'analyse factuelle d'image
+    n'a besoin d'aucune créativité - la température la plus basse
+    possible est appropriée ici, contrairement à une tâche générative.
+    À VALIDER par un nouveau test sur les mêmes 18 candidats : si la
+    confabulation persiste à température 0, la cause est ailleurs
+    (limite de perception du modèle sur l'image elle-même, pas un
+    effet d'échantillonnage) - distinction importante pour la suite.
     """
     import time
+    try:
+        from google.genai import types
+        config = types.GenerateContentConfig(temperature=0.0)
+    except Exception:
+        config = None  # si le SDK ne supporte pas ce type, on continue sans
 
     codes_transitoires = ("503", "UNAVAILABLE", "timeout", "timed out",
                           "429", "RESOURCE_EXHAUSTED", "500", "INTERNAL")
@@ -617,6 +653,8 @@ def _appeler_gemini_avec_retry(client, model, parts, max_tentatives=3, delai_bas
     derniere_erreur = None
     for tentative in range(max_tentatives):
         try:
+            if config is not None:
+                return client.models.generate_content(model=model, contents=[{"parts": parts}], config=config)
             return client.models.generate_content(model=model, contents=[{"parts": parts}])
         except Exception as e:
             derniere_erreur = e
