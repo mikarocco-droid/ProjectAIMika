@@ -840,7 +840,7 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
     """
     Point d'entrée principal. Prend le top-N candidats déjà produit par
     le RandomForest (ko_features.py + le modèle entraîné), départage-les
-    par IA vision (vote majoritaire jusqu'à 3 appels par candidat),
+    par IA vision (vote majoritaire jusqu'à 5 appels par candidat),
     retourne le contrat fonctionnel V1.
 
     Objectif du projet : le PREMIER coup d'envoi du match (pas "tous les
@@ -984,7 +984,20 @@ def detecter_ko_par_vision(video_path, top_n_candidats, fps_source=None,
         # Arrêt anticipé : au-delà de la fenêtre d'ambiguïté autour du
         # premier positif trouvé, plus rien ne peut changer la décision.
         # DESACTIVABLE en mode diagnostic (desactiver_arret_anticipe=True).
-        if (not desactiver_arret_anticipe and premier_positif_t is not None
+        #
+        # EXCEPTION IMPORTANTE : un candidat déjà présent dans
+        # candidats_deja_evalues (cache, mode adaptatif passe 2) n'est
+        # JAMAIS sauté ici, même si l'arrêt anticipé le voudrait -
+        # le réutiliser ne coûte aucun appel Gemini, et le sauter
+        # produirait une trace "evalue=False" mensongère pour un
+        # candidat qui a bel et bien été évalué (en passe 1). Bug
+        # trouvé et corrigé suite à un test dédié : sans cette
+        # exception, les 10 candidats de la passe 1 apparaissaient à
+        # tort comme jamais évalués dans le résultat final de la passe
+        # 2, dès qu'un nouveau positif plus précoce était découvert.
+        deja_en_cache = c["t"] in candidats_deja_evalues
+        if (not deja_en_cache and not desactiver_arret_anticipe
+                and premier_positif_t is not None
                 and (c["t"] - premier_positif_t) >= seuil_ambiguite_secondes):
             resultats.append({
                 "t": c["t"], "categorie_rf": c.get("categorie"), "proba_rf": c.get("proba"),
