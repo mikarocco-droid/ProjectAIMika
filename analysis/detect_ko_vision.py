@@ -167,7 +167,8 @@ D) la géométrie et la position réelle sur le terrain
 Lis les 3 images comme UNE SEULE séquence temporelle continue.
 
 Chaque affirmation doit être fondée uniquement sur ce qui est réellement visible dans les images. Ne déduis jamais un événement qui n'est pas observable.
-Ne suppose jamais qu'un élément est présent parce qu'il serait normalement présent dans cette situation.
+Ne suppose jamais qu'un élément est présent parce qu'il serait normalement
+présent dans cette situation.													 
 
 ════════════════════════════════════
 
@@ -218,11 +219,25 @@ Les règles du jeu imposent que, lors d'un coup d'envoi, TOUS les joueurs de l'�
 Si tu observes un ou plusieurs joueurs d'une équipe positionnés dans la moitié de terrain de l'équipe adverse (au-delà de la ligne médiane, mélangés avec des joueurs de l'autre équipe, ou dispersés sur l'ensemble du terrain sans respecter cette séparation), ce N'EST PAS une formation de coup d'envoi valide. Réponds "non" à "avant_compatible" dans ce cas, même si un rond central est visible, même si le ballon semble proche du centre, et même si les deux équipes sont par ailleurs visuellement distinctes par leurs couleurs.
 
 Ne confonds jamais "les deux équipes sont visibles et distinctes" (couleurs différentes) avec "les deux équipes sont correctement séparées par moitié de terrain" (positionnement). Les deux conditions sont nécessaires, ni l'une ni l'autre ne suffit seule.
+
+CAS PARTICULIER, TRÈS FRÉQUENT — LES DEUX ÉQUIPES DU MÊME CÔTÉ :
+Vérifie spécifiquement si les DEUX équipes (ou la majorité de leurs joueurs visibles) se trouvent du MÊME côté de la ligne médiane, c'est-à-dire dans la MÊME moitié de terrain plutôt que chacune dans sa propre moitié. Ceci est différent du cas d'un simple joueur isolé qui dépasse la ligne : ici, c'est la majorité ou la totalité des deux équipes qui est concentrée d'un seul côté.
+
+Ce cas de figure N'EST JAMAIS une formation de coup d'envoi, même si :
+- un rond central est visible ;
+- le ballon semble proche du centre ou de la ligne médiane ;
+- les deux équipes restent visuellement distinctes par leurs couleurs ;
+- la situation paraît stable ou immobile.
+
+Une telle disposition (les deux équipes groupées du même côté) indique une phase de jeu normale — par exemple une équipe qui vient de récupérer le ballon près de sa propre surface, une remise en jeu, ou toute autre situation où le jeu s'est simplement déplacé vers un côté du terrain — jamais un coup d'envoi.
+
+Pour vérifier ce point, essaie de compter, même approximativement, combien de joueurs de chaque équipe se trouvent de chaque côté de la ligne médiane. Si l'écrasante majorité des joueurs des DEUX équipes se trouve du même côté, réponds "non" à "avant_compatible", quelle que soit la position exacte du ballon.
 ════════════════════════════════════════
 ÉTAPE 0 — IDENTIFIER LA GÉOMÉTRIE DU TERRAIN
 ════════════════════════════════════════
 
-Avant de décider si la séquence est un coup d'envoi, identifie autant que possible la géométrie réelle du terrain.
+Avant de décider si la séquence est un coup d'envoi, identifie autant que
+possible la géométrie réelle du terrain.
 
 Le centre du terrain correspond à l'intersection :
 - de la ligne médiane ;
@@ -239,41 +254,72 @@ Pour localiser le centre, utilise en priorité :
 - les autres lignes du terrain permettant de reconstruire la géométrie.
 
 IMPORTANT :
+																						
+												
+																				  
+																								   
 
 Le centre de l'IMAGE n'est PAS nécessairement le centre du TERRAIN.
 
-La caméra peut filmer le terrain depuis un angle, une extrémité ou une position latérale.
+La caméra peut filmer le terrain depuis un angle, une extrémité ou une
+															  
+															  
+										 
+														  
+											   
+													
+position latérale.
+																													   
 
-Ne considère donc JAMAIS qu'un ballon est au centre simplement parce qu'il est au milieu de l'image.
+Ne considère donc JAMAIS qu'un ballon est au centre simplement parce qu'il
+est au milieu de l'image.
 
 Si le rond central est visible, utilise-le comme référence prioritaire.
 
-Si le rond central n'est pas visible, utilise les autres lignes du terrain pour estimer sa position uniquement si cette estimation est suffisamment fiable.
+Si le rond central n'est pas visible, utilise les autres lignes du terrain
+pour estimer sa position uniquement si cette estimation est suffisamment
+fiable.
 
-Si la géométrie visible ne permet pas de déterminer avec suffisamment de certitude où se trouve le centre du terrain, ne suppose pas que le ballon est au centre.
+Si la géométrie visible ne permet pas de déterminer avec suffisamment de
+certitude où se trouve le centre du terrain, ne suppose pas que le ballon
+est au centre.
 
 ════════════════════════════════════════
 RÈGLE ANTI-HALLUCINATION, TRÈS IMPORTANTE
 ════════════════════════════════════════
 
-Un but visible dans l'image, une surface de réparation, ou simplement un espace dégagé d'herbe NE SONT PAS le rond central. Le rond central est une ligne courbe blanche spécifique, visible au sol, formant un cercle autour du point central — pas n'importe quelle zone vide du terrain.
+Un but visible dans l'image, une surface de réparation, ou simplement un
+espace dégagé d'herbe NE SONT PAS le rond central. Le rond central est
+une ligne courbe blanche spécifique, visible au sol, formant un cercle
+autour du point central — pas n'importe quelle zone vide du terrain.
 
-Avant d'affirmer "le rond central est visible" ou "les joueurs sont positionnés autour du centre", vérifie explicitement :
+Avant d'affirmer "le rond central est visible" ou "les joueurs sont
+positionnés autour du centre", vérifie explicitement :
 - Vois-tu une ligne courbe blanche caractéristique du rond central ?
 - Vois-tu la ligne médiane droite qui traverse tout le terrain ?
-- Si un but (cage, filet, poteaux) est visible dans l'image, le point jugé "central" n'est presque certainement PAS le centre du terrain, mais une zone proche du but (surface de réparation, dégagement, remise en jeu du gardien) — dans ce cas, réponds "non" à toute la séquence, quelle que soit l'organisation apparente des joueurs.
+- Si un but (cage, filet, poteaux) est visible dans l'image, le point
+  jugé "central" n'est presque certainement PAS le centre du terrain,
+  mais une zone proche du but (surface de réparation, dégagement,
+  remise en jeu du gardien) — dans ce cas, réponds "non" à toute la
+  séquence, quelle que soit l'organisation apparente des joueurs.
 
-Si tu ne peux pas identifier avec certitude le rond central OU la ligne médiane dans IMAGE 1, tu DOIS répondre que la géométrie ne permet pas de confirmer un coup d'envoi central — ne complète jamais ce doute par une supposition sur la disposition des joueurs.
+Si tu ne peux pas identifier avec certitude le rond central OU la ligne
+médiane dans IMAGE 1, tu DOIS répondre que la géométrie ne permet pas de
+confirmer un coup d'envoi central — ne complète jamais ce doute par une
+supposition sur la disposition des joueurs.
 
 ════════════════════════════════════════
 ÉTAPE 1 — EXCLURE LES AUTRES REMISES EN JEU
 ════════════════════════════════════════
 
-Le fait qu'un ballon soit immobile et que des joueurs soient organisés ne suffit PAS.
+Le fait qu'un ballon soit immobile et que des joueurs soient organisés ne
+suffit PAS.
 
 La séquence doit correspondre à une mise en jeu depuis LE CENTRE DU TERRAIN.
 
-Rejette la séquence si elle correspond visuellement à une autre situation, notamment :
+Rejette la séquence si elle correspond visuellement à une autre situation,
+notamment :
+												
 
 - corner ;
 - coup franc ;
@@ -288,7 +334,9 @@ Rejette la séquence si elle correspond visuellement à une autre situation, not
 
 CAS TRÈS IMPORTANT — CORNER :
 
-Si la géométrie du terrain montre que le ballon est situé près d'un angle du terrain ou d'un drapeau de corner, ce n'est PAS un coup d'envoi.
+Si la géométrie du terrain montre que le ballon est situé près d'un angle
+du terrain ou d'un drapeau de corner, ce n'est PAS un coup d'envoi.
+																											
 
 Même si :
 - le ballon est immobile ;
@@ -299,14 +347,18 @@ Même si :
 
 le résultat doit être false si le ballon est dans la zone d'un corner.
 
-Ne confonds jamais une zone rectangulaire, une surface de réparation ou une autre partie du terrain avec le centre du terrain.
+Ne confonds jamais une zone rectangulaire, une surface de réparation ou une
+autre partie du terrain avec le centre du terrain.
 
 CAS IMPORTANT — SURFACE DE RÉPARATION :
+																			 
+																						 
 
-Une zone qui semble être "au milieu" de l'image peut en réalité être une surface de réparation.
+Une zone qui semble être "au milieu" de l'image peut en réalité être une
+surface de réparation.
 
 Utilise les lignes du terrain pour déterminer sa position réelle.
-
+				
 ════════════════════════════════════
 2. IMAGE 1 — POSITION DU BALLON
 ════════════════════════════════════
@@ -545,6 +597,43 @@ Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
 """
 
 
+def _appeler_gemini_avec_retry(client, model, parts, max_tentatives=3, delai_base_s=2.0):
+    """
+    Appelle client.models.generate_content avec retry + backoff exponentiel
+    sur les erreurs TRANSITOIRES (503 UNAVAILABLE, timeout, erreurs réseau).
+
+    Ne retente PAS sur les erreurs qui ne se résoudront jamais toutes seules
+    (JSON invalide, réponse vide) - celles-là sont gérées par l'appelant,
+    pas ici, puisque retenter avec les mêmes images ne changerait rien.
+
+    Lève l'exception d'origine si toutes les tentatives échouent - à
+    l'appelant de l'attraper (comportement inchangé pour lui).
+    """
+    import time
+
+    codes_transitoires = ("503", "UNAVAILABLE", "timeout", "timed out",
+                          "429", "RESOURCE_EXHAUSTED", "500", "INTERNAL")
+
+    derniere_erreur = None
+    for tentative in range(max_tentatives):
+        try:
+            return client.models.generate_content(model=model, contents=[{"parts": parts}])
+        except Exception as e:
+            derniere_erreur = e
+            message = str(e)
+            est_transitoire = any(code in message for code in codes_transitoires)
+
+            if not est_transitoire or tentative == max_tentatives - 1:
+                raise  # erreur définitive, ou plus de tentatives -> on relance telle quelle
+
+            delai = delai_base_s * (2 ** tentative)  # 2s, 4s, 8s...
+            print(f"  [detect_ko_vision] Erreur transitoire ({message[:80]}...) - "
+                  f"retry {tentative + 1}/{max_tentatives - 1} dans {delai:.0f}s")
+            time.sleep(delai)
+
+    raise derniere_erreur
+
+
 def demander_gemini_prefiltre(image, client, model="gemini-3.1-pro-preview"):
     """
     Envoie UNE SEULE image (typiquement "juste_avant") à Gemini pour un
@@ -567,10 +656,7 @@ def demander_gemini_prefiltre(image, client, model="gemini-3.1-pro-preview"):
     parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img_b64}})
 
     try:
-        response = client.models.generate_content(
-            model=model,
-            contents=[{"parts": parts}]
-        )
+        response = _appeler_gemini_avec_retry(client, model, parts)
         text = response.text.strip()
         if text.startswith("```"):
             text = text.split("```")[1]
@@ -607,10 +693,7 @@ def demander_gemini_ko(images_dict, client, model="gemini-3.1-pro-preview"):
         parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img_b64}})
 
     try:
-        response = client.models.generate_content(
-            model=model,
-            contents=[{"parts": parts}]
-        )
+        response = _appeler_gemini_avec_retry(client, model, parts)
         text = response.text.strip()
         if text.startswith("```"):
             text = text.split("```")[1]
