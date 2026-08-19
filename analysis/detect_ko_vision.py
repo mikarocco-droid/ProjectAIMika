@@ -144,315 +144,370 @@ def _frame_to_base64(frame):
 # NE PAS considérer comme acquise avant ce test.
 # ─────────────────────────────────────────
 
-PROMPT_KO_VISION = """Tu analyses 3 images consécutives extraites d'une vidéo d'un match de football amateur.
+PROMPT_KO_VISION = """Tu vas analyser 3 images consécutives extraites d'une vidéo d'un match de football amateur.
 
 Les images sont espacées de 2 secondes :
-- Image 1 = 2 secondes avant l'instant candidat
-- Image 2 = instant candidat
-- Image 3 = 2 secondes après l'instant candidat
 
-OBJECTIF UNIQUE
+* IMAGE 1 = environ t-2 secondes
+* IMAGE 2 = instant candidat
+* IMAGE 3 = environ t+2 secondes
 
-Déterminer si l'instant candidat correspond au COUP D'ENVOI qui démarre
-une période de jeu, et non à une reprise de jeu quelconque pendant un match
-(coup franc, remise en jeu, après un but, etc.).
+OBJECTIF :
+Déterminer si ces 3 images montrent réellement le moment où le ballon est mis en jeu depuis le centre du terrain, c'est-à-dire le début effectif d'une séquence de jeu après une situation de préparation au coup d'envoi.
 
 IMPORTANT :
-Un ballon au centre du terrain + un joueur qui le frappe + des joueurs qui
-se mettent à courir NE SUFFISENT PAS pour répondre oui.
+Ne cherche PAS simplement une scène qui "ressemble" à un coup d'envoi.
+Nous voulons distinguer :
+A) une véritable mise en jeu : joueurs déjà prêts → ballon joué → joueurs commencent réellement à jouer
+de
+B) une préparation au coup d'envoi : joueurs qui arrivent encore, se rassemblent, font un cri de guerre, discutent, se placent progressivement, puis seulement plus tard le vrai coup d'envoi
+de
+C) une autre reprise de jeu ou une phase de jeu déjà commencée.
+D) la géométrie et la position réelle sur le terrain
+Lis les 3 images comme UNE SEULE séquence temporelle continue.
 
-Tu dois d'abord chercher des preuves que la scène est réellement un
-COUP D'ENVOI INITIAL, puis seulement répondre oui si ces preuves sont
-visibles.
+Chaque affirmation doit être fondée uniquement sur ce qui est réellement visible dans les images. Ne déduis jamais un événement qui n'est pas observable.
+Ne suppose jamais qu'un élément est présent parce qu'il serait normalement présent dans cette situation.
 
-============================================================
-RÈGLE FONDAMENTALE
-============================================================
+════════════════════════════════════
 
-N'essaie PAS de déterminer si la scène "ressemble" à un coup d'envoi.
+1. IMAGE 1 — LA SITUATION EST-ELLE DÉJÀ PRÊTE ?
+   ════════════════════════════════════
 
-Cherche au contraire des éléments qui permettraient de dire :
+Avant de considérer la séquence comme compatible avec une mise en jeu, examine attentivement l'état des joueurs dans IMAGE 1.
 
-"Cette scène pourrait être une autre reprise de jeu."
+Le ballon au centre et la présence de l'arbitre ne suffisent PAS.
 
-Si une autre interprétation plausible existe et qu'elle ne peut pas être
-exclue visuellement, réponds false.
+IMAGE 1 doit montrer une situation déjà suffisamment stabilisée et immédiatement compatible avec une mise en jeu.
 
-Ne complète jamais mentalement une scène.
-Ne suppose jamais qu'un élément est présent parce qu'il devrait normalement
-être présent lors d'un coup d'envoi.
+ACCEPTE comme "avant_compatible" si :
 
-Chaque affirmation doit être fondée uniquement sur ce qui est réellement
-visible dans les images.
+* le ballon est visible au sol dans ou très près de la zone du point central ;
+* les joueurs des deux équipes sont déjà majoritairement en position sur le terrain ;
+* les deux équipes sont clairement distinctes ;
+* la disposition générale est compatible avec une mise en jeu depuis le centre ;
+* il n'y a pas de signe évident que les joueurs sont encore en train d'arriver ou de se préparer.
 
-============================================================
-ÉTAPE 1 — IMAGE 1 : LE JEU EST-IL RÉELLEMENT ARRÊTÉ ?
-============================================================
+REJETTE "avant_compatible" si IMAGE 1 montre clairement :
 
-Regarde uniquement l'image 1.
+* des joueurs qui entrent encore sur le terrain ;
+* plusieurs joueurs qui rejoignent encore leurs coéquipiers ;
+* une équipe qui forme encore un cercle ou un cri de guerre ;
+* une équipe regroupée pour une photo ;
+* une discussion collective ou une préparation tactique ;
+* des joueurs encore en train de s'échauffer ;
+* une mise en place progressive clairement visible ;
+* une équipe dont une partie importante n'est pas encore en position ;
+* une situation où le match semble encore en phase de préparation plutôt qu'en attente immédiate de la mise en jeu.
 
-Pour accepter cette étape, il faut voir une situation clairement STATIQUE
-précédant la mise en jeu.
+POINT TRÈS IMPORTANT :
 
-INDICES FAVORABLES :
+Le fait que le ballon soit déjà au centre ne signifie PAS que le coup d'envoi est imminent.
 
-- plusieurs joueurs sont immobiles ou presque immobiles ;
-- les deux équipes sont disposées sur le terrain ;
-- le ballon est posé au centre du terrain ou immédiatement à proximité ;
-- un joueur est clairement positionné pour effectuer la mise en jeu ;
-- l'arbitre est éventuellement présent à proximité.
+Le ballon peut être placé au centre alors que les joueurs sont encore en train de se rassembler, de faire un cri de guerre ou de se préparer.
 
-INDICES DÉFAVORABLES :
+Exemple :
+Si une équipe est encore regroupée pour son cri de guerre et que plusieurs joueurs de l'autre équipe arrivent encore sur le terrain, alors IMAGE 1 n'est PAS une situation immédiatement prête au coup d'envoi, même si le ballon et l'arbitre sont déjà au centre.
 
-- ballon déjà en mouvement ;
-- joueur clairement en train de dribbler ;
-- joueurs déjà engagés dans une action ;
-- duel ou confrontation autour du ballon ;
-- joueurs regroupés autour d'une action en cours ;
-- ballon éloigné du centre ;
-- situation manifestement dynamique.
+ATTENTION AU VOCABULAIRE :
+"Regroupée" et "stabilisée" ne sont PAS compatibles entre eux. Si tu décris une équipe comme "regroupée", "en cercle", "rassemblée" ou "en cluster", le fait d'ajouter qu'elle est "stable" ou "stabilisée" à ce moment précis NE COMPENSE PAS le rejet — cela reste un REJET de avant_compatible. Une équipe prête pour un coup d'envoi est RÉPARTIE sur sa moitié de terrain (joueurs à des positions distinctes), jamais regroupée en un seul point, peu importe à quel point ce regroupement semble immobile ou stable.
 
-Si l'image 1 montre clairement que le jeu est déjà en cours :
-réponds false.
+CRITÈRE DE SÉPARATION PAR MOITIÉ DE TERRAIN, TRÈS IMPORTANT :
+Les règles du jeu imposent que, lors d'un coup d'envoi, TOUS les joueurs de l'équipe qui ne botte pas soient dans LEUR PROPRE moitié de terrain, et que l'équipe qui botte ait également ses joueurs dans sa propre moitié (à l'exception du joueur qui s'apprête à jouer le ballon). Une formation de coup d'envoi valide montre donc une séparation nette de part et d'autre de la ligne médiane.
 
-============================================================
-ÉTAPE 2 — IMAGE 1 : DISPOSITION DES DEUX ÉQUIPES
-============================================================
+Si tu observes un ou plusieurs joueurs d'une équipe positionnés dans la moitié de terrain de l'équipe adverse (au-delà de la ligne médiane, mélangés avec des joueurs de l'autre équipe, ou dispersés sur l'ensemble du terrain sans respecter cette séparation), ce N'EST PAS une formation de coup d'envoi valide. Réponds "non" à "avant_compatible" dans ce cas, même si un rond central est visible, même si le ballon semble proche du centre, et même si les deux équipes sont par ailleurs visuellement distinctes par leurs couleurs.
 
-Vérifie séparément les deux équipes.
+Ne confonds jamais "les deux équipes sont visibles et distinctes" (couleurs différentes) avec "les deux équipes sont correctement séparées par moitié de terrain" (positionnement). Les deux conditions sont nécessaires, ni l'une ni l'autre ne suffit seule.
+════════════════════════════════════════
+ÉTAPE 0 — IDENTIFIER LA GÉOMÉTRIE DU TERRAIN
+════════════════════════════════════════
 
-Pour accepter cette étape :
+Avant de décider si la séquence est un coup d'envoi, identifie autant que possible la géométrie réelle du terrain.
 
-- les deux équipes doivent être clairement identifiables ;
-- elles doivent être principalement réparties dans leurs moitiés respectives ;
-- la majorité des joueurs visibles doivent être dans une disposition
-  correspondant à une attente avant remise en jeu ;
-- il ne doit pas y avoir de mélange général des deux équipes.
+Le centre du terrain correspond à l'intersection :
+- de la ligne médiane ;
+- et de l'axe longitudinal du terrain.
 
-ATTENTION :
+Il est normalement matérialisé par le rond central.
 
-Une simple présence de joueurs des deux couleurs autour du centre ne suffit
-PAS.
+Pour localiser le centre, utilise en priorité :
+- le rond central ;
+- la ligne médiane ;
+- les lignes de touche ;
+- les lignes de but ;
+- les surfaces de réparation ;
+- les autres lignes du terrain permettant de reconstruire la géométrie.
 
-Un groupe compact d'une équipe ne constitue PAS une formation de coup d'envoi.
+IMPORTANT :
 
-Une équipe peut avoir quelques joueurs proches du centre, mais la scène doit
-globalement montrer une organisation précédant la reprise.
+Le centre de l'IMAGE n'est PAS nécessairement le centre du TERRAIN.
 
-Si cette organisation n'est pas clairement visible :
-réponds false.
+La caméra peut filmer le terrain depuis un angle, une extrémité ou une position latérale.
 
-============================================================
-ÉTAPE 3 — LE CENTRE DU TERRAIN
-============================================================
+Ne considère donc JAMAIS qu'un ballon est au centre simplement parce qu'il est au milieu de l'image.
 
-Le ballon doit être clairement associé au point central du terrain.
+Si le rond central est visible, utilise-le comme référence prioritaire.
+
+Si le rond central n'est pas visible, utilise les autres lignes du terrain pour estimer sa position uniquement si cette estimation est suffisamment fiable.
+
+Si la géométrie visible ne permet pas de déterminer avec suffisamment de certitude où se trouve le centre du terrain, ne suppose pas que le ballon est au centre.
+
+════════════════════════════════════════
+RÈGLE ANTI-HALLUCINATION, TRÈS IMPORTANTE
+════════════════════════════════════════
+
+Un but visible dans l'image, une surface de réparation, ou simplement un espace dégagé d'herbe NE SONT PAS le rond central. Le rond central est une ligne courbe blanche spécifique, visible au sol, formant un cercle autour du point central — pas n'importe quelle zone vide du terrain.
+
+Avant d'affirmer "le rond central est visible" ou "les joueurs sont positionnés autour du centre", vérifie explicitement :
+- Vois-tu une ligne courbe blanche caractéristique du rond central ?
+- Vois-tu la ligne médiane droite qui traverse tout le terrain ?
+- Si un but (cage, filet, poteaux) est visible dans l'image, le point jugé "central" n'est presque certainement PAS le centre du terrain, mais une zone proche du but (surface de réparation, dégagement, remise en jeu du gardien) — dans ce cas, réponds "non" à toute la séquence, quelle que soit l'organisation apparente des joueurs.
+
+Si tu ne peux pas identifier avec certitude le rond central OU la ligne médiane dans IMAGE 1, tu DOIS répondre que la géométrie ne permet pas de confirmer un coup d'envoi central — ne complète jamais ce doute par une supposition sur la disposition des joueurs.
+
+════════════════════════════════════════
+ÉTAPE 1 — EXCLURE LES AUTRES REMISES EN JEU
+════════════════════════════════════════
+
+Le fait qu'un ballon soit immobile et que des joueurs soient organisés ne suffit PAS.
+
+La séquence doit correspondre à une mise en jeu depuis LE CENTRE DU TERRAIN.
+
+Rejette la séquence si elle correspond visuellement à une autre situation, notamment :
+
+- corner ;
+- coup franc ;
+- penalty ;
+- sortie de but ;
+- touche ;
+- reprise de jeu depuis une autre zone ;
+- ballon situé dans ou près d'une surface de réparation ;
+- ballon situé près d'une ligne de touche ;
+- ballon situé près d'un coin du terrain ;
+- jeu déjà en cours.
+
+CAS TRÈS IMPORTANT — CORNER :
+
+Si la géométrie du terrain montre que le ballon est situé près d'un angle du terrain ou d'un drapeau de corner, ce n'est PAS un coup d'envoi.
+
+Même si :
+- le ballon est immobile ;
+- l'arbitre est présent ;
+- plusieurs joueurs sont organisés ;
+- les joueurs commencent ensuite à courir ;
+- la séquence ressemble visuellement à une mise en jeu ;
+
+le résultat doit être false si le ballon est dans la zone d'un corner.
+
+Ne confonds jamais une zone rectangulaire, une surface de réparation ou une autre partie du terrain avec le centre du terrain.
+
+CAS IMPORTANT — SURFACE DE RÉPARATION :
+
+Une zone qui semble être "au milieu" de l'image peut en réalité être une surface de réparation.
+
+Utilise les lignes du terrain pour déterminer sa position réelle.
+
+════════════════════════════════════
+2. IMAGE 1 — POSITION DU BALLON
+════════════════════════════════════
+
+Vérifie séparément la position du ballon.
+
+Le ballon doit être :
+
+* visible ;
+* posé au sol ou clairement placé dans la zone centrale ;
+* à proximité du point central / rond central.
+
+Si le ballon est clairement ailleurs sur le terrain, ou si sa position ne peut pas être déterminée, la séquence n'est pas compatible avec une mise en jeu depuis le centre.
+
+Cependant, ne rejette PAS uniquement parce que le ballon est difficile à voir si sa position centrale est clairement identifiable autrement.
+
+════════════════════════════════════
+3. IMAGE 2 — LA MISE EN JEU EST-ELLE RÉELLEMENT VISIBLE ?
+════════════════════════════════════
+
+IMAGE 2 correspond à l'instant candidat.
+
+Cherche des preuves visuelles que le ballon est effectivement mis en jeu depuis le centre.
+
+Une mise en jeu visible peut être indiquée par :
+
+* un joueur qui frappe clairement le ballon ;
+* le ballon qui commence clairement à se déplacer depuis le point central ;
+* une action immédiatement identifiable comme le déclenchement du jeu depuis le centre.
+
+Ne considère PAS comme preuve suffisante :
+
+* simplement un joueur proche du ballon ;
+* un joueur qui semble prêt à frapper ;
+* un ballon posé au centre sans mouvement observable ;
+* une simple modification de position des joueurs.
+
+Si aucune mise en jeu réelle n'est observable dans les 3 images, "mise_en_jeu_visible" doit être false.
+
+IMPORTANT :
+Ne suppose jamais qu'un joueur a frappé le ballon uniquement parce que le ballon est ensuite ailleurs.
+
+PRÉCISION IMPORTANTE SUR LE TIMING :
+La frappe ne tombe pas forcément exactement au moment de l'IMAGE 2 — les 3 images sont espacées de 2 secondes, et l'instant candidat n'est qu'une estimation, pas un instant exact au trentième de seconde. Si l'IMAGE 1 montre une situation "avant_compatible" claire, et que l'IMAGE 3 montre sans ambiguïté un jeu déjà engagé (ballon déplacé depuis le centre, joueurs des deux équipes en mouvement), alors "mise_en_jeu_visible" doit être considéré comme true MÊME SI le ballon apparaît encore immobile sur l'IMAGE 2 elle-même — la mise en jeu a simplement eu lieu entre l'IMAGE 2 et l'IMAGE 3. Ne rejette pas uniquement parce que l'action de frappe elle-même n'est pas figée exactement sur l'IMAGE 2 ; ce qui compte est qu'une progression réelle et cohérente existe entre IMAGE 1 (prêt) et IMAGE 3 (jeu engagé).
+
+════════════════════════════════════
+4. IMAGE 3 — LE JEU COMMENCE-T-IL RÉELLEMENT ?
+════════════════════════════════════
+
+IMAGE 3 doit confirmer la transition vers le jeu actif.
 
 Cherche :
 
-- ballon posé au centre ;
-- joueur positionné pour jouer le ballon ;
-- éventuellement arbitre à proximité.
+* le ballon désormais en mouvement ou déplacé depuis le centre ;
+* plusieurs joueurs qui commencent réellement à se déplacer ;
+* une évolution cohérente de la position des joueurs des deux équipes ;
+* une transition entre une situation préparée et une situation de jeu actif.
 
-Mais ATTENTION :
+Un simple changement de position d'un seul joueur ne suffit PAS.
 
-La présence du ballon au centre est seulement une CONDITION NÉCESSAIRE.
+Une image 3 différente de l'image 1 ne prouve PAS à elle seule qu'il s'agit du coup d'envoi.
 
-Elle ne prouve absolument PAS qu'il s'agit d'un coup d'envoi.
+════════════════════════════════════
+5. DIFFÉRENCE ESSENTIELLE : PRÉPARATION VS VRAI COUP D'ENVOI
+════════════════════════════════════
 
-Un coup franc ou une autre reprise peut également se produire près du centre.
+C'est le point le plus important de l'analyse.
 
-Donc :
+Tu dois distinguer :
 
-BALLON AU CENTRE ≠ COUP D'ENVOI.
-
-============================================================
-ÉTAPE 4 — IMAGE 2 : QUE SE PASSE-T-IL EXACTEMENT ?
-============================================================
-
-Regarde l'image 2.
-
-Cherche une action de mise en jeu :
-
-- un joueur frappe ou joue le ballon depuis le point central ;
-- le ballon commence son déplacement ;
-- les joueurs commencent à réagir.
-
-Mais ne donne PAS beaucoup de poids à cette étape.
-
-Le fait qu'un joueur frappe le ballon depuis le centre peut également
-correspondre à une autre reprise de jeu.
-
-Cette étape ne peut donc jamais, à elle seule, transformer un candidat
-incertain en true.
-
-============================================================
-ÉTAPE 5 — IMAGE 3 : LA TRANSITION
-============================================================
-
-Compare directement l'image 1 et l'image 3.
-
-Cherche une transition réelle :
+SCÉNARIO A — VRAI COUP D'ENVOI
 
 IMAGE 1 :
-situation statique précédant la mise en jeu
+Les joueurs sont déjà prêts et la situation est stabilisée.
 
-vers
+IMAGE 2 :
+Le ballon est effectivement joué depuis le centre.
 
 IMAGE 3 :
-situation de jeu actif.
+Les joueurs commencent réellement à jouer.
 
-Il faut observer un changement collectif et cohérent :
+→ Compatible avec un vrai coup d'envoi.
 
-- plusieurs joueurs des deux équipes ont quitté leur position initiale ;
-- le ballon a quitté le centre ;
-- le jeu est réellement engagé.
+SCÉNARIO B — PRÉPARATION AU COUP D'ENVOI
 
-Un seul joueur qui bouge ne suffit pas.
+IMAGE 1 :
+Les joueurs arrivent encore, se regroupent, font un cri de guerre, discutent ou se mettent encore en place.
 
-Une simple différence de position entre les images ne suffit pas.
+IMAGE 2 :
+La situation évolue.
 
-============================================================
-ÉTAPE 6 — TEST CRITIQUE : "POURRAIT-IL S'AGIR D'UNE AUTRE REPRISE ?"
-============================================================
+IMAGE 3 :
+Les joueurs commencent à se disperser ou à jouer.
 
-C'est l'étape la plus importante.
+→ REJETER.
 
-Avant de répondre true, pose-toi explicitement cette question :
+Même si le ballon était déjà au centre.
 
-"Est-ce que les 3 images pourraient aussi correspondre à un coup franc,
-une remise en jeu, une reprise après une faute, une reprise après un but,
-ou une autre situation de jeu arrêtée ?"
+SCÉNARIO C — AUTRE REPRISE / JEU DÉJÀ EN COURS
 
-Si OUI et que les images ne permettent pas d'exclure cette possibilité :
-réponds false.
+IMAGE 1 :
+Le ballon est déjà en jeu, les joueurs sont déjà engagés dans une action ou la configuration n'est pas celle d'une mise en jeu depuis le centre.
 
-Ne réponds pas true simplement parce que la scène ressemble à un
-coup d'envoi.
+→ REJETER.
 
-============================================================
-CAS PARTICULIERS
-============================================================
+════════════════════════════════════
+6. NE PAS INVENTER DE CONTEXTE
+════════════════════════════════════
 
-1. BALLON INVISIBLE
+Tu ne connais pas le chronomètre réel de la vidéo.
 
-Si le ballon n'est pas visible dans l'image 1 :
+Tu ne sais pas si cette mise en jeu correspond :
 
-ne suppose PAS qu'il est au centre.
+* au début du match ;
+* au début de la deuxième mi-temps ;
+* à une reprise après un but.
 
-Si sa position ne peut pas être déterminée clairement :
-réponds false.
+Tu ne dois donc PAS essayer de déterminer cela à partir d'hypothèses.
 
-2. ARBITRE
+L'objectif est uniquement de déterminer si les images montrent une véritable mise en jeu depuis le centre après une situation de préparation stabilisée.
 
-La présence d'un arbitre près du ballon est un indice utile mais PAS
-obligatoire.
+Ne dis jamais :
+"c'est probablement le début du match"
+si cette information n'est pas visible.
 
-Son absence ne suffit donc pas à répondre false.
+Ne dis jamais :
+"c'est probablement une reprise après un but"
+si cette information n'est pas visible.
 
-3. COULEURS
+════════════════════════════════════
+7. RÈGLE DE DÉCISION
+════════════════════════════════════
 
-Les couleurs peuvent être imparfaites si les deux équipes restent
-clairement distinguables.
+Pour répondre TRUE, les conditions suivantes doivent être réunies :
 
-4. JOUEUR DANS LA MAUVAISE MOITIÉ
+1. avant_compatible = true
+2. mise_en_jeu_visible = true
+3. transition_apres = true
 
-Ne fais pas de déduction stricte à partir de la position d'un seul joueur.
-Un joueur peut être légèrement avancé.
+Si une condition essentielle n'est pas clairement vérifiable dans les images, réponds false.
 
-Évalue la disposition générale des deux équipes.
+Ne compense jamais une condition manquante par une forte impression générale.
 
-5. BUT / REPRISE APRÈS UN BUT
+Par exemple :
 
-Si la scène ressemble à une remise en jeu après un but mais que rien dans
-les images ne permet de savoir qu'un but vient d'avoir lieu, ne l'invente
-pas.
+* ballon au centre + arbitre + joueurs = PAS automatiquement true ;
+* ballon au centre + joueurs encore en cri de guerre = false ;
+* joueurs prêts + frappe clairement visible + transition collective = true.
 
-En revanche, si les joueurs sont clairement regroupés pour célébrer ou
-qu'une situation de reprise différente est visible, réponds false.
+════════════════════════════════════
+8. CONFIANCE
+════════════════════════════════════
 
-6. AUTRE REPRISE AU CENTRE
+La confiance doit représenter la confiance dans la décision globale basée sur les preuves visuelles.
 
-C'est un cas particulièrement important.
+Elle ne doit PAS être systématiquement élevée.
 
-Si le ballon est au centre et qu'un joueur le frappe, mais que la disposition
-des équipes ou la séquence ne permet pas de distinguer clairement un
-véritable coup d'envoi d'une autre reprise, réponds false.
+Utilise approximativement :
 
-============================================================
-RÈGLE DE DÉCISION
-============================================================
+* 0.90–1.00 : les trois conditions sont clairement visibles ;
+* 0.70–0.89 : la décision est assez claire mais certains éléments sont partiellement visibles ;
+* 0.50–0.69 : plusieurs éléments sont ambigus ;
+* < 0.50 : les images ne permettent pas une décision fiable.
 
-Réponds TRUE uniquement si les trois conditions suivantes sont réunies :
+Si une condition essentielle manque clairement, réponds false et explique précisément laquelle manque.
 
-A. IMAGE 1 :
-une situation clairement statique précédant une mise en jeu est visible ;
+════════════════════════════════════
+9. RAISONNEMENT
+════════════════════════════════════
 
-B. IMAGE 1 :
-les deux équipes présentent clairement une organisation générale
-compatible avec un coup d'envoi ;
+Le raisonnement doit être court et factuel.
 
-C. IMAGES 1 → 2 → 3 :
-une transition réelle vers le jeu actif est visible depuis cette situation.
+Ne répète pas un texte générique du type :
+"les joueurs se dispersent, indiquant le début du jeu."
 
-ET surtout :
+Indique précisément :
 
-D. aucune autre interprétation évidente comme reprise de jeu ne ressort
-des images.
+* l'état observable des joueurs dans IMAGE 1 ;
+* la position observable du ballon ;
+* ce qui est réellement observable dans IMAGE 2 ;
+* ce qui change réellement dans IMAGE 3 ;
+* et, si rejet, la condition précise qui échoue.
 
-Si une condition A, B ou C n'est pas clairement observable :
-FALSE.
+Ne mentionne jamais une information qui n'est pas visible dans les images.
 
-Si A, B et C semblent réunies mais qu'une autre interprétation plausible
-reste impossible à exclure :
-FALSE.
-
-============================================================
-IMPORTANT : NE PAS UTILISER LE "TEMPS DU MATCH"
-============================================================
-
-Tu ne connais pas le chronomètre réel du match.
-
-Ne suppose jamais que tu es au début, au milieu ou à la fin du match en
-fonction du temps vidéo.
-
-Ne déduis jamais qu'il s'agit du premier coup d'envoi simplement parce que
-la scène ressemble à un début de match.
-
-Tu dois décider uniquement à partir des éléments visibles dans les 3 images.
-
-============================================================
-FORMAT DE RÉPONSE
-============================================================
-
-Réponds UNIQUEMENT avec un JSON valide.
+Réponds UNIQUEMENT avec ce JSON valide, sans texte avant ni après :
 
 {
-  "transition_visible": true,
-  "confidence": 0.0,
-  "raisonnement": "..."
+"avant_compatible": true,
+"mise_en_jeu_visible": true,
+"transition_apres": true,
+"transition_visible": true,
+"confidence": 0.92,
+"raisonnement": "Description courte et factuelle des éléments réellement observables dans les trois images."
 }
 
-"transition_visible" :
-true uniquement si tu es réellement capable de confirmer visuellement
-qu'il s'agit d'un coup d'envoi.
-
-"confidence" :
-estime ta confiance dans cette décision entre 0.0 et 1.0.
-
-"raisonnement" :
-1 à 3 phrases maximum.
-
-Le raisonnement doit citer des éléments réellement visibles.
-Ne dis pas simplement "compatible avec un coup d'envoi".
-Explique pourquoi les images permettent de distinguer un coup d'envoi
-d'une autre reprise de jeu.
-
-IMPORTANT :
-Si tu réponds false, explique précisément quel élément observable empêche
-de confirmer le coup d'envoi.
-
-Ne donne aucun texte en dehors du JSON.
+RÈGLE FINALE :
+Ne réponds jamais true simplement parce que la scène ressemble à un coup d'envoi.
+Pour répondre true, il faut voir une séquence cohérente :
+FORMATION DÉJÀ PRÊTE → MISE EN JEU RÉELLEMENT OBSERVABLE → DÉBUT DU JEU.
+Si l'image 1 montre encore une phase de préparation, d'arrivée, de regroupement ou de cri de guerre, rejette la séquence.
 """
 
 
@@ -562,8 +617,20 @@ def demander_gemini_ko(images_dict, client, model="gemini-3.1-pro-preview"):
             if text.startswith("json"):
                 text = text[4:]
         result = json.loads(text.strip())
+        avant = bool(result.get("avant_compatible", False))
+        mise = bool(result.get("mise_en_jeu_visible", False))
+        transition = bool(result.get("transition_apres", False))
         return {
-            "transition_visible": bool(result.get("transition_visible", False)),
+            # Décision STRICTE recalculée en code — ne fait plus confiance
+            # au transition_visible auto-rapporté par Gemini seul, qui peut
+            # se contredire avec ses propres sous-critères (cas observé :
+            # Andrimont 937/1262/1273/1322 où Gemini identifie lui-même
+            # une géométrie incompatible mais votait quand même True).
+            "avant_compatible": avant,
+            "mise_en_jeu_visible": mise,
+            "transition_apres": transition,
+            "transition_visible": avant and mise and transition,
+            "transition_visible_brute_gemini": bool(result.get("transition_visible", False)),
             "confidence": float(result.get("confidence", 0.0)),
             "raisonnement": result.get("raisonnement", ""),
         }
