@@ -2162,6 +2162,26 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # 1b-bis. RÉSOLUTION IDENTITÉS JOUEURS
     # ─────────────────────────────────────────
+    # V5.1 : sauvegarde AUTOMATIQUE de frames_data + jersey_map BRUT (avant
+    # fusion canonique) - nécessaire pour l'audit de fiabilité d'identité
+    # (audit_identite_joueurs.py), qui doit voir les track_id d'origine, pas
+    # les IDs déjà fusionnés en "P{jersey}". Coût quasi nul (quelques Mo,
+    # écriture locale), toujours actif - pas besoin de relancer un run pour
+    # récupérer ces données plus tard.
+    try:
+        import pickle as _pickle_audit
+        _audit_dir = os.path.join(output_dir, "audit_identite")
+        os.makedirs(_audit_dir, exist_ok=True)
+        with open(os.path.join(_audit_dir, "frames_data.pkl"), "wb") as _f_audit:
+            _pickle_audit.dump(frames_data, _f_audit)
+        with open(os.path.join(_audit_dir, "jersey_map_brut.json"), "w", encoding="utf-8") as _f_audit2:
+            json.dump(jersey_map, _f_audit2)
+        print(f"  [AUDIT IDENTITE] frames_data + jersey_map brut sauvegardés "
+              f"dans {_audit_dir}/ ({len(frames_data)} frames, "
+              f"{len(jersey_map)} track_id référencés)")
+    except Exception as _e_audit:
+        print(f"  [AUDIT IDENTITE] Sauvegarde ignorée : {_e_audit}")
+
     try:
         events, jersey_map = resolve_player_identities(events, jersey_map)
         print(f"  Jersey map : {len(jersey_map)} joueurs identifiés")
