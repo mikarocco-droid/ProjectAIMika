@@ -40,6 +40,12 @@ class PlayerReID:
         self._team_color_samples     = []
         self._team_centroids         = None
 
+        # V5.1 DIAGNOSTIC : distribution reelle de abs(d0-d1), pour calibrer
+        # le seuil d'ambiguite (actuellement 15.0, suspecte trop large -
+        # seulement 25/665 track_id ont recu une equipe sur un match test).
+        # Retirer une fois le bon seuil determine.
+        self._diag_gaps = []
+
         # jersey_map intégré : {reid_id → jersey_number}
         # Permet de stabiliser les IDs via les numéros détectés
         self._jersey_map             = {}
@@ -184,7 +190,9 @@ class PlayerReID:
         if d0 > dist_threshold and d1 > dist_threshold:
             return "gk"
 
-        if abs(d0 - d1) < 15.0:
+        gap = abs(d0 - d1)
+        self._diag_gaps.append(gap)  # V5.1 DIAGNOSTIC - a retirer apres calibration
+        if gap < 15.0:
             return None
 
         return 0 if d0 < d1 else 1
@@ -351,7 +359,7 @@ class PlayerReID:
         active   = sum(1 for m in self.memory.values()
                        if self.frame_count - m["last_seen"] <= self.TTL_ACTIVE)
         sleeping = len(self.memory) - active
-        return {
+        result = {
             "total_ids":        self.next_id,
             "in_memory":        len(self.memory),
             "active":           active,
@@ -359,6 +367,20 @@ class PlayerReID:
             "spatial_max_dist": self.SPATIAL_MAX_DIST,
             "teams_calibrated": self._team_colors_calibrated,
         }
+        # V5.1 DIAGNOSTIC - a retirer apres calibration du seuil d'ambiguite
+        if self._diag_gaps:
+            import numpy as _np_diag
+            arr = _np_diag.array(self._diag_gaps)
+            result["diag_gap_n"]      = len(arr)
+            result["diag_gap_pct_below_15"] = float((arr < 15.0).mean() * 100)
+            result["diag_gap_percentiles"] = {
+                p: float(_np_diag.percentile(arr, p)) for p in [10, 25, 50, 75, 90]
+            }
+            print(f"  [DIAG team gap] n={len(arr)}  "
+                  f"%<15.0={(arr < 15.0).mean()*100:.1f}%  "
+                  f"percentiles(10/25/50/75/90)="
+                  f"{[round(float(_np_diag.percentile(arr, p)), 1) for p in [10,25,50,75,90]]}")
+        return result
 
     # ─────────────────────────────────────────
     # TEAM DISTRIBUTION

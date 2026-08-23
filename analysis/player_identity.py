@@ -19,7 +19,7 @@ from collections import defaultdict
 # ─────────────────────────────────────────
 # BUILD IDENTITY MAP
 # ─────────────────────────────────────────
-def build_identity_map(events, jersey_map):
+def build_identity_map(events, jersey_map, team_map=None):
     """
     Construit un mapping {old_id → canonical_id} basé sur le numéro de maillot.
 
@@ -28,24 +28,40 @@ def build_identity_map(events, jersey_map):
       2. Créer un ID canonique "P{jersey}" pour chaque groupe
       3. Les IDs sans maillot gardent leur ID original
 
+    IMPORTANT (V5.1) : si team_map est fourni ({track_id: "team_a"/"team_b"/...}),
+    la fusion se fait sur la paire (équipe, maillot) plutôt que sur le maillot
+    seul. Un match de foot a deux équipes qui partagent presque toujours les
+    mêmes petits numéros (1-11) — fusionner sur le numéro seul mélange à tort
+    deux joueurs réels de camps différents sous un seul ID (démontré : 725
+    fusions erronées prouvées sur un match de test, concentrées sur les
+    numéros 1-9, quasi absentes sur les numéros à deux chiffres rares à une
+    seule équipe — cf. audit_identite_joueurs.py). Sans team_map, l'ancien
+    comportement (fusion sur maillot seul) est conservé pour compatibilité,
+    mais reste vulnérable à ce même problème.
+
     Retourne : identity_map {old_id → canonical_id}
     """
+    team_map = team_map or {}
     jersey_to_ids = defaultdict(set)
     for pid, jersey in jersey_map.items():
         if jersey is not None and str(jersey).strip():
-            jersey_to_ids[str(jersey)].add(str(pid))
+            team = team_map.get(str(pid)) or team_map.get(pid)
+            key = (team, str(jersey)) if team else (None, str(jersey))
+            jersey_to_ids[key].add(str(pid))
 
     identity_map = {}
-    for jersey, ids in jersey_to_ids.items():
-        canonical_id = f"P{jersey}"
+    for key, ids in jersey_to_ids.items():
+        team, jersey = key
+        canonical_id = f"P{team}_{jersey}" if team else f"P{jersey}"
         for pid in ids:
             if pid != canonical_id:
                 identity_map[pid] = canonical_id
 
     n_merged = sum(1 for ids in jersey_to_ids.values() if len(ids) > 1)
     if identity_map:
+        mode = "clé=(équipe,maillot)" if team_map else "clé=maillot seul — team_map absent, risque de fusion inter-équipe"
         print(f"  Identity : {len(identity_map)} IDs → {len(jersey_to_ids)} joueurs "
-              f"({n_merged} fusions)")
+              f"({n_merged} fusions, {mode})")
 
     return identity_map
 
@@ -122,12 +138,15 @@ def get_player_label(pid, jersey_map):
 # ─────────────────────────────────────────
 # RESOLVE ALL — point d'entrée unique
 # ─────────────────────────────────────────
-def resolve_player_identities(events, jersey_map):
+def resolve_player_identities(events, jersey_map, team_map=None):
     """
     Effectue toute la résolution d'identité en une seule fonction.
     Retourne (events, jersey_map) mis à jour.
+
+    team_map optionnel ({track_id: equipe}) - voir build_identity_map()
+    pour la raison de son importance (evite les fusions inter-equipes).
     """
-    identity_map = build_identity_map(events, jersey_map)
+    identity_map = build_identity_map(events, jersey_map, team_map=team_map)
     if not identity_map:
         return events, jersey_map
 
