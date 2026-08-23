@@ -2183,7 +2183,27 @@ def run_pipeline(
         print(f"  [AUDIT IDENTITE] Sauvegarde ignorée : {_e_audit}")
 
     try:
-        events, jersey_map = resolve_player_identities(events, jersey_map)
+        # V5.1 : construit team_map (track_id -> equipe majoritaire) a partir
+        # de frames_data (deja disponible, deja enrichi par PlayerReID avec
+        # le champ "team") - evite que build_identity_map() fusionne a tort
+        # deux joueurs de camps differents partageant le meme numero de
+        # maillot (demontre : 725 fusions erronees sur un match de test,
+        # concentrees sur les numeros 1-9 partages entre les deux equipes).
+        from collections import Counter as _Counter_team, defaultdict as _dd_team
+        _team_votes = _dd_team(list)
+        for _fd in frames_data:
+            for _p in _fd.get("players", []):
+                _tid = str(_p.get("id", _p.get("tracker_id", "")))
+                _team = _p.get("team")
+                if _tid and _team:
+                    _team_votes[_tid].append(_team)
+        team_map = {
+            _tid: _Counter_team(_votes).most_common(1)[0][0]
+            for _tid, _votes in _team_votes.items()
+        }
+        print(f"  [IDENTITE] team_map construit : {len(team_map)} track_id avec équipe connue")
+
+        events, jersey_map = resolve_player_identities(events, jersey_map, team_map=team_map)
         print(f"  Jersey map : {len(jersey_map)} joueurs identifiés")
 
         # ── PlayerIdentityMemory : mise à jour finale + sauvegarde ────────────

@@ -369,6 +369,23 @@ def process_video(
     print(f"  {len(events)} events detectes")
     print(f"  {len(jersey_map)} maillots identifies")
 
+    # V5.1 DIAGNOSTIC - SAUVEGARDE EN FICHIER (pas juste console !) la
+    # distribution reelle de abs(d0-d1), pour calibrer le seuil d'ambiguite
+    # team (actuellement 15.0, suspecte trop large). Meme dossier que
+    # frames_data.pkl / jersey_map_brut.json (pipeline.py), pour tout
+    # retrouver au meme endroit sans jamais avoir a relancer un run pour
+    # recuperer une info deja calculee. A retirer une fois le seuil corrige.
+    try:
+        import json as _json_diag
+        _diag_dir = "outputs/test/audit_identite"
+        os.makedirs(_diag_dir, exist_ok=True)
+        _diag_stats = tracker.reid.stats()
+        with open(os.path.join(_diag_dir, "reid_diag.json"), "w", encoding="utf-8") as _f_diag:
+            _json_diag.dump(_diag_stats, _f_diag, indent=2)
+        print(f"  [DIAG PlayerReID] sauvegardé dans {_diag_dir}/reid_diag.json : {_diag_stats}")
+    except Exception as _e_diag:
+        print(f"  [DIAG PlayerReID] indisponible : {_e_diag}")
+
     if return_frames:
         return events, jersey_map, fps, total_frames, frames_data
     else:
