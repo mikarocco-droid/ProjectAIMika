@@ -2195,7 +2195,15 @@ def run_pipeline(
             for _p in _fd.get("players", []):
                 _tid = str(_p.get("id", _p.get("tracker_id", "")))
                 _team = _p.get("team")
-                if _tid and _team:
+                if _tid and _team is not None:
+                    # V5.1 FIX : `if _team:` rejetait silencieusement TOUTES
+                    # les votes team=0 (0 est falsy en Python !), alors que
+                    # team=0 represente 41.1% des classifications reelles
+                    # sur Raeren - ce bug a lui seul faisait chuter la
+                    # couverture de team_map de 46.2% a 26.7% (verifie sur
+                    # donnees reelles). Rien a voir avec _calibrate_teams()
+                    # lui-meme - un simple bug de verite Python dans CE
+                    # fichier.
                     _team_votes[_tid].append(_team)
         team_map = {
             _tid: _Counter_team(_votes).most_common(1)[0][0]
