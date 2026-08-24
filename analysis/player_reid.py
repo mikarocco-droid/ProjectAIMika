@@ -173,7 +173,18 @@ class PlayerReID:
         c = color.astype(np.float32)
 
         if not self._team_colors_calibrated:
-            if np.any(c > 10):
+            # FIX V5.1 : l'ancien filtre `np.any(c > 10)` supposait un vecteur
+            # BGR brut (0-255). Le vecteur couleur actuel est un histogramme
+            # NORMALISE (somme=1 si valide, tout-zero si _extract_color a
+            # echoue) + LAB pondere (~[-4,4]) - AUCUNE composante ne depasse
+            # jamais 10 dans ce nouveau format, donc l'ancien filtre etait
+            # TOUJOURS faux, `_team_color_samples` ne se remplissait jamais,
+            # et la calibration ne se declenchait JAMAIS de tout un match
+            # (confirme : teams_calibrated=False apres 1800s sur Raeren,
+            # cf. reid_diag.json). Nouveau test : le vecteur est valide si
+            # sa portion histogramme (16 premieres valeurs) somme a ~1.0,
+            # ce qui echoue proprement sur le sentinel tout-zero.
+            if c[:16].sum() > 0.9:
                 self._team_color_samples.append(c)
             if (len(self._team_color_samples) >= self.CALIB_MIN_SAMPLE
                     and self.frame_count >= self.CALIB_FRAMES):
