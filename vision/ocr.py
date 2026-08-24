@@ -55,7 +55,10 @@ def read_number_from_patch(patch):
         return None
 
     cfg = (
-        "--psm 8 "
+        "--psm 8 "  # V5.1 : teste 6/7/8/10/11/13 sur image propre -
+                    # seul psm=8 (et 10/13) lit correctement "47" en
+                    # entier ; psm=7 (tente initialement) ne lit que "7"
+                    # - regression evitee par test reel avant deploiement
         "--oem 3 "
         "-c tessedit_char_whitelist=0123456789"
     )
@@ -99,6 +102,23 @@ class OCRReader:
 
         x1, y1, x2, y2 = [int(v) for v in player["bbox"]]
         h_frame, w_frame = frame.shape[:2]
+
+        # FIX V5.1 : padding horizontal de 20% de la largeur de la bbox,
+        # de chaque cote, AVANT le clip aux bords de la frame. Sans ca,
+        # un numero a deux chiffres proche du bord de la bbox (joueur
+        # legerement de biais, bbox mal centree sur le torse) se fait
+        # couper d'un cote - Tesseract en mode "un seul mot" (psm 8) lit
+        # alors correctement le SEUL chiffre restant, avec une confiance
+        # elevee et repetee (erreur systematique, pas du bruit aleatoire,
+        # donc non filtree par le systeme de vote). Confirme visuellement
+        # sur Raeren : #17 et #44 clairement lisibles a l'ecran, mais lus
+        # une seule fois chacun sur tout le match dans jersey_map_brut
+        # (94% des lectures totales sont des chiffres simples 1-9, alors
+        # qu'aucun numero a deux chiffres n'apparait plus d'une fois).
+        pad = int((x2 - x1) * 0.20)
+        x1 -= pad
+        x2 += pad
+
         x1 = max(0, x1); y1 = max(0, y1)
         x2 = min(w_frame, x2); y2 = min(h_frame, y2)
 
