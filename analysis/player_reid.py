@@ -45,6 +45,8 @@ class PlayerReID:
         # seulement 25/665 track_id ont recu une equipe sur un match test).
         # Retirer une fois le bon seuil determine.
         self._diag_gaps = []
+        self._diag_calibration = None
+        self._diag_decisions = {"team0": 0, "team1": 0, "none_ambigu": 0, "gk": 0}
 
         # jersey_map intégré : {reid_id → jersey_number}
         # Permet de stabiliser les IDs via les numéros détectés
@@ -147,27 +149,38 @@ class PlayerReID:
 
         samples  = np.array(self._team_color_samples, dtype=np.float32)
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
-        _, labels, centroids = cv2.kmeans(
+        compacite, labels, centroids = cv2.kmeans(
             samples, 2, None, criteria, 5, cv2.KMEANS_RANDOM_CENTERS
         )
 
         self._team_centroids         = centroids
         self._team_colors_calibrated = True
 
-        # Les centroids sont 19D — extraire LAB A pour le log
-        def _lab_a(centroid):
-            if len(centroid) >= 19:
-                return round(float(centroid[16]) / 4.0, 3)  # dé-pondérer
-            return 0.0
-        c0_a = _lab_a(centroids[0])
-        c1_a = _lab_a(centroids[1])
-        # Garder c0/c1 comme BGR approximatif pour compatibilité logs
-        c0 = np.array([128, 128, 128], dtype=int)
-        c1 = np.array([64, 64, 64], dtype=int)
-        print(f"  ReID équipes calibrées : "
-              f"équipe0=BGR({c0[0]},{c0[1]},{c0[2]}) "
-              f"équipe1=BGR({c1[0]},{c1[1]},{c1[2]}) "
-              f"({len(samples)} samples)")
+        # V5.1 DIAGNOSTIC - le print precedent affichait des valeurs
+        # CODEES EN DUR (BGR 128/128/128 et 64/64/64), jamais les vraies
+        # centroides - corrige ici avec les vraies stats de calibration,
+        # demandees explicitement pour diagnostiquer le desequilibre
+        # 41.1% team=0 vs 3.6% team=1 observe sur Raeren.
+        labels_flat = labels.flatten()
+        n_cluster0  = int((labels_flat == 0).sum())
+        n_cluster1  = int((labels_flat == 1).sum())
+        dist_entre_centroides = float(np.linalg.norm(centroids[0] - centroids[1]))
+
+        # Sauvegarde pour restitution via stats() apres le match complet
+        self._diag_calibration = {
+            "n_samples_total":       len(samples),
+            "n_cluster0":            n_cluster0,
+            "n_cluster1":            n_cluster1,
+            "ratio_cluster0_pct":    round(100 * n_cluster0 / len(samples), 1),
+            "ratio_cluster1_pct":    round(100 * n_cluster1 / len(samples), 1),
+            "distance_entre_centroides": round(dist_entre_centroides, 3),
+            "compacite_kmeans":      float(compacite),
+        }
+
+        print(f"  ReID équipes calibrées : {len(samples)} samples au total → "
+              f"cluster0={n_cluster0} ({100*n_cluster0/len(samples):.1f}%)  "
+              f"cluster1={n_cluster1} ({100*n_cluster1/len(samples):.1f}%)  "
+              f"distance_centroides={dist_entre_centroides:.3f}")
 
     def _infer_team(self, color):
         c = color.astype(np.float32)
@@ -199,6 +212,7 @@ class PlayerReID:
             self._team_centroids[0] - self._team_centroids[1]
         ) * 0.6
         if d0 > dist_threshold and d1 > dist_threshold:
+            self._diag_decisions["gk"] += 1  # V5.1 DIAGNOSTIC
             return "gk"
 
         gap = abs(d0 - d1)
@@ -213,9 +227,12 @@ class PlayerReID:
         # A RE-VALIDER sur 2-3 matchs supplementaires avant de considerer
         # ce chiffre comme definitif.
         if gap < 0.3:
+            self._diag_decisions["none_ambigu"] += 1  # V5.1 DIAGNOSTIC
             return None
 
-        return 0 if d0 < d1 else 1
+        decision = 0 if d0 < d1 else 1
+        self._diag_decisions["team0" if decision == 0 else "team1"] += 1  # V5.1 DIAGNOSTIC
+        return decision
 
     # ─────────────────────────────────────────
     # EMBEDDING HISTOGRAMME
@@ -400,6 +417,45 @@ class PlayerReID:
                   f"%<15.0={(arr < 15.0).mean()*100:.1f}%  "
                   f"percentiles(10/25/50/75/90)="
                   f"{[round(float(_np_diag.percentile(arr, p)), 1) for p in [10,25,50,75,90]]}")
+
+        # V5.1 DIAGNOSTIC - rapport complet calibration + classification,
+        # pour comprendre le desequilibre team0=41.1%/team1=3.6% observe
+        # sur Raeren. A retirer une fois la cause identifiee et corrigee.
+        if self._diag_calibration is not None:
+            result["diag_calibration"] = self._diag_calibration
+        total_decisions = sum(self._diag_decisions.values())
+        if total_decisions > 0:
+            result["diag_decisions"] = dict(self._diag_decisions)
+            result["diag_decisions_pct"] = {
+                k: round(100 * v / total_decisions, 1)
+                for k, v in self._diag_decisions.items()
+            }
+            calib = self._diag_calibration or {}
+            print(f"\n  [DIAG CALIBRATION+CLASSIFICATION]")
+            print(f"  Calibration")
+            print(f"  -----------")
+            print(f"  samples utilisés       : {calib.get('n_samples_total', 'N/A')}")
+            print(f"  cluster 0              : {calib.get('n_cluster0', 'N/A')}")
+            print(f"  cluster 1              : {calib.get('n_cluster1', 'N/A')}")
+            print(f"  ratio                  : {calib.get('ratio_cluster0_pct', '?')}% / "
+                  f"{calib.get('ratio_cluster1_pct', '?')}%")
+            print(f"  distance centroides    : {calib.get('distance_entre_centroides', 'N/A')}")
+            print(f"\n  Classification (sur {total_decisions} decisions post-calibration)")
+            print(f"  --------------")
+            print(f"  team 0                 : {result['diag_decisions_pct']['team0']}%  "
+                  f"({self._diag_decisions['team0']})")
+            print(f"  team 1                 : {result['diag_decisions_pct']['team1']}%  "
+                  f"({self._diag_decisions['team1']})")
+            print(f"  unknown (ambigu)       : {result['diag_decisions_pct']['none_ambigu']}%  "
+                  f"({self._diag_decisions['none_ambigu']})")
+            print(f"  gk                     : {result['diag_decisions_pct']['gk']}%  "
+                  f"({self._diag_decisions['gk']})")
+            if arr_present := self._diag_gaps:
+                import numpy as _np2
+                _a = _np2.array(arr_present)
+                print(f"\n  distance d0/d1 (gap) percentiles(10/25/50/75/90) : "
+                      f"{[round(float(_np2.percentile(_a, p)), 2) for p in [10,25,50,75,90]]}")
+
         return result
 
     # ─────────────────────────────────────────
