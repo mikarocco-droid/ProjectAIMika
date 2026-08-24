@@ -126,6 +126,28 @@ class OCRReader:
             return None
 
         patch  = frame[y1:y2, x1:x2]
+
+        # V5.1 DIAGNOSTIC - sauvegarde de VRAIS crops (bruts + traites)
+        # pour un echantillon de track_id, pour inspection visuelle directe
+        # plutot que de continuer a deviner sur des tests synthetiques -
+        # le correctif de padding n'a eu QUASIMENT AUCUN effet mesurable
+        # sur la distribution reelle (93.9% vs 94% avant), donc l'hypothese
+        # de coupure horizontale n'est probablement pas la cause dominante.
+        # A retirer une fois la vraie cause identifiee.
+        try:
+            import os as _os_diag
+            _diag_dir = "outputs/test/audit_identite/ocr_crops_diag"
+            _os_diag.makedirs(_diag_dir, exist_ok=True)
+            _compteur = getattr(self, "_diag_crop_count", 0)
+            if _compteur < 60:  # limite pour ne pas exploser le stockage
+                cv2.imwrite(f"{_diag_dir}/{track_id}_f{self._frame_counter}_brut.png", patch)
+                _traite = preprocess_patch(patch)
+                if _traite is not None:
+                    cv2.imwrite(f"{_diag_dir}/{track_id}_f{self._frame_counter}_traite.png", _traite)
+                self._diag_crop_count = _compteur + 1
+        except Exception:
+            pass
+
         number = read_number_from_patch(patch)
 
         if number is not None:
