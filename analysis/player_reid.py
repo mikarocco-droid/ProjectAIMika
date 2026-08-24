@@ -202,8 +202,17 @@ class PlayerReID:
             return "gk"
 
         gap = abs(d0 - d1)
-        self._diag_gaps.append(gap)  # V5.1 DIAGNOSTIC - a retirer apres calibration
-        if gap < 15.0:
+        self._diag_gaps.append(gap)  # V5.1 DIAGNOSTIC - a retirer une fois stabilise
+        # FIX V5.1 (2e correction) : seuil recalibre sur donnees reelles
+        # (Raeren, apres correction du filtre de collecte) - percentiles
+        # mesures (10/25/50/75/90) = [0.68, 1.15, 1.25, 1.48, 1.59].
+        # L'ANCIEN seuil (15.0) etait ~10x plus grand que le 90e percentile
+        # reel -> 100% des comparaisons tombaient dessous -> aucune equipe
+        # jamais assignee. Nouveau seuil (0.3) : nettement sous le 10e
+        # percentile (0.68), ne rejette que les cas vraiment ambigus.
+        # A RE-VALIDER sur 2-3 matchs supplementaires avant de considerer
+        # ce chiffre comme definitif.
+        if gap < 0.3:
             return None
 
         return 0 if d0 < d1 else 1
