@@ -208,9 +208,16 @@ class PlayerReID:
         d1 = np.linalg.norm(c - self._team_centroids[1])
 
         # Couleur très éloignée des deux équipes → probable gardien
+        # FIX V5.1 : multiplicateur 0.6 -> 1.5. Avec 0.6 et une distance
+        # entre centroides typiquement petite (~1.7 mesure sur Raeren),
+        # le seuil (~1.0) etait deja depasse par 44.2% des joueurs NORMAUX
+        # (statistiquement absurde - 2 gardiens sur 22+ joueurs attendus).
+        # 1.5 reste une estimation raisonnee, pas une valeur validee -
+        # a reconsiderer si le pourcentage "gk" du prochain run reste
+        # trop eloigne d'un ordre de grandeur de ~5-10%.
         dist_threshold = np.linalg.norm(
             self._team_centroids[0] - self._team_centroids[1]
-        ) * 0.6
+        ) * 1.5
         if d0 > dist_threshold and d1 > dist_threshold:
             self._diag_decisions["gk"] += 1  # V5.1 DIAGNOSTIC
             return "gk"
