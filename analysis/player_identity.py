@@ -45,14 +45,22 @@ def build_identity_map(events, jersey_map, team_map=None):
     jersey_to_ids = defaultdict(set)
     for pid, jersey in jersey_map.items():
         if jersey is not None and str(jersey).strip():
-            team = team_map.get(str(pid)) or team_map.get(pid)
-            key = (team, str(jersey)) if team else (None, str(jersey))
+            # V5.1 FIX (2e bug du meme type) : `team_map.get(str(pid)) or
+            # team_map.get(pid)` echoue silencieusement quand team=0, car
+            # `0 or x` evalue x, pas 0 - retombant a tort sur la seconde
+            # cle. Et `if team else` traitait ensuite team=0 comme "aucune
+            # equipe connue", desactivant la fusion composite pour toute
+            # l'equipe 0 (41.1% des classifications reelles sur Raeren).
+            team = team_map.get(str(pid))
+            if team is None:
+                team = team_map.get(pid)
+            key = (team, str(jersey)) if team is not None else (None, str(jersey))
             jersey_to_ids[key].add(str(pid))
 
     identity_map = {}
     for key, ids in jersey_to_ids.items():
         team, jersey = key
-        canonical_id = f"P{team}_{jersey}" if team else f"P{jersey}"
+        canonical_id = f"P{team}_{jersey}" if team is not None else f"P{jersey}"
         for pid in ids:
             if pid != canonical_id:
                 identity_map[pid] = canonical_id
