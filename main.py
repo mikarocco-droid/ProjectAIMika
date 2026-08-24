@@ -361,8 +361,53 @@ def process_video(
     print(f"\n  {frame_id} frames lues | {analyzed} analysées"
           f" | batches de {b_size}")
 
-    jersey_map = ocr.get_jersey_map()
+    jersey_map_tesseract = ocr.get_jersey_map()
     ocr.reset()
+
+    # V5.1 : lecture des maillots via Gemini, en PRIORITE sur Tesseract.
+    # Reutilise read_jersey_numbers() deja existant (regroupe jusqu'a 20
+    # joueurs par appel - PAS un appel par joueur par frame, cout modere :
+    # ~10 appels Gemini pour tout un match de ~180-200 track_id). Repli
+    # sur Tesseract pour tout track_id que Gemini n'a pas resolu.
+    jersey_map = dict(jersey_map_tesseract)
+    try:
+        from ai.gemini_validator import read_jersey_numbers
+
+        # Un representant par track_id : la frame ou sa bbox est la plus
+        # grande (meilleure chance de numero lisible)
+        meilleure_frame_par_tid = {}
+        for fd in frames_data:
+            for p in fd.get("players", []):
+                tid = p.get("id")
+                bbox = p.get("bbox")
+                if tid is None or not bbox:
+                    continue
+                aire = max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1])
+                prec = meilleure_frame_par_tid.get(tid)
+                if prec is None or aire > prec["aire"]:
+                    meilleure_frame_par_tid[tid] = {
+                        "id": tid, "frame_id": fd.get("frame"),
+                        "bbox": bbox, "aire": aire,
+                    }
+
+        players_with_frames = list(meilleure_frame_par_tid.values())
+        print(f"  [GEMINI JERSEYS] {len(players_with_frames)} track_id à lire "
+              f"({(len(players_with_frames) + 19) // 20} appels prévus)")
+
+        jersey_map_gemini = {}
+        TAILLE_LOT = 20
+        for i in range(0, len(players_with_frames), TAILLE_LOT):
+            lot = players_with_frames[i:i + TAILLE_LOT]
+            resultat_lot = read_jersey_numbers(video_path, lot, fps=fps, max_players=TAILLE_LOT)
+            jersey_map_gemini.update(resultat_lot)
+
+        print(f"  [GEMINI JERSEYS] {len(jersey_map_gemini)} numéros lus avec succès "
+              f"(sur {len(players_with_frames)} track_id tentés)")
+
+        # Gemini prioritaire, Tesseract en repli pour ce que Gemini n'a pas resolu
+        jersey_map = {**jersey_map_tesseract, **jersey_map_gemini}
+    except Exception as _e_gemini_jersey:
+        print(f"  [GEMINI JERSEYS] échec, repli intégral sur Tesseract : {_e_gemini_jersey}")
 
     events = process_match(frames_data, sport, shot_zones=shot_zones)
 
