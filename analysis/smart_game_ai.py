@@ -14,7 +14,7 @@ def compute_possession(events):
         e2 = events[i]
         dt = max(0, e2.get("time", 0) - e1.get("time", 0))
         team = e1.get("team")
-        if team:
+        if team is not None:  # V5.1 FIX : team=0 est falsy, etait jamais compte
             possession[team] += dt
 
     total = sum(possession.values()) or 1
