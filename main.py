@@ -386,6 +386,22 @@ def process_video(
     except Exception as _e_diag:
         print(f"  [DIAG PlayerReID] indisponible : {_e_diag}")
 
+    # V5.1 DIAGNOSTIC - zippe le dossier de crops OCR (bruts + traites)
+    # en un seul fichier, plus simple a telecharger depuis Kaggle qu'un
+    # dossier de dizaines d'images individuelles.
+    try:
+        import shutil as _shutil_diag
+        _crops_dir = "outputs/test/audit_identite/ocr_crops_diag"
+        if os.path.isdir(_crops_dir) and os.listdir(_crops_dir):
+            _zip_path_sans_ext = "outputs/test/audit_identite/ocr_crops_diag"
+            _shutil_diag.make_archive(_zip_path_sans_ext, "zip", _crops_dir)
+            _taille_ko = os.path.getsize(_zip_path_sans_ext + ".zip") / 1024
+            print(f"  [DIAG PlayerReID] crops zippés : {_zip_path_sans_ext}.zip ({_taille_ko:.0f} Ko)")
+        else:
+            print(f"  [DIAG PlayerReID] aucun crop a zipper ({_crops_dir} vide ou absent)")
+    except Exception as _e_zip:
+        print(f"  [DIAG PlayerReID] zip des crops échoué : {_e_zip}")
+
     if return_frames:
         return events, jersey_map, fps, total_frames, frames_data
     else:
