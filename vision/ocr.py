@@ -136,7 +136,8 @@ class OCRReader:
         # A retirer une fois la vraie cause identifiee.
         try:
             import os as _os_diag
-            _diag_dir = "outputs/test/audit_identite/ocr_crops_diag"
+            _nom_match_ocr = getattr(self, "_nom_match", "test")
+            _diag_dir = f"outputs/{_nom_match_ocr}/audit_identite/ocr_crops_diag"
             _os_diag.makedirs(_diag_dir, exist_ok=True)
             _compteur = getattr(self, "_diag_crop_count", 0)
             if _compteur < 60:  # limite pour ne pas exploser le stockage
