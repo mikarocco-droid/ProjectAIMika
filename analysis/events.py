@@ -20,6 +20,29 @@ def distance(a, b):
 def speed(a, b):
     return distance(a, b)
 
+def _locked_team(player, team_map):
+    """
+    V5.2 : retourne l'equipe "verrouillee" (vote majoritaire sur toute la
+    trajectoire du track_id, via team_map) plutot que la classification
+    instantanee de CETTE frame (player.get("team"), potentiellement
+    ambigue meme pour un joueur dont l'equipe est connue avec confiance
+    par ailleurs). Repli sur la classification instantanee si team_map
+    n'a pas d'entree pour ce track_id (ou si team_map absent, pour
+    compatibilite retro).
+
+    C'est le principe Veo : un numero/une equipe, une fois identifie,
+    reste attache au joueur pendant tout le match - pas redemande a
+    chaque evenement.
+    """
+    if player is None:
+        return None
+    if team_map:
+        tid = str(player.get("id", ""))
+        locked = team_map.get(tid)
+        if locked is not None:
+            return locked
+    return player.get("team")
+
 def get_closest_player(players, ball):
     closest  = None
     min_dist = float("inf")
@@ -296,6 +319,7 @@ def detect_events(
     frame_h    = 720,
     learner    = None,
     fps        = 25,
+    team_map   = None,
 ):
     if state is None:
         state = init_state(learner)
@@ -322,7 +346,7 @@ def detect_events(
     current       = closest if dist < threshold else None
 
     if current:
-        team_key = current.get("team")
+        team_key = _locked_team(current, team_map)
         events.append({
             "type":   "possession",
             "player": str(current["id"]),
@@ -338,7 +362,7 @@ def detect_events(
             if players:
                 team_counts = {}
                 for p in players:
-                    t = p.get("team")
+                    t = _locked_team(p, team_map)
                     if t is not None:
                         team_counts[t] = team_counts.get(t, 0) + 1
                 if team_counts:
@@ -384,7 +408,7 @@ def detect_events(
 
     # ── PRESSURE ─────────────────────────
     if current:
-        opponents = [p for p in players if p.get("team") != current.get("team")]
+        opponents = [p for p in players if _locked_team(p, team_map) != _locked_team(current, team_map)]
         close_opp = sum(
             1 for o in opponents
             if distance(o["center"], current["center"]) < frame_w * 0.05
@@ -399,7 +423,7 @@ def detect_events(
             events.append({
                 "type":   "progressive_run",
                 "player": str(current["id"]),
-                "team":   current.get("team"),
+                "team":   _locked_team(current, team_map),
                 "x":      ball["center"][0],
                 "y":      ball["center"][1]
             })
@@ -407,7 +431,7 @@ def detect_events(
     # ── PASS / INTERCEPTION ──────────────
     last = state["last_player"]
     if last and current and str(last["id"]) != str(current["id"]):
-        same_team = last.get("team") == current.get("team")
+        same_team = _locked_team(last, team_map) == _locked_team(current, team_map)
 
         _pass_dist     = distance(last["center"], current["center"])
         _min_pass_dist = frame_w * 0.05
@@ -417,7 +441,7 @@ def detect_events(
                 "type":   "pass",
                 "from":   str(last["id"]),
                 "to":     str(current["id"]),
-                "team":   current.get("team"),
+                "team":   _locked_team(current, team_map),
                 "x":      ball["center"][0],
                 "y":      ball["center"][1],
                 "xA":     0.0,
@@ -429,7 +453,7 @@ def detect_events(
             events.append({
                 "type":   "interception",
                 "player": str(current["id"]),
-                "team":   current.get("team"),
+                "team":   _locked_team(current, team_map),
                 "x":      ball["center"][0],
                 "y":      ball["center"][1]
             })
@@ -455,7 +479,7 @@ def detect_events(
             events.append({
                 "type":   "dribble",
                 "player": str(current["id"]),
-                "team":   current.get("team"),
+                "team":   _locked_team(current, team_map),
                 "x":      ball["center"][0],
                 "y":      ball["center"][1]
             })
@@ -473,7 +497,7 @@ def detect_events(
             events.append({
                 "type":   "long_pass",
                 "player": str(current["id"]) if current else None,
-                "team":   current.get("team") if current else None
+                "team":   _locked_team(current, team_map) if current else None
             })
 
     # ── SHOTS / GOALS ────────────────────
@@ -525,7 +549,7 @@ def detect_events(
                 events.append({
                     "type":   "shot_blocked",
                     "player": str(current["id"]),
-                    "team":   current.get("team"),
+                    "team":   _locked_team(current, team_map),
                     "x":      state["_last_shot_x"],
                     "y":      state["_last_shot_y"],
                     "danger": 5.0,
@@ -557,7 +581,7 @@ def detect_events(
                 shot = {
                     "type":      "shot",
                     "player":    str(current["id"]),
-                    "team":      current.get("team"),
+                    "team":      _locked_team(current, team_map),
                     "x":         x,
                     "y":         y,
                     "xg":        xg_val,
@@ -583,7 +607,7 @@ def detect_events(
                         x=x, y=y, t=current_time,
                         xg=xg_val,
                         player=str(current["id"]),
-                        team=current.get("team")
+                        team=_locked_team(current, team_map)
                     )
                 if state["events_buffer"]:
                     state["events_buffer"][-1]["xA"] = compute_xa(
@@ -640,7 +664,7 @@ def detect_events(
                         events.append({
                             "type":        "goal",
                             "player":      sc.player or str(current["id"]),
-                            "team":        sc.team   or current.get("team"),
+                            "team":        sc.team   or _locked_team(current, team_map),
                             "x":           x,
                             "y":           y,
                             "xg":          final_xg,
@@ -732,7 +756,7 @@ def detect_events(
                         events.append({
                             "type":        "goal",
                             "player":      str(current["id"]),
-                            "team":        current.get("team"),
+                            "team":        _locked_team(current, team_map),
                             "x":           x,
                             "y":           y,
                             "xg":          _recent_shot_xg,
@@ -761,7 +785,7 @@ def detect_events(
     state["last_player"]             = current
     state["last_ball_pos"]           = ball["center"]
     state["_last_ball_interpolated"] = ball.get("interpolated", False)
-    state["last_team"]               = current.get("team") if current else None
+    state["last_team"]               = _locked_team(current, team_map) if current else None
 
     return events, state
 
@@ -769,7 +793,7 @@ def detect_events(
 # ─────────────────────────────────────────
 # MATCH PROCESSOR
 # ─────────────────────────────────────────
-def process_match(frames_data, sport="football", shot_zones=None, learner=None):
+def process_match(frames_data, sport="football", shot_zones=None, learner=None, team_map=None):
     state      = None
     all_events = []
     fps        = frames_data[0].get("fps", 25) if frames_data else 25
@@ -785,6 +809,7 @@ def process_match(frames_data, sport="football", shot_zones=None, learner=None):
             frame_h    = frame.get("frame_h", 720),
             learner    = learner,
             fps        = fps,
+            team_map   = team_map,
         )
         for e in events:
             e["frame"] = frame.get("frame")
