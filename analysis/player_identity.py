@@ -75,6 +75,110 @@ def build_identity_map(events, jersey_map, team_map=None):
 
 
 # ─────────────────────────────────────────
+# RECONCILE UNKNOWN-TEAM FRAGMENTS (V5.2)
+# ─────────────────────────────────────────
+def reconcile_unknown_team_fragments(identity_map, jersey_map, team_map, frames_data):
+    """
+    Tente de fusionner les fragments "equipe inconnue" (ex: P4) dans le
+    fragment "equipe connue" correspondant (ex: P1_4) - UNIQUEMENT quand
+    c'est sûr.
+
+    ATTENTION DE SECURITE (decouverte sur Raeren) : un numero de maillot
+    peut être confirmé sur LES DEUX équipes a la fois (amateur : 1-11 des
+    deux cotes). Sur Raeren, 8 numeros/17 avec equipe connue etaient dans
+    ce cas (2,4,5,6,7,8,9,17) - fusionner aveuglement "meme numero, equipe
+    inconnue" dans "meme numero, UNE equipe connue" aurait ete FAUX pour
+    la majorite de ces cas (P4 est confirme majoritairement equipe 0, pas
+    equipe 1 - une fusion naive dans P1_4 aurait aggrave le probleme).
+
+    Regle stricte : on ne fusionne QUE si le numero de maillot est confirmé
+    sur UNE SEULE équipe parmi tous les track_id connus qui le portent.
+    Si le numero est confirmé sur les deux équipes (ou si aucune équipe
+    n'est connue du tout), le fragment "équipe inconnue" reste séparé et
+    marqué incertain - conformement au principe V5.2 : conserver
+    l'incertitude plutôt que fabriquer une identité.
+
+    En plus de cette condition, verifie l'absence de chevauchement
+    temporel (test de presence simultanee, meme logique que
+    audit_identite_joueurs.py) avant de fusionner, par securite
+    supplementaire.
+
+    Retourne : identity_map mis à jour (copie), avec un rapport imprimé.
+    """
+    identity_map = dict(identity_map)
+
+    # 1. Regrouper les track_id par numero de maillot
+    jersey_to_tids = {}
+    for pid, jersey in jersey_map.items():
+        if jersey is None:
+            continue
+        jersey_to_tids.setdefault(str(jersey), set()).add(str(pid))
+
+    # 2. Pour chaque numero, verifier s'il est confirme sur UNE SEULE equipe
+    fusions_appliquees = []
+    fusions_refusees_ambigu = []
+    for jersey, tids in jersey_to_tids.items():
+        equipes_connues = set()
+        tids_connus, tids_inconnus = [], []
+        for tid in tids:
+            team = team_map.get(tid)
+            if team is not None:
+                equipes_connues.add(team)
+                tids_connus.append(tid)
+            else:
+                tids_inconnus.append(tid)
+
+        if not tids_inconnus or not tids_connus:
+            continue  # rien a reconcilier
+
+        if len(equipes_connues) != 1:
+            # Numero ambigu (0 ou 2+ equipes confirmees) - ON NE FUSIONNE PAS
+            fusions_refusees_ambigu.append((jersey, sorted(equipes_connues), tids_inconnus))
+            continue
+
+        equipe_unique = next(iter(equipes_connues))
+        canonical_connu = f"P{equipe_unique}_{jersey}"
+        canonical_inconnu = f"P{jersey}"
+
+        # 3. Verification de securite supplementaire : pas de chevauchement
+        # temporel entre le groupe "connu" et le groupe "inconnu"
+        frames_connu, frames_inconnu = set(), set()
+        for fd in frames_data:
+            frame_id = fd.get("frame")
+            for p in fd.get("players", []):
+                tid = str(p.get("id", p.get("tracker_id", "")))
+                if tid in tids_connus:
+                    frames_connu.add(frame_id)
+                elif tid in tids_inconnus:
+                    frames_inconnu.add(frame_id)
+
+        chevauchement = frames_connu & frames_inconnu
+        if chevauchement:
+            fusions_refusees_ambigu.append((jersey, [equipe_unique], tids_inconnus,
+                                             f"chevauchement sur {len(chevauchement)} frames"))
+            continue
+
+        # Sûr : fusionner le fragment "inconnu" dans le fragment "connu"
+        for tid in tids_inconnus:
+            identity_map[tid] = canonical_connu
+        identity_map[canonical_inconnu] = canonical_connu  # au cas ou canonical_inconnu est deja utilise comme cle
+        fusions_appliquees.append((jersey, equipe_unique, len(tids_inconnus)))
+
+    print(f"  [RECONCILE] {len(fusions_appliquees)} numéro(s) réconcilié(s) "
+          f"(équipe unique confirmée + pas de chevauchement) :")
+    for jersey, equipe, n in fusions_appliquees:
+        print(f"    #{jersey} → équipe {equipe} ({n} track_id inconnus fusionnés)")
+    print(f"  [RECONCILE] {len(fusions_refusees_ambigu)} numéro(s) LAISSÉ(S) SÉPARÉ(S) "
+          f"(ambigu ou chevauchement — incertitude conservée) :")
+    for item in fusions_refusees_ambigu:
+        jersey, equipes = item[0], item[1]
+        raison = item[3] if len(item) > 3 else f"{len(equipes)} équipe(s) confirmée(s)"
+        print(f"    #{jersey} : {raison}")
+
+    return identity_map
+
+
+# ─────────────────────────────────────────
 # APPLY IDENTITY MAP
 # ─────────────────────────────────────────
 def apply_identity_map(events, identity_map):
