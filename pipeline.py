@@ -458,6 +458,66 @@ def run_pipeline(
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
+    # V5.2 : team_map construite ICI (tot, avant RAW) pour servir au
+    # tracage de provenance ci-dessous, ET reutilisee pour le meme
+    # diagnostic au stade CLEAN plus loin.
+    from collections import Counter as _Counter_tm_early, defaultdict as _dd_tm_early
+    _team_votes_early = _dd_tm_early(list)
+    for _fd in frames_data:
+        for _p in _fd.get("players", []):
+            _tid = str(_p.get("id", _p.get("tracker_id", "")))
+            _team = _p.get("team")
+            if _tid and _team is not None:
+                _team_votes_early[_tid].append(_team)
+    _team_map_diag = {
+        _tid: _Counter_tm_early(_votes).most_common(1)[0][0]
+        for _tid, _votes in _team_votes_early.items()
+    }
+
+    def _diag_team_source(e, team_map_ref):
+        """
+        V5.2 DIAGNOSTIC - deduit RETROACTIVEMENT la provenance du champ
+        team d'un evenement (sans toucher aux 15 points de creation dans
+        events.py) :
+          - "team_map"      : l'evenement a un 'player' connu de team_map
+                               (donc _locked_team a bien pioche dans le
+                               vote majoritaire PlayerReID)
+          - "last_team"     : pas de 'player' (fast_break/build_up) mais
+                               team quand meme renseigne -> vient de
+                               state["last_team"]
+          - "current_frame" : 'player' connu mais ABSENT de team_map,
+                               team quand meme renseigne -> repli sur la
+                               classification instantanee de la frame
+          - "team_cluster"  : team renseigne mais 'player' totalement
+                               absent de l'evenement ET pas de pattern
+                               last_team plausible (rare a ce stade RAW,
+                               plus probable au stade CLEAN si team_cluster
+                               a deja tourne)
+          - "none"          : team=None
+        """
+        team = e.get("team")
+        if team is None:
+            return "none"
+        pid = e.get("player")
+        if pid is not None:
+            if str(pid) in team_map_ref:
+                return "team_map"
+            return "current_frame"
+        # pas de 'player' du tout mais team renseigne
+        if e.get("type") in ("fast_break", "build_up"):
+            return "last_team"
+        return "team_cluster_ou_autre"
+
+    def _print_diag_sources(events_ref, team_map_ref, etiquette):
+        from collections import Counter as _Counter_src
+        _src = _Counter_src(_diag_team_source(e, team_map_ref) for e in events_ref)
+        _tot = len(events_ref)
+        print(f"  [DIAG TEAM SOURCE — {etiquette}] " + " | ".join(
+            f"{s}: {c} ({100*c/_tot:.0f}%)" for s, c in _src.most_common()
+        ))
+
+    _print_diag_sources(events, _team_map_diag, "RAW")
+
     # V5.2 DIAGNOSTIC - repartition team=None PAR TYPE d'evenement, pour
     # verifier l'hypothese d'effet de selection sur le nettoyage RAW->CLEAN
     # (si "possession" domine les evenements FILTRES et "pass"/"shot"
@@ -914,6 +974,14 @@ def run_pipeline(
         n_goals = sum(1 for e in events if e.get("type") in ["goal", "score"])
         print(f"  CLEAN {len(events)} events | {n_goals} but(s) | "
               f"goal_cooldown={goal_cooldown:.0f}s")
+
+        # V5.2 DIAGNOSTIC - traçage de provenance, meme logique qu'au stade
+        # RAW (reutilise _team_map_diag / _print_diag_sources definis plus
+        # haut). Au stade CLEAN, team_cluster.py a deja pu tourner - donc
+        # une partie du "team_cluster_ou_autre" ici peut vraiment venir de
+        # son repli RGB, contrairement au stade RAW ou cette categorie
+        # etait quasi-vide par construction.
+        _print_diag_sources(events, _team_map_diag, "CLEAN")
 
         # V5.2 DIAGNOSTIC - meme repartition qu'au stade RAW, pour comparaison directe
         from collections import Counter as _Counter_diag_clean
