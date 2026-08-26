@@ -458,6 +458,25 @@ def run_pipeline(
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
+    # V5.2 DIAGNOSTIC - repartition team=None PAR TYPE d'evenement, pour
+    # verifier l'hypothese d'effet de selection sur le nettoyage RAW->CLEAN
+    # (si "possession" domine les evenements FILTRES et "pass"/"shot"
+    # dominent ce qui SURVIT, la baisse de couverture team au stade CLEAN
+    # s'expliquerait par une selection, pas une reinitialisation du champ).
+    # A retirer une fois l'hypothese tranchee.
+    from collections import Counter as _Counter_diag_raw
+    _par_type_raw = {}
+    for _e in events:
+        _t = _e.get("type", "?")
+        _par_type_raw.setdefault(_t, [0, 0])
+        _par_type_raw[_t][0] += 1
+        if _e.get("team") is None:
+            _par_type_raw[_t][1] += 1
+    print(f"  [DIAG TEAM PAR TYPE — RAW] " + " | ".join(
+        f"{t}: {none_c}/{tot} ({100*none_c/tot:.0f}% None)"
+        for t, (tot, none_c) in sorted(_par_type_raw.items(), key=lambda x: -x[1][0])
+    ))
+
     # ── KICKOFF / MATCH_END / TEAM_COLORS ────────────────────────────────────
     # En mode replay (_match_data fourni), ce bloc est skippé :
     # kickoff_offset et team_colors viennent déjà du cache.
@@ -895,6 +914,20 @@ def run_pipeline(
         n_goals = sum(1 for e in events if e.get("type") in ["goal", "score"])
         print(f"  CLEAN {len(events)} events | {n_goals} but(s) | "
               f"goal_cooldown={goal_cooldown:.0f}s")
+
+        # V5.2 DIAGNOSTIC - meme repartition qu'au stade RAW, pour comparaison directe
+        from collections import Counter as _Counter_diag_clean
+        _par_type_clean = {}
+        for _e in events:
+            _t = _e.get("type", "?")
+            _par_type_clean.setdefault(_t, [0, 0])
+            _par_type_clean[_t][0] += 1
+            if _e.get("team") is None:
+                _par_type_clean[_t][1] += 1
+        print(f"  [DIAG TEAM PAR TYPE — CLEAN] " + " | ".join(
+            f"{t}: {none_c}/{tot} ({100*none_c/tot:.0f}% None)"
+            for t, (tot, none_c) in sorted(_par_type_clean.items(), key=lambda x: -x[1][0])
+        ))
 
     except Exception as e:
         print(f"  Post processing ignoré : {e}")
