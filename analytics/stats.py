@@ -19,7 +19,21 @@ def is_goalkeeper(player_stats, frame_w=1920):
     return avg_x_n < 0.12 or avg_x_n > 0.88
 
 
-def compute_stats(events, jersey_map=None, frame_w=1920):
+def compute_stats(events, jersey_map=None, frame_w=1920, duration_s=None):
+    """
+    duration_s : durée couverte par les evenements (secondes), pour adapter
+    le seuil minimal de "touches" (V5.2 - le seuil fixe de 15 etait calibre
+    pour un match complet ~90min ; sur un extrait court, filtrait presque
+    tous les joueurs - demontre sur un clip de 10min : 1 seul joueur sur 33
+    atteignait 15 touches). Reference : 15 touches / 90min (5400s).
+    Plancher a 3 pour eviter qu'un extrait tres court laisse passer
+    n'importe quelle detection ponctuelle comme "joueur".
+    """
+    if duration_s and duration_s > 0:
+        MIN_TOUCHES = max(3, round(15 * duration_s / 5400))
+    else:
+        MIN_TOUCHES = 15  # comportement par defaut inchange si duree inconnue
+
     players = defaultdict(lambda: {
         "touches":            0,
         "passes":             0,
@@ -114,11 +128,11 @@ def compute_stats(events, jersey_map=None, frame_w=1920):
         elif t == "progressive_run":
             players[pid]["progressive_runs"] += 1
 
-    # ── Filtre touches minimum ──
+    # ── Filtre touches minimum (adaptatif a la duree, V5.2) ──
     filtered = {
         pid: s
         for pid, s in players.items()
-        if s["touches"] >= 15
+        if s["touches"] >= MIN_TOUCHES
     }
 
     # ── Post-processing : label, équipe, gardien ──
