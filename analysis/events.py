@@ -414,7 +414,8 @@ def detect_events(
             if distance(o["center"], current["center"]) < frame_w * 0.05
         )
         if close_opp >= 2:
-            events.append({"type": "under_pressure", "player": str(current["id"])})
+            events.append({"type": "under_pressure", "player": str(current["id"]),
+                            "team": _locked_team(current, team_map)})
             state["pressing"] = True
 
     # ── PROGRESSIVE RUN ──────────────────
@@ -463,7 +464,7 @@ def detect_events(
     if state["turnover_window"] > 0 and state["last_ball_pos"]:
         v = speed(state["last_ball_pos"], ball["center"])
         if v > frame_w * 0.08:
-            events.append({"type": "fast_break"})
+            events.append({"type": "fast_break", "team": state.get("last_team")})
             state["turnover_window"] = 0
     state["turnover_window"] = max(0, state["turnover_window"] - 1)
 
@@ -488,7 +489,7 @@ def detect_events(
     # ── BUILD UP ─────────────────────────
     state["sequence"].append(ball["center"])
     if detect_build_up(state["sequence"], frame_w):
-        events.append({"type": "build_up"})
+        events.append({"type": "build_up", "team": state.get("last_team")})
         state["sequence"].clear()
 
     # ── LONG PASS ────────────────────────
