@@ -2376,7 +2376,7 @@ def run_pipeline(
     print(f"  [TEAM DIST] {dict(team_dist)}")
     
     print("Step 3 : Stats...")
-    stats = compute_stats(events, jersey_map=jersey_map)
+    stats = compute_stats(events, jersey_map=jersey_map, duration_s=total_frames / fps if fps > 0 else None)
     print(f"  OK {len(stats)} joueurs")
 
     possession = {}
