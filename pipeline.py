@@ -2211,7 +2211,7 @@ def run_pipeline(
         }
         print(f"  [IDENTITE] team_map construit : {len(team_map)} track_id avec équipe connue")
 
-        events, jersey_map = resolve_player_identities(events, jersey_map, team_map=team_map)
+        events, jersey_map = resolve_player_identities(events, jersey_map, team_map=team_map, frames_data=frames_data)
         print(f"  Jersey map : {len(jersey_map)} joueurs identifiés")
 
         # ── PlayerIdentityMemory : mise à jour finale + sauvegarde ────────────
