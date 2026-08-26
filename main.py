@@ -409,7 +409,28 @@ def process_video(
     except Exception as _e_gemini_jersey:
         print(f"  [GEMINI JERSEYS] échec, repli intégral sur Tesseract : {_e_gemini_jersey}")
 
-    events = process_match(frames_data, sport, shot_zones=shot_zones)
+    # V5.2 : team_map (identite d'equipe "verrouillee", vote majoritaire par
+    # track_id) - construite ICI pour etre passee a process_match(), afin
+    # que les evenements heritent de cette identite stable plutot que de
+    # redemander une classification instantanee par frame (cf. events.py,
+    # qui utilisait jusqu'ici current.get("team") - une seule frame,
+    # potentiellement ambigue, meme pour un track dont l'equipe est connue
+    # a 90% du temps par ailleurs). Meme logique de vote que celle deja
+    # utilisee dans pipeline.py pour la sauvegarde audit_identite.
+    from collections import Counter as _Counter_evt, defaultdict as _dd_evt
+    _team_votes_evt = _dd_evt(list)
+    for _fd in frames_data:
+        for _p in _fd.get("players", []):
+            _tid = str(_p.get("id", _p.get("tracker_id", "")))
+            _team = _p.get("team")
+            if _tid and _team is not None:
+                _team_votes_evt[_tid].append(_team)
+    team_map = {
+        _tid: _Counter_evt(_votes).most_common(1)[0][0]
+        for _tid, _votes in _team_votes_evt.items()
+    }
+
+    events = process_match(frames_data, sport, shot_zones=shot_zones, team_map=team_map)
 
     print(f"  {len(events)} events detectes")
     print(f"  {len(jersey_map)} maillots identifies")
