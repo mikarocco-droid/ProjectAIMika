@@ -250,17 +250,28 @@ def get_player_label(pid, jersey_map):
 # ─────────────────────────────────────────
 # RESOLVE ALL — point d'entrée unique
 # ─────────────────────────────────────────
-def resolve_player_identities(events, jersey_map, team_map=None):
+def resolve_player_identities(events, jersey_map, team_map=None, frames_data=None):
     """
     Effectue toute la résolution d'identité en une seule fonction.
     Retourne (events, jersey_map) mis à jour.
 
     team_map optionnel ({track_id: equipe}) - voir build_identity_map()
     pour la raison de son importance (evite les fusions inter-equipes).
+
+    frames_data optionnel : si fourni (avec team_map), tente une
+    reconciliation SÛRE des fragments "équipe inconnue" (ex: P4) dans
+    leur fragment "équipe connue" correspondant (ex: P1_4) - uniquement
+    quand le numéro de maillot est confirmé sur une seule équipe et sans
+    chevauchement temporel. Voir reconcile_unknown_team_fragments().
     """
     identity_map = build_identity_map(events, jersey_map, team_map=team_map)
     if not identity_map:
         return events, jersey_map
+
+    if frames_data and team_map:
+        identity_map = reconcile_unknown_team_fragments(
+            identity_map, jersey_map, team_map, frames_data
+        )
 
     events     = apply_identity_map(events, identity_map)
     jersey_map = build_final_jersey_map(identity_map, jersey_map)
