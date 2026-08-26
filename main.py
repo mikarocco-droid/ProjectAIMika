@@ -232,6 +232,7 @@ def process_video(
     detector       = Detector(sport=sport)
     tracker        = Tracker()
     ocr            = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
+    ocr._nom_match = os.path.splitext(os.path.basename(video_path))[0]  # V5.2 : evite l'ecrasement entre matchs (outputs/test codé en dur)
     color_detector = TeamColorDetector(sample_frames=60)
 
     ball_tracker = None
@@ -443,7 +444,8 @@ def process_video(
     # recuperer une info deja calculee. A retirer une fois le seuil corrige.
     try:
         import json as _json_diag
-        _diag_dir = "outputs/test/audit_identite"
+        _nom_match = os.path.splitext(os.path.basename(video_path))[0]
+        _diag_dir = f"outputs/{_nom_match}/audit_identite"
         os.makedirs(_diag_dir, exist_ok=True)
         _diag_stats = tracker.reid.stats()
         with open(os.path.join(_diag_dir, "reid_diag.json"), "w", encoding="utf-8") as _f_diag:
@@ -457,9 +459,9 @@ def process_video(
     # dossier de dizaines d'images individuelles.
     try:
         import shutil as _shutil_diag
-        _crops_dir = "outputs/test/audit_identite/ocr_crops_diag"
+        _crops_dir = f"outputs/{_nom_match}/audit_identite/ocr_crops_diag"
         if os.path.isdir(_crops_dir) and os.listdir(_crops_dir):
-            _zip_path_sans_ext = "outputs/test/audit_identite/ocr_crops_diag"
+            _zip_path_sans_ext = f"outputs/{_nom_match}/audit_identite/ocr_crops_diag"
             _shutil_diag.make_archive(_zip_path_sans_ext, "zip", _crops_dir)
             _taille_ko = os.path.getsize(_zip_path_sans_ext + ".zip") / 1024
             print(f"  [DIAG PlayerReID] crops zippés : {_zip_path_sans_ext}.zip ({_taille_ko:.0f} Ko)")
