@@ -67,6 +67,35 @@ class Tracker:
                 # vrai joueur, faussant l'extraction de couleur de maillot.
                 "time_since_update": t.time_since_update,
             })
+
+        # V5.2 FIX : deduplique par tracker_id AU SEIN de la meme frame.
+        # Demontre sur Goe (65% des frames) puis Raeren (~90% des frames,
+        # CPU et GPU) : la sortie brute de update_tracks() peut contenir
+        # DEUX entrees distinctes pour le MEME track_id, a des positions
+        # differentes et des time_since_update differents (donc deux
+        # objets Track distincts partageant un ID, pas une reference
+        # dupliquee). Cause exacte (deep_sort_realtime lui-meme, ou nos
+        # detections en entree) non elucidee - voir V4_CLUSTERING_ET_
+        # AUTOPSIE_RF.md §13.1. Ce correctif ne resout pas la cause, il
+        # neutralise le symptome le plus dommageable (classification
+        # equipe/evenements dupliques en aval) : on garde la version la
+        # PLUS FRAICHE (time_since_update le plus bas) de chaque doublon,
+        # celle la plus susceptible de refleter une vraie detection YOLO
+        # de cette frame plutot qu'une prediction Kalman perimee.
+        par_id = {}
+        ids_vus = set()
+        n_doublons = 0
+        for r in results:
+            tid = r["id"]
+            if tid in ids_vus:
+                n_doublons += 1
+                if r["time_since_update"] < par_id[tid]["time_since_update"]:
+                    par_id[tid] = r
+            else:
+                ids_vus.add(tid)
+                par_id[tid] = r
+        results = list(par_id.values())
+
         return results
 
     def reset(self):
