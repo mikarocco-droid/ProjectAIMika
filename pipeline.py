@@ -458,6 +458,24 @@ def run_pipeline(
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
+    # V5.2 DIAGNOSTIC - mesure le taux de doublons tracker_id ICI, juste
+    # apres le retour de process_video()/analyze_segments(), AVANT toute
+    # transformation (kickoff offset, MATCH_END, etc.) - pour localiser
+    # precisement si les doublons observes dans le frames_data.pkl FINAL
+    # (sauvegarde plus tard) sont deja presents des la sortie du tracker,
+    # ou apparaissent APRES, quelque part dans les transformations qui
+    # suivent. Mesure sur Raeren : dedup_diag.json (dans le tracker lui-
+    # meme) dit 0% de doublons, mais le frames_data.pkl final en montre
+    # 93.9% - il faut savoir ou exactement cet ecart se produit.
+    _n_doublons_ici = sum(
+        1 for _fd in frames_data
+        if len(_ids := [_p.get("tracker_id", _p.get("id")) for _p in _fd.get("players", [])]) != len(set(_ids))
+    )
+    print(f"  [DIAG DOUBLONS - juste apres process_video()] "
+          f"{_n_doublons_ici}/{len(frames_data)} frames avec doublon "
+          f"({100*_n_doublons_ici/len(frames_data):.1f}%)" if frames_data else
+          f"  [DIAG DOUBLONS - juste apres process_video()] frames_data vide")
+
     # V5.2 : team_map construite ICI (tot, avant RAW) pour servir au
     # tracage de provenance ci-dessous, ET reutilisee pour le meme
     # diagnostic au stade CLEAN plus loin.
@@ -2273,10 +2291,42 @@ def run_pipeline(
         import pickle as _pickle_audit
         _audit_dir = os.path.join(output_dir, "audit_identite")
         os.makedirs(_audit_dir, exist_ok=True)
+
+        # V5.2 DIAGNOSTIC - meme mesure qu'a la sortie de process_video(),
+        # mais ICI juste avant l'ecriture du fichier - pour voir si le taux
+        # a change entre les deux points (kickoff offset, MATCH_END,
+        # resolve_player_identities et tout ce qui s'execute entre les deux).
+        _n_doublons_avant_save = sum(
+            1 for _fd in frames_data
+            if len(_ids := [_p.get("tracker_id", _p.get("id")) for _p in _fd.get("players", [])]) != len(set(_ids))
+        )
+        print(f"  [DIAG DOUBLONS - juste avant sauvegarde frames_data.pkl] "
+              f"{_n_doublons_avant_save}/{len(frames_data)} frames avec doublon "
+              f"({100*_n_doublons_avant_save/len(frames_data):.1f}%)" if frames_data else
+              f"  [DIAG DOUBLONS - juste avant sauvegarde] frames_data vide")
+
         with open(os.path.join(_audit_dir, "frames_data.pkl"), "wb") as _f_audit:
             _pickle_audit.dump(frames_data, _f_audit)
         with open(os.path.join(_audit_dir, "jersey_map_brut.json"), "w", encoding="utf-8") as _f_audit2:
             json.dump(jersey_map, _f_audit2)
+
+        # V5.2 - marqueur de version explicite, ecrit AU MEME MOMENT et
+        # dans le MEME dossier que frames_data.pkl - demande directement
+        # par l'utilisateur, marre des allers-retours a deviner si un
+        # fichier est perime a partir du nombre de frames/taux de doublons.
+        # Contient un identifiant unique change a chaque ajout de
+        # diagnostic - si ce fichier dit "V5.2_DIAG_DOUBLONS_PIPELINE",
+        # alors frames_data.pkl A COTE vient forcement de CE code-ci,
+        # point final, plus besoin de deviner.
+        import datetime as _dt_version
+        with open(os.path.join(_audit_dir, "version_marker.json"), "w", encoding="utf-8") as _f_version:
+            json.dump({
+                "marqueur": "V5.2_DIAG_DOUBLONS_PIPELINE",
+                "genere_le": _dt_version.datetime.now(_dt_version.timezone.utc).isoformat(),
+                "output_dir": output_dir,
+            }, _f_version, indent=2)
+        print(f"  [VERSION] marqueur écrit : {_audit_dir}/version_marker.json")
+
         print(f"  [AUDIT IDENTITE] frames_data + jersey_map brut sauvegardés "
               f"dans {_audit_dir}/ ({len(frames_data)} frames, "
               f"{len(jersey_map)} track_id référencés)")
