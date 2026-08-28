@@ -454,6 +454,19 @@ def process_video(
     except Exception as _e_diag:
         print(f"  [DIAG PlayerReID] indisponible : {_e_diag}")
 
+    # V5.2 - stats de deduplication tracker_id, compteur PERMANENT (pas un
+    # echantillon) - garantit une reponse sans ambiguite a la question
+    # "ce code a-t-il tourne, et avec quel effet ?"
+    try:
+        _dedup_dir = f"outputs/{_nom_match}/audit_identite"
+        os.makedirs(_dedup_dir, exist_ok=True)
+        _dedup_stats = tracker.get_dedup_stats()
+        with open(os.path.join(_dedup_dir, "dedup_diag.json"), "w", encoding="utf-8") as _f_dedup:
+            _json_diag.dump(_dedup_stats, _f_dedup, indent=2)
+        print(f"  [DIAG DEDUP] sauvegardé dans {_dedup_dir}/dedup_diag.json : {_dedup_stats}")
+    except Exception as _e_dedup:
+        print(f"  [DIAG DEDUP] indisponible : {_e_dedup}")
+
     # V5.1 DIAGNOSTIC - zippe le dossier de crops OCR (bruts + traites)
     # en un seul fichier, plus simple a telecharger depuis Kaggle qu'un
     # dossier de dizaines d'images individuelles.
