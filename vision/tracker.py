@@ -33,10 +33,20 @@ class Tracker:
         results = self._update_deepsort(players, frame)
         results = self.reid.process(frame, results)
 
+        # V5.2 FIX : ne PLUS ecraser "tracker_id" ici. player_reid.py le
+        # definit DEJA correctement (det.get("id"), le vrai id DeepSort,
+        # deja deduplique par _update_deepsort()). L'ancienne ligne
+        # `r["tracker_id"] = r.get("id", ...)` remplacait ce bon tracker_id
+        # par reid_id (l'id de fusion couleur) - si deux pistes DeepSort
+        # DIFFERENTES etaient fusionnees a tort sous le meme reid_id
+        # (couleurs de maillot similaires), elles se retrouvaient avec le
+        # MEME tracker_id apres cette ligne, creant un faux "doublon"
+        # attribue a tort a DeepSort. Demontre sur Raeren : 0% de doublons
+        # juste apres _update_deepsort() (mesure interne), mais 80.8% dans
+        # frames_data final - l'ecart se produisait exactement ici.
         for r in results:
             if "player_id" in r:
-                r["tracker_id"] = r.get("id", r["player_id"])
-                r["id"]         = r["player_id"]
+                r["id"] = r["player_id"]
 
         return results
 
