@@ -82,22 +82,26 @@ class Tracker:
         # PLUS FRAICHE (time_since_update le plus bas) de chaque doublon,
         # celle la plus susceptible de refleter une vraie detection YOLO
         # de cette frame plutot qu'une prediction Kalman perimee.
-        # V5.2 DIAGNOSTIC - avant de continuer a deviner pourquoi le taux de
-        # doublons ne baisse pas malgre le fix (mesure sur Andrimont CPU :
-        # 88.3% apres fix, quasi identique a avant) - affiche explicitement
-        # ce qui se passe A CE POINT PRECIS, une fois par 200 frames pour
-        # ne pas noyer le log. A retirer une fois la cause comprise.
-        if not hasattr(self, "_diag_frame_count"):
-            self._diag_frame_count = 0
-        self._diag_frame_count += 1
-        _diag_actif = (self._diag_frame_count % 200 == 1)
+        #
+        # V5.2 DIAGNOSTIC (compteur PERMANENT, pas un echantillon) - le
+        # premier diagnostic (affichage conditionnel tous les 200 frames)
+        # ne permettait pas de savoir avec certitude si ce code tournait
+        # reellement sur un run donne (silence ambigu : code absent, ou
+        # simplement aucun doublon sur les frames echantillonnees ?).
+        # Remplace par un compteur cumule sur TOUTE la duree de vie de
+        # l'instance, expose via get_dedup_stats() et sauvegarde en
+        # fichier par main.py - une seule ligne, sans ambiguite possible.
+        if not hasattr(self, "_dedup_frames_traitees"):
+            self._dedup_frames_traitees = 0
+            self._dedup_frames_avec_doublon = 0
+            self._dedup_doublons_totaux = 0
+        self._dedup_frames_traitees += 1
 
         ids_bruts = [r["id"] for r in results]
         from collections import Counter as _Counter_diag
         _doublons_bruts = {k: v for k, v in _Counter_diag(ids_bruts).items() if v > 1}
-        if _diag_actif and _doublons_bruts:
-            print(f"    [DIAG DEDUP frame#{self._diag_frame_count}] AVANT dedup : "
-                  f"{len(results)} entrees, doublons bruts={_doublons_bruts}")
+        if _doublons_bruts:
+            self._dedup_frames_avec_doublon += 1
 
         par_id = {}
         ids_vus = set()
@@ -112,15 +116,26 @@ class Tracker:
                 ids_vus.add(tid)
                 par_id[tid] = r
         results = list(par_id.values())
-
-        if _diag_actif and _doublons_bruts:
-            ids_apres = [r["id"] for r in results]
-            _doublons_apres = {k: v for k, v in _Counter_diag(ids_apres).items() if v > 1}
-            print(f"    [DIAG DEDUP frame#{self._diag_frame_count}] APRES dedup : "
-                  f"{len(results)} entrees, n_doublons_comptes={n_doublons}, "
-                  f"doublons_restants={_doublons_apres}")
+        self._dedup_doublons_totaux += n_doublons
 
         return results
+
+    def get_dedup_stats(self):
+        """
+        V5.2 - Statistiques CUMULEES de deduplication sur toute la duree
+        de vie de cette instance Tracker. A appeler et sauvegarder en fin
+        de match (voir main.py) pour verifier, sans ambiguite, que ce
+        code a bien tourne et quel effet il a eu.
+        """
+        n = getattr(self, "_dedup_frames_traitees", 0)
+        return {
+            "frames_traitees": n,
+            "frames_avec_doublon_brut": getattr(self, "_dedup_frames_avec_doublon", 0),
+            "pct_frames_avec_doublon": round(
+                100 * getattr(self, "_dedup_frames_avec_doublon", 0) / n, 1
+            ) if n else 0.0,
+            "doublons_totaux_corriges": getattr(self, "_dedup_doublons_totaux", 0),
+        }
 
     def reset(self):
         self.__init__()
