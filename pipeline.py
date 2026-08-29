@@ -560,16 +560,37 @@ def run_pipeline(
     # kickoff_offset et team_colors viennent déjà du cache.
     if _match_data is None:
         # ── DÉTECTION COUP D'ENVOI ────────────────────────────────────────────────
-        # Le coup d'envoi est détecté par terminal_events pendant le tracking
-        # (event type="kickoff" : ballon au rond central + joueurs symétriques).
-        # On cherche le premier kickoff pour corriger tous les timestamps.
-        _video_duration_s = total_frames / max(fps, 1)
-        _kickoff_offset, _kickoff_conf = find_kickoff_offset(
-            events, _video_duration_s,
-            frames_data = frames_data,   # V9.8 : score pondéré sans dépendre du ballon
-            fps         = fps,        
-            video_path  = video_path,   # ← ligne ajoutée
-        )
+        # V5.2 : kickoff_detector.py catégorisé LEGACY/OBSOLETE - son
+        # heuristique "groups[-1]" (choisir systematiquement le dernier
+        # groupe candidat) echoue de facon repetee et destructive sur
+        # Andrimont (confirme sur 2 runs independants : KO reel=307.5s,
+        # choisi=1193.5s puis 644.6s - jamais reproduit sur Raeren/Wanze,
+        # ou le meme mecanisme fonctionne). Le laisser agir est incompatible
+        # avec l'architecture V5.2 (mining/RF/validation) : il peut
+        # supprimer physiquement les donnees dont ce nouveau systeme a
+        # besoin pour trouver le vrai KO. Voir V5_2_FIABILITE_ROADMAP.md §7.
+        #
+        # Desactive ici plutot que le code retire : garde la possibilite
+        # de revenir en arriere facilement, et de comparer plus tard les
+        # decisions de l'ancien systeme a celles du nouveau sans avoir a
+        # restaurer le code depuis git.
+        KICKOFF_DETECTOR_LEGACY_DESACTIVE = True
+        _video_duration_s = total_frames / max(fps, 1)  # toujours calculee, reutilisee par find_match_end plus bas
+
+        if KICKOFF_DETECTOR_LEGACY_DESACTIVE:
+            _kickoff_offset, _kickoff_conf = 0.0, 0.0
+            print(f"  [KICKOFF] kickoff_detector.py désactivé (LEGACY, V5.2 §7) — "
+                  f"timestamps inchangés, aucune suppression")
+        else:
+            # Le coup d'envoi est détecté par terminal_events pendant le tracking
+            # (event type="kickoff" : ballon au rond central + joueurs symétriques).
+            # On cherche le premier kickoff pour corriger tous les timestamps.
+            _kickoff_offset, _kickoff_conf = find_kickoff_offset(
+                events, _video_duration_s,
+                frames_data = frames_data,   # V9.8 : score pondéré sans dépendre du ballon
+                fps         = fps,        
+                video_path  = video_path,   # ← ligne ajoutée
+            )
 
         if _kickoff_offset > 0:
             print(f"  [KICKOFF] Application offset={_kickoff_offset:.1f}s "
