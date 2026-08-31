@@ -2481,7 +2481,18 @@ def run_pipeline(
         ctx    = ContextEngine(fps=fps, frame_w=_frame_w, frame_h=_frame_h)
         events = ctx.process_events(events, frames_data)
         ctx_stats = ctx.get_match_stats(events)
-        print(f"  Context : shots_ctx={ctx_stats['shots_by_context']} | "
+        # V5.2 FIX : renomme pour clarifier - ce calcul porte sur TOUS les
+        # tirs bruts detectes (avant filtrage highlight), alors que
+        # summary["shots"] (calcule plus loin, ligne ~2971, sur
+        # events_clean) ne compte que les tirs VALIDES par la highlight.
+        # Les deux mesuraient des populations differentes sans que ce soit
+        # indique (ex. Andrimont : 68 bruts vs 9 valides) - source de
+        # confusion, pas un bug de calcul. Cle renommee ici, se propage
+        # automatiquement partout ou ctx_stats est expose (summary,
+        # sorties intermediaires lignes ~3086/3134).
+        if "shots_by_context" in ctx_stats:
+            ctx_stats["shots_bruts_by_context"] = ctx_stats.pop("shots_by_context")
+        print(f"  Context : shots_ctx={ctx_stats.get('shots_bruts_by_context')} | "
               f"avg_pressure={ctx_stats['avg_pressure_on_shot']} | "
               f"avg_seq={ctx_stats['avg_sequence_length']}")
     except Exception as e:
@@ -2984,7 +2995,12 @@ def run_pipeline(
     # V9.9 — shots = tirs dans les highlights (ce que l'utilisateur voit)
     # n_highlight_shots = tirs, n_highlight_goals = buts
     # Total = highlights sélectionnés = ce qui est dans le reel
-    summary["shots"]    = n_highlight_shots   # tirs cadres dans les highlights
+    # V5.2 NOTE : ne pas confondre avec context_stats["shots_bruts_by_context"]
+    # (calculé plus haut, ligne ~2483) - celui-ci compte TOUS les tirs bruts
+    # détectés avant filtrage highlight, une population différente et plus
+    # large. Les deux mesures sont légitimes mais distinctes (démontré sur
+    # Andrimont : 9 valides ici vs 68 bruts côté context_stats).
+    summary["shots"]    = n_highlight_shots   # tirs cadres dans les highlights (validés)
     summary["total_xg"] = round(
         sum(float(h.get("xg", 0) or 0) for h in highlights), 2
     )
