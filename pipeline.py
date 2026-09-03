@@ -54,6 +54,11 @@ from analysis.player_identity import resolve_player_identities, get_player_label
 from analysis.goal_posthoc    import detect_fast_goals_from_ball
 from analysis.terminal_events import detect_terminal_events, build_candidate_windows
 from analysis.kickoff_detector import find_kickoff_offset, apply_kickoff_offset, apply_kickoff_offset_frames, reset_pre_kickoff_state, find_match_end, apply_match_end
+# V5.2 : find_kickoff_offset n'est plus appelee (remplacee par detect_kickoff_gemini,
+# voir bloc KICKOFF ci-dessous) - import gardee pour reference/rollback facile, pas
+# du code mort accidentel. apply_kickoff_offset/apply_kickoff_offset_frames/
+# reset_pre_kickoff_state restent activement utilisees (consomment _kickoff_offset
+# quelle que soit sa source). find_match_end/apply_match_end inchanges (MATCH_END).
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTE ZONE DE BUT — source unique
@@ -249,6 +254,17 @@ def run_pipeline(
     player_position   = None,    # "Gardien", "Attaquant", etc. — pour mode player
     audit_mode        = False,   # Mode collecte données : skip highlights, PDF, commentary, heatmaps
     video_end_s       = None,    # Forcer la fin de la vidéo à ce timestamp (s) — utile pour couper l'après-match
+    half_duration_min = 45,      # V5.2 : durée d'une mi-temps choisie par l'utilisateur (min),
+                                  # AVANT l'analyse. Sert à dériver la limite de recherche du
+                                  # coup d'envoi : max_search_min = (half_duration_min / 3) * 2.
+                                  # Ex: 45min → 30min de recherche max ; 30min (jeunes) → 20min.
+                                  # ⚠️ Formule non validée empiriquement — nos 9 matchs de
+                                  # référence sont tous en mi-temps 45min (KO le plus tardif
+                                  # observé : 18min, Goe). Hypothèse raisonnable (le protocole
+                                  # d'avant-match raccourcit proportionnellement à la durée du
+                                  # match) mais jamais mesurée sur un vrai match jeunes.
+                                  # À surveiller/ajuster si des faux NOT_FOUND apparaissent
+                                  # sur des matchs à mi-temps courte.
     _match_data       = None,    # Replay Engine : dict depuis replay.load_cache() — skip YOLO/tracking si fourni
 ):
     os.makedirs(output_dir, exist_ok=True)
@@ -560,37 +576,35 @@ def run_pipeline(
     # kickoff_offset et team_colors viennent déjà du cache.
     if _match_data is None:
         # ── DÉTECTION COUP D'ENVOI ────────────────────────────────────────────────
-        # V5.2 : kickoff_detector.py catégorisé LEGACY/OBSOLETE - son
-        # heuristique "groups[-1]" (choisir systematiquement le dernier
-        # groupe candidat) echoue de facon repetee et destructive sur
-        # Andrimont (confirme sur 2 runs independants : KO reel=307.5s,
-        # choisi=1193.5s puis 644.6s - jamais reproduit sur Raeren/Wanze,
-        # ou le meme mecanisme fonctionne). Le laisser agir est incompatible
-        # avec l'architecture V5.2 (mining/RF/validation) : il peut
-        # supprimer physiquement les donnees dont ce nouveau systeme a
-        # besoin pour trouver le vrai KO. Voir V5_2_FIABILITE_ROADMAP.md §7.
-        #
-        # Desactive ici plutot que le code retire : garde la possibilite
-        # de revenir en arriere facilement, et de comparer plus tard les
-        # decisions de l'ancien systeme a celles du nouveau sans avoir a
-        # restaurer le code depuis git.
-        KICKOFF_DETECTOR_LEGACY_DESACTIVE = True
+        # V5.2 : kickoff_detector.py (LEGACY) reste desactive - heuristique
+        # "groups[-1]" destructive documentee, voir V5_2_FIABILITE_ROADMAP.md §7.
+        # Remplace par la cascade Gemini (§12), validee 9/9 sur les 9 matchs de
+        # reference, Run 1 et Run 2 tous deux 9/9 (ecart max 5.2s, jamais en
+        # avance). Contrat V1 fige : premier KO uniquement, statuts explicites
+        # AUTO_CONFIRMED/NOT_FOUND/ERROR, jamais de faux timestamp sur echec.
+        KICKOFF_DETECTOR_LEGACY_DESACTIVE = True  # ancien systeme, ne jamais reactiver sans revalidation
         _video_duration_s = total_frames / max(fps, 1)  # toujours calculee, reutilisee par find_match_end plus bas
 
-        if KICKOFF_DETECTOR_LEGACY_DESACTIVE:
-            _kickoff_offset, _kickoff_conf = 0.0, 0.0
-            print(f"  [KICKOFF] kickoff_detector.py désactivé (LEGACY, V5.2 §7) — "
-                  f"timestamps inchangés, aucune suppression")
+        from analysis.kickoff_gemini_cascade import detect_kickoff_gemini  # TODO: module a creer
+
+        _kickoff_max_search_s = (half_duration_min / 3) * 2 * 60  # cf. doc du parametre half_duration_min ci-dessus
+        _kickoff_result = detect_kickoff_gemini(
+            video_path,
+            max_search_s = min(_video_duration_s, _kickoff_max_search_s),
+        )
+        print(f"  [KICKOFF] Gemini cascade → status={_kickoff_result['status']} "
+              f"kickoff_s={_kickoff_result['kickoff_s']}")
+
+        if _kickoff_result["status"] == "AUTO_CONFIRMED":
+            _kickoff_offset = _kickoff_result["kickoff_s"]
+            _kickoff_conf   = 1.0  # V1 : pas de score de confiance defini (§12, contrat), AUTO_CONFIRMED = confiance binaire
         else:
-            # Le coup d'envoi est détecté par terminal_events pendant le tracking
-            # (event type="kickoff" : ballon au rond central + joueurs symétriques).
-            # On cherche le premier kickoff pour corriger tous les timestamps.
-            _kickoff_offset, _kickoff_conf = find_kickoff_offset(
-                events, _video_duration_s,
-                frames_data = frames_data,   # V9.8 : score pondéré sans dépendre du ballon
-                fps         = fps,        
-                video_path  = video_path,   # ← ligne ajoutée
-            )
+            # NOT_FOUND ou ERROR : jamais de faux timestamp. Comportement
+            # identique au cas "pas de coup d'envoi detecte" deja existant
+            # ci-dessous (_kickoff_offset=0 -> timestamps inchanges).
+            _kickoff_offset, _kickoff_conf = 0.0, 0.0
+            print(f"  [KICKOFF] {_kickoff_result['status']} "
+                  f"({_kickoff_result.get('reason', 'raison non precisee')}) — timestamps inchangés")
 
         if _kickoff_offset > 0:
             print(f"  [KICKOFF] Application offset={_kickoff_offset:.1f}s "
