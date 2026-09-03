@@ -585,7 +585,7 @@ def run_pipeline(
         KICKOFF_DETECTOR_LEGACY_DESACTIVE = True  # ancien systeme, ne jamais reactiver sans revalidation
         _video_duration_s = total_frames / max(fps, 1)  # toujours calculee, reutilisee par find_match_end plus bas
 
-        from analysis.kickoff_gemini_cascade import detect_kickoff_gemini  # TODO: module a creer
+        from analysis.kickoff_gemini_cascade import detect_kickoff_gemini
 
         _kickoff_max_search_s = (half_duration_min / 3) * 2 * 60  # cf. doc du parametre half_duration_min ci-dessus
         _kickoff_result = detect_kickoff_gemini(
