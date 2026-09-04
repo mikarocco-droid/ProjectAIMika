@@ -154,7 +154,12 @@ def process_batch(
 
         tracked = tracker.update(players, frame_orig)
         tracked = assign_teams_by_color(frame_orig, tracked, color_detector)
-        tracked = ocr.read_all(frame_orig, tracked, frame_id=analyzed)
+        # V5.2 FIX (meme bug que ball["frame"] ci-dessous, §12.15) : frame_id
+        # absolu, pas analyzed (relatif a la session) - le frame_orig fourni
+        # est deja la bonne image, mais l'etiquette frame_id doit rester
+        # coherente avec le reste du pipeline pour eviter toute confusion
+        # en aval (apply_kickoff_offset_frames, correlation temporelle).
+        tracked = ocr.read_all(frame_orig, tracked, frame_id=frame_id)
 
         if ball_tracker is not None:
             yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
@@ -171,8 +176,19 @@ def process_batch(
         # PATCH : injecter le frame courant dans ball pour que detect_events
         # puisse calculer current_time = frame / fps correctement
         # Sans ça, ball.get("frame", 0) retourne 0 → tous les logs t=0.0s
+        #
+        # V5.2 FIX (bug trouve suite a l'ajout de start_time_s, §12.15) :
+        # DOIT etre frame_id (position ABSOLUE dans la video originale),
+        # PAS analyzed (compteur relatif a la session, toujours reinitialise
+        # a 0 peu importe start_time_s). Avec start_time_s>0, ball["frame"]=
+        # analyzed donnait des "time" proches de 0 au lieu du vrai temps
+        # video (~300s+), faisant supprimer TOUS les events comme "pre-match"
+        # par apply_kickoff_offset (718/718 events perdus, observe en test
+        # reel sur Andrimont). Reste invisible avant ce changement car
+        # start_frame etait toujours 0 (frame_id et analyzed coincidaient
+        # par coincidence).
         if ball is not None:
-            ball["frame"] = analyzed
+            ball["frame"] = frame_id
 
         frame_events, events_state = detect_events(
             players    = tracked,
