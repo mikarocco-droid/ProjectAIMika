@@ -375,6 +375,10 @@ def run_pipeline(
     # ─────────────────────────────────────────
     candidate_segments = None
     coarse_stats       = {}
+    _kickoff_deja_detecte = False  # V5.2 : evite une double detection Gemini
+    # (une fois avant process_video() pour le chemin fallback, §12.15 -
+    # une fois dans le bloc partage plus bas, encore necessaire pour le
+    # chemin candidate_segments/analyze_segments, non touche par ce chantier)
 
     if use_coarse_scan and mode == "match":
         try:
@@ -461,6 +465,56 @@ def run_pipeline(
         print(f"  [REPLAY] kickoff_offset={_kickoff_offset:.1f}s | team_colors={_captured_team_colors}")
 
     elif not candidate_segments:
+        # ── DÉTECTION COUP D'ENVOI — AVANT process_video() ──────────────────────
+        # V5.2 : deplacee ici (etait apres process_video()) pour eviter de
+        # faire tourner le tracking complet (etape la plus lente) sur
+        # l'avant-match, qui etait de toute facon supprime juste apres.
+        # Voir V5_2_FIABILITE_ROADMAP.md §12.15. kickoff_detector.py (LEGACY)
+        # reste desactive - heuristique "groups[-1]" destructive documentee,
+        # voir §7. Cascade Gemini (§12), validee 9/9 sur les 9 matchs de
+        # reference (Run 1 et Run 2). Contrat V1 fige : premier KO uniquement,
+        # statuts explicites AUTO_CONFIRMED/NOT_FOUND/ERROR, jamais de faux
+        # timestamp sur echec.
+        KICKOFF_DETECTOR_LEGACY_DESACTIVE = True  # ancien systeme, ne jamais reactiver sans revalidation
+
+        # Lecture LEGERE des metadonnees (fps, duree) - PAS un traitement de
+        # frames, juste l'en-tete du fichier. video_path ne change jamais.
+        import cv2 as _cv2_ko
+        _cap_ko = _cv2_ko.VideoCapture(video_path)
+        _ko_fps = _cap_ko.get(_cv2_ko.CAP_PROP_FPS) or 25.0
+        _ko_total_frames = int(_cap_ko.get(_cv2_ko.CAP_PROP_FRAME_COUNT))
+        _cap_ko.release()
+        _video_duration_s = _ko_total_frames / max(_ko_fps, 1)
+
+        from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
+
+        _kickoff_max_search_s = (half_duration_min / 3) * 2 * 60  # cf. doc du parametre half_duration_min ci-dessus
+        _kickoff_result = detect_kickoff_gemini_avec_retry(
+            video_path,
+            max_search_s = min(_video_duration_s, _kickoff_max_search_s),
+            max_retries  = 3,  # NOT_FOUND peut venir de variance residuelle Gemini
+                               # (observe concretement sur Andrimont : NOT_FOUND puis
+                               # AUTO_CONFIRMED sur le meme match, meme code) - jamais
+                               # retente sur ERROR (conditions plus probablement
+                               # structurelles). Voir kickoff_gemini_cascade.py.
+        )
+        print(f"  [KICKOFF] Gemini cascade → status={_kickoff_result['status']} "
+              f"kickoff_s={_kickoff_result['kickoff_s']}")
+
+        if _kickoff_result["status"] == "AUTO_CONFIRMED":
+            _kickoff_offset = _kickoff_result["kickoff_s"]
+            _kickoff_conf   = 1.0  # V1 : pas de score de confiance defini (§12, contrat), AUTO_CONFIRMED = confiance binaire
+        else:
+            # NOT_FOUND ou ERROR : jamais de faux timestamp. start_time_s=0.0
+            # -> process_video() analyse la video complete depuis le debut,
+            # comportement volontairement conservateur (§12.15).
+            _kickoff_offset, _kickoff_conf = 0.0, 0.0
+            print(f"  [KICKOFF] {_kickoff_result['status']} "
+                  f"({_kickoff_result.get('reason', 'raison non precisee')}) — "
+                  f"analyse depuis le début de la vidéo (t=0)")
+
+        _kickoff_deja_detecte = True  # evite la re-detection dans le bloc partage plus bas
+
         # ── FALLBACK : process_video() complet ───────────────────────────
         print("Step 1 : Tracking + Events (full pass)...")
         events, jersey_map, fps, total_frames, frames_data = process_video(
@@ -471,6 +525,8 @@ def run_pipeline(
             annotated_path    = annotated_path,
             shot_zones        = shot_zones,
             return_frames     = True,
+            start_time_s      = _kickoff_offset,  # V5.2 : positionne le curseur au KO,
+                                                    # evite de tracker l'avant-match (§12.15)
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
@@ -575,42 +631,44 @@ def run_pipeline(
     # En mode replay (_match_data fourni), ce bloc est skippé :
     # kickoff_offset et team_colors viennent déjà du cache.
     if _match_data is None:
-        # ── DÉTECTION COUP D'ENVOI ────────────────────────────────────────────────
-        # V5.2 : kickoff_detector.py (LEGACY) reste desactive - heuristique
-        # "groups[-1]" destructive documentee, voir V5_2_FIABILITE_ROADMAP.md §7.
-        # Remplace par la cascade Gemini (§12), validee 9/9 sur les 9 matchs de
-        # reference, Run 1 et Run 2 tous deux 9/9 (ecart max 5.2s, jamais en
-        # avance). Contrat V1 fige : premier KO uniquement, statuts explicites
-        # AUTO_CONFIRMED/NOT_FOUND/ERROR, jamais de faux timestamp sur echec.
-        KICKOFF_DETECTOR_LEGACY_DESACTIVE = True  # ancien systeme, ne jamais reactiver sans revalidation
-        _video_duration_s = total_frames / max(fps, 1)  # toujours calculee, reutilisee par find_match_end plus bas
+        if not _kickoff_deja_detecte:
+            # ── DÉTECTION COUP D'ENVOI ────────────────────────────────────────────────
+            # V5.2 : ce chemin ne s'execute que pour candidate_segments/
+            # analyze_segments (non touche par le chantier §12.15 - la
+            # detection anticipee avant process_video() ne s'applique
+            # qu'au chemin fallback, deja marquee via _kickoff_deja_detecte).
+            # kickoff_detector.py (LEGACY) reste desactive - heuristique
+            # "groups[-1]" destructive documentee, voir V5_2_FIABILITE_ROADMAP.md §7.
+            # Cascade Gemini (§12), validee 9/9 sur les 9 matchs de
+            # reference, Run 1 et Run 2 tous deux 9/9 (ecart max 5.2s, jamais en
+            # avance). Contrat V1 fige : premier KO uniquement, statuts explicites
+            # AUTO_CONFIRMED/NOT_FOUND/ERROR, jamais de faux timestamp sur echec.
+            KICKOFF_DETECTOR_LEGACY_DESACTIVE = True  # ancien systeme, ne jamais reactiver sans revalidation
+            _video_duration_s = total_frames / max(fps, 1)  # toujours calculee, reutilisee par find_match_end plus bas
 
-        from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
+            from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
 
-        _kickoff_max_search_s = (half_duration_min / 3) * 2 * 60  # cf. doc du parametre half_duration_min ci-dessus
-        _kickoff_result = detect_kickoff_gemini_avec_retry(
-            video_path,
-            max_search_s = min(_video_duration_s, _kickoff_max_search_s),
-            max_retries  = 3,  # NOT_FOUND peut venir de variance residuelle Gemini
-                               # (observe concretement sur Andrimont : NOT_FOUND puis
-                               # AUTO_CONFIRMED sur le meme match, meme code) - jamais
-                               # retente sur ERROR (conditions plus probablement
-                               # structurelles). Voir kickoff_gemini_cascade.py.
-        )
-        print(f"  [KICKOFF] Gemini cascade → status={_kickoff_result['status']} "
-              f"kickoff_s={_kickoff_result['kickoff_s']}")
+            _kickoff_max_search_s = (half_duration_min / 3) * 2 * 60  # cf. doc du parametre half_duration_min ci-dessus
+            _kickoff_result = detect_kickoff_gemini_avec_retry(
+                video_path,
+                max_search_s = min(_video_duration_s, _kickoff_max_search_s),
+                max_retries  = 3,
+            )
+            print(f"  [KICKOFF] Gemini cascade → status={_kickoff_result['status']} "
+                  f"kickoff_s={_kickoff_result['kickoff_s']}")
 
-        if _kickoff_result["status"] == "AUTO_CONFIRMED":
-            _kickoff_offset = _kickoff_result["kickoff_s"]
-            _kickoff_conf   = 1.0  # V1 : pas de score de confiance defini (§12, contrat), AUTO_CONFIRMED = confiance binaire
+            if _kickoff_result["status"] == "AUTO_CONFIRMED":
+                _kickoff_offset = _kickoff_result["kickoff_s"]
+                _kickoff_conf   = 1.0
+            else:
+                _kickoff_offset, _kickoff_conf = 0.0, 0.0
+                print(f"  [KICKOFF] {_kickoff_result['status']} "
+                      f"({_kickoff_result.get('reason', 'raison non precisee')}) — timestamps inchangés")
         else:
-            # NOT_FOUND ou ERROR : jamais de faux timestamp. Comportement
-            # identique au cas "pas de coup d'envoi detecte" deja existant
-            # ci-dessous (_kickoff_offset=0 -> timestamps inchanges).
-            _kickoff_offset, _kickoff_conf = 0.0, 0.0
-            print(f"  [KICKOFF] {_kickoff_result['status']} "
-                  f"({_kickoff_result.get('reason', 'raison non precisee')}) — timestamps inchangés")
+            print(f"  [KICKOFF] Déjà détecté avant process_video() (§12.15) — "
+                  f"offset={_kickoff_offset:.1f}s, application ci-dessous")
 
+        # ── APPLICATION DE L'OFFSET (dans tous les cas, une fois _kickoff_offset connu) ──
         if _kickoff_offset > 0:
             print(f"  [KICKOFF] Application offset={_kickoff_offset:.1f}s "
                   f"(conf={_kickoff_conf:.2f}) — suppression pré-match")

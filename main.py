@@ -220,6 +220,15 @@ def process_video(
     return_frames     = False,
     frame_skip_every  = None,
     batch_size        = None,
+    start_time_s      = 0.0,   # V5.2 : positionne le curseur de lecture a ce
+                                # temps (s) SANS decouper/recreer la video -
+                                # video_path ne change jamais, evite tous les
+                                # problemes de cache/correlation de frame
+                                # identifies lors de l'integration de la
+                                # detection KO Gemini (V5_2_FIABILITE_ROADMAP.md
+                                # §12.15). frame_id demarre a cette position
+                                # (pas 0), reste coherent avec l'offset deja
+                                # applique plus tard par apply_kickoff_offset_frames.
 ):
     if progress_callback is None:
         progress_callback = default_progress
@@ -251,6 +260,12 @@ def process_video(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     w            = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h            = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    start_frame = int(start_time_s * fps) if start_time_s > 0 else 0
+    if start_frame > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        print(f"  [START_TIME_S] Positionnement à t={start_time_s:.1f}s "
+              f"(frame {start_frame}/{total_frames}) — frames précédentes non lues, non traitées")
 
     scale_x = w / PROCESS_W
     scale_y = h / PROCESS_H
@@ -292,7 +307,7 @@ def process_video(
         )
 
     frames_data   = []
-    frame_id      = 0
+    frame_id      = start_frame  # V5.2 : pas toujours 0 (cf. start_time_s ci-dessus)
     analyzed      = 0
     last_pct      = -1
     current_batch = []
