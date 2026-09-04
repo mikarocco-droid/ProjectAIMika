@@ -242,7 +242,14 @@ def process_video(
     tracker        = Tracker()
     ocr            = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
     ocr._nom_match = os.path.splitext(os.path.basename(video_path))[0]  # V5.2 : evite l'ecrasement entre matchs (outputs/test codé en dur)
-    color_detector = TeamColorDetector(sample_frames=60)
+    color_detector = TeamColorDetector(
+        sample_frames=60,
+        debug_save_crops=os.environ.get("DEBUG_TEAM_COLORS", "false").lower() == "true",
+        # V5.2 : active avec `set DEBUG_TEAM_COLORS=true` (Windows) ou
+        # `export DEBUG_TEAM_COLORS=true` (Linux/Mac) avant de lancer, pour
+        # sauvegarder les crops de calibration a inspecter visuellement.
+        # Diagnostic du jaune trop terne detecte sur Andrimont.
+    )
 
     ball_tracker = None
     try:
