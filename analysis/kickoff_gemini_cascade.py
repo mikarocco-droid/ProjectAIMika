@@ -406,3 +406,36 @@ def detect_kickoff_gemini(video_path, max_search_s,
     resultat["n_appels_gemini"] = etat.n_appels
     resultat["duree_recherche_s"] = time.monotonic() - etat.t_debut
     return resultat
+
+
+def detect_kickoff_gemini_avec_retry(video_path, max_search_s,
+                                       max_retries=3, **kwargs):
+    """
+    Enveloppe detect_kickoff_gemini() avec un retry automatique -
+    UNIQUEMENT sur NOT_FOUND, pas sur ERROR.
+
+    Justification : NOT_FOUND (notamment DEGENERATE_WINDOW) peut venir
+    de la variance residuelle de Gemini documentee tout au long de
+    V5_2_FIABILITE_ROADMAP.md §12 - observe concretement : meme match
+    (Andrimont), 2 appels consecutifs a ce module -> 1x NOT_FOUND/
+    DEGENERATE_WINDOW, 1x AUTO_CONFIRMED (310s). Un nouvel essai complet
+    peut recuperer le bon resultat sans intervention manuelle.
+
+    ERROR n'est PAS retente : ces conditions (cle API manquante, client
+    mal initialise, exception inattendue) sont plus probablement
+    structurelles que transitoires - reessayer ne les resoudrait pas et
+    gaspillerait du budget/temps pour rien.
+
+    Cout dans le pire cas : jusqu'a max_retries x le cout d'un essai
+    normal (appels + temps). A surveiller en production - si NOT_FOUND
+    est frequent, ce multiplicateur peut devenir significatif.
+    """
+    dernier_resultat = None
+    for tentative in range(1, max_retries + 1):
+        resultat = detect_kickoff_gemini(video_path, max_search_s, **kwargs)
+        resultat["tentative"] = tentative
+        if resultat["status"] != "NOT_FOUND":
+            return resultat  # AUTO_CONFIRMED ou ERROR : on s'arrete la
+        dernier_resultat = resultat
+
+    return dernier_resultat  # NOT_FOUND apres max_retries tentatives
