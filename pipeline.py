@@ -265,6 +265,14 @@ def run_pipeline(
                                   # match) mais jamais mesurée sur un vrai match jeunes.
                                   # À surveiller/ajuster si des faux NOT_FOUND apparaissent
                                   # sur des matchs à mi-temps courte.
+    kickoff_s_precalcule = None,  # V5.2 §12.17 : si fourni (detecte ou saisi
+                                  # manuellement pendant l'etape de preview cote
+                                  # site, avant cet appel), SAUTE la detection
+                                  # Gemini et utilise directement cette valeur -
+                                  # evite un appel Gemini complet en double.
+                                  # 0 ou None => pas de KO connu, comportement
+                                  # inchange (detection normale, ou NOT_FOUND si
+                                  # explicitement 0 suite a une saisie manuelle vide).
     _match_data       = None,    # Replay Engine : dict depuis replay.load_cache() — skip YOLO/tracking si fourni
 ):
     os.makedirs(output_dir, exist_ok=True)
@@ -477,41 +485,55 @@ def run_pipeline(
         # timestamp sur echec.
         KICKOFF_DETECTOR_LEGACY_DESACTIVE = True  # ancien systeme, ne jamais reactiver sans revalidation
 
-        # Lecture LEGERE des metadonnees (fps, duree) - PAS un traitement de
-        # frames, juste l'en-tete du fichier. video_path ne change jamais.
-        import cv2 as _cv2_ko
-        _cap_ko = _cv2_ko.VideoCapture(video_path)
-        _ko_fps = _cap_ko.get(_cv2_ko.CAP_PROP_FPS) or 25.0
-        _ko_total_frames = int(_cap_ko.get(_cv2_ko.CAP_PROP_FRAME_COUNT))
-        _cap_ko.release()
-        _video_duration_s = _ko_total_frames / max(_ko_fps, 1)
-
-        from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
-
-        _kickoff_max_search_s = (half_duration_min / 3) * 2 * 60  # cf. doc du parametre half_duration_min ci-dessus
-        _kickoff_result = detect_kickoff_gemini_avec_retry(
-            video_path,
-            max_search_s = min(_video_duration_s, _kickoff_max_search_s),
-            max_retries  = 3,  # NOT_FOUND peut venir de variance residuelle Gemini
-                               # (observe concretement sur Andrimont : NOT_FOUND puis
-                               # AUTO_CONFIRMED sur le meme match, meme code) - jamais
-                               # retente sur ERROR (conditions plus probablement
-                               # structurelles). Voir kickoff_gemini_cascade.py.
-        )
-        print(f"  [KICKOFF] Gemini cascade → status={_kickoff_result['status']} "
-              f"kickoff_s={_kickoff_result['kickoff_s']}")
-
-        if _kickoff_result["status"] == "AUTO_CONFIRMED":
-            _kickoff_offset = _kickoff_result["kickoff_s"]
-            _kickoff_conf   = 1.0  # V1 : pas de score de confiance defini (§12, contrat), AUTO_CONFIRMED = confiance binaire
+        if kickoff_s_precalcule is not None:
+            # V5.2 §12.17 : KO deja connu (detecte ou saisi manuellement
+            # pendant l'etape de preview cote site) - on saute entierement
+            # la detection Gemini, evite un appel complet en double.
+            # ⚠️ is not None (pas juste `if kickoff_s_precalcule:`) : 0.0 est
+            # une valeur explicite valide ("preview a echoue/utilisateur a
+            # laisse vide -> analyser depuis le debut, ne PAS re-detecter"),
+            # pas juste une absence de valeur - bug trouve en testant cette
+            # logique avant livraison.
+            print(f"  [KICKOFF] Valeur pré-calculée fournie : {kickoff_s_precalcule}s "
+                  f"(détection Gemini sautée)")
+            _kickoff_offset = float(kickoff_s_precalcule)
+            _kickoff_conf   = 1.0 if _kickoff_offset > 0 else 0.0
         else:
-            # NOT_FOUND ou ERROR : jamais de faux timestamp. start_time_s=0.0
-            # -> process_video() analyse la video complete depuis le debut,
-            # comportement volontairement conservateur (§12.15).
-            _kickoff_offset, _kickoff_conf = 0.0, 0.0
-            print(f"  [KICKOFF] {_kickoff_result['status']} "
-                  f"({_kickoff_result.get('reason', 'raison non precisee')}) — "
-                  f"analyse depuis le début de la vidéo (t=0)")
+            # Lecture LEGERE des metadonnees (fps, duree) - PAS un traitement de
+            # frames, juste l'en-tete du fichier. video_path ne change jamais.
+            import cv2 as _cv2_ko
+            _cap_ko = _cv2_ko.VideoCapture(video_path)
+            _ko_fps = _cap_ko.get(_cv2_ko.CAP_PROP_FPS) or 25.0
+            _ko_total_frames = int(_cap_ko.get(_cv2_ko.CAP_PROP_FRAME_COUNT))
+            _cap_ko.release()
+            _video_duration_s = _ko_total_frames / max(_ko_fps, 1)
+
+            from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
+
+            _kickoff_max_search_s = (half_duration_min / 3) * 2 * 60  # cf. doc du parametre half_duration_min ci-dessus
+            _kickoff_result = detect_kickoff_gemini_avec_retry(
+                video_path,
+                max_search_s = min(_video_duration_s, _kickoff_max_search_s),
+                max_retries  = 3,  # NOT_FOUND peut venir de variance residuelle Gemini
+                                   # (observe concretement sur Andrimont : NOT_FOUND puis
+                                   # AUTO_CONFIRMED sur le meme match, meme code) - jamais
+                                   # retente sur ERROR (conditions plus probablement
+                                   # structurelles). Voir kickoff_gemini_cascade.py.
+            )
+            print(f"  [KICKOFF] Gemini cascade → status={_kickoff_result['status']} "
+                  f"kickoff_s={_kickoff_result['kickoff_s']}")
+
+            if _kickoff_result["status"] == "AUTO_CONFIRMED":
+                _kickoff_offset = _kickoff_result["kickoff_s"]
+                _kickoff_conf   = 1.0  # V1 : pas de score de confiance defini (§12, contrat), AUTO_CONFIRMED = confiance binaire
+            else:
+                # NOT_FOUND ou ERROR : jamais de faux timestamp. start_time_s=0.0
+                # -> process_video() analyse la video complete depuis le debut,
+                # comportement volontairement conservateur (§12.15).
+                _kickoff_offset, _kickoff_conf = 0.0, 0.0
+                print(f"  [KICKOFF] {_kickoff_result['status']} "
+                      f"({_kickoff_result.get('reason', 'raison non precisee')}) — "
+                      f"analyse depuis le début de la vidéo (t=0)")
 
         _kickoff_deja_detecte = True  # evite la re-detection dans le bloc partage plus bas
 
