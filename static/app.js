@@ -287,6 +287,17 @@ async function runTeamDetection(uploadId) {
 
         }
 
+        // ── COUP D'ENVOI — V5.2 ──────────────────────────────────────────
+        // AUTO_CONFIRMED : affiche le temps détecté, pré-remplit le champ
+        // caché transmis à /upload (évite une re-détection lors de
+        // l'analyse complète, cf. §12.17).
+        // NOT_FOUND/ERROR : bascule sur la saisie manuelle - jamais de
+        // valeur inventée, l'utilisateur peut toujours indiquer le KO
+        // lui-même, ou laisser vide pour analyser depuis le début.
+        if (data.kickoff) {
+            handleKickoffResult(data.kickoff);
+        }
+
         await new Promise(r => setTimeout(r, 800));
 
     } catch (e) {
@@ -345,6 +356,67 @@ if (dropZone) {
         const file = fileInput.files[0];
         if (file) startUploadWithProgress(file);
     });
+}
+
+
+// ─────────────────────────────────────────
+// COUP D'ENVOI — AUTO / MANUEL
+// ─────────────────────────────────────────
+function handleKickoffResult(kickoff) {
+    const hiddenInput = document.getElementById("kickoff-s-input");
+    const autoDiv     = document.getElementById("kickoff-auto");
+    const manuelDiv    = document.getElementById("kickoff-manuel");
+    const autoTime    = document.getElementById("kickoff-auto-time");
+    const raisonSpan  = document.getElementById("kickoff-manuel-raison");
+
+    if (kickoff.status === "AUTO_CONFIRMED" && kickoff.kickoff_s != null) {
+        const mm = Math.floor(kickoff.kickoff_s / 60);
+        const ss = Math.round(kickoff.kickoff_s % 60);
+        if (autoTime) autoTime.textContent = `${mm}:${String(ss).padStart(2, "0")}`;
+        if (hiddenInput) hiddenInput.value = kickoff.kickoff_s;
+        if (autoDiv) autoDiv.style.display = "flex";
+        if (manuelDiv) manuelDiv.style.display = "none";
+    } else {
+        // NOT_FOUND ou ERROR : pas de valeur devinée, saisie manuelle proposée
+        if (raisonSpan) {
+            raisonSpan.textContent = kickoff.status === "ERROR"
+                ? "Détection automatique indisponible — indiquez le temps du coup d'envoi (minutes:secondes), ou laissez vide pour analyser depuis le début."
+                : "Coup d'envoi non trouvé automatiquement — indiquez-le (minutes:secondes), ou laissez vide pour analyser depuis le début.";
+        }
+        if (hiddenInput) hiddenInput.value = "";
+        if (autoDiv) autoDiv.style.display = "none";
+        if (manuelDiv) manuelDiv.style.display = "block";
+    }
+}
+
+function toggleKickoffManuel(forcerManuel) {
+    const autoDiv    = document.getElementById("kickoff-auto");
+    const manuelDiv  = document.getElementById("kickoff-manuel");
+    const raisonSpan = document.getElementById("kickoff-manuel-raison");
+    if (forcerManuel) {
+        if (raisonSpan) raisonSpan.textContent =
+            "Corrigez le temps du coup d'envoi (minutes:secondes), ou laissez vide pour analyser depuis le début.";
+        if (autoDiv) autoDiv.style.display = "none";
+        if (manuelDiv) manuelDiv.style.display = "block";
+    }
+}
+
+function updateKickoffFromManuel() {
+    const inp = document.getElementById("kickoff-manuel-mmss");
+    const hiddenInput = document.getElementById("kickoff-s-input");
+    if (!inp || !hiddenInput) return;
+    const val = (inp.value || "").trim();
+    if (!val) {
+        hiddenInput.value = "";  // vide = analyser depuis le début (comportement NOT_FOUND)
+        return;
+    }
+    const m = val.match(/^(\d+):([0-5]?\d)$/);
+    if (m) {
+        const secondes = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+        hiddenInput.value = secondes;
+    }
+    // Si le format ne correspond pas encore (saisie en cours), on ne
+    // touche pas au champ caché - il garde sa dernière valeur valide.
 }
 
 
