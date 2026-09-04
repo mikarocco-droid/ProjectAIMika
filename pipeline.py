@@ -515,6 +515,21 @@ def run_pipeline(
 
         _kickoff_deja_detecte = True  # evite la re-detection dans le bloc partage plus bas
 
+        # V5.2 : marge de 10s AVANT le KO detecte, uniquement pour le
+        # positionnement du curseur de lecture - PAS pour l'offset
+        # applique plus bas aux events/frames (qui reste _kickoff_offset
+        # exact). Objectif : donner a TeamColorDetector une fenetre avec
+        # les joueurs statiques, alignes avant le coup d'envoi (meilleure
+        # calibration que sur les 60 premieres frames du jeu deja en
+        # mouvement). Benefice secondaire : garde la possibilite de
+        # montrer le coup d'envoi lui-meme dans un futur resume de match.
+        # apply_kickoff_offset garde sa marge de 2s independante et retire
+        # deja tout ce qui precede le vrai KO, donc ces 10s de marge sont
+        # automatiquement exclues des events finaux, sans changement a
+        # cette logique.
+        _MARGE_AVANT_KO_S = 10
+        _start_lecture_s = max(0, _kickoff_offset - _MARGE_AVANT_KO_S)
+
         # ── FALLBACK : process_video() complet ───────────────────────────
         print("Step 1 : Tracking + Events (full pass)...")
         events, jersey_map, fps, total_frames, frames_data = process_video(
@@ -525,8 +540,9 @@ def run_pipeline(
             annotated_path    = annotated_path,
             shot_zones        = shot_zones,
             return_frames     = True,
-            start_time_s      = _kickoff_offset,  # V5.2 : positionne le curseur au KO,
-                                                    # evite de tracker l'avant-match (§12.15)
+            start_time_s      = _start_lecture_s,  # V5.2 : KO - 10s (marge pour la
+                                                     # calibration couleurs), pas
+                                                     # _kickoff_offset exact (§12.15)
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
