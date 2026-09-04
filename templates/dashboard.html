@@ -112,6 +112,30 @@
       <div id="step-config" style="display:none;margin-top:1.25rem;
            border-top:1px solid var(--border);padding-top:1.25rem">
 
+      <!-- Coup d'envoi détecté / saisie manuelle si échec -->
+      <div class="sport-wrapper" style="margin-top:0" id="kickoff-wrapper">
+        <label>Coup d'envoi</label>
+        <input type="hidden" name="kickoff_s_precalcule" id="kickoff-s-input" value="">
+        <div id="kickoff-auto" style="display:none;padding:0.6rem 0.85rem;
+             background:rgba(0,200,100,0.08);border:1px solid rgba(0,200,100,0.3);
+             border-radius:8px;font-size:0.85rem;color:var(--white);
+             display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+          <span>✅ Détecté automatiquement à <strong id="kickoff-auto-time"></strong></span>
+          <button type="button" id="kickoff-edit-btn" onclick="toggleKickoffManuel(true)"
+                  style="background:transparent;border:1px solid var(--border);
+                         border-radius:6px;padding:0.25rem 0.6rem;color:var(--gray);
+                         font-size:0.75rem;cursor:pointer">Corriger</button>
+        </div>
+        <div id="kickoff-manuel" style="display:none">
+          <div style="font-size:0.78rem;color:var(--gray);margin-bottom:0.4rem">
+            <span id="kickoff-manuel-raison">Détection automatique non concluante — indiquez le temps du coup d'envoi (minutes:secondes dans la vidéo), ou laissez vide pour analyser depuis le début.</span>
+          </div>
+          <input class="f-input" type="text" id="kickoff-manuel-mmss"
+                 placeholder="Ex: 5:07" pattern="[0-9]+:[0-9]{2}"
+                 oninput="updateKickoffFromManuel()" style="max-width:160px">
+        </div>
+      </div>
+
       <div class="sport-wrapper" style="margin-top:0">
         <label>Noms des équipes <span style="color:var(--gray-dim);font-weight:400">(optionnel — utilisés partout dans le rapport)</span></label>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem">
