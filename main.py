@@ -229,6 +229,15 @@ def process_video(
                                 # §12.15). frame_id demarre a cette position
                                 # (pas 0), reste coherent avec l'offset deja
                                 # applique plus tard par apply_kickoff_offset_frames.
+    end_time_s        = None,  # V5.2 : arrete la LECTURE (pas juste le filtrage
+                                # apres coup) a ce temps (s) - meme principe que
+                                # start_time_s. AVANT ce correctif, video_end_s
+                                # dans pipeline.py ne filtrait qu'APRES tracking
+                                # complet sur toute la video - gaspillage
+                                # symetrique a celui deja corrige pour le KO
+                                # (§12.15). Verifie une fois par iteration,
+                                # cout negligeable (une comparaison, pas un
+                                # appel supplementaire).
 ):
     if progress_callback is None:
         progress_callback = default_progress
@@ -273,6 +282,11 @@ def process_video(
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         print(f"  [START_TIME_S] Positionnement à t={start_time_s:.1f}s "
               f"(frame {start_frame}/{total_frames}) — frames précédentes non lues, non traitées")
+
+    end_frame = int(end_time_s * fps) if end_time_s is not None else None
+    if end_frame is not None:
+        print(f"  [END_TIME_S] Lecture arrêtée à t={end_time_s:.1f}s "
+              f"(frame {end_frame}/{total_frames}) — frames suivantes non lues, non traitées")
 
     scale_x = w / PROCESS_W
     scale_y = h / PROCESS_H
@@ -347,6 +361,10 @@ def process_video(
             frames_data.append(fd)
 
     while True:
+        if end_frame is not None and frame_id >= end_frame:
+            print(f"  [END_TIME_S] Arrêt de la lecture à frame {frame_id} (limite atteinte)")
+            break
+
         ret, frame = cap.read()
         if not ret:
             break

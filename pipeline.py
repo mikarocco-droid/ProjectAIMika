@@ -565,6 +565,9 @@ def run_pipeline(
             start_time_s      = _start_lecture_s,  # V5.2 : KO - 10s (marge pour la
                                                      # calibration couleurs), pas
                                                      # _kickoff_offset exact (§12.15)
+            end_time_s        = video_end_s,  # V5.2 FIX : arrete la LECTURE, pas
+                                                # juste le filtrage apres coup plus
+                                                # bas (qui reste en securite/inchange)
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
