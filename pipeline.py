@@ -585,12 +585,17 @@ def run_pipeline(
         KICKOFF_DETECTOR_LEGACY_DESACTIVE = True  # ancien systeme, ne jamais reactiver sans revalidation
         _video_duration_s = total_frames / max(fps, 1)  # toujours calculee, reutilisee par find_match_end plus bas
 
-        from analysis.kickoff_gemini_cascade import detect_kickoff_gemini
+        from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
 
         _kickoff_max_search_s = (half_duration_min / 3) * 2 * 60  # cf. doc du parametre half_duration_min ci-dessus
-        _kickoff_result = detect_kickoff_gemini(
+        _kickoff_result = detect_kickoff_gemini_avec_retry(
             video_path,
             max_search_s = min(_video_duration_s, _kickoff_max_search_s),
+            max_retries  = 3,  # NOT_FOUND peut venir de variance residuelle Gemini
+                               # (observe concretement sur Andrimont : NOT_FOUND puis
+                               # AUTO_CONFIRMED sur le meme match, meme code) - jamais
+                               # retente sur ERROR (conditions plus probablement
+                               # structurelles). Voir kickoff_gemini_cascade.py.
         )
         print(f"  [KICKOFF] Gemini cascade → status={_kickoff_result['status']} "
               f"kickoff_s={_kickoff_result['kickoff_s']}")
