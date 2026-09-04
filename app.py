@@ -539,6 +539,18 @@ def upload():
     preview_upload_id = request.form.get("preview_upload_id", "").strip() or None
     user_team_id_raw  = request.form.get("user_team_id", "").strip()
 
+    # V5.2 §12.17 : KO detecte (ou saisi manuellement) pendant l'etape de
+    # preview - transmis a run_pipeline() pour eviter une re-detection.
+    # Chaine vide = le champ existe dans le formulaire mais n'a pas de
+    # valeur (preview NOT_FOUND/ERROR sans correction manuelle) -> 0.0
+    # explicite (analyser depuis le debut), PAS None (qui relancerait la
+    # detection Gemini une seconde fois inutilement).
+    _kickoff_raw = request.form.get("kickoff_s_precalcule", "").strip()
+    try:
+        kickoff_s_precalcule = float(_kickoff_raw) if _kickoff_raw else 0.0
+    except ValueError:
+        kickoff_s_precalcule = 0.0
+
     # user_team_id : 0 = équipe A est la mienne, 1 = équipe B est la mienne
     # Si l'utilisateur a cliqué "C'est mon équipe" sur l'équipe B (tid=1),
     # on inverse les noms pour que son équipe soit toujours team_0
@@ -601,6 +613,7 @@ def upload():
                 "analysis_id":     analysis.id,
                 "use_coarse_scan": True,
                 "team_names":      team_names or None,
+                "kickoff_s_precalcule": kickoff_s_precalcule,
             },
             task_id = f"analysis_{analysis.id}",
             queue   = "pipeline",
@@ -613,7 +626,8 @@ def upload():
             target = run_analysis,
             args   = (analysis.id, path, sport, current_user.plan,
                       mode, player_id, None, team_names or None),
-            kwargs = {"player_position": player_position},
+            kwargs = {"player_position": player_position,
+                      "kickoff_s_precalcule": kickoff_s_precalcule},
             daemon = True
         )
         thread.start()
@@ -628,7 +642,7 @@ def upload():
 def run_analysis(
     analysis_id, video_path, sport, plan,
     mode="match", player_id=None, r2_key=None, team_names=None,
-    player_position=None
+    player_position=None, kickoff_s_precalcule=None
 ):
     with app.app_context():
         a              = db.session.get(Analysis, analysis_id)
@@ -664,6 +678,7 @@ def run_analysis(
             player_id       = player_id,
             player_position = player_position,
             team_names      = team_names or None,
+            kickoff_s_precalcule = kickoff_s_precalcule,
         )
 
         # ── Supprime la vidéo brute dès que l'analyse est terminée ──
@@ -727,7 +742,7 @@ def api_upload_preview():
 @app.route("/api/detect-teams/<upload_id>")
 @login_required
 def api_detect_teams(upload_id):
-    """Détecte les 2 équipes depuis l'upload préliminaire."""
+    """Détecte les 2 équipes + le coup d'envoi depuis l'upload préliminaire."""
     tmp_dir = os.path.join(config.UPLOAD_FOLDER, "previews")
     matches = _glob.glob(os.path.join(tmp_dir, f"prev_{upload_id}.*"))
     if not matches:
@@ -773,6 +788,36 @@ def api_detect_teams(upload_id):
                 # Purger les valeurs None non sérialisables
                 t = {k: v for k, v in t.items() if v is not None}
                 result[tid] = t
+
+        # ── DÉTECTION COUP D'ENVOI — V5.2, ajoutée à cette même étape légère ──
+        # Objectif double : (1) donner un premier résultat à l'utilisateur avant
+        # l'analyse complète, avec fallback manuel si NOT_FOUND/ERROR (2) éviter
+        # de re-détecter en double pendant l'analyse complète — voir
+        # kickoff_s_precalcule dans run_pipeline() (§12.17). Dans un try séparé :
+        # un échec de détection KO ne doit jamais faire échouer la détection
+        # des couleurs, et inversement.
+        try:
+            import cv2 as _cv2_ko_endpoint
+            from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
+            _half_duration_min = float(request.args.get("half_duration_min", 45))
+            _cap_ko = _cv2_ko_endpoint.VideoCapture(video_path)
+            _ko_fps = _cap_ko.get(_cv2_ko_endpoint.CAP_PROP_FPS) or 25.0
+            _ko_total_frames = int(_cap_ko.get(_cv2_ko_endpoint.CAP_PROP_FRAME_COUNT))
+            _cap_ko.release()
+            _video_duration_s = _ko_total_frames / max(_ko_fps, 1)
+            _max_search_s = min(_video_duration_s, (_half_duration_min / 3) * 2 * 60)
+
+            _kickoff_result = detect_kickoff_gemini_avec_retry(
+                video_path, max_search_s=_max_search_s, max_retries=3,
+            )
+            result["kickoff"] = {
+                "status":     _kickoff_result["status"],
+                "kickoff_s":  _kickoff_result["kickoff_s"],
+                "reason":     _kickoff_result.get("reason"),
+            }
+        except Exception as e:
+            print(f"  [PREVIEW] Détection KO échouée (n'affecte pas les couleurs) : {e}")
+            result["kickoff"] = {"status": "ERROR", "kickoff_s": None, "reason": str(e)}
 
         return jsonify(result)
 
