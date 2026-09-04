@@ -742,7 +742,11 @@ def api_upload_preview():
 @app.route("/api/detect-teams/<upload_id>")
 @login_required
 def api_detect_teams(upload_id):
-    """Détecte les 2 équipes + le coup d'envoi depuis l'upload préliminaire."""
+    """Détecte le coup d'envoi PUIS les 2 équipes autour de ce moment
+    (V5.2 §12.18 : confirmé empiriquement plus fiable qu'un échantillon
+    en milieu de match - voir V5_2_FIABILITE_ROADMAP.md pour le test
+    comparatif). Fallback sur l'ancienne méthode (bootstrap 30s) si le
+    KO n'est pas trouvé."""
     tmp_dir = os.path.join(config.UPLOAD_FOLDER, "previews")
     matches = _glob.glob(os.path.join(tmp_dir, f"prev_{upload_id}.*"))
     if not matches:
@@ -750,27 +754,61 @@ def api_detect_teams(upload_id):
 
     video_path  = matches[0]
     preview_dir = os.path.join(tmp_dir, f"preview_{upload_id}")
+    os.makedirs(preview_dir, exist_ok=True)
+    _prev_sport = request.args.get("sport", "football")
 
+    # ── ÉTAPE 1 : DÉTECTION COUP D'ENVOI — en premier, les couleurs en dépendent ──
+    kickoff_info = {"status": "ERROR", "kickoff_s": None, "reason": "non tenté"}
     try:
-        from analysis.detect_teams_preview import detect_teams_preview
-        # sport depuis la session ou formulaire si disponible
-        _prev_sport = request.args.get("sport", "football")
-        result = detect_teams_preview(
-            video_path          = video_path,
-            output_dir          = preview_dir,
-            bootstrap_duration  = 30.0,
-            sport               = _prev_sport,
+        import cv2 as _cv2_ko_endpoint
+        from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
+        _half_duration_min = float(request.args.get("half_duration_min", 45))
+        _cap_ko = _cv2_ko_endpoint.VideoCapture(video_path)
+        _ko_fps = _cap_ko.get(_cv2_ko_endpoint.CAP_PROP_FPS) or 25.0
+        _ko_total_frames = int(_cap_ko.get(_cv2_ko_endpoint.CAP_PROP_FRAME_COUNT))
+        _cap_ko.release()
+        _video_duration_s = _ko_total_frames / max(_ko_fps, 1)
+        _max_search_s = min(_video_duration_s, (_half_duration_min / 3) * 2 * 60)
+
+        _kickoff_result = detect_kickoff_gemini_avec_retry(
+            video_path, max_search_s=_max_search_s, max_retries=3,
         )
+        kickoff_info = {
+            "status":    _kickoff_result["status"],
+            "kickoff_s": _kickoff_result["kickoff_s"],
+            "reason":    _kickoff_result.get("reason"),
+        }
+    except Exception as e:
+        print(f"  [PREVIEW] Détection KO échouée : {e}")
+        kickoff_info = {"status": "ERROR", "kickoff_s": None, "reason": str(e)}
+
+    # ── ÉTAPE 2 : COULEURS — autour du KO si trouvé, sinon ancienne méthode ──
+    try:
+        if kickoff_info["status"] == "AUTO_CONFIRMED":
+            result = _detect_teams_colors_autour_ko(
+                video_path, kickoff_info["kickoff_s"], preview_dir, upload_id
+            )
+        else:
+            # Fallback : KO non trouvé, on ne sait pas où échantillonner
+            # de façon fiable - ancienne méthode (bootstrap 30s) plutôt
+            # que de ne rien proposer du tout.
+            print(f"  [PREVIEW] KO non trouvé ({kickoff_info['status']}) — "
+                  f"fallback couleurs sur bootstrap_duration=30s")
+            from analysis.detect_teams_preview import detect_teams_preview
+            result = detect_teams_preview(
+                video_path          = video_path,
+                output_dir          = preview_dir,
+                bootstrap_duration  = 30.0,
+                sport               = _prev_sport,
+            )
 
         if result.get("success"):
             for tid in ["team_0", "team_1"]:
                 t = result.get(tid, {})
-                # Couleur maillot
                 bgr = t.get("color_bgr")
                 if bgr:
                     b, g, r = int(bgr[0]), int(bgr[1]), int(bgr[2])
                     t["color_hex"] = f"#{r:02x}{g:02x}{b:02x}"
-                # Couleur short
                 short_bgr = t.get("short_bgr")
                 if short_bgr:
                     try:
@@ -782,49 +820,99 @@ def api_detect_teams(upload_id):
                 if t.get("preview_frame") and os.path.exists(t["preview_frame"]):
                     fname = os.path.basename(t["preview_frame"])
                     t["preview_url"] = f"/api/preview-image/{upload_id}/{fname}"
-                # Rendre color_bgr sérialisable (peut être tuple ou numpy array)
                 if t.get("color_bgr"):
                     t["color_bgr"] = [int(x) for x in t["color_bgr"]]
-                # Purger les valeurs None non sérialisables
                 t = {k: v for k, v in t.items() if v is not None}
                 result[tid] = t
 
-        # ── DÉTECTION COUP D'ENVOI — V5.2, ajoutée à cette même étape légère ──
-        # Objectif double : (1) donner un premier résultat à l'utilisateur avant
-        # l'analyse complète, avec fallback manuel si NOT_FOUND/ERROR (2) éviter
-        # de re-détecter en double pendant l'analyse complète — voir
-        # kickoff_s_precalcule dans run_pipeline() (§12.17). Dans un try séparé :
-        # un échec de détection KO ne doit jamais faire échouer la détection
-        # des couleurs, et inversement.
-        try:
-            import cv2 as _cv2_ko_endpoint
-            from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
-            _half_duration_min = float(request.args.get("half_duration_min", 45))
-            _cap_ko = _cv2_ko_endpoint.VideoCapture(video_path)
-            _ko_fps = _cap_ko.get(_cv2_ko_endpoint.CAP_PROP_FPS) or 25.0
-            _ko_total_frames = int(_cap_ko.get(_cv2_ko_endpoint.CAP_PROP_FRAME_COUNT))
-            _cap_ko.release()
-            _video_duration_s = _ko_total_frames / max(_ko_fps, 1)
-            _max_search_s = min(_video_duration_s, (_half_duration_min / 3) * 2 * 60)
-
-            _kickoff_result = detect_kickoff_gemini_avec_retry(
-                video_path, max_search_s=_max_search_s, max_retries=3,
-            )
-            result["kickoff"] = {
-                "status":     _kickoff_result["status"],
-                "kickoff_s":  _kickoff_result["kickoff_s"],
-                "reason":     _kickoff_result.get("reason"),
-            }
-        except Exception as e:
-            print(f"  [PREVIEW] Détection KO échouée (n'affecte pas les couleurs) : {e}")
-            result["kickoff"] = {"status": "ERROR", "kickoff_s": None, "reason": str(e)}
-
+        result["kickoff"] = kickoff_info
         return jsonify(result)
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": str(e), "kickoff": kickoff_info}), 500
+
+
+def _detect_teams_colors_autour_ko(video_path, kickoff_s, preview_dir, upload_id):
+    """V5.2 §12.18 : echantillonne 3 frames autour du KO deja detecte
+    (KO-5s, KO+10s, KO+30s), demande les couleurs a Gemini sur chacune
+    (meme prompt _ask_gemini_colors EXACT que l'ancienne methode - pas
+    de reformulation), vote majoritaire. Confirme visuellement plus
+    fiable que l'echantillonnage en milieu de match (2/3 d'erreurs sur
+    le short en milieu de match, contre 1/3 autour du KO - voir
+    V5_2_FIABILITE_ROADMAP.md §12.18 pour le detail du test)."""
+    import cv2
+    from collections import Counter
+    from analysis.detect_teams_preview import _ask_gemini_colors, _color_name_to_hex, _hex_to_bgr
+
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        return {"success": False, "error": "GEMINI_API_KEY manquante"}
+    from google import genai
+    client = genai.Client(api_key=api_key)
+
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duree_s = total_frames / fps if fps else 0
+
+    timestamps = [max(0, kickoff_s - 5), min(kickoff_s + 10, duree_s - 1),
+                  min(kickoff_s + 30, duree_s - 1)]
+
+    resultats = []
+    meilleure_frame = None
+    for t in timestamps:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        result = _ask_gemini_colors(frame, client)
+        if result and result.get("confidence") in ("high", "medium") and result.get("team_a") and result.get("team_b"):
+            resultats.append(result)
+            if meilleure_frame is None:
+                meilleure_frame = frame.copy()
+    cap.release()
+
+    if not resultats:
+        return {"success": False, "error": "Gemini n'a identifié aucune équipe autour du KO"}
+
+    def majorite(key, subkey):
+        votes = [r[key][subkey].lower() for r in resultats if r.get(key) and r[key].get(subkey)]
+        return Counter(votes).most_common(1)[0][0] if votes else "inconnu"
+
+    j_a, s_a = majorite("team_a", "jersey"), majorite("team_a", "short")
+    j_b, s_b = majorite("team_b", "jersey"), majorite("team_b", "short")
+    name_a = f"{j_a}/{s_a}" if s_a and s_a != j_a else j_a
+    name_b = f"{j_b}/{s_b}" if s_b and s_b != j_b else j_b
+
+    preview_0 = preview_1 = None
+    if meilleure_frame is not None:
+        try:
+            cv2.imwrite(os.path.join(preview_dir, "team_0_preview.jpg"), meilleure_frame)
+            cv2.imwrite(os.path.join(preview_dir, "team_1_preview.jpg"), meilleure_frame)
+            preview_0 = os.path.join(preview_dir, "team_0_preview.jpg")
+            preview_1 = os.path.join(preview_dir, "team_1_preview.jpg")
+        except Exception:
+            pass
+
+    return {
+        "success": True,
+        "method": "gemini_autour_ko",
+        "n_frames_exploitees": len(resultats),
+        "team_0": {
+            "color_bgr": _hex_to_bgr(_color_name_to_hex(j_a)),
+            "color_name": name_a,
+            "short_bgr": _hex_to_bgr(_color_name_to_hex(s_a)),
+            "preview_frame": preview_0,
+        },
+        "team_1": {
+            "color_bgr": _hex_to_bgr(_color_name_to_hex(j_b)),
+            "color_name": name_b,
+            "short_bgr": _hex_to_bgr(_color_name_to_hex(s_b)),
+            "preview_frame": preview_1,
+        },
+    }
 
 
 @app.route("/api/preview-image/<upload_id>/<filename>")
