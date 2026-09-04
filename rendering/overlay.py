@@ -521,7 +521,7 @@ class TeamColorDetector:
                                                     # PAS ENCORE validée visuellement sur des cas réels
                                                     # — à ajuster si besoin après vérification.
 
-    def __init__(self, teams_data=None, sample_frames=60, **kwargs):
+    def __init__(self, teams_data=None, sample_frames=60, debug_save_crops=False, **kwargs):
         self.teams_data    = teams_data or {}
         self.sample_frames = sample_frames
         self.score         = {0: 0, 1: 0}
@@ -533,6 +533,14 @@ class TeamColorDetector:
         self._calibration_attempts = 0   # nb de tentatives de calibration rejetées (diagnostic)
         self._total_frames_seen = 0      # compteur total (soupape de sécurité anti-blocage)
         self._max_classification_dist = None  # cf. get_team() : seuil au-delà duquel une couleur
+        # V5.2 : sauvegarde optionnelle des crops (bbox complete + torse
+        # seul) pour inspection visuelle - diagnostic du jaune trop terne
+        # detecte sur Andrimont (couleur mesuree (56,88,102) en BGR, tres
+        # eloignee du jaune vif visible sur photo reelle). Desactive par
+        # defaut (pas d'ecriture disque en usage normal).
+        self.debug_save_crops = debug_save_crops
+        self._debug_dir = "debug_team_color_crops"
+        self._debug_n_saved = 0
                                                 # n'est classée dans aucune équipe
 
     def add_frame(self, frame):
@@ -579,6 +587,21 @@ class TeamColorDetector:
                 color = torse[mask].mean(axis=0).astype(np.float32)
             else:
                 color = torse.mean(axis=(0, 1)).astype(np.float32)
+
+            # V5.2 : sauvegarde debug (opt-in) - crop complet + torse seul,
+            # pour verifier visuellement ce qui est reellement echantillonne.
+            # Limite a 20 images pour ne pas polluer le disque.
+            if self.debug_save_crops and self._debug_n_saved < 20:
+                import os as _os_dbg
+                _os_dbg.makedirs(self._debug_dir, exist_ok=True)
+                _idx = self._debug_n_saved
+                cv2.imwrite(f"{self._debug_dir}/crop_complet_{_idx:02d}_bbox{bbox}.jpg", crop)
+                cv2.imwrite(f"{self._debug_dir}/torse_seul_{_idx:02d}.jpg", torse)
+                print(f"  [DEBUG_CROPS] échantillon {_idx} sauvegardé "
+                      f"(bbox={bbox}, torse={torse.shape[1]}x{torse.shape[0]}px, "
+                      f"couleur_moyenne_BGR={tuple(int(x) for x in color)})")
+                self._debug_n_saved += 1
+
             return color
         except Exception:
             return None
