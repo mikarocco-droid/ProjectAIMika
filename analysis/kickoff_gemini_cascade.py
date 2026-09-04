@@ -310,23 +310,31 @@ def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif):
 def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max):
     t = 60  # t=0 toujours "avant-match", jamais utile de le tester
     while t <= t_max:
+        print(f"  [KICKOFF_GEMINI] scan Q1 depuis t={t:.0f}s (max={t_max:.0f}s)")
         premier_oui, t, raison_arret = _scan_q1_par_lots(client, video_path, tmp_dir, etat, t, t_max)
         if raison_arret:
+            print(f"  [KICKOFF_GEMINI] arrêt : {raison_arret}")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": raison_arret}
         if premier_oui is None:
+            print(f"  [KICKOFF_GEMINI] aucun candidat Q1 trouvé jusqu'à t={t_max:.0f}s")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
 
         t_verif = premier_oui + 60
         if t_verif > t_max:
+            print(f"  [KICKOFF_GEMINI] candidat à t={premier_oui:.0f}s mais vérification hors limite")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
 
+        print(f"  [KICKOFF_GEMINI] candidat Q1 à t={premier_oui:.0f}s, vote Q2 à t={t_verif:.0f}s...")
         decision_q2 = _voter_q2(client, video_path, t_verif, tmp_dir, etat)
+        print(f"  [KICKOFF_GEMINI] vote Q2 : {'OUI' if decision_q2 else 'NON' if decision_q2 is not None else 'ERREUR'}")
 
         raison_arret = etat.budget_epuise()
         if raison_arret:
+            print(f"  [KICKOFF_GEMINI] arrêt : {raison_arret}")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": raison_arret}
 
         if not decision_q2:
+            print(f"  [KICKOFF_GEMINI] candidat rejeté, reprise à t={t_verif:.0f}s")
             t = t_verif  # reprend le scan Q1 ici, pas t_verif+60 (trou de couverture, §12.3)
             continue
 
@@ -335,9 +343,12 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max):
         # avant premier_oui) - ne jamais deviner, signaler NOT_FOUND.
         premier_check = _q2_une_lecture(client, video_path, premier_oui, tmp_dir, etat)
         if premier_check:
+            print(f"  [KICKOFF_GEMINI] fenêtre dégénérée détectée (Q2 déjà vrai à t={premier_oui:.0f}s)")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "DEGENERATE_WINDOW"}
 
+        print(f"  [KICKOFF_GEMINI] confirmé, recherche fine dans [{premier_oui:.0f}s, {t_verif:.0f}s]...")
         kickoff_s = _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif)
+        print(f"  [KICKOFF_GEMINI] KO détecté à t={kickoff_s:.0f}s")
         return {"status": "AUTO_CONFIRMED", "kickoff_s": float(kickoff_s), "reason": None}
 
     return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
@@ -432,10 +443,14 @@ def detect_kickoff_gemini_avec_retry(video_path, max_search_s,
     """
     dernier_resultat = None
     for tentative in range(1, max_retries + 1):
+        print(f"[KICKOFF_GEMINI] tentative {tentative}/{max_retries}")
         resultat = detect_kickoff_gemini(video_path, max_search_s, **kwargs)
         resultat["tentative"] = tentative
+        print(f"[KICKOFF_GEMINI] tentative {tentative} → status={resultat['status']} "
+              f"kickoff_s={resultat['kickoff_s']} reason={resultat.get('reason')}")
         if resultat["status"] != "NOT_FOUND":
             return resultat  # AUTO_CONFIRMED ou ERROR : on s'arrete la
         dernier_resultat = resultat
 
+    print(f"[KICKOFF_GEMINI] échec après {max_retries} tentatives (NOT_FOUND persistant)")
     return dernier_resultat  # NOT_FOUND apres max_retries tentatives
