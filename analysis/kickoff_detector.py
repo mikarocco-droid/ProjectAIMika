@@ -1539,3 +1539,54 @@ def apply_match_end(events, frames_data, match_end_s, fps=25):
               f"{n_ev} events + {n_fr} frames supprimés")
 
     return events_cut, frames_cut
+
+
+# ─────────────────────────────────────────
+# APPLY PAUSE FILTER — V5.2 Phase A
+# ─────────────────────────────────────────
+def apply_pause_filter(events, frames_data, fin1mt_s, ko2_s, fps=25):
+    """
+    V5.2 Phase A : supprime les events/frames_data tombant dans la
+    fenetre de pause [Fin1MT, KO2] (mi-temps) - analogue a
+    apply_match_end, mais filtre un intervalle interieur au lieu de
+    couper apres une seule borne.
+
+    ⚠️ PAS de re-basage des timestamps (contrairement a
+    apply_kickoff_offset qui soustrait l'offset) - en Phase A,
+    process_video() reste un seul appel continu, donc les timestamps
+    apres Fin1MT restent inchanges, juste les events DANS la pause sont
+    retires. Un re-basage (fusionner les 2 mi-temps sans le trou de la
+    pause) est repousse a la Phase B (decoupage physique en 2 appels
+    process_video), qui necessite un audit separe de la continuite des
+    tracker_id/jersey_map/etc. (voir discussion Phase A/B).
+
+    Parametres
+    ----------
+    fin1mt_s, ko2_s : float
+        Timestamps DEJA convertis dans le meme referentiel que events/
+        frames_data (relatif a KO1 si l'offset kickoff a deja ete
+        applique - voir pipeline.py, l'appel a apply_kickoff_offset
+        precede ce filtre). L'appelant est responsable de la
+        conversion absolu -> relatif AVANT d'appeler cette fonction.
+
+    Retourne (events_filtres, frames_filtres, n_events_retires, n_frames_retires)
+    """
+    if fin1mt_s is None or ko2_s is None or ko2_s <= fin1mt_s:
+        return events, frames_data, 0, 0
+
+    events_filtres = [
+        e for e in events
+        if not (fin1mt_s <= float(e.get("time", 0)) <= ko2_s)
+    ]
+    frames_filtres = [
+        fd for fd in frames_data
+        if not (fin1mt_s <= fd.get("frame", 0) / max(fps, 1) <= ko2_s)
+    ]
+
+    n_ev = len(events) - len(events_filtres)
+    n_fr = len(frames_data) - len(frames_filtres)
+    if n_ev or n_fr:
+        print(f"  [PAUSE_FILTER] Retire [{fin1mt_s:.0f}s, {ko2_s:.0f}s] : "
+              f"{n_ev} events + {n_fr} frames supprimés")
+
+    return events_filtres, frames_filtres, n_ev, n_fr
