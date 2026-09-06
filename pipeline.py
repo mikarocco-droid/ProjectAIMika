@@ -53,7 +53,8 @@ from analysis.context_engine import ContextEngine
 from analysis.player_identity import resolve_player_identities, get_player_label
 from analysis.goal_posthoc    import detect_fast_goals_from_ball
 from analysis.terminal_events import detect_terminal_events, build_candidate_windows
-from analysis.kickoff_detector import find_kickoff_offset, apply_kickoff_offset, apply_kickoff_offset_frames, reset_pre_kickoff_state, find_match_end, apply_match_end
+from analysis.kickoff_detector import find_kickoff_offset, apply_kickoff_offset, apply_kickoff_offset_frames, reset_pre_kickoff_state, find_match_end, apply_match_end, apply_pause_filter
+from analysis.match_boundaries_v2 import find_ko2_gemini, find_fin1mt_audio, find_finmatch_audio  # V5.2 Phase A
 # V5.2 : find_kickoff_offset n'est plus appelee (remplacee par detect_kickoff_gemini,
 # voir bloc KICKOFF ci-dessous) - import gardee pour reference/rollback facile, pas
 # du code mort accidentel. apply_kickoff_offset/apply_kickoff_offset_frames/
@@ -741,6 +742,51 @@ def run_pipeline(
                   f"({int(video_end_s//60):02d}:{int(video_end_s%60):02d}) | "
                   f"events {_n_events_before}→{len(events)} | "
                   f"frames {_n_frames_before}→{len(frames_data)}")
+
+        # ── V5.2 Phase A : KO2 / Fin1MT / FinMatch (audio) ──────────────────────
+        # ⚠️ _kickoff_offset = KO1 ABSOLU (temps reel video, avant rebasage).
+        # find_ko2_gemini/find_fin1mt_audio/find_finmatch_audio travaillent
+        # tous en temps ABSOLU (lisent le fichier video brut). events/
+        # frames_data a ce stade sont DEJA rebases relatif a KO1
+        # (apply_kickoff_offset deja applique ci-dessus) - conversion
+        # absolu->relatif necessaire avant apply_pause_filter/apply_match_end.
+        _ko2_absolu = None
+        _fin1mt_absolu = None
+        _finmatch_audio_absolu = None
+
+        if _kickoff_offset > 0:
+            print(f"  [KO2] Recherche dans [KO1+{half_duration_min+4}min, KO1+{half_duration_min+23}min]...")
+            _ko2_result = find_ko2_gemini(
+                video_path, ko1_s=_kickoff_offset, half_duration_min=half_duration_min,
+            )
+            if _ko2_result["status"] == "AUTO_CONFIRMED":
+                _ko2_absolu = _ko2_result["ko2_s"]
+                print(f"  [KO2] Détecté à t={_ko2_absolu:.0f}s (absolu)")
+
+                print(f"  [FIN1MT] Recherche audio dans [KO2-16min, KO2-8min]...")
+                _fin1mt_absolu = find_fin1mt_audio(video_path, ko2_s=_ko2_absolu)
+                if _fin1mt_absolu is not None:
+                    print(f"  [FIN1MT] Détecté à t={_fin1mt_absolu:.0f}s (absolu)")
+                else:
+                    print(f"  [FIN1MT] Aucun signal crédible — pas de filtrage de pause pour ce match")
+
+                print(f"  [FINMATCH_AUDIO] Recherche audio dans [KO2+40min, KO2+55min] "
+                      f"(comparaison uniquement, Phase A — find_match_end() reste la borne active)...")
+                _finmatch_audio_absolu = find_finmatch_audio(video_path, ko2_s=_ko2_absolu)
+                if _finmatch_audio_absolu is not None:
+                    print(f"  [FINMATCH_AUDIO] Détecté à t={_finmatch_audio_absolu:.0f}s (absolu) "
+                          f"— à comparer avec find_match_end() ci-dessous")
+            else:
+                print(f"  [KO2] {_ko2_result['status']} ({_ko2_result.get('reason', '?')}) "
+                      f"— Fin1MT/FinMatch audio non calculés (dépendent de KO2)")
+
+        # ── Filtrage de la pause (Fin1MT → KO2), si les deux sont connus ────────
+        if _fin1mt_absolu is not None and _ko2_absolu is not None:
+            _fin1mt_relatif = _fin1mt_absolu - _kickoff_offset
+            _ko2_relatif = _ko2_absolu - _kickoff_offset
+            events, frames_data, _n_ev_pause, _n_fr_pause = apply_pause_filter(
+                events, frames_data, fin1mt_s=_fin1mt_relatif, ko2_s=_ko2_relatif, fps=fps,
+            )
 
         # ── DÉTECTION FIN DE MATCH ───────────────────────────────────────────────
         # Cherche la fin du match dans les frames_data pour couper l'après-match.
