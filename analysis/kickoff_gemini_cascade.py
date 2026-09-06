@@ -307,8 +307,14 @@ def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif):
     return t_haut
 
 
-def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max):
-    t = 60  # t=0 toujours "avant-match", jamais utile de le tester
+def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60):
+    # V5.2 Phase A : t_debut parametrable (defaut=60, comportement KO1
+    # inchange) - necessaire pour reutiliser cette meme cascade pour KO2,
+    # qui doit demarrer sa recherche a KO1+quelque chose, pas a t=60s.
+    # AUCUN changement de logique/prompts/seuils, uniquement le point de
+    # depart du scan.
+    t = t_debut  # t=0 (ou avant t_debut) toujours "avant-match" pour KO1,
+                 # mais pour KO2 t_debut sera deja loin dans la video
     while t <= t_max:
         print(f"  [KICKOFF_GEMINI] scan Q1 depuis t={t:.0f}s (max={t_max:.0f}s)")
         premier_oui, t, raison_arret = _scan_q1_par_lots(client, video_path, tmp_dir, etat, t, t_max)
@@ -357,7 +363,7 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max):
 def detect_kickoff_gemini(video_path, max_search_s,
                             max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                             max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT,
-                            tmp_dir="/tmp"):
+                            tmp_dir="/tmp", t_debut=60):
     """
     Détecte le premier coup d'envoi d'un match par cascade Gemini
     (Q1 scan 60s -> Q2 confirmation -> recherche fine 15/5/1s).
@@ -382,6 +388,11 @@ def detect_kickoff_gemini(video_path, max_search_s,
         indépendant du budget d'appels.
     tmp_dir : str
         Répertoire pour les frames temporaires extraites.
+    t_debut : float
+        V5.2 Phase A : point de départ du scan (défaut=60, comportement
+        KO1 identique à avant). Permet de réutiliser cette cascade pour
+        KO2 en démarrant le scan à un point avancé de la vidéo (ex:
+        KO1+49min) plutôt qu'au tout début.
 
     Retourne
     --------
@@ -408,7 +419,7 @@ def detect_kickoff_gemini(video_path, max_search_s,
     etat = _EtatRecherche(max_gemini_calls, max_wallclock_s)
 
     try:
-        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s)
+        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut)
     except Exception as e:
         resultat = {"status": "ERROR", "kickoff_s": None, "reason": f"UNEXPECTED_EXCEPTION: {e}"}
     finally:
@@ -420,7 +431,7 @@ def detect_kickoff_gemini(video_path, max_search_s,
 
 
 def detect_kickoff_gemini_avec_retry(video_path, max_search_s,
-                                       max_retries=3, **kwargs):
+                                       max_retries=3, t_debut=60, **kwargs):
     """
     Enveloppe detect_kickoff_gemini() avec un retry automatique -
     UNIQUEMENT sur NOT_FOUND, pas sur ERROR.
@@ -440,11 +451,14 @@ def detect_kickoff_gemini_avec_retry(video_path, max_search_s,
     Cout dans le pire cas : jusqu'a max_retries x le cout d'un essai
     normal (appels + temps). A surveiller en production - si NOT_FOUND
     est frequent, ce multiplicateur peut devenir significatif.
+
+    t_debut : voir detect_kickoff_gemini (V5.2 Phase A, defaut=60,
+    permet la reutilisation pour KO2).
     """
     dernier_resultat = None
     for tentative in range(1, max_retries + 1):
         print(f"[KICKOFF_GEMINI] tentative {tentative}/{max_retries}")
-        resultat = detect_kickoff_gemini(video_path, max_search_s, **kwargs)
+        resultat = detect_kickoff_gemini(video_path, max_search_s, t_debut=t_debut, **kwargs)
         resultat["tentative"] = tentative
         print(f"[KICKOFF_GEMINI] tentative {tentative} → status={resultat['status']} "
               f"kickoff_s={resultat['kickoff_s']} reason={resultat.get('reason')}")
