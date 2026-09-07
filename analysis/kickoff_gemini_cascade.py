@@ -183,6 +183,27 @@ Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown 
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
 {"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false, "nombre_ballons_compte": <entier>, "un_seul_ballon": true/false}'''
+).replace(
+    # V5.2 FIX CRITIQUE : le critere precedent ne verifiait que "PAS
+    # PLUSIEURS ballons" - un cas avec ZERO ballon visible passait donc
+    # a travers sans etre detecte (un_seul_ballon pouvait etre repondu
+    # true meme si nombre_ballons_compte=0) ! Decouvert sur un vrai faux
+    # positif P1Minerois (t=3674s) : aucun ballon visible dans l'image
+    # (verifie par visionnage reel), scene acceptee a tort. Un vrai
+    # coup d'envoi a NECESSAIREMENT un ballon visible au centre - son
+    # absence est un signal fort d'anomalie (echauffement, ballon hors
+    # cadre, discussion), pas juste l'absence de multiples ballons.
+    '''7. UN SEUL BALLON VISIBLE : compte le nombre de ballons de football visibles dans l'image. Un vrai match ou une vraie mise en place de coup d'envoi ne peut avoir qu'UN SEUL ballon sur le terrain. Si tu vois DEUX ballons ou plus, même à des endroits différents de l'image, c'est la preuve certaine qu'il ne s'agit PAS d'un vrai match (probablement un échauffement avec plusieurs ateliers/ballons en parallèle) - réponds false à ce critère dans ce cas, même si tout le reste semble plausible.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false, "nombre_ballons_compte": <entier>, "un_seul_ballon": true/false}''',
+    '''7. EXACTEMENT UN BALLON VISIBLE, PRÈS DU CENTRE : compte le nombre de ballons de football visibles dans l'image. Une vraie mise en place de coup d'envoi a TOUJOURS un ballon visible, posé près du point central. Deux cas font échouer ce critère (réponds false) :
+   a) ZÉRO ballon visible nulle part dans l'image - un vrai coup d'envoi imminent implique que le ballon soit visible et positionné, pas absent/hors cadre.
+   b) DEUX ballons ou plus visibles simultanément - signe d'échauffement avec plusieurs ateliers.
+Seul le cas d'EXACTEMENT UN ballon visible, plausiblement proche du centre, valide ce critère.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false, "nombre_ballons_compte": <entier>, "un_seul_ballon": true/false}'''
 )
 assert PROMPT_Q1_KO2 != PROMPT_Q1_RIGOUREUX, "Le remplacement du prompt KO2 a échoué (texte cible introuvable) - vérifier que PROMPT_Q1_RIGOUREUX n'a pas changé de formulation"
 
@@ -394,7 +415,7 @@ def _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=MODEL_N
     ]
     deux_equipes = result.get("deux_equipes_visibles", False)
     nombre_suffisant = result.get("nombre_joueurs_suffisant", False)
-    un_seul_ballon = result.get("un_seul_ballon", False)
+    un_seul_ballon = result.get("un_seul_ballon", False) and result.get("nombre_ballons_compte") == 1
     return (sum(criteres) >= SEUIL_Q1) and deux_equipes and nombre_suffisant and un_seul_ballon
 
 
