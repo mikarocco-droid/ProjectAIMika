@@ -168,6 +168,21 @@ Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown 
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
 {"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false}'''
+).replace(
+    # V5.2 FIX : ajout d'une verification "UN SEUL ballon" - signal
+    # objectif et verifiable (comme le fanion), decouvert sur une image
+    # reelle montrant DEUX ballons visibles simultanement (un pres d'un
+    # joueur au centre, un autre pres d'un groupe de joueurs plus loin) -
+    # preuve certaine qu'il ne peut pas s'agir d'un vrai match (le
+    # football se joue avec un seul ballon), meme si le reste de la
+    # scene (equipes separees, nombre de joueurs) semblait plausible.
+    # Typique d'un echauffement multi-ateliers ou plusieurs ballons
+    # circulent en parallele. UNIQUEMENT KO2 - KO1 non touche.
+    'Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :\n{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false}',
+    '''7. UN SEUL BALLON VISIBLE : compte le nombre de ballons de football visibles dans l'image. Un vrai match ou une vraie mise en place de coup d'envoi ne peut avoir qu'UN SEUL ballon sur le terrain. Si tu vois DEUX ballons ou plus, même à des endroits différents de l'image, c'est la preuve certaine qu'il ne s'agit PAS d'un vrai match (probablement un échauffement avec plusieurs ateliers/ballons en parallèle) - réponds false à ce critère dans ce cas, même si tout le reste semble plausible.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false, "nombre_ballons_compte": <entier>, "un_seul_ballon": true/false}'''
 )
 assert PROMPT_Q1_KO2 != PROMPT_Q1_RIGOUREUX, "Le remplacement du prompt KO2 a échoué (texte cible introuvable) - vérifier que PROMPT_Q1_RIGOUREUX n'a pas changé de formulation"
 
@@ -313,8 +328,8 @@ def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME)
 
 def _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
     """V5.2 Phase A : variante Q1 pour KO2 UNIQUEMENT - meme 4 criteres +
-    deux_equipes_visibles + nombre_joueurs_suffisant, tous les 2
-    OBLIGATOIRES (voir PROMPT_Q1_KO2 ci-dessus).
+    deux_equipes_visibles + nombre_joueurs_suffisant + un_seul_ballon,
+    tous OBLIGATOIRES (voir PROMPT_Q1_KO2 ci-dessus).
     KO1 continue d'utiliser _q1_une_lecture (original), intact.
 
     model_name : V5.2 - parametrable pour comparer Pro vs Flash sur KO2,
@@ -330,7 +345,8 @@ def _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=MODEL_N
     ]
     deux_equipes = result.get("deux_equipes_visibles", False)
     nombre_suffisant = result.get("nombre_joueurs_suffisant", False)
-    return (sum(criteres) >= SEUIL_Q1) and deux_equipes and nombre_suffisant
+    un_seul_ballon = result.get("un_seul_ballon", False)
+    return (sum(criteres) >= SEUIL_Q1) and deux_equipes and nombre_suffisant and un_seul_ballon
 
 
 def _q1_une_lecture_ko2_vote_economique(client, video_path, t, tmp_dir, etat, max_confirmations=2, model_name=MODEL_NAME):
