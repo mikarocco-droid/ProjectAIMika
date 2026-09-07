@@ -39,8 +39,8 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────
 
 def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=4,
-                     marge_apres_min=23, max_retries=3, nom_fonction_q1="standard",
-                     model_name="gemini-3.1-pro-preview"):
+                     marge_apres_min=23, max_retries=3, nom_fonction_q1="vote_economique",
+                     model_name="gemini-3.1-pro-preview", nom_fonction_q2="standard"):
     """
     Cherche KO2 (coup d'envoi 2e mi-temps) via la MEME cascade Gemini
     Q1/Q2 deja validee pour KO1 - structure visuelle identique (joueurs
@@ -83,12 +83,17 @@ def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=4,
     Retourne un dict {"status": ..., "ko2_s": float|None, "reason": str}
     - meme contrat que detect_kickoff_gemini_avec_retry.
     """
-    from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry, _q1_une_lecture_ko2, _q1_une_lecture_ko2_vote_economique
+    from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry, _q1_une_lecture_ko2, _q1_une_lecture_ko2_vote_economique, _q2_une_lecture, _q2_avant_apres_une_lecture
 
     fonction_q1_choisie = {
         "standard": _q1_une_lecture_ko2,
         "vote_economique": _q1_une_lecture_ko2_vote_economique,
     }[nom_fonction_q1]
+
+    fonction_q2_choisie = {
+        "standard": _q2_une_lecture,
+        "avant_apres": _q2_avant_apres_une_lecture,
+    }[nom_fonction_q2]
 
     t_debut_recherche = ko1_s + (half_duration_min + marge_avant_min) * 60
     t_fin_recherche = ko1_s + (half_duration_min + marge_apres_min) * 60
@@ -105,6 +110,19 @@ def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=4,
                              # mi-temps, un pas de 60s peut sauter par-dessus). Diagnostic
                              # confirme en production : sans ce fix, Franchimont et
                              # Stembert donnaient des erreurs KO2 de plusieurs minutes.
+        delai_verif_q2 = 22, # V5.2 FIX : le delai de verification Q2 (premier_oui+X)
+                             # etait fige a 60s (calibre pour pas_scan=60 de KO1 - "un
+                             # pas de scan plus loin"). Avec pas_scan=20 pour KO2, un
+                             # delai de 60s verifie 3 pas de scan plus loin au lieu de 1.
+                             # Valeur 22s choisie empiriquement (test Franchimont : bascule
+                             # nette False->True entre 20s et 21s ; test Stembert :
+                             # comportement NON MONOTONE observe (True a 6-10s, False a
+                             # nouveau a 15s, True a nouveau a 20s+) - aucun delai fixe
+                             # n'est parfaitement fiable partout, 22s est un compromis
+                             # raisonnable avec un peu de marge sur Franchimont, pas une
+                             # garantie universelle. Le systeme garde une redondance
+                             # (reprise de scan si Q2 rejette a tort) qui absorbe une
+                             # partie de ce risque residuel.
         max_retries  = max_retries,
         model_name   = model_name,
         fonction_q1  = fonction_q1_choisie,  # V5.2 : "standard" (defaut, deja
@@ -120,6 +138,15 @@ def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=4,
                              # Seule variable changee dans ce test, pour isoler
                              # precisement si le scan par lots affecte le resultat.
                              # KO1 continue d'utiliser TAILLE_LOT_Q1=6 (non touche).
+        fonction_q2  = fonction_q2_choisie,  # V5.2 : "standard" (defaut, ancien
+                             # signal "match deja commence") ou "avant_apres"
+                             # (nouveau signal AVANT/TRANSITION/APRES/INCERTAIN,
+                             # moins fragile - experience de caracterisation sur
+                             # 9 matchs a montre 6/9 sequences parfaitement
+                             # monotones contre une non-monotonie averee de
+                             # l'ancien signal sur au moins 1 cas, Stembert).
+                             # KO1 continue d'utiliser _q2_une_lecture (original),
+                             # non touche.
     )
 
     if resultat["status"] == "AUTO_CONFIRMED":

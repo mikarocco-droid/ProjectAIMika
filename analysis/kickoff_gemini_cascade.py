@@ -226,6 +226,55 @@ Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown 
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# V5.2 - PROMPT ALTERNATIF "AVANT/APRES" pour KO2 UNIQUEMENT
+# ─────────────────────────────────────────────────────────────────────────
+# Remplace PROMPT_Q2_RIGOUREUX ("le match a-t-il commence ?") par un signal
+# moins fragile : classifier l'image comme AVANT/TRANSITION/APRES le coup
+# d'envoi, le ballon devenant un indice parmi d'autres plutot qu'une
+# condition eliminatoire. Motive par une decouverte empirique reelle :
+# le critere "match deja commence" pouvait repondre NON a tort simplement
+# parce que le ballon etait hors cadre/en touche/masque (Wanze, image
+# t=4749s confirmee par visionnage reel), meme quand le jeu avait
+# clairement repris. Experience de caracterisation (9 matchs, [-10s,+10s]
+# seconde par seconde) a montre 6/9 sequences parfaitement monotones avec
+# ce nouveau signal, contre une non-monotonie averee avec l'ancien
+# critere sur au moins 1 cas (Stembert).
+# NE remplace PAS PROMPT_Q2_RIGOUREUX ci-dessus (garde intact pour KO1 et
+# comme reference/comparaison) - ajoute une voie alternative, activable
+# via parametre.
+PROMPT_AVANT_APRES = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur, autour du moment supposé d'un coup d'envoi (début de match ou de mi-temps).
+
+OBJECTIF : classifier cette image par rapport au coup d'envoi - PAS déterminer si "le jeu est actif", mais si la scène se situe AVANT ou APRÈS l'instant du coup d'envoi lui-même.
+
+═══════════════════════════════════════════════════
+CATÉGORIES POSSIBLES
+═══════════════════════════════════════════════════
+
+AVANT : les joueurs sont encore positionnés pour l'engagement (formation figée ou presque, de part et d'autre du centre, en attente).
+
+TRANSITION : l'instant est ambigu, semble être exactement au moment du coup d'envoi ou juste après (le ballon vient d'être touché, mouvement à peine amorcé).
+
+APRES : le jeu a clairement repris - joueurs qui se dispersent depuis le centre, se replacent, courent, ou occupent des positions de jeu établies (plus la formation d'engagement).
+
+INCERTAIN : l'image ne permet vraiment pas de juger (cadrage, flou, éléments masqués empêchant toute conclusion).
+
+═══════════════════════════════════════════════════
+INDICES À CONSIDÉRER ENSEMBLE (aucun n'est éliminatoire à lui seul)
+═══════════════════════════════════════════════════
+
+- Joueurs figés en formation d'engagement → AVANT
+- Joueurs qui commencent tout juste à s'écarter du centre → TRANSITION ou APRES
+- Joueurs dispersés normalement sur le terrain, en mouvement actif → APRES
+- Ballon au point central, immobile → plutôt AVANT (mais pas une preuve absolue - peut aussi être juste avant que quelqu'un ne le touche)
+- Ballon visible en mouvement ou hors du centre → plutôt APRES
+- Ballon NON visible (hors cadre, en touche, masqué) → NE PAS conclure AVANT automatiquement - regarde les AUTRES indices (position des joueurs) pour juger quand même
+- Scène de corner/touche/coup franc excentré → INCERTAIN pour cette tâche (pas liée au coup d'envoi)
+
+Réponds STRICTEMENT en JSON, avec un raisonnement bref :
+{"classification": "AVANT"|"TRANSITION"|"APRES"|"INCERTAIN", "raisonnement": "..."}"""
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # ÉTAT INTERNE DE RECHERCHE — regroupe compteurs/horloge/executor pour
 # éviter les globals (ce module peut être appelé plusieurs fois en
 # parallèle sur des matchs différents dans le pipeline)
@@ -385,13 +434,41 @@ def _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME)
     return bool(result.get("match_deja_commence", False))
 
 
-def _voter_q2(client, video_path, t, tmp_dir, etat, max_appels=3, model_name=MODEL_NAME):
+def _q2_avant_apres_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME, max_retry_incertain=2):
+    """V5.2 : variante Q2 utilisant le signal AVANT/TRANSITION/APRES/INCERTAIN
+    au lieu de "match deja commence". Mapping : AVANT->False, APRES/
+    TRANSITION->True (coherent avec la semantique "au moins commence").
+    INCERTAIN -> retente a des offsets voisins (t+1,t-1...) plutot que de
+    conclure au hasard - une image vraiment illisible ne doit pas peser
+    sur la decision.
+
+    Retourne True/False, ou None si toujours INCERTAIN apres les
+    tentatives (l'appelant doit alors traiter comme une erreur/retry,
+    pas comme une reponse fiable)."""
+    for tentative in range(max_retry_incertain + 1):
+        tt = t if tentative == 0 else t + tentative  # essaie t, puis t+1, t+2...
+        result = _appeler_json_robuste(client, video_path, tt, tmp_dir, PROMPT_AVANT_APRES, etat, model_name=model_name)
+        if result is None:
+            continue  # echec API, deja gere par retry interne de _appeler_json_robuste, on tente l'offset suivant
+        classification = result.get("classification", "INCERTAIN")
+        if classification == "AVANT":
+            return False
+        elif classification in ("APRES", "TRANSITION"):
+            return True
+        # INCERTAIN : on boucle vers la tentative suivante (offset different)
+    return None  # reste INCERTAIN apres toutes les tentatives
+
+
+def _voter_q2(client, video_path, t, tmp_dir, etat, max_appels=3, model_name=MODEL_NAME, fonction_q2=_q2_une_lecture):
     """Vote majoritaire avec arret anticipe - meme principe que
     detect_ko_vision.py::voter_transition(), max_appels=3 (pas 5, pour
-    maitriser le cout sur ce point de decision critique)."""
+    maitriser le cout sur ce point de decision critique).
+
+    fonction_q2 : V5.2, defaut=_q2_une_lecture (comportement inchange).
+    Permet de passer _q2_avant_apres_une_lecture pour le signal alternatif."""
     votes = []
     for _ in range(max_appels):
-        v = _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
+        v = fonction_q2(client, video_path, t, tmp_dir, etat, model_name=model_name)
         if v is None:
             if not votes:
                 return None
@@ -434,16 +511,18 @@ def _scan_q1_par_lots(client, video_path, tmp_dir, etat, t_debut, t_max, pas=60,
     return None, t, None
 
 
-def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, model_name=MODEL_NAME):
+def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, model_name=MODEL_NAME, fonction_q2=_q2_une_lecture):
     """Affine entre premier_oui (Q2=NON, deja verifie) et t_verif (Q2=OUI,
     deja verifie) par paliers decroissants. t_bas et t_haut ne sont
-    jamais reredemandes (deja connus a chaque palier)."""
+    jamais reredemandes (deja connus a chaque palier).
+
+    fonction_q2 : V5.2, defaut=_q2_une_lecture (comportement inchange)."""
     t_bas, t_haut = premier_oui, t_verif
     for i_pas, pas in enumerate(PALIERS_RECHERCHE_FINE):
         tt = t_bas + pas
         dernier_non = t_bas
         while tt < t_haut:
-            d = _q2_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
+            d = fonction_q2(client, video_path, tt, tmp_dir, etat, model_name=model_name)
             print(f"    [FINE pas={pas}s] t={tt:.0f}s : {'OUI' if d else 'NON' if d is not None else 'ERREUR'}")
             if d:
                 t_haut = tt
@@ -456,7 +535,7 @@ def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, mod
     return t_haut
 
 
-def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60):
+def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, fonction_q2=_q2_une_lecture):
     # V5.2 Phase A : t_debut parametrable (defaut=60, comportement KO1
     # inchange) - necessaire pour reutiliser cette meme cascade pour KO2,
     # qui doit demarrer sa recherche a KO1+quelque chose, pas a t=60s.
@@ -474,6 +553,10 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
     # verifie 3 pas de scan plus loin au lieu de 1, ce qui peut rendre le
     # controle "fenetre degeneree" (Q2 deja vrai au point premier_oui)
     # trop sensible - suspicion signalee, jamais teste avant ce fix.
+    # fonction_q2 parametrable (defaut=_q2_une_lecture, comportement
+    # inchange) - permet de passer _q2_avant_apres_une_lecture pour le
+    # signal alternatif AVANT/APRES, moins fragile que "match deja
+    # commence" (qui dependait trop de la visibilite du ballon).
     # AUCUN changement de logique/prompts/seuils, uniquement le pas, le
     # point de depart du scan, le modele, et ce delai.
     t = t_debut  # t=0 (ou avant t_debut) toujours "avant-match" pour KO1,
@@ -494,7 +577,7 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
 
         print(f"  [KICKOFF_GEMINI] candidat Q1 à t={premier_oui:.0f}s, vote Q2 à t={t_verif:.0f}s...")
-        decision_q2 = _voter_q2(client, video_path, t_verif, tmp_dir, etat, model_name=model_name)
+        decision_q2 = _voter_q2(client, video_path, t_verif, tmp_dir, etat, model_name=model_name, fonction_q2=fonction_q2)
         print(f"  [KICKOFF_GEMINI] vote Q2 : {'OUI' if decision_q2 else 'NON' if decision_q2 is not None else 'ERREUR'}")
 
         raison_arret = etat.budget_epuise()
@@ -510,13 +593,13 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
         # Garde de securite : si Q2 est deja vrai au point de depart, la
         # fenetre [premier_oui, t_verif] est invalide (vrai KO probablement
         # avant premier_oui) - ne jamais deviner, signaler NOT_FOUND.
-        premier_check = _q2_une_lecture(client, video_path, premier_oui, tmp_dir, etat, model_name=model_name)
+        premier_check = fonction_q2(client, video_path, premier_oui, tmp_dir, etat, model_name=model_name)
         if premier_check:
             print(f"  [KICKOFF_GEMINI] fenêtre dégénérée détectée (Q2 déjà vrai à t={premier_oui:.0f}s)")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "DEGENERATE_WINDOW"}
 
         print(f"  [KICKOFF_GEMINI] confirmé, recherche fine dans [{premier_oui:.0f}s, {t_verif:.0f}s]...")
-        kickoff_s = _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, model_name=model_name)
+        kickoff_s = _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, model_name=model_name, fonction_q2=fonction_q2)
         print(f"  [KICKOFF_GEMINI] KO détecté à t={kickoff_s:.0f}s")
         return {"status": "AUTO_CONFIRMED", "kickoff_s": float(kickoff_s), "reason": None}
 
@@ -526,7 +609,7 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
 def detect_kickoff_gemini(video_path, max_search_s,
                             max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                             max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT,
-                            tmp_dir="/tmp", t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60):
+                            tmp_dir="/tmp", t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, fonction_q2=_q2_une_lecture):
     """
     Détecte le premier coup d'envoi d'un match par cascade Gemini
     (Q1 scan 60s -> Q2 confirmation -> recherche fine 15/5/1s).
@@ -582,7 +665,7 @@ def detect_kickoff_gemini(video_path, max_search_s,
     etat = _EtatRecherche(max_gemini_calls, max_wallclock_s)
 
     try:
-        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut, pas_scan=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name, delai_verif_q2=delai_verif_q2)
+        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut, pas_scan=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name, delai_verif_q2=delai_verif_q2, fonction_q2=fonction_q2)
     except Exception as e:
         resultat = {"status": "ERROR", "kickoff_s": None, "reason": f"UNEXPECTED_EXCEPTION: {e}"}
     finally:
