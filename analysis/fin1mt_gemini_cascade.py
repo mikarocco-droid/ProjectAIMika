@@ -1,24 +1,32 @@
 """
 fin1mt_gemini_cascade.py
 ============================
-V5.2 - Detection Fin1MT (fin de 1ere mi-temps) par vision Gemini, meme
-architecture AVANT/TRANSITION/APRES/INCERTAIN validee sur KO2 aujourd'hui
-(8/9 <=3s), plutot que la detection audio existante (2 echecs a >200s
-sur Franchimont/Stembert, faux positifs acoustiques plus forts que le
-vrai signal).
+V5.2 - Detection Fin1MT (fin de 1ere mi-temps) par vision Gemini,
+architecture Q1/Q2 identique a KO2 (pas juste un signal AVANT/APRES
+unique - premiere version abandonnee suite a un retour terrain :
+"but visible" n'est pas un signal fiable, le vrai Fin1MT peut se jouer
+pres d'un but aussi bien qu'un faux positif apres-but).
+
+Q1 : signal DIRECTIONNEL - beaucoup de joueurs qui marchent vers le
+bord du terrain (touche), plutot que de rester sur le terrain ou vers
+le centre. C'est le signal specifiquement identifie comme fiable par
+observation directe de 2 images comparees (vrai Fin1MT vs faux positif
+apres-but - les deux avaient un but visible et des joueurs calmes,
+SEULE la direction de marche differait).
+
+Q2 : verification - le terrain est-il maintenant vide (ou quasiment)
+DES JOUEURS DES DEUX EQUIPES DU MATCH specifiquement - tolere
+explicitement la presence d'autres personnes (jeunes joueurs,
+pom-pom girls, staff) qui peuvent occuper le terrain pendant la vraie
+pause, sans que ca invalide la detection.
 
 Recherche DANS LA FENETRE DEJA VALIDEE [KO2-marge_avant_min,
 KO2-marge_apres_min] (validee 9/9 pour contenir le vrai Fin1MT dans le
-travail R&D anterieur) - on ne change pas la fenetre de recherche,
-seulement la methode de detection a l'interieur.
+travail R&D anterieur).
 
-Reutilise l'infrastructure generique de kickoff_gemini_cascade.py
-(_appeler_json_robuste, _EtatRecherche, executor, PALIERS_RECHERCHE_FINE)
-- AUCUNE modification de ce fichier, uniquement des imports.
+Reutilise l'infrastructure generique de kickoff_gemini_cascade.py -
+AUCUNE modification de ce fichier, uniquement des imports.
 """
-
-import time
-import concurrent.futures
 
 from analysis.kickoff_gemini_cascade import (
     _EtatRecherche,
@@ -31,68 +39,79 @@ from analysis.kickoff_gemini_cascade import (
 MODEL_NAME_DEFAUT = "gemini-3.5-flash"
 
 # ─────────────────────────────────────────────────────────────────────────
-# PROMPT — meme structure AVANT/TRANSITION/APRES/INCERTAIN que KO2,
-# adaptee a la transition "jeu actif -> mi-temps sifflee"
+# PROMPT Q1 — signal directionnel (candidat)
 # ─────────────────────────────────────────────────────────────────────────
-PROMPT_FIN1MT = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur, autour du moment supposé de la fin de la première mi-temps.
+PROMPT_Q1_FIN1MT = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur, autour du moment supposé de la fin de la première mi-temps.
 
-OBJECTIF : classifier cette image par rapport à la fin de la première mi-temps - le jeu est-il encore en cours (AVANT la fin), ou la mi-temps a-t-elle clairement commencé (APRÈS la fin) ?
-
-═══════════════════════════════════════════════════
-CATÉGORIES POSSIBLES
-═══════════════════════════════════════════════════
-
-AVANT : le jeu est manifestement encore en cours - joueurs actifs sur le terrain, ballon en jeu, action identifiable (passe, duel, course), même un arrêt de jeu ponctuel (touche, corner, coup franc) qui fait partie du match en cours.
-
-TRANSITION : l'instant est ambigu, semble être exactement au moment du coup de sifflet de fin de mi-temps ou juste après (joueurs qui s'arrêtent, commencent tout juste à se regrouper).
-
-APRES : la mi-temps est clairement en cours - joueurs qui quittent le terrain vers la ligne de touche/les vestiaires, se regroupent en dehors du jeu, marchent calmement sans ballon en jeu, arbitre qui s'éloigne du terrain, absence prolongée d'action de jeu.
-
-INCERTAIN : l'image ne permet vraiment pas de juger (cadrage, flou, éléments masqués empêchant toute conclusion).
+OBJECTIF : détecter un signe précoce que la fin de la première mi-temps vient d'être sifflée - PAS déterminer si le terrain est déjà vide, juste si un mouvement de sortie a commencé.
 
 ═══════════════════════════════════════════════════
-INDICES À CONSIDÉRER ENSEMBLE (aucun n'est éliminatoire à lui seul)
+CRITÈRE PRINCIPAL — SENS DE LA MARCHE
 ═══════════════════════════════════════════════════
 
-- Joueurs dispersés sur le terrain en action de jeu → AVANT
-- Arrêt de jeu ponctuel reconnaissable comme faisant partie du match (touche, corner, coup franc, faute) → AVANT (ça compte comme jeu en cours)
-- Joueurs qui marchent vers la ligne de touche ou les vestiaires, sans ballon en jeu → APRES
-- Joueurs regroupés en dehors du terrain ou à l'arrêt sans logique de jeu → APRES
-- Arbitre qui s'éloigne du centre du terrain vers la sortie → APRES
-- Absence de ballon visible ne signifie PAS automatiquement APRES - regarde la position et l'attitude des joueurs pour juger quand même
+Le critère décisif n'est PAS "les joueurs sont-ils calmes" (un arrêt de jeu normal, ou un instant juste après un but marqué, montrent aussi des joueurs calmes, y compris près d'un but). Le critère est : **PLUSIEURS joueurs marchent-ils vers le BORD du terrain (ligne de touche), plutôt que de rester sur le terrain ou de se diriger vers son centre ?**
+
+- Si plusieurs joueurs (idéalement des deux équipes) sont clairement orientés/en mouvement vers une ligne de touche (peu importe laquelle) → OUI, signal de fin de mi-temps.
+- Si les joueurs sont dispersés mais restent globalement SUR le terrain, ou se dirigent vers le centre (ex: après un but, pour se replacer) → NON, ce n'est probablement pas la fin de la mi-temps.
+- Un seul joueur qui s'éloigne (ex: pour une touche, un ballon sorti) ne suffit pas - il faut un mouvement collectif vers la sortie.
+
+Réponds STRICTEMENT en JSON, avec un raisonnement bref décrivant le sens de marche observé :
+{"signal_sortie_detecte": true/false, "raisonnement": "..."}"""
+
+# ─────────────────────────────────────────────────────────────────────────
+# PROMPT Q2 — verification (terrain vide des 2 equipes du match)
+# ─────────────────────────────────────────────────────────────────────────
+PROMPT_Q2_FIN1MT = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur, pour vérifier si la pause de mi-temps est bien en cours.
+
+OBJECTIF : déterminer si le terrain est maintenant vide, ou quasiment vide, DES JOUEURS DES DEUX ÉQUIPES DU MATCH (celles visibles avant cet instant, en tenue de match) - PAS déterminer si le terrain est totalement désert.
+
+═══════════════════════════════════════════════════
+IMPORTANT — TOLÉRANCE EXPLICITE
+═══════════════════════════════════════════════════
+
+D'autres personnes peuvent être présentes sur ou près du terrain SANS que cela invalide la pause de mi-temps :
+- jeunes joueurs (enfants) qui utilisent le terrain pendant la pause
+- pom-pom girls, animation, présentateur
+- personnel du club, arbitres assistants, remplaçants au repos
+Leur présence NE COMPTE PAS comme "le match est en cours" - seule la présence ou l'absence des JOUEURS DES DEUX ÉQUIPES DU MATCH (en tenue de match, ceux qui jouaient) compte pour ce critère.
+
+═══════════════════════════════════════════════════
+CRITÈRES
+═══════════════════════════════════════════════════
+
+- Terrain vide ou quasiment vide des joueurs des deux équipes du match → OUI (pause confirmée)
+- Encore plusieurs joueurs des deux équipes du match visibles sur le terrain, en position de jeu ou clairement encore engagés dans le match → NON
+- Uniquement d'autres personnes (enfants, pom-pom girls, staff) visibles, aucun joueur des équipes du match → OUI (pause confirmée, le terrain leur appartient pendant la pause)
 
 Réponds STRICTEMENT en JSON, avec un raisonnement bref :
-{"classification": "AVANT"|"TRANSITION"|"APRES"|"INCERTAIN", "raisonnement": "..."}"""
+{"terrain_vide_des_2_equipes": true/false, "raisonnement": "..."}"""
 
 
-def _classifier_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME_DEFAUT, max_retry_incertain=2):
-    """Classifie un point AVANT/APRES (mappage booleen), avec retry sur
-    INCERTAIN a des offsets voisins - meme logique que
-    _q2_avant_apres_une_lecture pour KO2."""
-    for tentative in range(max_retry_incertain + 1):
-        tt = t if tentative == 0 else t + tentative
-        result = _appeler_json_robuste(client, video_path, tt, tmp_dir, PROMPT_FIN1MT, etat, model_name=model_name)
-        if result is None:
-            continue
-        classification = result.get("classification", "INCERTAIN")
-        if classification == "AVANT":
-            return False
-        elif classification in ("APRES", "TRANSITION"):
-            return True
-    return None
+def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME_DEFAUT):
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q1_FIN1MT, etat, model_name=model_name)
+    if result is None:
+        return None, "échec API"
+    return bool(result.get("signal_sortie_detecte", False)), result.get("raisonnement", "non fourni")
 
 
-def _voter_classification(client, video_path, t, tmp_dir, etat, max_appels=3, model_name=MODEL_NAME_DEFAUT):
-    """Vote majoritaire avec arret anticipe - meme principe que _voter_q2
-    de KO2. Confirme un point avant de l'utiliser comme borne de
-    dichotomie, pour eviter qu'un seul appel malchanceux ne fasse
-    derailler la recherche."""
+def _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME_DEFAUT):
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q2_FIN1MT, etat, model_name=model_name)
+    if result is None:
+        return None, "échec API"
+    return bool(result.get("terrain_vide_des_2_equipes", False)), result.get("raisonnement", "non fourni")
+
+
+def _voter(client, video_path, t, tmp_dir, etat, fonction_lecture, max_appels=3, model_name=MODEL_NAME_DEFAUT):
+    """Vote majoritaire avec arret anticipe - meme principe que
+    _voter_q2 de KO2."""
     votes = []
+    dernier_raisonnement = None
     for _ in range(max_appels):
-        v = _classifier_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
+        v, raisonnement = fonction_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
+        dernier_raisonnement = raisonnement
         if v is None:
             if not votes:
-                return None
+                return None, raisonnement
             break
         votes.append(v)
         n_true = sum(votes)
@@ -101,50 +120,46 @@ def _voter_classification(client, video_path, t, tmp_dir, etat, max_appels=3, mo
         if n_true > n_false + restants or n_false > n_true + restants:
             break
     if not votes:
-        return None
-    return sum(votes) > len(votes) / 2
+        return None, dernier_raisonnement
+    return (sum(votes) > len(votes) / 2), dernier_raisonnement
 
 
 def _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t_avant, t_apres, model_name=MODEL_NAME_DEFAUT):
-    """Meme dichotomie 15/5/1s que KO2 (_recherche_fine), adaptee au
-    signal AVANT/APRES local. t_avant : dernier point confirme AVANT.
-    t_apres : premier point confirme APRES."""
+    """Dichotomie 15/5/1s, utilise le signal Q2 (terrain vide des 2
+    equipes) - meme structure que _recherche_fine de KO2."""
     t_bas, t_haut = t_avant, t_apres
     for pas in PALIERS_RECHERCHE_FINE:
         tt = t_bas + pas
-        dernier_avant = t_bas
+        dernier_non = t_bas
         while tt < t_haut:
-            d = _classifier_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
-            print(f"    [FIN1MT FINE pas={pas}s] t={tt:.0f}s : {'APRES' if d else 'AVANT' if d is not None else 'ERREUR'}")
+            d, raisonnement = _q2_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
+            print(f"    [FIN1MT FINE pas={pas}s] t={tt:.0f}s : {'VIDE' if d else 'PAS_VIDE' if d is not None else 'ERREUR'} — {raisonnement}")
             if d:
                 t_haut = tt
-                t_bas = dernier_avant
+                t_bas = dernier_non
                 break
-            dernier_avant = tt
+            dernier_non = tt
             tt += pas
         else:
-            t_bas = dernier_avant
+            t_bas = dernier_non
     return t_haut
 
 
 def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=8,
-                        pas_scan=20, model_name=MODEL_NAME_DEFAUT,
+                        pas_scan=60, delai_verif_q2=60, model_name=MODEL_NAME_DEFAUT,
                         max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                         max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT, tmp_dir="/tmp"):
     """
-    Cherche Fin1MT par vision Gemini (signal AVANT/TRANSITION/APRES),
-    dans la fenetre [KO2-marge_avant_min, KO2-marge_apres_min] - MEME
-    fenetre officielle que find_fin1mt_audio, deja validee 9/9 pour
-    contenir le vrai Fin1MT. Seule la methode de detection change.
+    Cherche Fin1MT par vision Gemini, architecture Q1 (signal
+    directionnel de sortie) + Q2 (verification terrain vide des 2
+    equipes) + dichotomie fine - meme structure que detect KO2.
 
-    Scan en avant depuis le debut de la fenetre, pas_scan par pas_scan,
-    jusqu'a trouver un premier point confirme APRES (vote majoritaire a
-    3 voix). Dichotomie 15/5/1s ensuite entre le dernier AVANT et ce
-    premier APRES confirme.
+    Fenetre [KO2-marge_avant_min, KO2-marge_apres_min] - MEME fenetre
+    officielle que find_fin1mt_audio, deja validee 9/9 pour contenir le
+    vrai Fin1MT.
 
     Retourne float (timestamp absolu) ou None si aucune transition
-    trouvee dans la fenetre (budget epuise ou fenetre entierement
-    AVANT/entierement APRES).
+    confirmee trouvee dans la fenetre.
     """
     from google import genai
     client = genai.Client()
@@ -157,35 +172,49 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=8,
             return None
 
         t = t_debut
-        dernier_avant_confirme = t_debut
         while t <= t_fin:
             raison_arret = etat.budget_epuise()
             if raison_arret:
                 print(f"  [FIN1MT_GEMINI] arrêt : {raison_arret}")
                 return None
 
-            print(f"  [FIN1MT_GEMINI] scan t={t:.0f}s (fenêtre [{t_debut:.0f}s, {t_fin:.0f}s], pas={pas_scan}s)")
-            decision = _voter_classification(client, video_path, t, tmp_dir, etat, model_name=model_name)
+            print(f"  [FIN1MT_GEMINI] scan Q1 t={t:.0f}s (fenêtre [{t_debut:.0f}s, {t_fin:.0f}s], pas={pas_scan}s)")
+            decision_q1, raisonnement_q1 = _voter(client, video_path, t, tmp_dir, etat, _q1_une_lecture, model_name=model_name)
+            print(f"  [FIN1MT_GEMINI] Q1 à t={t:.0f}s : {'SIGNAL_SORTIE' if decision_q1 else 'NON' if decision_q1 is not None else 'ERREUR'} — {raisonnement_q1}")
 
-            if decision is None:
-                # echec/incertitude persistante sur ce point : on avance sans
-                # pouvoir le classer, ni AVANT ni APRES confirme
+            if not decision_q1:
                 t += pas_scan
                 continue
 
-            if not decision:
-                dernier_avant_confirme = t
-                t += pas_scan
+            t_verif = t + delai_verif_q2
+            if t_verif > t_fin:
+                print(f"  [FIN1MT_GEMINI] candidat à t={t:.0f}s mais vérification hors limite")
+                return None
+
+            print(f"  [FIN1MT_GEMINI] candidat Q1 à t={t:.0f}s, vérif Q2 à t={t_verif:.0f}s...")
+            decision_q2, raisonnement_q2 = _voter(client, video_path, t_verif, tmp_dir, etat, _q2_une_lecture, model_name=model_name)
+            print(f"  [FIN1MT_GEMINI] Q2 à t={t_verif:.0f}s : {'VIDE' if decision_q2 else 'PAS_VIDE' if decision_q2 is not None else 'ERREUR'} — {raisonnement_q2}")
+
+            if not decision_q2:
+                print(f"  [FIN1MT_GEMINI] candidat rejeté, reprise à t={t_verif:.0f}s")
+                t = t_verif
                 continue
 
-            # Premier APRES confirme : dichotomie entre dernier_avant_confirme et t
-            print(f"  [FIN1MT_GEMINI] premier APRES confirmé à t={t:.0f}s, "
-                  f"dichotomie depuis dernier AVANT confirmé à t={dernier_avant_confirme:.0f}s")
-            resultat = _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, dernier_avant_confirme, t, model_name=model_name)
+            # Garde de securite - meme principe que DEGENERATE_WINDOW KO2 :
+            # si Q2 est deja vrai AU point du candidat Q1 lui-meme, la
+            # fenetre [t, t_verif] est invalide (vrai Fin1MT probablement
+            # avant t) - ne jamais deviner.
+            premier_check, _ = _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
+            if premier_check:
+                print(f"  [FIN1MT_GEMINI] fenêtre dégénérée détectée (Q2 déjà vrai à t={t:.0f}s)")
+                return None
+
+            print(f"  [FIN1MT_GEMINI] confirmé, recherche fine dans [{t:.0f}s, {t_verif:.0f}s]...")
+            resultat = _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t, t_verif, model_name=model_name)
             print(f"  [FIN1MT_GEMINI] Fin1MT détecté à t={resultat:.0f}s")
             return float(resultat)
 
-        print(f"  [FIN1MT_GEMINI] aucune transition APRES trouvée dans la fenêtre")
+        print(f"  [FIN1MT_GEMINI] aucun candidat Q1 trouvé dans la fenêtre")
         return None
     finally:
         etat.fermer()
