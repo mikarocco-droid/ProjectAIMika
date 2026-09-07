@@ -102,6 +102,59 @@ CRITÈRES (jugés ensemble, pas un ET strict)
 Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
 {"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false}"""
 
+
+# ─────────────────────────────────────────────────────────────────────────
+# V5.2 Phase A — variante Q1 DEDIEE A KO2, PAS utilisee pour KO1
+# ─────────────────────────────────────────────────────────────────────────
+# ⚠️ Le prompt Q1 original (ci-dessus) est PARTAGE et deja valide 9/9 pour
+# KO1 - ne pas le modifier sans revalidation complete (cf. avertissement
+# en tete de fichier : une reformulation a deja fait perdre un run
+# complet).
+#
+# Le critere "deux_equipes_visibles" ci-dessous a ete decouvert et valide
+# specifiquement sur des faux positifs KO2 (P1Minerois : une seule equipe
+# en echauffement pres de la touche satisfaisait les 4 criteres
+# originaux). CE CRITERE FAISAIT PARTIE DU TEST QUI A VALIDE KO2 9/9 -
+# ce n'est pas une amelioration optionnelle, c'est une piece necessaire
+# du comportement deja valide, qui n'avait par erreur jamais ete portee
+# en production avant ce fix (bug trouve suite a un audit demande
+# apres un run de production divergent du test).
+#
+# Utilise UNIQUEMENT par find_ko2_gemini (match_boundaries_v2.py) - KO1
+# continue d'utiliser PROMPT_Q1_RIGOUREUX + _q1_une_lecture originaux,
+# intacts.
+PROMPT_Q1_KO2 = PROMPT_Q1_RIGOUREUX.replace(
+    'Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :\n{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false}',
+    '''═══════════════════════════════════════════════════
+CRITÈRE OBLIGATOIRE SUPPLÉMENTAIRE (à part, pas optionnel)
+═══════════════════════════════════════════════════
+
+5. DEUX ÉQUIPES DISTINCTES VISIBLES : vois-tu clairement des joueurs des DEUX équipes (deux couleurs de maillot différentes, hors gardien) ? Une scène montrant une seule équipe en train de s'échauffer ou de se replacer (même avec son propre gardien dans une 3e couleur) NE COMPTE PAS - il faut voir les deux équipes adverses en même temps. Si tu ne vois qu'une seule couleur de maillot de champ (+ éventuellement un gardien), réponds false ici, même si les autres critères semblent satisfaits.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false}'''
+).replace(
+    # V5.2 FIX (vigilance signalee sur le JSON strict) : la formulation
+    # originale "reponds directement NON a tout le reste" pouvait etre
+    # mal interpretee par le modele comme "renvoie le texte NON" au lieu
+    # du JSON attendu, ce qui aurait fait echouer le parsing JSON en
+    # aval. Clarifie UNIQUEMENT pour KO2 - le prompt Q1 original (KO1)
+    # n'est pas touche, cette formulation potentiellement ambigue y
+    # reste identique a ce qui est deja valide 9/9.
+    'Si l\'une des deux réponses ci-dessous est "oui", réponds directement "NON" à tout le reste, sans analyser davantage.',
+    'Si l\'une des deux réponses ci-dessous est "oui", réponds immédiatement avec un JSON complet où TOUTES les valeurs (y compris deux_equipes_visibles) sont à false - ne réponds JAMAIS par le simple texte "NON", toujours le JSON structuré complet.'
+).replace(
+    # V5.2 FIX : ajout d'une 3e verification prealable - fanion de corner
+    # visible = signal visuel net et concret (comme le but), decouvert
+    # sur un faux positif reel (P1Minerois t=3652s : fanion de corner
+    # visible en arriere-plan, scene de coup franc pres de la touche
+    # acceptee a tort comme candidat KO2). UNIQUEMENT pour KO2 - prompt
+    # KO1 non touche.
+    "QUESTION PRÉALABLE 2 — Le jeu est-il MANIFESTEMENT déjà actif (joueurs en mouvement de jeu réel, ballon en circulation loin du centre) ?\nSi oui → NON automatique (ce n'est plus une scène d'avant-match, c'est déjà du jeu).",
+    "QUESTION PRÉALABLE 2 — Le jeu est-il MANIFESTEMENT déjà actif (joueurs en mouvement de jeu réel, ballon en circulation loin du centre) ?\nSi oui → NON automatique (ce n'est plus une scène d'avant-match, c'est déjà du jeu).\n\nQUESTION PRÉALABLE 3 — Un fanion de corner APPARTENANT AU TERRAIN SUR LEQUEL SE JOUE LE MATCH (piquet avec petit drapeau, à l'un des 4 coins DE CE terrain) est-il visible dans l'image ? ⚠️ Attention : si plusieurs terrains sont visibles côte à côte (complexe multi-terrains), ignore les fanions d'un terrain VOISIN - seul un fanion appartenant au terrain où se déroule CE match compte. En cas de doute sur l'appartenance du fanion à ce terrain précis, ne le compte pas.\nSi un fanion du terrain de jeu est identifié avec certitude → NON automatique (la scène se situe près d'un coin de ce terrain, pas au centre)."
+)
+assert PROMPT_Q1_KO2 != PROMPT_Q1_RIGOUREUX, "Le remplacement du prompt KO2 a échoué (texte cible introuvable) - vérifier que PROMPT_Q1_RIGOUREUX n'a pas changé de formulation"
+
 PROMPT_Q2_RIGOUREUX = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur.
 
 OBJECTIF : déterminer si le jeu est MANIFESTEMENT en cours dans cette image - y compris si le jeu est momentanément à l'arrêt pour une raison de match (pas nécessairement en mouvement à cet instant précis). Un jugement strict, pas une impression.
@@ -182,13 +235,13 @@ def _extraire_frame(video_path, t_secondes, tmp_dir):
     return data
 
 
-def _appeler_gemini_json(client, image_bytes, prompt, etat):
+def _appeler_gemini_json(client, image_bytes, prompt, etat, model_name=MODEL_NAME):
     from google.genai import types
     etat.n_appels += 1
 
     def _appel():
         response = client.models.generate_content(
-            model=MODEL_NAME,
+            model=model_name,
             contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), prompt],
             config=types.GenerateContentConfig(temperature=TEMPERATURE),
         )
@@ -206,23 +259,31 @@ def _appeler_gemini_json(client, image_bytes, prompt, etat):
         return None  # traite comme "pas d'avis" par l'appelant, retry gere plus haut
 
 
-def _appeler_json_robuste(client, video_path, t, tmp_dir, prompt, etat):
+def _appeler_json_robuste(client, video_path, t, tmp_dir, prompt, etat, model_name=MODEL_NAME):
     """2 tentatives a t exact, puis t+1s, puis t-1s (chacun 2 tentatives) -
     jusqu'a 6 appels sur 3 images differentes avant d'abandonner ce
     checkpoint. Un echec silencieux casserait la garantie de couverture
-    exhaustive du scan (cf. V5_2_FIABILITE_ROADMAP.md §12.6bis)."""
+    exhaustive du scan (cf. V5_2_FIABILITE_ROADMAP.md §12.6bis).
+
+    V5.2 : logging ajoute pour visibilite - si le retry se declenche
+    frequemment, c'est un signe d'instabilite API reelle a surveiller."""
     for delta in (0, 1, -1):
         tt = max(0, t + delta)
         image_bytes = _extraire_frame(video_path, tt, tmp_dir)
         for _tentative in range(2):
-            resultat = _appeler_gemini_json(client, image_bytes, prompt, etat)
+            resultat = _appeler_gemini_json(client, image_bytes, prompt, etat, model_name=model_name)
             if resultat is not None:
+                if delta != 0 or _tentative != 0:
+                    print(f"    [RETRY] succès à t={tt:.0f}s après {delta:+d}s/tentative {_tentative+1} "
+                          f"(échec initial à t={t:.0f}s)")
                 return resultat
+            print(f"    [RETRY] échec à t={tt:.0f}s (delta={delta:+d}, tentative {_tentative+1}/2)")
+    print(f"    [RETRY] ÉCHEC TOTAL sur checkpoint t={t:.0f}s (6 appels, 3 frames, tous échoués)")
     return None  # echec total, checkpoint reellement perdu (rare)
 
 
-def _q1_une_lecture(client, video_path, t, tmp_dir, etat):
-    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q1_RIGOUREUX, etat)
+def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q1_RIGOUREUX, etat, model_name=model_name)
     if result is None:
         return None
     criteres = [
@@ -234,20 +295,65 @@ def _q1_une_lecture(client, video_path, t, tmp_dir, etat):
     return sum(criteres) >= SEUIL_Q1
 
 
-def _q2_une_lecture(client, video_path, t, tmp_dir, etat):
-    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q2_RIGOUREUX, etat)
+def _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
+    """V5.2 Phase A : variante Q1 pour KO2 UNIQUEMENT - meme 4 criteres +
+    deux_equipes_visibles OBLIGATOIRE (voir PROMPT_Q1_KO2 ci-dessus).
+    KO1 continue d'utiliser _q1_une_lecture (original), intact.
+
+    model_name : V5.2 - parametrable pour comparer Pro vs Flash sur KO2,
+    sans toucher au defaut (Pro) utilise partout ailleurs y compris KO1."""
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q1_KO2, etat, model_name=model_name)
+    if result is None:
+        return None
+    criteres = [
+        result.get("zone_centrale_plausible", False),
+        result.get("caractere_avant_match", False),
+        result.get("amorce_separation", False),
+        result.get("pas_autre_remise_en_jeu", False),
+    ]
+    deux_equipes = result.get("deux_equipes_visibles", False)
+    return (sum(criteres) >= SEUIL_Q1) and deux_equipes
+
+
+def _q1_une_lecture_ko2_vote_economique(client, video_path, t, tmp_dir, etat, max_confirmations=2, model_name=MODEL_NAME):
+    """V5.2 : variante ECONOMIQUE du vote majoritaire, appliquee SEULEMENT
+    quand le premier appel dit OUI - pas sur chaque point scanne (la
+    plupart disent NON correctement et n'ont pas besoin de confirmation
+    couteuse). Motivation : diagnostic reel (P1Minerois, t=3652s) a montre
+    2 appels sur la MEME image donnant 2 verdicts opposes (OUI puis NON)
+    - un seul "OUI" chanceux peut faire derailler toute la recherche vers
+    un faux Q2+recherche fine couteux, alors qu'un "NON" incorrect n'a
+    qu'un cout faible (on continue simplement le scan).
+
+    Cout ajoute : +max_confirmations appels UNIQUEMENT sur les points ou
+    le 1er appel dit deja OUI (rares compares aux NON) - pas un
+    multiplicateur global sur tout le scan."""
+    premier = _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=model_name)
+    if not premier:
+        return premier  # NON ou erreur : pas de confirmation, cout inchange
+
+    votes = [premier]
+    for _ in range(max_confirmations):
+        v = _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=model_name)
+        if v is not None:
+            votes.append(v)
+    return sum(votes) > len(votes) / 2
+
+
+def _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q2_RIGOUREUX, etat, model_name=model_name)
     if result is None:
         return None
     return bool(result.get("match_deja_commence", False))
 
 
-def _voter_q2(client, video_path, t, tmp_dir, etat, max_appels=3):
+def _voter_q2(client, video_path, t, tmp_dir, etat, max_appels=3, model_name=MODEL_NAME):
     """Vote majoritaire avec arret anticipe - meme principe que
     detect_ko_vision.py::voter_transition(), max_appels=3 (pas 5, pour
     maitriser le cout sur ce point de decision critique)."""
     votes = []
     for _ in range(max_appels):
-        v = _q2_une_lecture(client, video_path, t, tmp_dir, etat)
+        v = _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
         if v is None:
             if not votes:
                 return None
@@ -263,10 +369,14 @@ def _voter_q2(client, video_path, t, tmp_dir, etat, max_appels=3):
     return sum(votes) > len(votes) / 2
 
 
-def _scan_q1_par_lots(client, video_path, tmp_dir, etat, t_debut, t_max, pas=60, taille_lot=TAILLE_LOT_Q1):
+def _scan_q1_par_lots(client, video_path, tmp_dir, etat, t_debut, t_max, pas=60, taille_lot=TAILLE_LOT_Q1, fonction_q1=_q1_une_lecture, model_name=MODEL_NAME):
     """Scanne Q1 par lots parallèles, traite dans l'ordre chronologique -
     identique en decision au scan sequentiel, juste plus rapide.
-    Verifie le budget (appels/wallclock) avant chaque lot."""
+    Verifie le budget (appels/wallclock) avant chaque lot.
+
+    fonction_q1 : V5.2 Phase A, defaut=_q1_une_lecture (KO1, inchange).
+    Permet de passer _q1_une_lecture_ko2 pour la recherche KO2.
+    model_name : V5.2, parametrable pour comparer Pro vs Flash sur KO2."""
     t = t_debut
     while t <= t_max:
         raison_arret = etat.budget_epuise()
@@ -274,7 +384,7 @@ def _scan_q1_par_lots(client, video_path, tmp_dir, etat, t_debut, t_max, pas=60,
             return None, t, raison_arret
 
         lot = [t + i * pas for i in range(taille_lot) if t + i * pas <= t_max]
-        futures = {tt: etat.executor.submit(_q1_une_lecture, client, video_path, tt, tmp_dir, etat) for tt in lot}
+        futures = {tt: etat.executor.submit(fonction_q1, client, video_path, tt, tmp_dir, etat, model_name=model_name) for tt in lot}
 
         for tt in lot:
             decision = futures[tt].result()
@@ -286,7 +396,7 @@ def _scan_q1_par_lots(client, video_path, tmp_dir, etat, t_debut, t_max, pas=60,
     return None, t, None
 
 
-def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif):
+def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, model_name=MODEL_NAME):
     """Affine entre premier_oui (Q2=NON, deja verifie) et t_verif (Q2=OUI,
     deja verifie) par paliers decroissants. t_bas et t_haut ne sont
     jamais reredemandes (deja connus a chaque palier)."""
@@ -295,7 +405,7 @@ def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif):
         tt = t_bas + pas
         dernier_non = t_bas
         while tt < t_haut:
-            d = _q2_une_lecture(client, video_path, tt, tmp_dir, etat)
+            d = _q2_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
             if d:
                 t_haut = tt
                 t_bas = dernier_non
@@ -307,17 +417,25 @@ def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif):
     return t_haut
 
 
-def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60):
+def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME):
     # V5.2 Phase A : t_debut parametrable (defaut=60, comportement KO1
     # inchange) - necessaire pour reutiliser cette meme cascade pour KO2,
     # qui doit demarrer sa recherche a KO1+quelque chose, pas a t=60s.
-    # AUCUN changement de logique/prompts/seuils, uniquement le point de
-    # depart du scan.
+    # pas_scan parametrable (defaut=60, comportement KO1 inchange) -
+    # KO2 a besoin d'un pas plus fin (20s, valide empiriquement sur
+    # Franchimont : la camera ne se stabilise sur le centre que
+    # brievement lors de la reprise, un pas de 60s peut sauter par-dessus
+    # cette fenetre - observe concretement en production, cf. diagnostic
+    # Franchimont/Stembert KO2 errone).
+    # model_name parametrable (defaut=MODEL_NAME=Pro, inchange pour KO1) -
+    # permet de comparer Pro vs Flash pour KO2 sans toucher KO1.
+    # AUCUN changement de logique/prompts/seuils, uniquement le pas, le
+    # point de depart du scan, et le modele.
     t = t_debut  # t=0 (ou avant t_debut) toujours "avant-match" pour KO1,
                  # mais pour KO2 t_debut sera deja loin dans la video
     while t <= t_max:
-        print(f"  [KICKOFF_GEMINI] scan Q1 depuis t={t:.0f}s (max={t_max:.0f}s)")
-        premier_oui, t, raison_arret = _scan_q1_par_lots(client, video_path, tmp_dir, etat, t, t_max)
+        print(f"  [KICKOFF_GEMINI] scan Q1 depuis t={t:.0f}s (max={t_max:.0f}s, pas={pas_scan}s, modele={model_name})")
+        premier_oui, t, raison_arret = _scan_q1_par_lots(client, video_path, tmp_dir, etat, t, t_max, pas=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name)
         if raison_arret:
             print(f"  [KICKOFF_GEMINI] arrêt : {raison_arret}")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": raison_arret}
@@ -331,7 +449,7 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60):
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
 
         print(f"  [KICKOFF_GEMINI] candidat Q1 à t={premier_oui:.0f}s, vote Q2 à t={t_verif:.0f}s...")
-        decision_q2 = _voter_q2(client, video_path, t_verif, tmp_dir, etat)
+        decision_q2 = _voter_q2(client, video_path, t_verif, tmp_dir, etat, model_name=model_name)
         print(f"  [KICKOFF_GEMINI] vote Q2 : {'OUI' if decision_q2 else 'NON' if decision_q2 is not None else 'ERREUR'}")
 
         raison_arret = etat.budget_epuise()
@@ -347,13 +465,13 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60):
         # Garde de securite : si Q2 est deja vrai au point de depart, la
         # fenetre [premier_oui, t_verif] est invalide (vrai KO probablement
         # avant premier_oui) - ne jamais deviner, signaler NOT_FOUND.
-        premier_check = _q2_une_lecture(client, video_path, premier_oui, tmp_dir, etat)
+        premier_check = _q2_une_lecture(client, video_path, premier_oui, tmp_dir, etat, model_name=model_name)
         if premier_check:
             print(f"  [KICKOFF_GEMINI] fenêtre dégénérée détectée (Q2 déjà vrai à t={premier_oui:.0f}s)")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "DEGENERATE_WINDOW"}
 
         print(f"  [KICKOFF_GEMINI] confirmé, recherche fine dans [{premier_oui:.0f}s, {t_verif:.0f}s]...")
-        kickoff_s = _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif)
+        kickoff_s = _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, model_name=model_name)
         print(f"  [KICKOFF_GEMINI] KO détecté à t={kickoff_s:.0f}s")
         return {"status": "AUTO_CONFIRMED", "kickoff_s": float(kickoff_s), "reason": None}
 
@@ -363,7 +481,7 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60):
 def detect_kickoff_gemini(video_path, max_search_s,
                             max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                             max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT,
-                            tmp_dir="/tmp", t_debut=60):
+                            tmp_dir="/tmp", t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME):
     """
     Détecte le premier coup d'envoi d'un match par cascade Gemini
     (Q1 scan 60s -> Q2 confirmation -> recherche fine 15/5/1s).
@@ -419,7 +537,7 @@ def detect_kickoff_gemini(video_path, max_search_s,
     etat = _EtatRecherche(max_gemini_calls, max_wallclock_s)
 
     try:
-        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut)
+        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut, pas_scan=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name)
     except Exception as e:
         resultat = {"status": "ERROR", "kickoff_s": None, "reason": f"UNEXPECTED_EXCEPTION: {e}"}
     finally:
