@@ -152,6 +152,22 @@ Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown 
     # KO1 non touche.
     "QUESTION PRÉALABLE 2 — Le jeu est-il MANIFESTEMENT déjà actif (joueurs en mouvement de jeu réel, ballon en circulation loin du centre) ?\nSi oui → NON automatique (ce n'est plus une scène d'avant-match, c'est déjà du jeu).",
     "QUESTION PRÉALABLE 2 — Le jeu est-il MANIFESTEMENT déjà actif (joueurs en mouvement de jeu réel, ballon en circulation loin du centre) ?\nSi oui → NON automatique (ce n'est plus une scène d'avant-match, c'est déjà du jeu).\n\nQUESTION PRÉALABLE 3 — Un fanion de corner APPARTENANT AU TERRAIN SUR LEQUEL SE JOUE LE MATCH (piquet avec petit drapeau, à l'un des 4 coins DE CE terrain) est-il visible dans l'image ? ⚠️ Attention : si plusieurs terrains sont visibles côte à côte (complexe multi-terrains), ignore les fanions d'un terrain VOISIN - seul un fanion appartenant au terrain où se déroule CE match compte. En cas de doute sur l'appartenance du fanion à ce terrain précis, ne le compte pas.\nSi un fanion du terrain de jeu est identifié avec certitude → NON automatique (la scène se situe près d'un coin de ce terrain, pas au centre)."
+).replace(
+    # V5.2 FIX : ajout d'un critere de NOMBRE DE JOUEURS - decouvert sur un
+    # faux positif reel (Franchimont/Flash t=3438s : seulement 3 personnes
+    # visibles - 2 joueurs de la MEME equipe en echauffement + 1 gardien
+    # confondu avec un arbitre - acceptees a tort comme "deux equipes
+    # separees de part et d'autre du centre"). Une vraie mise en place de
+    # coup d'envoi implique un nombre significatif de joueurs des deux
+    # equipes (typiquement plusieurs par equipe qui convergent/se
+    # placent), pas 2-3 personnes isolees qui peuvent trivialement
+    # sembler "deux equipes" par la seule couleur. UNIQUEMENT KO2 - KO1
+    # non touche.
+    'Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :\n{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false}',
+    '''6. NOMBRE DE JOUEURS SUFFISANT : compte le nombre total de joueurs visibles dans l'image (hors arbitre). Une vraie mise en place de coup d'envoi implique la présence d'un nombre significatif de joueurs des deux équipes convergeant ou se plaçant vers le centre - PAS seulement 1 ou 2 joueurs isolés par équipe. Si tu ne comptes que 2-3 joueurs au total sur toute l'image (même avec des couleurs différentes), ce n'est PAS une mise en place de coup d'envoi complète - c'est probablement un échauffement localisé, une discussion entre quelques joueurs, ou une scène similaire. Indique le nombre de joueurs compté, et réponds false à ce critère si tu comptes moins de 5 joueurs au total.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false}'''
 )
 assert PROMPT_Q1_KO2 != PROMPT_Q1_RIGOUREUX, "Le remplacement du prompt KO2 a échoué (texte cible introuvable) - vérifier que PROMPT_Q1_RIGOUREUX n'a pas changé de formulation"
 
@@ -297,7 +313,8 @@ def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME)
 
 def _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
     """V5.2 Phase A : variante Q1 pour KO2 UNIQUEMENT - meme 4 criteres +
-    deux_equipes_visibles OBLIGATOIRE (voir PROMPT_Q1_KO2 ci-dessus).
+    deux_equipes_visibles + nombre_joueurs_suffisant, tous les 2
+    OBLIGATOIRES (voir PROMPT_Q1_KO2 ci-dessus).
     KO1 continue d'utiliser _q1_une_lecture (original), intact.
 
     model_name : V5.2 - parametrable pour comparer Pro vs Flash sur KO2,
@@ -312,7 +329,8 @@ def _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=MODEL_N
         result.get("pas_autre_remise_en_jeu", False),
     ]
     deux_equipes = result.get("deux_equipes_visibles", False)
-    return (sum(criteres) >= SEUIL_Q1) and deux_equipes
+    nombre_suffisant = result.get("nombre_joueurs_suffisant", False)
+    return (sum(criteres) >= SEUIL_Q1) and deux_equipes and nombre_suffisant
 
 
 def _q1_une_lecture_ko2_vote_economique(client, video_path, t, tmp_dir, etat, max_confirmations=2, model_name=MODEL_NAME):
@@ -417,7 +435,7 @@ def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, mod
     return t_haut
 
 
-def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME):
+def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60):
     # V5.2 Phase A : t_debut parametrable (defaut=60, comportement KO1
     # inchange) - necessaire pour reutiliser cette meme cascade pour KO2,
     # qui doit demarrer sa recherche a KO1+quelque chose, pas a t=60s.
@@ -429,8 +447,14 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
     # Franchimont/Stembert KO2 errone).
     # model_name parametrable (defaut=MODEL_NAME=Pro, inchange pour KO1) -
     # permet de comparer Pro vs Flash pour KO2 sans toucher KO1.
+    # delai_verif_q2 parametrable (defaut=60, comportement KO1 inchange) -
+    # ce delai etait calibre pour pas_scan=60 (KO1) : verifier Q2 "un pas
+    # de scan plus loin". Avec pas_scan=20 pour KO2, un delai fixe de 60s
+    # verifie 3 pas de scan plus loin au lieu de 1, ce qui peut rendre le
+    # controle "fenetre degeneree" (Q2 deja vrai au point premier_oui)
+    # trop sensible - suspicion signalee, jamais teste avant ce fix.
     # AUCUN changement de logique/prompts/seuils, uniquement le pas, le
-    # point de depart du scan, et le modele.
+    # point de depart du scan, le modele, et ce delai.
     t = t_debut  # t=0 (ou avant t_debut) toujours "avant-match" pour KO1,
                  # mais pour KO2 t_debut sera deja loin dans la video
     while t <= t_max:
@@ -443,7 +467,7 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
             print(f"  [KICKOFF_GEMINI] aucun candidat Q1 trouvé jusqu'à t={t_max:.0f}s")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
 
-        t_verif = premier_oui + 60
+        t_verif = premier_oui + delai_verif_q2
         if t_verif > t_max:
             print(f"  [KICKOFF_GEMINI] candidat à t={premier_oui:.0f}s mais vérification hors limite")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
@@ -481,7 +505,7 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
 def detect_kickoff_gemini(video_path, max_search_s,
                             max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                             max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT,
-                            tmp_dir="/tmp", t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME):
+                            tmp_dir="/tmp", t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60):
     """
     Détecte le premier coup d'envoi d'un match par cascade Gemini
     (Q1 scan 60s -> Q2 confirmation -> recherche fine 15/5/1s).
@@ -537,7 +561,7 @@ def detect_kickoff_gemini(video_path, max_search_s,
     etat = _EtatRecherche(max_gemini_calls, max_wallclock_s)
 
     try:
-        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut, pas_scan=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name)
+        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut, pas_scan=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name, delai_verif_q2=delai_verif_q2)
     except Exception as e:
         resultat = {"status": "ERROR", "kickoff_s": None, "reason": f"UNEXPECTED_EXCEPTION: {e}"}
     finally:
