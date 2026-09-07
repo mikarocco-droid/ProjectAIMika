@@ -146,7 +146,7 @@ def _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t_avant, t_apres, 
 
 
 def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=8,
-                        pas_scan=60, delai_verif_q2=60, model_name=MODEL_NAME_DEFAUT,
+                        pas_scan=20, delai_verif_q2=60, model_name=MODEL_NAME_DEFAUT,
                         max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                         max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT, tmp_dir="/tmp"):
     """
