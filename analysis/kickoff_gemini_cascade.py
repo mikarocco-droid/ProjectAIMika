@@ -366,12 +366,16 @@ def _q1_une_lecture_ko2_vote_economique(client, video_path, t, tmp_dir, etat, ma
     if not premier:
         return premier  # NON ou erreur : pas de confirmation, cout inchange
 
+    print(f"    [VOTE_Q1] premier appel=OUI à t={t:.0f}s, confirmation par {max_confirmations} appels supplémentaires...")
     votes = [premier]
     for _ in range(max_confirmations):
         v = _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=model_name)
         if v is not None:
             votes.append(v)
-    return sum(votes) > len(votes) / 2
+    decision = sum(votes) > len(votes) / 2
+    print(f"    [VOTE_Q1] votes={votes} → décision finale={'OUI' if decision else 'NON'}"
+          f"{' (majorité a corrigé un premier OUI isolé)' if not decision else ''}")
+    return decision
 
 
 def _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
@@ -440,6 +444,7 @@ def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, mod
         dernier_non = t_bas
         while tt < t_haut:
             d = _q2_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
+            print(f"    [FINE pas={pas}s] t={tt:.0f}s : {'OUI' if d else 'NON' if d is not None else 'ERREUR'}")
             if d:
                 t_haut = tt
                 t_bas = dernier_non
