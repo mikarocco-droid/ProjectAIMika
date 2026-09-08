@@ -221,8 +221,18 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
 
             t_verif = t + delai_verif_q2
             if t_verif > t_fin:
-                print(f"  [FIN1MT_GEMINI] candidat à t={t:.0f}s mais vérification hors limite")
-                return {"fin1mt_s": None, "n_appels_gemini": etat.n_appels}
+                # V5.2 FIX : meme correction que finmatch_gemini_cascade.py
+                # - plafonner plutot que rejeter, si un minimum de marge
+                # existe encore avant t_fin (fin de fenetre officielle ou
+                # duree reelle de la video).
+                MARGE_MIN_VERIF_S = 5
+                if t_fin - t < MARGE_MIN_VERIF_S:
+                    print(f"  [FIN1MT_GEMINI] candidat à t={t:.0f}s mais marge insuffisante "
+                          f"même en plafonnant ({t_fin-t:.0f}s < {MARGE_MIN_VERIF_S}s)")
+                    return {"fin1mt_s": None, "n_appels_gemini": etat.n_appels}
+                print(f"  [FIN1MT_GEMINI] délai de vérification plafonné à la fin de fenêtre : "
+                      f"t_verif {t_verif:.0f}s → {t_fin:.0f}s ({t_fin-t:.0f}s de marge au lieu de {delai_verif_q2}s)")
+                t_verif = t_fin
 
             print(f"  [FIN1MT_GEMINI] candidat Q1 à t={t:.0f}s, vérif Q2 à t={t_verif:.0f}s...")
             decision_q2, raisonnement_q2 = _voter(client, video_path, t_verif, tmp_dir, etat, _q2_une_lecture, model_name=model_name)
