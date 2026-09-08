@@ -40,7 +40,7 @@ except ImportError:
 
 def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=4,
                      marge_apres_min=23, max_retries=3, nom_fonction_q1="vote_economique",
-                     model_name="gemini-3.1-pro-preview", nom_fonction_q2="standard"):
+                     model_name="gemini-3.1-pro-preview", nom_fonction_q2="standard", tmp_dir="/tmp"):
     """
     Cherche KO2 (coup d'envoi 2e mi-temps) via la MEME cascade Gemini
     Q1/Q2 deja validee pour KO1 - structure visuelle identique (joueurs
@@ -125,6 +125,14 @@ def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=4,
                              # partie de ce risque residuel.
         max_retries  = max_retries,
         model_name   = model_name,
+        tmp_dir      = tmp_dir,  # V5.2 FIX : dossier temporaire dedie,
+                             # evite toute collision de nom de fichier
+                             # avec un autre detecteur/match tournant
+                             # dans le meme processus (fichiers nommes
+                             # uniquement par timestamp arrondi -
+                             # risque reel si deux detecteurs
+                             # interrogent par coincidence le meme
+                             # timestamp arrondi dans /tmp partage).
         fonction_q1  = fonction_q1_choisie,  # V5.2 : "standard" (defaut, deja
                              # deja valide dependait de ce filtre (deux equipes
                              # visibles obligatoire) - jamais porte en production
