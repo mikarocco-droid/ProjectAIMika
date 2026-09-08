@@ -77,10 +77,12 @@ CRITÈRES
 ═══════════════════════════════════════════════════
 
 - Terrain vide ou quasiment vide des joueurs des deux équipes du match → OUI (fin de match confirmée)
-- Encore plusieurs joueurs des deux équipes du match visibles sur le terrain, en position de jeu ou clairement encore engagés dans le match → NON
 - Uniquement d'autres personnes (enfants, pom-pom girls, staff) visibles, aucun joueur des équipes du match → OUI (fin de match confirmée)
+- Joueurs des deux équipes visibles ET clairement engagés dans une ACTION DE JEU ACTIVE (ballon disputé, courses de jeu, positions tactiques organisées) → NON (le match est réellement en cours)
 
-Réponds STRICTEMENT en JSON, avec un raisonnement bref :
+⚠️ IMPORTANT : la simple PRÉSENCE de joueurs en tenue de match sur le terrain ne suffit PAS à elle seule pour répondre NON. Après le coup de sifflet final, des joueurs peuvent rester sur le terrain (discussion, étirements, ballon qui circule de façon informelle sans structure de jeu) sans que le match soit réellement en cours. Si tu ne vois PAS d'action de jeu structurée et active (pas juste des joueurs immobiles ou qui se déplacent sans logique de jeu), réponds OUI même si des joueurs sont encore visibles sur le terrain.
+
+Réponds STRICTEMENT en JSON, avec un raisonnement bref précisant si tu observes une action de jeu active ou non :
 {"terrain_vide_des_2_equipes": true/false, "raisonnement": "..."}"""
 
 
@@ -235,6 +237,21 @@ def find_finmatch_gemini(video_path, ko2_s, marge_avant_min=40, marge_apres_min=
             return {"finmatch_s": float(resultat), "n_appels_gemini": etat.n_appels}
 
         print(f"  [FINMATCH_GEMINI] aucun candidat Q1 trouvé dans la fenêtre")
+
+        # V5.2 FIX : si rien n'a ete trouve MAIS que la video se termine
+        # peu apres la fenetre de recherche (fenetre deja limitee par la
+        # duree reelle plus haut), c'est un signe que le match se termine
+        # probablement pres de la fin du fichier - la video a ete coupee
+        # juste apres. Repli : utiliser la fin de la video comme
+        # estimation de FinMatch, plutot que de renvoyer None sans rien.
+        # Decouvert en production (Goe : video se termine ~49s apres le
+        # vrai FinMatch, mais aucun candidat n'avait ete confirme dans la
+        # fenetre de recherche standard).
+        if duree_video is not None:
+            print(f"  [FINMATCH_GEMINI] repli : utilisation de la fin de la vidéo "
+                  f"({duree_video:.0f}s) comme estimation de FinMatch")
+            return {"finmatch_s": duree_video, "n_appels_gemini": etat.n_appels}
+
         return {"finmatch_s": None, "n_appels_gemini": etat.n_appels}
     finally:
         etat.fermer()
