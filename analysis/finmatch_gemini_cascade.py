@@ -21,9 +21,12 @@ AUCUNE modification de ce fichier ni de fin1mt_gemini_cascade.py,
 uniquement des imports.
 """
 
+import json
+
 from analysis.kickoff_gemini_cascade import (
     _EtatRecherche,
     _appeler_json_robuste,
+    _extraire_frame,
     PALIERS_RECHERCHE_FINE,
     MAX_GEMINI_CALLS_DEFAUT,
     MAX_WALLCLOCK_S_DEFAUT,
@@ -100,6 +103,77 @@ Réponds STRICTEMENT en JSON, avec un raisonnement bref précisant : le nombre a
 {"terrain_vide_des_2_equipes": true/false, "raisonnement": "..."}"""
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# PROMPT HISTOIRE — verification narrative a 2 images (t et t+5s), au
+# moment ou Q1 declenche un candidat au scan grossier, AVANT de lancer
+# la verification Q2 a +90s. Objectif : rejeter tot les faux signaux
+# transitoires (faute/coup franc en cours), sans gaspiller un appel Q2
+# a +90s dessus.
+# ─────────────────────────────────────────────────────────────────────────
+PROMPT_HISTOIRE_FINMATCH = """Tu vas analyser DEUX images extraites de la même vidéo de match de football amateur, prises à exactement 5 secondes d'intervalle (Image 1 = instant t, Image 2 = instant t+5s).
+
+CONTEXTE : un signal potentiel de fin de match a été détecté sur l'Image 1 (terrain semblant dégarni, ou joueurs en train de sortir). Ta tâche est de juger si ces deux images, prises ENSEMBLE comme une courte séquence, racontent une histoire COHÉRENTE avec une vraie fin de match en cours.
+
+═══════════════════════════════════════════════════
+CE QUI RACONTE UNE HISTOIRE COHÉRENTE DE FIN DE MATCH (répondre OUI)
+═══════════════════════════════════════════════════
+- La même configuration calme/dégarnie se maintient ou s'accentue entre les 2 images (les joueurs continuent de sortir, ou restent dispersés sans revenir au jeu)
+- Le mouvement de sortie observé sur l'Image 1 se poursuit logiquement sur l'Image 2
+
+═══════════════════════════════════════════════════
+CE QUI CONTREDIT L'HISTOIRE DE FIN DE MATCH (répondre NON)
+═══════════════════════════════════════════════════
+- L'Image 2 montre un retour à une action de jeu active (ballon disputé, courses)
+- Un ballon apparaît sur l'Image 2 alors qu'il était absent sur l'Image 1 (signe qu'un coup franc/coup de pied arrêté était juste en préparation, pas une fin de match)
+- Les joueurs se replacent pour une reprise du jeu plutôt que de continuer à sortir/rester dispersés
+- Tout signe que la scène de l'Image 1 était un simple arrêt de jeu temporaire (faute, blessure, discussion) qui se résout normalement sur l'Image 2
+
+Réponds STRICTEMENT en JSON, avec un raisonnement bref décrivant ce qui change ou se maintient entre les 2 images :
+{"histoire_coherente": true/false, "raisonnement": "..."}"""
+
+
+def _verifier_histoire(client, video_path, t, tmp_dir, etat, delai_s=5, prompt_histoire=None, model_name=MODEL_NAME_DEFAUT):
+    """Envoie 2 images (t et t+delai_s) ENSEMBLE dans un seul appel
+    Gemini, pour un jugement de coherence narrative - pas 2 appels
+    independants compares apres coup. Retourne (bool_ou_None,
+    raisonnement)."""
+    from google.genai import types
+
+    image_1 = _extraire_frame(video_path, t, tmp_dir)
+    image_2 = _extraire_frame(video_path, t + delai_s, tmp_dir)
+    if image_1 is None or image_2 is None:
+        return None, "échec extraction d'une des 2 images"
+
+    etat.n_appels += 1
+
+    def _appel():
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[
+                types.Part.from_bytes(data=image_1, mime_type="image/jpeg"),
+                types.Part.from_bytes(data=image_2, mime_type="image/jpeg"),
+                prompt_histoire,
+            ],
+            config=types.GenerateContentConfig(temperature=0.0),
+        )
+        texte = response.text.strip()
+        if texte.startswith("```"):
+            texte = texte.split("```")[1]
+            if texte.startswith("json"):
+                texte = texte[4:]
+        return json.loads(texte.strip())
+
+    try:
+        future = etat.executor.submit(_appel)
+        resultat = future.result(timeout=30)
+    except Exception as e:
+        return None, f"échec appel : {e}"
+
+    if resultat is None:
+        return None, "échec appel"
+    return bool(resultat.get("histoire_coherente", False)), resultat.get("raisonnement", "non fourni")
+
+
 def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME_DEFAUT):
     result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q1_FINMATCH, etat, model_name=model_name)
     if result is None:
@@ -140,20 +214,7 @@ def _voter(client, video_path, t, tmp_dir, etat, fonction_lecture, max_appels=3,
 
 def _recherche_fine_finmatch(client, video_path, tmp_dir, etat, t_avant, t_apres, model_name=MODEL_NAME_DEFAUT):
     """Dichotomie 15/5/1s utilisant Q1 (signal large), pas Q2 (trop
-    strict) - identique a fin1mt_gemini_cascade.py.
-
-    V5.2 FIX : quand Q1 dit SORTIE a un point tt, on verifie AUSSI un
-    point 5s plus tard avant d'accepter - si ce 2e point se contredit
-    (dit PAS_ENCORE), on traite tt comme non fiable et on continue le
-    scan, plutot que d'accepter un signal isole qui peut etre un instant
-    transitoire ambigu (ex: juste apres un coup de sifflet pour faute,
-    avant que le ballon soit replace pour le coup franc - diagnostic
-    reel sur Juprelle t=6601s : Q1 dit SORTIE de facon confiante et
-    stable sur 3 appels identiques, "aucun ballon en jeu", alors que 90s
-    plus tard le ballon est bien visible pour le coup franc). Applique
-    UNIQUEMENT ici (recherche fine), pas au scan grossier initial, pour
-    ne pas multiplier le cout sur l'ensemble du scan."""
-    DELAI_COHERENCE_S = 5
+    strict) - identique a fin1mt_gemini_cascade.py."""
     t_bas, t_haut = t_avant, t_apres
     for pas in PALIERS_RECHERCHE_FINE:
         tt = t_bas + pas
@@ -162,19 +223,6 @@ def _recherche_fine_finmatch(client, video_path, tmp_dir, etat, t_avant, t_apres
             d, raisonnement = _q1_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
             print(f"    [FINMATCH FINE pas={pas}s] t={tt:.0f}s : {'SORTIE' if d else 'PAS_ENCORE' if d is not None else 'ERREUR'} — {raisonnement}")
             if d:
-                # Verification de coherence : un point 5s plus tard doit
-                # confirmer, sinon le signal isole est traite comme non
-                # fiable (probablement un instant transitoire ambigu).
-                tt_verif = tt + DELAI_COHERENCE_S
-                if tt_verif < t_haut:
-                    d_verif, raisonnement_verif = _q1_une_lecture(client, video_path, tt_verif, tmp_dir, etat, model_name=model_name)
-                    print(f"      [COHÉRENCE +{DELAI_COHERENCE_S}s] t={tt_verif:.0f}s : "
-                          f"{'SORTIE' if d_verif else 'PAS_ENCORE' if d_verif is not None else 'ERREUR'} — {raisonnement_verif}")
-                    if not d_verif:
-                        print(f"      [COHÉRENCE] contradiction détectée, signal à t={tt:.0f}s traité comme non fiable")
-                        dernier_non = tt
-                        tt += pas
-                        continue
                 t_haut = tt
                 t_bas = dernier_non
                 break
@@ -250,6 +298,28 @@ def find_finmatch_gemini(video_path, ko2_s, marge_avant_min=40, marge_apres_min=
             if not decision_q1:
                 dernier_non_confirme = t
                 t += pas_scan
+                continue
+
+            # V5.2 FIX : avant de lancer la verification Q2 couteuse a
+            # +90s, verifier d'abord la coherence narrative sur une
+            # courte sequence de 2 images (t, t+5s), envoyees ENSEMBLE
+            # dans un seul appel - le modele juge si les 2 images
+            # racontent une histoire coherente de fin de match, ou si la
+            # 2e image contredit le signal initial (retour du jeu,
+            # ballon qui reapparait pour un coup franc, etc.). Permet de
+            # rejeter tot les faux signaux transitoires SANS gaspiller
+            # un appel Q2 a +90s dessus. Diagnostic reel (Juprelle
+            # t=6601s) : signal Q1 confiant mais instant transitoire
+            # ambigu (juste apres une faute, avant que le ballon soit
+            # replace pour le coup franc).
+            print(f"  [FINMATCH_GEMINI] vérification narrative (t={t:.0f}s, t+5s={t+5:.0f}s)...")
+            histoire_coherente, raisonnement_histoire = _verifier_histoire(
+                client, video_path, t, tmp_dir, etat, delai_s=5,
+                prompt_histoire=PROMPT_HISTOIRE_FINMATCH, model_name=model_name)
+            print(f"  [FINMATCH_GEMINI] histoire : {'COHÉRENTE' if histoire_coherente else 'CONTREDITE' if histoire_coherente is not None else 'ERREUR'} — {raisonnement_histoire}")
+            if not histoire_coherente:
+                print(f"  [FINMATCH_GEMINI] signal à t={t:.0f}s rejeté (histoire non cohérente), reprise à t={t+5:.0f}s")
+                t += 5
                 continue
 
             t_verif = t + delai_verif_q2
