@@ -58,6 +58,8 @@ SIGNAL B — TERRAIN DÉJÀ DÉGARNI : le nombre de joueurs visibles sur le terr
 
 ⚠️ EXCEPTION IMPORTANTE au Signal B : si les quelques joueurs visibles sont REGROUPÉS ENSEMBLE autour d'un point précis (un joueur au sol/blessé, une discussion avec l'arbitre, un incident quelconque), plutôt que dispersés/immobiles chacun de leur côté, NE PAS déclencher le Signal B. Un attroupement autour d'un incident (blessure, contestation) est une scène de MATCH EN COURS avec arrêt de jeu temporaire - le reste des joueurs peut simplement être hors du cadre de la caméra à cet instant (cadrage centré sur l'incident), pas absent du terrain. Le Signal B doit décrire des joueurs dispersés/épars qui ne sont PAS regroupés autour d'un événement précis.
 
+⚠️ AUTRE EXCEPTION IMPORTANTE au Signal B : un ballon immobile et SEUL au sol, avec un ou plusieurs joueurs à distance (parfois un mur de joueurs alignés à quelques mètres), est une configuration typique de PRÉPARATION D'UN COUP FRANC OU D'UN COUP DE PIED ARRÊTÉ - PAS un signe de pause, même si peu de joueurs sont visibles et qu'aucune action n'est en cours à cet instant précis (le botteur n'a pas encore frappé). Un ballon visible et positionné seul sur la pelouse, quel que soit le nombre de joueurs autour, doit plutôt orienter vers NON (jeu en cours, coup de pied arrêté en préparation), sauf si DEUX ballons ou plus sont visibles.
+
 Si NI l'un NI l'autre signal n'est présent (terrain avec un effectif normal, joueurs qui restent sur le terrain ou se dirigent vers le centre) → NON.
 Un seul joueur qui s'éloigne (ex: pour une touche, un ballon sorti) ne suffit pas pour le signal A - il faut un mouvement collectif. Mais un terrain visiblement clairsemé suffit pour le signal B, même sans mouvement visible.
 
@@ -96,6 +98,8 @@ CRITÈRES
 - Effectif visiblement REDUIT (nettement moins de joueurs qu'un effectif complet), joueurs DISPERSÉS/épars (pas regroupés autour d'un point précis) ET aucune action de jeu active → OUI (pause confirmée)
 
 ⚠️ EXCEPTION : si les joueurs visibles, même en nombre réduit, sont REGROUPÉS ENSEMBLE autour d'un point précis (joueur au sol/blessé, discussion avec l'arbitre, incident quelconque), ce n'est PAS un signe de pause - c'est un arrêt de jeu temporaire en cours de match, le reste des joueurs étant probablement hors du cadre de la caméra à cet instant. Réponds NON dans ce cas.
+
+⚠️ AUTRE EXCEPTION : un ballon UNIQUE et immobile visible sur la pelouse (préparation d'un coup franc ou coup de pied arrêté), même avec peu de joueurs visibles ou aucune action en cours, doit orienter vers NON (jeu en cours, pas pause) - sauf si le terrain est par ailleurs clairement désert de toute présence des deux équipes.
 
 ⚠️ IMPORTANT : ne réponds OUI sur la base de "pas d'action de jeu" QUE SI le nombre de joueurs visibles est ÉGALEMENT nettement réduit par rapport à un effectif complet (SAUF si le critère des 2 ballons ou celui d'une seule équipe visible ci-dessus s'applique, chacun décisif à lui seul). Un effectif complet ou quasi-complet DES DEUX ÉQUIPES avec un seul ballon, même immobile à cet instant précis, ne suffit PAS à conclure à la pause - ça peut être un simple flottement de jeu.
 
