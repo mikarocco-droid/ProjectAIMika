@@ -130,15 +130,23 @@ def _voter(client, video_path, t, tmp_dir, etat, fonction_lecture, max_appels=3,
 
 
 def _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t_avant, t_apres, model_name=MODEL_NAME_DEFAUT):
-    """Dichotomie 15/5/1s, utilise le signal Q2 (terrain vide des 2
-    equipes) - meme structure que _recherche_fine de KO2."""
+    """Dichotomie 15/5/1s. Utilise Q1 (signal large : sortie en cours OU
+    terrain deja vide), PAS Q2 (terrain completement vide) - Q2 est trop
+    strict pour la precision fine, il n'accepte que le terrain DEJA
+    entierement vide, ce qui pousse systematiquement la detection APRES
+    le vrai coup de sifflet (le temps que les joueurs finissent de
+    sortir). Diagnostic reel sur les 9 matchs : biais systematique de
+    +33 a +46s avec Q2, les raisonnements montrant explicitement des
+    joueurs "en train de sortir" classes PAS_VIDE a tort pour cet usage.
+    Q1 capte le DEBUT de la transition (sortie en cours), plus proche du
+    vrai instant du sifflet."""
     t_bas, t_haut = t_avant, t_apres
     for pas in PALIERS_RECHERCHE_FINE:
         tt = t_bas + pas
         dernier_non = t_bas
         while tt < t_haut:
-            d, raisonnement = _q2_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
-            print(f"    [FIN1MT FINE pas={pas}s] t={tt:.0f}s : {'VIDE' if d else 'PAS_VIDE' if d is not None else 'ERREUR'} — {raisonnement}")
+            d, raisonnement = _q1_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
+            print(f"    [FIN1MT FINE pas={pas}s] t={tt:.0f}s : {'SORTIE' if d else 'PAS_ENCORE' if d is not None else 'ERREUR'} — {raisonnement}")
             if d:
                 t_haut = tt
                 t_bas = dernier_non
@@ -151,7 +159,7 @@ def _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t_avant, t_apres, 
 
 
 def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
-                        pas_scan=60, delai_verif_q2=60, model_name=MODEL_NAME_DEFAUT,
+                        pas_scan=60, delai_verif_q2=90, model_name=MODEL_NAME_DEFAUT,
                         max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                         max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT, tmp_dir="/tmp"):
     """
