@@ -84,10 +84,12 @@ CRITÈRES
 ═══════════════════════════════════════════════════
 
 - Terrain vide ou quasiment vide des joueurs des deux équipes du match → OUI (pause confirmée)
-- Encore plusieurs joueurs des deux équipes du match visibles sur le terrain, en position de jeu ou clairement encore engagés dans le match → NON
 - Uniquement d'autres personnes (enfants, pom-pom girls, staff) visibles, aucun joueur des équipes du match → OUI (pause confirmée, le terrain leur appartient pendant la pause)
+- Joueurs des deux équipes visibles ET clairement engagés dans une ACTION DE JEU ACTIVE (ballon disputé, courses de jeu, positions tactiques organisées) → NON (le match est réellement en cours)
 
-Réponds STRICTEMENT en JSON, avec un raisonnement bref :
+⚠️ IMPORTANT : la simple PRÉSENCE de joueurs en tenue de match sur le terrain ne suffit PAS à elle seule pour répondre NON. Pendant la pause, des joueurs peuvent rester sur le terrain (discussion, étirements, ballon qui circule de façon informelle sans structure de jeu) sans que le match soit réellement en cours. Si tu ne vois PAS d'action de jeu structurée et active, réponds OUI même si des joueurs sont encore visibles sur le terrain.
+
+Réponds STRICTEMENT en JSON, avec un raisonnement bref précisant si tu observes une action de jeu active ou non :
 {"terrain_vide_des_2_equipes": true/false, "raisonnement": "..."}"""
 
 
