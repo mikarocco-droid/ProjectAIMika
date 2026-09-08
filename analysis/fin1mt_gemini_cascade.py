@@ -175,8 +175,8 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
     collectif ait le temps de devenir visuellement net. marge_apres_min=5
     garantit >=196s de marge sur les 9 matchs de reference (verifie).
 
-    Retourne float (timestamp absolu) ou None si aucune transition
-    confirmee trouvee dans la fenetre.
+    Retourne un dict {"fin1mt_s": float|None, "n_appels_gemini": int} -
+    fin1mt_s est None si aucune transition confirmee trouvee.
     """
     from google import genai
     client = genai.Client()
@@ -186,7 +186,7 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
         t_debut = ko2_s - marge_avant_min * 60
         t_fin = ko2_s - marge_apres_min * 60
         if t_fin <= t_debut:
-            return None
+            return {"fin1mt_s": None, "n_appels_gemini": etat.n_appels}
 
         t = t_debut
         dernier_non_confirme = t_debut
@@ -194,7 +194,7 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
             raison_arret = etat.budget_epuise()
             if raison_arret:
                 print(f"  [FIN1MT_GEMINI] arrêt : {raison_arret}")
-                return None
+                return {"fin1mt_s": None, "n_appels_gemini": etat.n_appels}
 
             print(f"  [FIN1MT_GEMINI] scan Q1 t={t:.0f}s (fenêtre [{t_debut:.0f}s, {t_fin:.0f}s], pas={pas_scan}s)")
             decision_q1, raisonnement_q1 = _voter(client, video_path, t, tmp_dir, etat, _q1_une_lecture, model_name=model_name)
@@ -208,7 +208,7 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
             t_verif = t + delai_verif_q2
             if t_verif > t_fin:
                 print(f"  [FIN1MT_GEMINI] candidat à t={t:.0f}s mais vérification hors limite")
-                return None
+                return {"fin1mt_s": None, "n_appels_gemini": etat.n_appels}
 
             print(f"  [FIN1MT_GEMINI] candidat Q1 à t={t:.0f}s, vérif Q2 à t={t_verif:.0f}s...")
             decision_q2, raisonnement_q2 = _voter(client, video_path, t_verif, tmp_dir, etat, _q2_une_lecture, model_name=model_name)
@@ -231,9 +231,9 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
                   f"[{dernier_non_confirme:.0f}s (dernier Q1=NON), {t_verif:.0f}s]...")
             resultat = _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, dernier_non_confirme, t_verif, model_name=model_name)
             print(f"  [FIN1MT_GEMINI] Fin1MT détecté à t={resultat:.0f}s")
-            return float(resultat)
+            return {"fin1mt_s": float(resultat), "n_appels_gemini": etat.n_appels}
 
         print(f"  [FIN1MT_GEMINI] aucun candidat Q1 trouvé dans la fenêtre")
-        return None
+        return {"fin1mt_s": None, "n_appels_gemini": etat.n_appels}
     finally:
         etat.fermer()
