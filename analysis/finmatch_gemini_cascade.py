@@ -140,7 +140,20 @@ def _voter(client, video_path, t, tmp_dir, etat, fonction_lecture, max_appels=3,
 
 def _recherche_fine_finmatch(client, video_path, tmp_dir, etat, t_avant, t_apres, model_name=MODEL_NAME_DEFAUT):
     """Dichotomie 15/5/1s utilisant Q1 (signal large), pas Q2 (trop
-    strict) - identique a fin1mt_gemini_cascade.py."""
+    strict) - identique a fin1mt_gemini_cascade.py.
+
+    V5.2 FIX : quand Q1 dit SORTIE a un point tt, on verifie AUSSI un
+    point 5s plus tard avant d'accepter - si ce 2e point se contredit
+    (dit PAS_ENCORE), on traite tt comme non fiable et on continue le
+    scan, plutot que d'accepter un signal isole qui peut etre un instant
+    transitoire ambigu (ex: juste apres un coup de sifflet pour faute,
+    avant que le ballon soit replace pour le coup franc - diagnostic
+    reel sur Juprelle t=6601s : Q1 dit SORTIE de facon confiante et
+    stable sur 3 appels identiques, "aucun ballon en jeu", alors que 90s
+    plus tard le ballon est bien visible pour le coup franc). Applique
+    UNIQUEMENT ici (recherche fine), pas au scan grossier initial, pour
+    ne pas multiplier le cout sur l'ensemble du scan."""
+    DELAI_COHERENCE_S = 5
     t_bas, t_haut = t_avant, t_apres
     for pas in PALIERS_RECHERCHE_FINE:
         tt = t_bas + pas
@@ -149,6 +162,19 @@ def _recherche_fine_finmatch(client, video_path, tmp_dir, etat, t_avant, t_apres
             d, raisonnement = _q1_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
             print(f"    [FINMATCH FINE pas={pas}s] t={tt:.0f}s : {'SORTIE' if d else 'PAS_ENCORE' if d is not None else 'ERREUR'} — {raisonnement}")
             if d:
+                # Verification de coherence : un point 5s plus tard doit
+                # confirmer, sinon le signal isole est traite comme non
+                # fiable (probablement un instant transitoire ambigu).
+                tt_verif = tt + DELAI_COHERENCE_S
+                if tt_verif < t_haut:
+                    d_verif, raisonnement_verif = _q1_une_lecture(client, video_path, tt_verif, tmp_dir, etat, model_name=model_name)
+                    print(f"      [COHÉRENCE +{DELAI_COHERENCE_S}s] t={tt_verif:.0f}s : "
+                          f"{'SORTIE' if d_verif else 'PAS_ENCORE' if d_verif is not None else 'ERREUR'} — {raisonnement_verif}")
+                    if not d_verif:
+                        print(f"      [COHÉRENCE] contradiction détectée, signal à t={tt:.0f}s traité comme non fiable")
+                        dernier_non = tt
+                        tt += pas
+                        continue
                 t_haut = tt
                 t_bas = dernier_non
                 break

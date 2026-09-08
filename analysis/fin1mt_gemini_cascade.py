@@ -156,7 +156,15 @@ def _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t_avant, t_apres, 
     +33 a +46s avec Q2, les raisonnements montrant explicitement des
     joueurs "en train de sortir" classes PAS_VIDE a tort pour cet usage.
     Q1 capte le DEBUT de la transition (sortie en cours), plus proche du
-    vrai instant du sifflet."""
+    vrai instant du sifflet.
+
+    V5.2 FIX : quand Q1 dit SORTIE a un point tt, on verifie AUSSI un
+    point 5s plus tard avant d'accepter - meme logique que
+    finmatch_gemini_cascade.py, pour rejeter un signal isole non
+    confirme (ex: instant transitoire ambigu type coup franc/faute) au
+    lieu d'un vrai signe de pause. Applique UNIQUEMENT ici (recherche
+    fine), pas au scan grossier initial."""
+    DELAI_COHERENCE_S = 5
     t_bas, t_haut = t_avant, t_apres
     for pas in PALIERS_RECHERCHE_FINE:
         tt = t_bas + pas
@@ -165,6 +173,16 @@ def _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t_avant, t_apres, 
             d, raisonnement = _q1_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
             print(f"    [FIN1MT FINE pas={pas}s] t={tt:.0f}s : {'SORTIE' if d else 'PAS_ENCORE' if d is not None else 'ERREUR'} — {raisonnement}")
             if d:
+                tt_verif = tt + DELAI_COHERENCE_S
+                if tt_verif < t_haut:
+                    d_verif, raisonnement_verif = _q1_une_lecture(client, video_path, tt_verif, tmp_dir, etat, model_name=model_name)
+                    print(f"      [COHÉRENCE +{DELAI_COHERENCE_S}s] t={tt_verif:.0f}s : "
+                          f"{'SORTIE' if d_verif else 'PAS_ENCORE' if d_verif is not None else 'ERREUR'} — {raisonnement_verif}")
+                    if not d_verif:
+                        print(f"      [COHÉRENCE] contradiction détectée, signal à t={tt:.0f}s traité comme non fiable")
+                        dernier_non = tt
+                        tt += pas
+                        continue
                 t_haut = tt
                 t_bas = dernier_non
                 break
