@@ -145,7 +145,7 @@ def _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t_avant, t_apres, 
     return t_haut
 
 
-def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=8,
+def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
                         pas_scan=20, delai_verif_q2=60, model_name=MODEL_NAME_DEFAUT,
                         max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                         max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT, tmp_dir="/tmp"):
@@ -154,9 +154,13 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=8,
     directionnel de sortie) + Q2 (verification terrain vide des 2
     equipes) + dichotomie fine - meme structure que detect KO2.
 
-    Fenetre [KO2-marge_avant_min, KO2-marge_apres_min] - MEME fenetre
-    officielle que find_fin1mt_audio, deja validee 9/9 pour contenir le
-    vrai Fin1MT.
+    Fenetre [KO2-marge_avant_min, KO2-marge_apres_min] - PROCHE de la
+    fenetre officielle historique (marge_apres_min=8 pour l'audio), mais
+    REDUITE a 5 min : diagnostic reel (Andrimont, Goe) a montre que
+    marge_apres_min=8 ne laissait que 16-18s apres le vrai Fin1MT avant
+    la coupure de la fenetre - pas assez pour qu'un mouvement de sortie
+    collectif ait le temps de devenir visuellement net. marge_apres_min=5
+    garantit >=196s de marge sur les 9 matchs de reference (verifie).
 
     Retourne float (timestamp absolu) ou None si aucune transition
     confirmee trouvee dans la fenetre.
