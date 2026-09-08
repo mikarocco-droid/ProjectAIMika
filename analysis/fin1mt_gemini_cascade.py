@@ -146,7 +146,7 @@ def _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t_avant, t_apres, 
 
 
 def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
-                        pas_scan=20, delai_verif_q2=60, model_name=MODEL_NAME_DEFAUT,
+                        pas_scan=60, delai_verif_q2=60, model_name=MODEL_NAME_DEFAUT,
                         max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                         max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT, tmp_dir="/tmp"):
     """
@@ -176,6 +176,7 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
             return None
 
         t = t_debut
+        dernier_non_confirme = t_debut
         while t <= t_fin:
             raison_arret = etat.budget_epuise()
             if raison_arret:
@@ -187,6 +188,7 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
             print(f"  [FIN1MT_GEMINI] Q1 à t={t:.0f}s : {'SIGNAL_SORTIE' if decision_q1 else 'NON' if decision_q1 is not None else 'ERREUR'} — {raisonnement_q1}")
 
             if not decision_q1:
+                dernier_non_confirme = t
                 t += pas_scan
                 continue
 
@@ -204,17 +206,17 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
                 t = t_verif
                 continue
 
-            # Garde de securite - meme principe que DEGENERATE_WINDOW KO2 :
-            # si Q2 est deja vrai AU point du candidat Q1 lui-meme, la
-            # fenetre [t, t_verif] est invalide (vrai Fin1MT probablement
-            # avant t) - ne jamais deviner.
-            premier_check, _ = _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
-            if premier_check:
-                print(f"  [FIN1MT_GEMINI] fenêtre dégénérée détectée (Q2 déjà vrai à t={t:.0f}s)")
-                return None
-
-            print(f"  [FIN1MT_GEMINI] confirmé, recherche fine dans [{t:.0f}s, {t_verif:.0f}s]...")
-            resultat = _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t, t_verif, model_name=model_name)
+            # V5.2 FIX : la dichotomie doit pouvoir remonter AVANT le point
+            # Q1 lui-meme (ou Q1 a detecte le mouvement collectif) jusqu'au
+            # dernier point ou Q1 disait encore NON - car Q2 (terrain vide)
+            # peut tres bien etre deja vrai plus tot que le moment ou le
+            # mouvement de sortie devient assez net pour declencher Q1.
+            # Diagnostic reel (Andrimont) : Q1 declenche a t=3064s mais le
+            # vrai coup de sifflet est a t=3028s (36s plus tot) - sans ce
+            # fix, la dichotomie ne peut jamais explorer cette marge.
+            print(f"  [FIN1MT_GEMINI] confirmé, recherche fine dans "
+                  f"[{dernier_non_confirme:.0f}s (dernier Q1=NON), {t_verif:.0f}s]...")
+            resultat = _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, dernier_non_confirme, t_verif, model_name=model_name)
             print(f"  [FIN1MT_GEMINI] Fin1MT détecté à t={resultat:.0f}s")
             return float(resultat)
 
