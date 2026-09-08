@@ -36,6 +36,7 @@ import time
 import json
 import subprocess
 import concurrent.futures
+from collections import Counter
 
 MODEL_NAME = "gemini-3.1-pro-preview"  # PAS gemini-2.5-flash (jamais validé, voir §12.2)
 TEMPERATURE = 0.0
@@ -206,6 +207,71 @@ Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown 
 {"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false, "nombre_ballons_compte": <entier>, "un_seul_ballon": true/false}'''
 )
 assert PROMPT_Q1_KO2 != PROMPT_Q1_RIGOUREUX, "Le remplacement du prompt KO2 a échoué (texte cible introuvable) - vérifier que PROMPT_Q1_RIGOUREUX n'a pas changé de formulation"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# V5.2 - Vote adaptatif CIBLE sur le comptage de ballons, UNIQUEMENT pour
+# KO2 (_q1_une_lecture_ko2). Decouvert par diagnostic rigoureux (10 appels
+# identiques sur une meme image, Wanze t=4671s) : sur 9 champs de sortie
+# de PROMPT_Q1_KO2, 8 sont stables a 100% - SEUL "nombre_ballons_compte"
+# est volatil (60%/40% entre 1 et 2 ballons sur 10 appels identiques),
+# et "un_seul_ballon" qui en depend directement herite exactement de la
+# meme instabilite. La decision finale d'un_seul_ballon (donc de tout
+# _q1_une_lecture_ko2) devient donc volatile a cause d'un SEUL capteur
+# localise, pas d'une instabilite generale du jugement.
+#
+# Verification experimentale du vote isole (meme point, meme image) :
+# 3 appels ne posant QUE la question du comptage (rien d'autre) ont
+# donne un vote unanime 3/3=2 ballons, confirme correct par inspection
+# visuelle directe de l'image par l'utilisateur - la ou le prompt
+# complet a 9 champs se trompait 4 fois sur 10.
+#
+# Principe : appel complet normal d'abord (comme avant, aucun cout
+# supplementaire dans le cas courant). Seulement SI le compte rapporte
+# est 1 ou 2 (la zone specifiquement identifiee comme instable, la
+# frontiere qui determine un_seul_ballon), on declenche un vote isole
+# et adaptatif (3 appels, 5 de plus seulement en cas d'egalite) sur
+# CETTE SEULE question, et on recalcule un_seul_ballon a partir du
+# compte verifie par vote plutot que du compte du premier appel seul.
+# Les scenes a 0 ou 3+ ballons (non-ambigues) ne coutent rien de plus.
+# ─────────────────────────────────────────────────────────────────────────
+PROMPT_COMPTAGE_BALLONS_SEUL = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur.
+
+OBJECTIF UNIQUE : compte précisément le nombre de ballons de football visibles dans cette image, où qu'ils soient (au sol, en l'air, tenus par un joueur, au premier plan ou en arrière-plan). Ne réponds à rien d'autre.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"nombre_ballons_visibles": <entier>}"""
+
+
+def _compter_ballons_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_COMPTAGE_BALLONS_SEUL, etat, model_name=model_name)
+    if result is None:
+        return None
+    return result.get("nombre_ballons_visibles")
+
+
+def _voter_nombre_ballons(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
+    """Vote adaptatif isole sur le seul comptage de ballons - 3 appels,
+    5 de plus SEULEMENT en cas d'egalite stricte (pas de majorite claire
+    parmi les valeurs obtenues). Retourne le compte majoritaire, ou None
+    si tous les appels echouent."""
+    votes = []
+    for _ in range(3):
+        n = _compter_ballons_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
+        if n is not None:
+            votes.append(n)
+    if not votes:
+        return None
+    compte = Counter(votes)
+    resultats_tries = compte.most_common()
+    egalite = len(resultats_tries) > 1 and resultats_tries[0][1] == resultats_tries[1][1]
+    if egalite:
+        for _ in range(5):
+            n = _compter_ballons_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
+            if n is not None:
+                votes.append(n)
+        compte = Counter(votes)
+    return compte.most_common(1)[0][0]
 
 PROMPT_Q2_RIGOUREUX = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur.
 
@@ -440,6 +506,14 @@ def _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=MODEL_N
     tous OBLIGATOIRES (voir PROMPT_Q1_KO2 ci-dessus).
     KO1 continue d'utiliser _q1_une_lecture (original), intact.
 
+    V5.2 : si le comptage de ballons rapporte par cet appel complet est
+    1 ou 2 (la zone specifiquement identifiee comme instable par
+    diagnostic - voir _voter_nombre_ballons ci-dessus), on verifie ce
+    compte precis par un vote isole et adaptatif avant de calculer
+    un_seul_ballon, plutot que de faire confiance au premier appel
+    seul sur ce capteur precis. Aucun cout supplementaire si le compte
+    est 0 ou >=3 (zones non ambigues).
+
     model_name : V5.2 - parametrable pour comparer Pro vs Flash sur KO2,
     sans toucher au defaut (Pro) utilise partout ailleurs y compris KO1."""
     result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q1_KO2, etat, model_name=model_name)
@@ -453,7 +527,20 @@ def _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=MODEL_N
     ]
     deux_equipes = result.get("deux_equipes_visibles", False)
     nombre_suffisant = result.get("nombre_joueurs_suffisant", False)
-    un_seul_ballon = result.get("un_seul_ballon", False) and result.get("nombre_ballons_compte") == 1
+
+    nombre_ballons_compte = result.get("nombre_ballons_compte")
+    if nombre_ballons_compte in (1, 2):
+        # V5.2 FIX : ne PAS garder le booleen un_seul_ballon du premier
+        # appel en ET logique ici - si ce premier appel a compte 2 (donc
+        # son propre un_seul_ballon=False) et que le vote verifie ensuite
+        # que c'est en realite 1, un ET avec l'ancien booleen aurait
+        # garde False a tort (base sur un compte perime). On derive
+        # un_seul_ballon UNIQUEMENT du compte verifie par vote.
+        nombre_ballons_verifie = _voter_nombre_ballons(client, video_path, t, tmp_dir, etat, model_name=model_name)
+        if nombre_ballons_verifie is not None:
+            nombre_ballons_compte = nombre_ballons_verifie
+    un_seul_ballon = nombre_ballons_compte == 1
+
     return (sum(criteres) >= SEUIL_Q1) and deux_equipes and nombre_suffisant and un_seul_ballon
 
 
