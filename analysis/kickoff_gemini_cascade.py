@@ -320,19 +320,53 @@ class _EtatRecherche:
         self.executor.shutdown(wait=False)
 
 
+def obtenir_duree_video(video_path):
+    """Retourne la duree reelle de la video en secondes (float), via
+    ffprobe. Retourne None si la duree ne peut pas etre determinee
+    (fichier illisible, etc.) - l'appelant doit alors se rabattre sur un
+    comportement prudent (ne pas supposer une duree infinie).
+
+    Utilise pour NE JAMAIS chercher au-dela de la fin reelle de la
+    video (evite des extractions qui echouent silencieusement ou
+    gaspillent des appels sur des points hors-video, decouvert en
+    production sur FinMatch ou la fenetre [KO2+40min, KO2+55min]
+    pouvait depasser la duree reelle du fichier)."""
+    try:
+        resultat = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", video_path
+        ], capture_output=True, text=True, check=True, timeout=30)
+        return float(resultat.stdout.strip())
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, OSError) as e:
+        print(f"  [DUREE_VIDEO] impossible de déterminer la durée de {video_path} : {e}")
+        return None
+
+
 def _extraire_frame(video_path, t_secondes, tmp_dir):
+    """Retourne les bytes de l'image, ou None si l'extraction echoue
+    (typiquement : t_secondes au-dela de la duree reelle de la video -
+    ffmpeg ne produit alors aucun fichier de sortie, sans forcement lever
+    d'exception lui-meme). Ne JAMAIS laisser une extraction hors bornes
+    faire planter tout le pipeline - la garde budget_epuise()/fenetre
+    officielle est censee eviter ce cas en amont, mais une video plus
+    courte que prevu peut toujours se produire en pratique."""
     t_secondes = max(0, t_secondes)
     chemin = os.path.join(tmp_dir, f"ko_frame_{t_secondes:.1f}.jpg")
-    subprocess.run([
-        "ffmpeg", "-y", "-ss", str(t_secondes), "-i", video_path,
-        "-frames:v", "1", "-q:v", "2", chemin
-    ], check=True, capture_output=True)
-    with open(chemin, "rb") as f:
-        data = f.read()
     try:
-        os.remove(chemin)
-    except OSError:
-        pass
+        subprocess.run([
+            "ffmpeg", "-y", "-ss", str(t_secondes), "-i", video_path,
+            "-frames:v", "1", "-q:v", "2", chemin
+        ], check=True, capture_output=True)
+        with open(chemin, "rb") as f:
+            data = f.read()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+        print(f"    [EXTRACTION] échec à t={t_secondes:.1f}s (probablement hors durée de la vidéo) : {e}")
+        return None
+    finally:
+        try:
+            os.remove(chemin)
+        except OSError:
+            pass
     return data
 
 
@@ -371,6 +405,10 @@ def _appeler_json_robuste(client, video_path, t, tmp_dir, prompt, etat, model_na
     for delta in (0, 1, -1):
         tt = max(0, t + delta)
         image_bytes = _extraire_frame(video_path, tt, tmp_dir)
+        if image_bytes is None:
+            print(f"    [RETRY] extraction impossible à t={tt:.0f}s (delta={delta:+d}), "
+                  f"passage à l'offset suivant sans appeler Gemini")
+            continue
         for _tentative in range(2):
             resultat = _appeler_gemini_json(client, image_bytes, prompt, etat, model_name=model_name)
             if resultat is not None:

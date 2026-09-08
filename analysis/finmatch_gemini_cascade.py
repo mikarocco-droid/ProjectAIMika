@@ -27,6 +27,7 @@ from analysis.kickoff_gemini_cascade import (
     PALIERS_RECHERCHE_FINE,
     MAX_GEMINI_CALLS_DEFAUT,
     MAX_WALLCLOCK_S_DEFAUT,
+    obtenir_duree_video,
 )
 
 MODEL_NAME_DEFAUT = "gemini-3.5-flash"
@@ -166,6 +167,19 @@ def find_finmatch_gemini(video_path, ko2_s, marge_avant_min=40, marge_apres_min=
     try:
         t_debut = ko2_s + marge_avant_min * 60
         t_fin = ko2_s + marge_apres_min * 60
+
+        # V5.2 FIX : ne jamais chercher au-dela de la duree reelle de la
+        # video - decouvert en production (MineroisSter) : la fenetre
+        # [KO2+40min, KO2+55min] peut depasser la duree reelle du
+        # fichier, une extraction hors bornes fait echouer ffmpeg
+        # silencieusement. Marge de securite de 5s.
+        duree_video = obtenir_duree_video(video_path)
+        if duree_video is not None and t_fin > duree_video - 5:
+            t_fin_originale = t_fin
+            t_fin = max(t_debut, duree_video - 5)
+            print(f"  [FINMATCH_GEMINI] fenêtre limitée par la durée réelle de la vidéo "
+                  f"({duree_video:.0f}s) : t_fin {t_fin_originale:.0f}s → {t_fin:.0f}s")
+
         if t_fin <= t_debut:
             return {"finmatch_s": None, "n_appels_gemini": etat.n_appels}
 
