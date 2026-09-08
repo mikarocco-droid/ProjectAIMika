@@ -49,11 +49,13 @@ SIGNAL A — MOUVEMENT DE SORTIE : plusieurs joueurs (idéalement des deux équi
 
 SIGNAL B — TERRAIN DÉJÀ DÉGARNI : le nombre de joueurs visibles sur le terrain est nettement inférieur à un effectif de match complet (moins de la moitié des joueurs habituels), ET ceux qui restent ne sont pas dans une configuration de jeu actif (pas de ballon disputé, pas de course de jeu). Ce signal capte le cas où la sortie a déjà eu lieu avant cette image - tu n'as pas besoin de voir le mouvement lui-même, juste constater que le terrain est déjà nettement plus vide qu'un terrain de match normal.
 
-Si NI l'un NI l'autre signal n'est présent (terrain avec un effectif normal, joueurs qui restent sur le terrain ou se dirigent vers le centre) → NON.
-Un seul joueur qui s'éloigne (ex: pour une touche, un ballon sorti) ne suffit pas pour le signal A - il faut un mouvement collectif. Mais un terrain visiblement clairsemé suffit pour le signal B, même sans mouvement visible.
+SIGNAL C — POIGNÉES DE MAIN / SALUT DE FIN DE MATCH : plusieurs joueurs des deux équipes se serrent la main, se félicitent, s'alignent pour se saluer, ou se regroupent de manière non liée au jeu (accolades, échanges de maillots) - même s'ils sont encore regroupés au centre ou n'ont pas commencé à marcher vers la sortie. C'est un rituel de fin de match qui survient généralement juste après le coup de sifflet final, avant même que le mouvement de sortie ne commence. Ce signal est spécifique à la fin de MATCH (n'existe pas à la mi-temps).
 
-Réponds STRICTEMENT en JSON, en précisant lequel des 2 signaux (A, B, les deux, ou aucun) a motivé ta réponse :
-{"signal_sortie_detecte": true/false, "signal_utilise": "A"|"B"|"aucun", "raisonnement": "..."}"""
+Si AUCUN des 3 signaux n'est présent (terrain avec un effectif normal, joueurs qui restent sur le terrain en configuration de jeu, pas de rituel de fin visible) → NON.
+Un seul joueur qui s'éloigne (ex: pour une touche, un ballon sorti) ne suffit pas pour le signal A - il faut un mouvement collectif. Mais un terrain visiblement clairsemé suffit pour le signal B, et une poignée de main collective suffit pour le signal C, même sans mouvement de sortie visible.
+
+Réponds STRICTEMENT en JSON, en précisant lequel des 3 signaux (A, B, C, plusieurs, ou aucun) a motivé ta réponse :
+{"signal_sortie_detecte": true/false, "signal_utilise": "A"|"B"|"C"|"aucun", "raisonnement": "..."}"""
 
 PROMPT_Q2_FINMATCH = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur, pour vérifier si la fin du match est bien confirmée.
 
