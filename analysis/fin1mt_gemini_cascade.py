@@ -46,17 +46,20 @@ PROMPT_Q1_FIN1MT = """Tu vas analyser UNE SEULE image extraite d'une vidéo de m
 OBJECTIF : détecter un signe précoce que la fin de la première mi-temps vient d'être sifflée - PAS déterminer si le terrain est déjà vide, juste si un mouvement de sortie a commencé.
 
 ═══════════════════════════════════════════════════
-CRITÈRE PRINCIPAL — SENS DE LA MARCHE
+CRITÈRE PRINCIPAL — SENS DE LA MARCHE, OU TERRAIN DÉJÀ DÉGARNI
 ═══════════════════════════════════════════════════
 
-Le critère décisif n'est PAS "les joueurs sont-ils calmes" (un arrêt de jeu normal, ou un instant juste après un but marqué, montrent aussi des joueurs calmes, y compris près d'un but). Le critère est : **PLUSIEURS joueurs marchent-ils vers le BORD du terrain (ligne de touche), plutôt que de rester sur le terrain ou de se diriger vers son centre ?**
+Le critère décisif n'est PAS "les joueurs sont-ils calmes" (un arrêt de jeu normal, ou un instant juste après un but marqué, montrent aussi des joueurs calmes, y compris près d'un but). Réponds OUI si L'UN OU L'AUTRE des deux signaux suivants est présent :
 
-- Si plusieurs joueurs (idéalement des deux équipes) sont clairement orientés/en mouvement vers une ligne de touche (peu importe laquelle) → OUI, signal de fin de mi-temps.
-- Si les joueurs sont dispersés mais restent globalement SUR le terrain, ou se dirigent vers le centre (ex: après un but, pour se replacer) → NON, ce n'est probablement pas la fin de la mi-temps.
-- Un seul joueur qui s'éloigne (ex: pour une touche, un ballon sorti) ne suffit pas - il faut un mouvement collectif vers la sortie.
+SIGNAL A — MOUVEMENT DE SORTIE : plusieurs joueurs (idéalement des deux équipes) sont clairement orientés/en mouvement vers une ligne de touche (peu importe laquelle), plutôt que de rester sur le terrain ou de se diriger vers son centre.
 
-Réponds STRICTEMENT en JSON, avec un raisonnement bref décrivant le sens de marche observé :
-{"signal_sortie_detecte": true/false, "raisonnement": "..."}"""
+SIGNAL B — TERRAIN DÉJÀ DÉGARNI : le nombre de joueurs visibles sur le terrain est nettement inférieur à un effectif de match complet (moins de la moitié des joueurs habituels), ET ceux qui restent ne sont pas dans une configuration de jeu actif (pas de ballon disputé, pas de course de jeu). Ce signal capte le cas où la sortie a déjà eu lieu avant cette image - tu n'as pas besoin de voir le mouvement lui-même, juste constater que le terrain est déjà nettement plus vide qu'un terrain de match normal.
+
+Si NI l'un NI l'autre signal n'est présent (terrain avec un effectif normal, joueurs qui restent sur le terrain ou se dirigent vers le centre) → NON.
+Un seul joueur qui s'éloigne (ex: pour une touche, un ballon sorti) ne suffit pas pour le signal A - il faut un mouvement collectif. Mais un terrain visiblement clairsemé suffit pour le signal B, même sans mouvement visible.
+
+Réponds STRICTEMENT en JSON, en précisant lequel des 2 signaux (A, B, les deux, ou aucun) a motivé ta réponse :
+{"signal_sortie_detecte": true/false, "signal_utilise": "A"|"B"|"aucun", "raisonnement": "..."}"""
 
 # ─────────────────────────────────────────────────────────────────────────
 # PROMPT Q2 — verification (terrain vide des 2 equipes du match)
@@ -91,7 +94,9 @@ def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME_
     result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q1_FIN1MT, etat, model_name=model_name)
     if result is None:
         return None, "échec API"
-    return bool(result.get("signal_sortie_detecte", False)), result.get("raisonnement", "non fourni")
+    signal_utilise = result.get("signal_utilise", "?")
+    raisonnement = f"[signal={signal_utilise}] {result.get('raisonnement', 'non fourni')}"
+    return bool(result.get("signal_sortie_detecte", False)), raisonnement
 
 
 def _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME_DEFAUT):
