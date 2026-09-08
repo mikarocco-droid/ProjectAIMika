@@ -193,6 +193,13 @@ def find_finmatch_gemini(video_path, ko2_s, marge_avant_min=40, marge_apres_min=
 
         t = t_debut
         dernier_non_confirme = t_debut
+        premier_signal_jamais_vu = None  # V5.2 : trace le tout premier
+        # SIGNAL_SORTIE vu (meme rejete ensuite par Q2) - sert de
+        # meilleure borne inferieure de repli que dernier_non_confirme,
+        # qui peut se retrouver APRES le vrai evenement si le scan
+        # continue au-dela (cas Goe : dernier NON a t=7411s, mais vrai
+        # FinMatch=7401s, donc dernier_non_confirme seul aurait rate la
+        # fenetre utile).
         while t <= t_fin:
             raison_arret = etat.budget_epuise()
             if raison_arret:
@@ -202,6 +209,9 @@ def find_finmatch_gemini(video_path, ko2_s, marge_avant_min=40, marge_apres_min=
             print(f"  [FINMATCH_GEMINI] scan Q1 t={t:.0f}s (fenêtre [{t_debut:.0f}s, {t_fin:.0f}s], pas={pas_scan}s)")
             decision_q1, raisonnement_q1 = _voter(client, video_path, t, tmp_dir, etat, _q1_une_lecture, model_name=model_name)
             print(f"  [FINMATCH_GEMINI] Q1 à t={t:.0f}s : {'SIGNAL_SORTIE' if decision_q1 else 'NON' if decision_q1 is not None else 'ERREUR'} — {raisonnement_q1}")
+
+            if decision_q1 and premier_signal_jamais_vu is None:
+                premier_signal_jamais_vu = t
 
             if not decision_q1:
                 dernier_non_confirme = t
@@ -242,20 +252,65 @@ def find_finmatch_gemini(video_path, ko2_s, marge_avant_min=40, marge_apres_min=
             print(f"  [FINMATCH_GEMINI] FinMatch détecté à t={resultat:.0f}s")
             return {"finmatch_s": float(resultat), "n_appels_gemini": etat.n_appels}
 
-        print(f"  [FINMATCH_GEMINI] aucun candidat Q1 trouvé dans la fenêtre")
+        print(f"  [FINMATCH_GEMINI] aucun candidat Q1 confirmé dans la fenêtre")
 
-        # V5.2 FIX : si rien n'a ete trouve MAIS que la video se termine
-        # peu apres la fenetre de recherche (fenetre deja limitee par la
-        # duree reelle plus haut), c'est un signe que le match se termine
-        # probablement pres de la fin du fichier - la video a ete coupee
-        # juste apres. Repli : utiliser la fin de la video comme
-        # estimation de FinMatch, plutot que de renvoyer None sans rien.
-        # Decouvert en production (Goe : video se termine ~49s apres le
-        # vrai FinMatch, mais aucun candidat n'avait ete confirme dans la
-        # fenetre de recherche standard).
-        if duree_video is not None:
+        # V5.2 FIX : plutot que d'essayer de deviner une borne inferieure
+        # fiable (le "vrai" instant n'est de toute facon jamais observable
+        # directement, seulement deductible de ce qui se passe apres),
+        # on balaie simplement en AVANT avec Q2 (pas Q1) depuis le
+        # dernier point connu jusqu'a la fin de la video, a la recherche
+        # du premier moment ou le terrain est reellement vide. On accepte
+        # un leger biais en retard plutot que de deviner une fourchette
+        # de dichotomie qui peut etre completement fausse (cas Goe :
+        # premier_signal_jamais_vu=6841s etait beaucoup trop loin en
+        # arriere pour etre une bonne borne).
+        if duree_video is not None and dernier_non_confirme < duree_video:
+            borne_sup = min(duree_video - 5, duree_video)
+            if borne_sup > dernier_non_confirme:
+                print(f"  [FINMATCH_GEMINI] repli : balayage Q2 en avant depuis "
+                      f"{dernier_non_confirme:.0f}s jusqu'à {borne_sup:.0f}s")
+                PAS_BALAYAGE_REPLI = 15
+                dernier_pas_vide = dernier_non_confirme
+                tt = dernier_non_confirme + PAS_BALAYAGE_REPLI
+                trouve = None
+                while tt <= borne_sup:
+                    d, raisonnement = _q2_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
+                    print(f"    [REPLI pas={PAS_BALAYAGE_REPLI}s] t={tt:.0f}s : "
+                          f"{'VIDE' if d else 'PAS_VIDE' if d is not None else 'ERREUR'} — {raisonnement}")
+                    if d:
+                        trouve = tt
+                        break
+                    dernier_pas_vide = tt
+                    tt += PAS_BALAYAGE_REPLI
+                if trouve is not None:
+                    # affinage 5s/1s entre dernier_pas_vide et trouve, EN
+                    # UTILISANT Q2 (pas Q1) - coherent avec le balayage
+                    # ci-dessus, qui cherche "terrain vide", pas "signal
+                    # de sortie".
+                    t_bas, t_haut = dernier_pas_vide, trouve
+                    for pas in (5, 1):
+                        tt2 = t_bas + pas
+                        dernier_non2 = t_bas
+                        while tt2 < t_haut:
+                            d2, raisonnement2 = _q2_une_lecture(client, video_path, tt2, tmp_dir, etat, model_name=model_name)
+                            print(f"    [REPLI FINE pas={pas}s] t={tt2:.0f}s : "
+                                  f"{'VIDE' if d2 else 'PAS_VIDE' if d2 is not None else 'ERREUR'} — {raisonnement2}")
+                            if d2:
+                                t_haut = tt2
+                                t_bas = dernier_non2
+                                break
+                            dernier_non2 = tt2
+                            tt2 += pas
+                        else:
+                            t_bas = dernier_non2
+                    resultat = t_haut
+                    print(f"  [FINMATCH_GEMINI] FinMatch détecté (via repli) à t={resultat:.0f}s")
+                    return {"finmatch_s": float(resultat), "n_appels_gemini": etat.n_appels}
+                print(f"  [FINMATCH_GEMINI] repli : jamais VIDE jusqu'à la fin de la vidéo, "
+                      f"utilisation de la fin de la vidéo ({duree_video:.0f}s) comme estimation")
+                return {"finmatch_s": duree_video, "n_appels_gemini": etat.n_appels}
             print(f"  [FINMATCH_GEMINI] repli : utilisation de la fin de la vidéo "
-                  f"({duree_video:.0f}s) comme estimation de FinMatch")
+                  f"({duree_video:.0f}s) comme estimation de FinMatch (pas de marge)")
             return {"finmatch_s": duree_video, "n_appels_gemini": etat.n_appels}
 
         return {"finmatch_s": None, "n_appels_gemini": etat.n_appels}
