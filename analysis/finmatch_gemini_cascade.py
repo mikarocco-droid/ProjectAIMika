@@ -44,7 +44,7 @@ OBJECTIF : détecter un signe précoce que la fin du match vient d'être sifflé
 CRITÈRE PRINCIPAL — SENS DE LA MARCHE, OU TERRAIN DÉJÀ DÉGARNI
 ═══════════════════════════════════════════════════
 
-Le critère décisif n'est PAS "les joueurs sont-ils calmes" (un arrêt de jeu normal, ou un instant juste après un but marqué, montrent aussi des joueurs calmes, y compris près d'un but). Réponds OUI si L'UN OU L'AUTRE des deux signaux suivants est présent :
+Le critère décisif n'est PAS "les joueurs sont-ils calmes" (un arrêt de jeu normal, ou un instant juste après un but marqué, montrent aussi des joueurs calmes, y compris près d'un but). Réponds OUI si L'UN OU L'AUTRE des trois signaux suivants est présent :
 
 SIGNAL A — MOUVEMENT DE SORTIE : plusieurs joueurs (idéalement des deux équipes) sont clairement orientés/en mouvement vers une ligne de touche (peu importe laquelle), plutôt que de rester sur le terrain ou de se diriger vers son centre.
 
