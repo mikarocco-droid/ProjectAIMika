@@ -63,7 +63,7 @@ Si AUCUN des 3 signaux n'est présent (terrain avec un effectif normal, joueurs 
 Un seul joueur qui s'éloigne (ex: pour une touche, un ballon sorti) ne suffit pas pour le signal A - il faut un mouvement collectif. Mais un terrain visiblement clairsemé suffit pour le signal B, et une poignée de main collective suffit pour le signal C, même sans mouvement de sortie visible.
 
 Réponds STRICTEMENT en JSON, en précisant lequel des 3 signaux (A, B, C, plusieurs, ou aucun) a motivé ta réponse :
-{"signal_sortie_detecte": true/false, "signal_utilise": "A"|"B"|"C"|"aucun", "raisonnement": "..."}"""
+{"signal_sortie_detecte": true/false, "signal_utilise": "A"|"B"|"C"|"aucun"}"""
 
 PROMPT_Q2_FINMATCH = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur, pour vérifier si la fin du match est bien confirmée.
 
@@ -99,8 +99,8 @@ CRITÈRES
 
 ⚠️ IMPORTANT : ne réponds OUI sur la base de "pas d'action de jeu" QUE SI le nombre de joueurs visibles est ÉGALEMENT nettement réduit par rapport à un effectif complet (SAUF si le critère des 2 ballons ou celui d'une seule équipe visible ci-dessus s'applique, chacun décisif à lui seul). Un effectif complet ou quasi-complet DES DEUX ÉQUIPES avec un seul ballon, même immobile à cet instant précis, ne suffit PAS à conclure à la fin du match - ça peut être un simple flottement de jeu.
 
-Réponds STRICTEMENT en JSON, avec un raisonnement bref précisant : le nombre approximatif de joueurs visibles par équipe, s'ils sont répartis en formation de jeu ou regroupés/attroupés ensemble, le nombre de ballons visibles, la présence ou non d'un gardien près d'un but visible, la présence ou non d'un arbitre, ET s'il y a une action de jeu :
-{"terrain_vide_des_2_equipes": true/false, "raisonnement": "..."}"""
+Réponds STRICTEMENT en JSON :
+{"terrain_vide_des_2_equipes": true/false}"""
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -117,8 +117,10 @@ CONTEXTE : un signal potentiel de fin de match a été détecté sur l'Image 1 (
 ═══════════════════════════════════════════════════
 CE QUI RACONTE UNE HISTOIRE COHÉRENTE DE FIN DE MATCH (répondre OUI)
 ═══════════════════════════════════════════════════
-- La même configuration calme/dégarnie se maintient ou s'accentue entre les 2 images (les joueurs continuent de sortir, ou restent dispersés sans revenir au jeu)
-- Le mouvement de sortie observé sur l'Image 1 se poursuit logiquement sur l'Image 2
+⚠️ IMPORTANT : "le jeu n'a pas repris en 5 secondes" n'est PAS suffisant à lui seul - un simple arrêt de jeu normal (faute, blessure, discussion) montre exactement la même chose sur une fenêtre aussi courte. Il faut un signe POSITIF et actif de fin de match, pas juste l'absence de reprise :
+- Un mouvement de sortie vers la ligne de touche (déjà amorcé sur l'Image 1) qui se confirme ou progresse sur l'Image 2 (joueurs clairement plus proches de la touche, ou plus nombreux à s'y diriger)
+- Des poignées de main, accolades, ou rituel de salutation visible sur l'une des 2 images
+- Le nombre de joueurs qui DIMINUE encore entre l'Image 1 et l'Image 2 (départ progressif confirmé, pas juste un nombre stable)
 
 ═══════════════════════════════════════════════════
 CE QUI CONTREDIT L'HISTOIRE DE FIN DE MATCH (répondre NON)
@@ -127,8 +129,9 @@ CE QUI CONTREDIT L'HISTOIRE DE FIN DE MATCH (répondre NON)
 - Un ballon apparaît sur l'Image 2 alors qu'il était absent sur l'Image 1 (signe qu'un coup franc/coup de pied arrêté était juste en préparation, pas une fin de match)
 - Les joueurs se replacent pour une reprise du jeu plutôt que de continuer à sortir/rester dispersés
 - Tout signe que la scène de l'Image 1 était un simple arrêt de jeu temporaire (faute, blessure, discussion) qui se résout normalement sur l'Image 2
+- L'Image 2 montre EXACTEMENT LA MÊME SCÈNE que l'Image 1 (même joueurs, mêmes positions, même calme) SANS aucun signe positif nouveau (pas de mouvement de sortie qui progresse, pas de salutations, pas de départ supplémentaire) - l'absence de reprise du jeu sur seulement 5 secondes ne prouve RIEN, un arrêt de jeu normal ressemble exactement à ça aussi
 
-Réponds STRICTEMENT en JSON, avec un raisonnement bref décrivant ce qui change ou se maintient entre les 2 images :
+Réponds STRICTEMENT en JSON, avec un raisonnement TRÈS COURT (15 mots maximum, style mots-clés factuels, pas de phrase complète) décrivant ce qui change entre les 2 images :
 {"histoire_coherente": true/false, "raisonnement": "..."}"""
 
 

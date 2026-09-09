@@ -67,7 +67,7 @@ Si NI l'un NI l'autre signal n'est présent (terrain avec un effectif normal, jo
 Un seul joueur qui s'éloigne (ex: pour une touche, un ballon sorti) ne suffit pas pour le signal A - il faut un mouvement collectif. Mais un terrain visiblement clairsemé suffit pour le signal B, même sans mouvement visible.
 
 Réponds STRICTEMENT en JSON, en précisant lequel des 2 signaux (A, B, les deux, ou aucun) a motivé ta réponse :
-{"signal_sortie_detecte": true/false, "signal_utilise": "A"|"B"|"aucun", "raisonnement": "..."}"""
+{"signal_sortie_detecte": true/false, "signal_utilise": "A"|"B"|"aucun"}"""
 
 # ─────────────────────────────────────────────────────────────────────────
 # PROMPT Q2 — verification (terrain vide des 2 equipes du match)
@@ -106,8 +106,8 @@ CRITÈRES
 
 ⚠️ IMPORTANT : ne réponds OUI sur la base de "pas d'action de jeu" QUE SI le nombre de joueurs visibles est ÉGALEMENT nettement réduit par rapport à un effectif complet (SAUF si le critère des 2 ballons ou celui d'une seule équipe visible ci-dessus s'applique, chacun décisif à lui seul). Un effectif complet ou quasi-complet DES DEUX ÉQUIPES avec un seul ballon, même immobile à cet instant précis, ne suffit PAS à conclure à la pause - ça peut être un simple flottement de jeu.
 
-Réponds STRICTEMENT en JSON, avec un raisonnement bref précisant : le nombre approximatif de joueurs visibles par équipe, s'ils sont répartis en formation de jeu ou regroupés/attroupés ensemble, le nombre de ballons visibles, la présence ou non d'un gardien près d'un but visible, la présence ou non d'un arbitre, ET s'il y a une action de jeu :
-{"terrain_vide_des_2_equipes": true/false, "raisonnement": "..."}"""
+Réponds STRICTEMENT en JSON :
+{"terrain_vide_des_2_equipes": true/false}"""
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -137,8 +137,8 @@ CE QUI CONTREDIT L'HISTOIRE DE PAUSE (répondre NON)
 - Tout signe que la scène de l'Image 1 était un simple arrêt de jeu temporaire (faute, blessure, discussion) qui se résout normalement sur l'Image 2
 - L'Image 2 montre EXACTEMENT LA MÊME SCÈNE que l'Image 1 SANS aucun signe positif nouveau - l'absence de reprise du jeu sur seulement 5 secondes ne prouve RIEN, un arrêt de jeu normal ressemble exactement à ça aussi
 
-Réponds STRICTEMENT en JSON, avec un raisonnement bref décrivant ce qui change ou se maintient entre les 2 images :
-{"histoire_coherente": true/false, "raisonnement": "..."}"""
+Réponds STRICTEMENT en JSON :
+{"histoire_coherente": true/false}"""
 
 
 def _verifier_histoire(client, video_path, t, tmp_dir, etat, delai_s=5, prompt_histoire=None, model_name=MODEL_NAME_DEFAUT):
