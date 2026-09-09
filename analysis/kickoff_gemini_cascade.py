@@ -82,8 +82,9 @@ VÉRIFICATIONS PRÉALABLES OBLIGATOIRES — À FAIRE EN PREMIER
 
 Si l'une des deux réponses ci-dessous est "oui", réponds directement "NON" à tout le reste, sans analyser davantage.
 
-QUESTION PRÉALABLE 1 — Un but (cage, poteaux, filet) est-il visible dans l'image ?
+QUESTION PRÉALABLE 1 — Un but ACTIF DU MATCH est-il visible dans l'image ? Un but actif du match se situe à l'une des DEUX EXTRÉMITÉS du terrain, dans l'alignement du jeu (généralement en fond de cadre, face à la caméra ou tournant le dos à elle).
 Si oui → NON automatique.
+⚠️ NE COMPTE PAS comme "but actif du match" : un petit but d'entraînement, de rangement, ou toute structure de type cage/poteaux positionnée SUR LE CÔTÉ du terrain (près d'une clôture, d'un bâtiment, ou hors de l'alignement des deux extrémités du terrain). Ce type de structure secondaire ne doit PAS déclencher le rejet automatique - seul un vrai but de match, aligné avec le terrain de jeu, compte ici.
 
 QUESTION PRÉALABLE 2 — Le jeu est-il MANIFESTEMENT déjà actif (joueurs en mouvement de jeu réel, ballon en circulation loin du centre) ?
 Si oui → NON automatique (ce n'est plus une scène d'avant-match, c'est déjà du jeu).
