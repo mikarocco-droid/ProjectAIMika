@@ -124,8 +124,9 @@ CONTEXTE : un signal potentiel de pause de mi-temps a été détecté sur l'Imag
 ═══════════════════════════════════════════════════
 CE QUI RACONTE UNE HISTOIRE COHÉRENTE DE PAUSE (répondre OUI)
 ═══════════════════════════════════════════════════
-- La même configuration calme/dégarnie se maintient ou s'accentue entre les 2 images (les joueurs continuent de sortir, ou restent dispersés sans revenir au jeu)
-- Le mouvement de sortie observé sur l'Image 1 se poursuit logiquement sur l'Image 2
+⚠️ IMPORTANT : "le jeu n'a pas repris en 5 secondes" n'est PAS suffisant à lui seul - un simple arrêt de jeu normal (faute, blessure, discussion) montre exactement la même chose sur une fenêtre aussi courte. Il faut un signe POSITIF et actif de pause, pas juste l'absence de reprise :
+- Un mouvement de sortie vers la ligne de touche (déjà amorcé sur l'Image 1) qui se confirme ou progresse sur l'Image 2 (joueurs clairement plus proches de la touche, ou plus nombreux à s'y diriger)
+- Le nombre de joueurs qui DIMINUE encore entre l'Image 1 et l'Image 2 (départ progressif confirmé, pas juste un nombre stable)
 
 ═══════════════════════════════════════════════════
 CE QUI CONTREDIT L'HISTOIRE DE PAUSE (répondre NON)
@@ -134,6 +135,7 @@ CE QUI CONTREDIT L'HISTOIRE DE PAUSE (répondre NON)
 - Un ballon apparaît sur l'Image 2 alors qu'il était absent sur l'Image 1 (signe qu'un coup franc/coup de pied arrêté était juste en préparation, pas une pause)
 - Les joueurs se replacent pour une reprise du jeu plutôt que de continuer à sortir/rester dispersés
 - Tout signe que la scène de l'Image 1 était un simple arrêt de jeu temporaire (faute, blessure, discussion) qui se résout normalement sur l'Image 2
+- L'Image 2 montre EXACTEMENT LA MÊME SCÈNE que l'Image 1 SANS aucun signe positif nouveau - l'absence de reprise du jeu sur seulement 5 secondes ne prouve RIEN, un arrêt de jeu normal ressemble exactement à ça aussi
 
 Réponds STRICTEMENT en JSON, avec un raisonnement bref décrivant ce qui change ou se maintient entre les 2 images :
 {"histoire_coherente": true/false, "raisonnement": "..."}"""
@@ -249,25 +251,39 @@ def _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t_avant, t_apres, 
     return t_haut
 
 
-def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
-                        pas_scan=60, delai_verif_q2=90, model_name=MODEL_NAME_DEFAUT,
+def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=2,
+                        pas_scan=60, seuil_confirmations=3, model_name=MODEL_NAME_DEFAUT,
                         max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                         max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT, tmp_dir="/tmp"):
     """
-    Cherche Fin1MT par vision Gemini, architecture Q1 (signal
-    directionnel de sortie) + Q2 (verification terrain vide des 2
-    equipes) + dichotomie fine - meme structure que detect KO2.
+    V5.2 NOUVELLE ARCHITECTURE (session Melen, validee sur les 9 matchs
+    de reference le 09/09/2026) : scan Q1 (signal directionnel de
+    sortie) SEUL, sans verification narrative ni confirmation Q2
+    couteuse - remplace par l'exigence de seuil_confirmations (3 par
+    defaut) resultats Q1=SORTIE CONSECUTIFS avant de considerer la
+    pause etablie. Le PREMIER point de cette serie sert de borne
+    superieure a la recherche fine (dichotomie 15/5/1s, fonction
+    _recherche_fine_fin1mt inchangee).
 
-    Fenetre [KO2-marge_avant_min, KO2-marge_apres_min] - PROCHE de la
-    fenetre officielle historique (marge_apres_min=8 pour l'audio), mais
-    REDUITE a 5 min : diagnostic reel (Andrimont, Goe) a montre que
-    marge_apres_min=8 ne laissait que 16-18s apres le vrai Fin1MT avant
-    la coupure de la fenetre - pas assez pour qu'un mouvement de sortie
-    collectif ait le temps de devenir visuellement net. marge_apres_min=5
-    garantit >=196s de marge sur les 9 matchs de reference (verifie).
+    Pourquoi ce changement (remplace l'ancienne logique narratif+Q2) :
+    - Sur Melen (match amical, echauffement prolonge des remplacants en
+      chasubles sur tout le terrain apres la pause), l'ancienne logique
+      produisait des dizaines de rejets narratifs consecutifs (le
+      narratif exige une "transition EN COURS", introuvable une fois la
+      pause deja bien etablie) - retard de +467s par rapport a la verite.
+    - Nouvelle logique testee sur les 9 matchs de reference (09/09/2026) :
+      mediane d'erreur divisee par 3 (9s -> 3s, 5/9 <=3s contre 2/9
+      avant), cout reduit de 34% (22.6 -> 14.9 appels/match en moyenne),
+      9/9 matchs reussis.
 
-    Retourne un dict {"fin1mt_s": float|None, "n_appels_gemini": int} -
-    fin1mt_s est None si aucune transition confirmee trouvee.
+    marge_apres_min par defaut passe de 5 a 2 minutes : diagnostic reel
+    (Andrimont) a montre qu'avec marge_apres_min=5, la 3e confirmation
+    necessaire tombait EXACTEMENT sur la borne de fin de fenetre
+    (exclue par la condition stricte t <= t_fin), faisant echouer toute
+    la detection pour un seul point manquant. marge_apres_min=2 laisse
+    une marge suffisante ; teste sans degradation sur Andrimont+Raeren.
+
+    Retourne un dict {"fin1mt_s": float|None, "n_appels_gemini": int}.
     """
     from google import genai
     client = genai.Client()
@@ -294,75 +310,38 @@ def find_fin1mt_gemini(video_path, ko2_s, marge_avant_min=16, marge_apres_min=5,
 
         t = t_debut
         dernier_non_confirme = t_debut
+        premier_de_la_serie = None
+        serie_actuelle = 0
+
         while t <= t_fin:
             raison_arret = etat.budget_epuise()
             if raison_arret:
                 print(f"  [FIN1MT_GEMINI] arrêt : {raison_arret}")
                 return {"fin1mt_s": None, "n_appels_gemini": etat.n_appels}
 
-            print(f"  [FIN1MT_GEMINI] scan Q1 t={t:.0f}s (fenêtre [{t_debut:.0f}s, {t_fin:.0f}s], pas={pas_scan}s)")
-            decision_q1, raisonnement_q1 = _voter(client, video_path, t, tmp_dir, etat, _q1_une_lecture, model_name=model_name)
-            print(f"  [FIN1MT_GEMINI] Q1 à t={t:.0f}s : {'SIGNAL_SORTIE' if decision_q1 else 'NON' if decision_q1 is not None else 'ERREUR'} — {raisonnement_q1}")
+            decision_q1, raisonnement_q1 = _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
+            print(f"  [FIN1MT_GEMINI] Q1 à t={t:.0f}s : {'SORTIE' if decision_q1 else 'NON' if decision_q1 is not None else 'ERREUR'} — {raisonnement_q1}")
 
-            if not decision_q1:
+            if decision_q1:
+                if serie_actuelle == 0:
+                    premier_de_la_serie = t
+                serie_actuelle += 1
+                if serie_actuelle >= seuil_confirmations:
+                    print(f"  [FIN1MT_GEMINI] pause établie ({seuil_confirmations} confirmations Q1 consécutives), "
+                          f"1er point={premier_de_la_serie:.0f}s — recherche fine dans "
+                          f"[{dernier_non_confirme:.0f}s, {premier_de_la_serie:.0f}s]...")
+                    resultat = _recherche_fine_fin1mt(client, video_path, tmp_dir, etat,
+                                                        dernier_non_confirme, premier_de_la_serie, model_name=model_name)
+                    print(f"  [FIN1MT_GEMINI] Fin1MT détecté à t={resultat:.0f}s")
+                    return {"fin1mt_s": float(resultat), "n_appels_gemini": etat.n_appels}
+            else:
+                serie_actuelle = 0
+                premier_de_la_serie = None
                 dernier_non_confirme = t
-                t += pas_scan
-                continue
 
-            # V5.2 FIX : avant de lancer la verification Q2 couteuse a
-            # +delai_verif_q2, verifier d'abord la coherence narrative
-            # sur une courte sequence de 2 images (t, t+5s), envoyees
-            # ENSEMBLE dans un seul appel - meme logique que
-            # finmatch_gemini_cascade.py.
-            print(f"  [FIN1MT_GEMINI] vérification narrative (t={t:.0f}s, t+5s={t+5:.0f}s)...")
-            histoire_coherente, raisonnement_histoire = _verifier_histoire(
-                client, video_path, t, tmp_dir, etat, delai_s=5,
-                prompt_histoire=PROMPT_HISTOIRE_FIN1MT, model_name=model_name)
-            print(f"  [FIN1MT_GEMINI] histoire : {'COHÉRENTE' if histoire_coherente else 'CONTREDITE' if histoire_coherente is not None else 'ERREUR'} — {raisonnement_histoire}")
-            if not histoire_coherente:
-                print(f"  [FIN1MT_GEMINI] signal à t={t:.0f}s rejeté (histoire non cohérente), reprise à t={t+5:.0f}s")
-                t += 5
-                continue
+            t += pas_scan
 
-            t_verif = t + delai_verif_q2
-            if t_verif > t_fin:
-                # V5.2 FIX : meme correction que finmatch_gemini_cascade.py
-                # - plafonner plutot que rejeter, si un minimum de marge
-                # existe encore avant t_fin (fin de fenetre officielle ou
-                # duree reelle de la video).
-                MARGE_MIN_VERIF_S = 5
-                if t_fin - t < MARGE_MIN_VERIF_S:
-                    print(f"  [FIN1MT_GEMINI] candidat à t={t:.0f}s mais marge insuffisante "
-                          f"même en plafonnant ({t_fin-t:.0f}s < {MARGE_MIN_VERIF_S}s)")
-                    return {"fin1mt_s": None, "n_appels_gemini": etat.n_appels}
-                print(f"  [FIN1MT_GEMINI] délai de vérification plafonné à la fin de fenêtre : "
-                      f"t_verif {t_verif:.0f}s → {t_fin:.0f}s ({t_fin-t:.0f}s de marge au lieu de {delai_verif_q2}s)")
-                t_verif = t_fin
-
-            print(f"  [FIN1MT_GEMINI] candidat Q1 à t={t:.0f}s, vérif Q2 à t={t_verif:.0f}s...")
-            decision_q2, raisonnement_q2 = _voter(client, video_path, t_verif, tmp_dir, etat, _q2_une_lecture, model_name=model_name)
-            print(f"  [FIN1MT_GEMINI] Q2 à t={t_verif:.0f}s : {'VIDE' if decision_q2 else 'PAS_VIDE' if decision_q2 is not None else 'ERREUR'} — {raisonnement_q2}")
-
-            if not decision_q2:
-                print(f"  [FIN1MT_GEMINI] candidat rejeté, reprise à t={t_verif:.0f}s")
-                t = t_verif
-                continue
-
-            # V5.2 FIX : la dichotomie doit pouvoir remonter AVANT le point
-            # Q1 lui-meme (ou Q1 a detecte le mouvement collectif) jusqu'au
-            # dernier point ou Q1 disait encore NON - car Q2 (terrain vide)
-            # peut tres bien etre deja vrai plus tot que le moment ou le
-            # mouvement de sortie devient assez net pour declencher Q1.
-            # Diagnostic reel (Andrimont) : Q1 declenche a t=3064s mais le
-            # vrai coup de sifflet est a t=3028s (36s plus tot) - sans ce
-            # fix, la dichotomie ne peut jamais explorer cette marge.
-            print(f"  [FIN1MT_GEMINI] confirmé, recherche fine dans "
-                  f"[{dernier_non_confirme:.0f}s (dernier Q1=NON), {t_verif:.0f}s]...")
-            resultat = _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, dernier_non_confirme, t_verif, model_name=model_name)
-            print(f"  [FIN1MT_GEMINI] Fin1MT détecté à t={resultat:.0f}s")
-            return {"fin1mt_s": float(resultat), "n_appels_gemini": etat.n_appels}
-
-        print(f"  [FIN1MT_GEMINI] aucun candidat Q1 trouvé dans la fenêtre")
+        print(f"  [FIN1MT_GEMINI] aucune pause établie dans la fenêtre")
         return {"fin1mt_s": None, "n_appels_gemini": etat.n_appels}
     finally:
         etat.fermer()
