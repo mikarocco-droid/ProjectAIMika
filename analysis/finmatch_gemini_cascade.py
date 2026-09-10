@@ -278,86 +278,46 @@ def find_finmatch_gemini(video_path, ko2_s, marge_avant_min=40, marge_apres_min=
 
         t = t_debut
         dernier_non_confirme = t_debut
-        premier_signal_jamais_vu = None  # V5.2 : trace le tout premier
-        # SIGNAL_SORTIE vu (meme rejete ensuite par Q2) - sert de
-        # meilleure borne inferieure de repli que dernier_non_confirme,
-        # qui peut se retrouver APRES le vrai evenement si le scan
-        # continue au-dela (cas Goe : dernier NON a t=7411s, mais vrai
-        # FinMatch=7401s, donc dernier_non_confirme seul aurait rate la
-        # fenetre utile).
+        premier_de_la_serie = None
+        serie_actuelle = 0
+        # V5.2 FIX (09/09/2026) : remplace la verification narrative +
+        # Q2 par la meme architecture que Fin1MT (3 confirmations Q1
+        # consecutives -> pause etablie au premier point de la serie).
+        # Diagnostic Andrimont : la verification narrative rejetait
+        # systematiquement un vrai signal de sortie a cause d'un jeu de
+        # ballon informel post-match (enfants/jeunes sur le terrain),
+        # menant a 15+ rejets consecutifs et un repli a +175s de la
+        # verite. 3 confirmations consecutives absorbent ce bruit
+        # ponctuel sans dependre d'un jugement narratif fragile sur 2
+        # images. ⚠️ Non valide sur les 9 matchs de reference au moment
+        # de l'integration - a confirmer avant deploiement large.
         while t <= t_fin:
             raison_arret = etat.budget_epuise()
             if raison_arret:
                 print(f"  [FINMATCH_GEMINI] arrêt : {raison_arret}")
                 return {"finmatch_s": None, "n_appels_gemini": etat.n_appels}
 
-            print(f"  [FINMATCH_GEMINI] scan Q1 t={t:.0f}s (fenêtre [{t_debut:.0f}s, {t_fin:.0f}s], pas={pas_scan}s)")
-            decision_q1, raisonnement_q1 = _voter(client, video_path, t, tmp_dir, etat, _q1_une_lecture, model_name=model_name)
+            decision_q1, raisonnement_q1 = _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
             print(f"  [FINMATCH_GEMINI] Q1 à t={t:.0f}s : {'SIGNAL_SORTIE' if decision_q1 else 'NON' if decision_q1 is not None else 'ERREUR'} — {raisonnement_q1}")
 
-            if decision_q1 and premier_signal_jamais_vu is None:
-                premier_signal_jamais_vu = t
-
-            if not decision_q1:
+            if decision_q1:
+                if serie_actuelle == 0:
+                    premier_de_la_serie = t
+                serie_actuelle += 1
+                if serie_actuelle >= 3:
+                    print(f"  [FINMATCH_GEMINI] pause établie (3 confirmations Q1 consécutives), "
+                          f"1er point={premier_de_la_serie:.0f}s — recherche fine dans "
+                          f"[{dernier_non_confirme:.0f}s, {premier_de_la_serie:.0f}s]...")
+                    resultat = _recherche_fine_finmatch(client, video_path, tmp_dir, etat,
+                                                          dernier_non_confirme, premier_de_la_serie, model_name=model_name)
+                    print(f"  [FINMATCH_GEMINI] FinMatch détecté à t={resultat:.0f}s")
+                    return {"finmatch_s": float(resultat), "n_appels_gemini": etat.n_appels}
+            else:
+                serie_actuelle = 0
+                premier_de_la_serie = None
                 dernier_non_confirme = t
-                t += pas_scan
-                continue
 
-            # V5.2 FIX : avant de lancer la verification Q2 couteuse a
-            # +90s, verifier d'abord la coherence narrative sur une
-            # courte sequence de 2 images (t, t+5s), envoyees ENSEMBLE
-            # dans un seul appel - le modele juge si les 2 images
-            # racontent une histoire coherente de fin de match, ou si la
-            # 2e image contredit le signal initial (retour du jeu,
-            # ballon qui reapparait pour un coup franc, etc.). Permet de
-            # rejeter tot les faux signaux transitoires SANS gaspiller
-            # un appel Q2 a +90s dessus. Diagnostic reel (Juprelle
-            # t=6601s) : signal Q1 confiant mais instant transitoire
-            # ambigu (juste apres une faute, avant que le ballon soit
-            # replace pour le coup franc).
-            print(f"  [FINMATCH_GEMINI] vérification narrative (t={t:.0f}s, t+5s={t+5:.0f}s)...")
-            histoire_coherente, raisonnement_histoire = _verifier_histoire(
-                client, video_path, t, tmp_dir, etat, delai_s=5,
-                prompt_histoire=PROMPT_HISTOIRE_FINMATCH, model_name=model_name)
-            print(f"  [FINMATCH_GEMINI] histoire : {'COHÉRENTE' if histoire_coherente else 'CONTREDITE' if histoire_coherente is not None else 'ERREUR'} — {raisonnement_histoire}")
-            if not histoire_coherente:
-                print(f"  [FINMATCH_GEMINI] signal à t={t:.0f}s rejeté (histoire non cohérente), reprise à t={t+5:.0f}s")
-                t += 5
-                continue
-
-            t_verif = t + delai_verif_q2
-            if t_verif > t_fin:
-                # V5.2 FIX : plutot que de rejeter purement et simplement
-                # (perte du candidat, meme s'il etait bon - observe en
-                # production sur MineroisSter : candidat legitime a
-                # t=7240s, tres proche du vrai FinMatch=7192s, rejete a
-                # tort faute des 90s complets avant la fin reelle de la
-                # video), on verifie au plus pres de la fin disponible.
-                # MARGE_MIN_VERIF_S : sous ce seuil, vraiment pas assez
-                # de marge pour verifier quoi que ce soit d'utile.
-                MARGE_MIN_VERIF_S = 5
-                if t_fin - t < MARGE_MIN_VERIF_S:
-                    print(f"  [FINMATCH_GEMINI] candidat à t={t:.0f}s mais marge insuffisante "
-                          f"même en plafonnant ({t_fin-t:.0f}s < {MARGE_MIN_VERIF_S}s)")
-                    return {"finmatch_s": None, "n_appels_gemini": etat.n_appels}
-                print(f"  [FINMATCH_GEMINI] délai de vérification plafonné à la fin de la vidéo : "
-                      f"t_verif {t_verif:.0f}s → {t_fin:.0f}s ({t_fin-t:.0f}s de marge au lieu de {delai_verif_q2}s)")
-                t_verif = t_fin
-
-            print(f"  [FINMATCH_GEMINI] candidat Q1 à t={t:.0f}s, vérif Q2 à t={t_verif:.0f}s...")
-            decision_q2, raisonnement_q2 = _voter(client, video_path, t_verif, tmp_dir, etat, _q2_une_lecture, model_name=model_name)
-            print(f"  [FINMATCH_GEMINI] Q2 à t={t_verif:.0f}s : {'VIDE' if decision_q2 else 'PAS_VIDE' if decision_q2 is not None else 'ERREUR'} — {raisonnement_q2}")
-
-            if not decision_q2:
-                print(f"  [FINMATCH_GEMINI] candidat rejeté, reprise à t={t_verif:.0f}s")
-                t = t_verif
-                continue
-
-            print(f"  [FINMATCH_GEMINI] confirmé, recherche fine dans "
-                  f"[{dernier_non_confirme:.0f}s (dernier Q1=NON), {t_verif:.0f}s]...")
-            resultat = _recherche_fine_finmatch(client, video_path, tmp_dir, etat, dernier_non_confirme, t_verif, model_name=model_name)
-            print(f"  [FINMATCH_GEMINI] FinMatch détecté à t={resultat:.0f}s")
-            return {"finmatch_s": float(resultat), "n_appels_gemini": etat.n_appels}
+            t += pas_scan
 
         print(f"  [FINMATCH_GEMINI] aucun candidat Q1 confirmé dans la fenêtre")
 
