@@ -114,6 +114,19 @@ def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=4,
                              # etait fige a 60s (calibre pour pas_scan=60 de KO1 - "un
                              # pas de scan plus loin"). Avec pas_scan=20 pour KO2, un
                              # delai de 60s verifie 3 pas de scan plus loin au lieu de 1.
+        delai_verif_q2_precoce = 22, # V5.2 FIX (09/09/2026) : la nouvelle
+                             # strategie C (verif precoce +30s puis +60s si NON,
+                             # ajoutee dans _rechercher_kickoff suite au diagnostic
+                             # Andrimont/KO1) n'a ete testee QUE pour KO1. Pour KO2,
+                             # delai_verif_q2_precoce est fixe EGAL a delai_verif_q2
+                             # (22s) - ce qui desactive de facto le comportement en
+                             # deux temps (la verification "precoce" et "tardive"
+                             # tombent au meme instant, donc un seul vote reel a
+                             # lieu, comme avant). Ne pas changer cette valeur sans
+                             # revalider KO2 sur les 9 matchs de reference - la
+                             # valeur 30s (defaut KO1) est SUPERIEURE a 22s et
+                             # inverserait l'ordre precoce/tardif de facon absurde
+                             # si utilisee telle quelle ici.
                              # Valeur 22s choisie empiriquement (test Franchimont : bascule
                              # nette False->True entre 20s et 21s ; test Stembert :
                              # comportement NON MONOTONE observe (True a 6-10s, False a

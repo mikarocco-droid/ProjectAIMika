@@ -82,8 +82,9 @@ VÉRIFICATIONS PRÉALABLES OBLIGATOIRES — À FAIRE EN PREMIER
 
 Si l'une des deux réponses ci-dessous est "oui", réponds directement "NON" à tout le reste, sans analyser davantage.
 
-QUESTION PRÉALABLE 1 — Un but (cage, poteaux, filet) est-il visible dans l'image ?
+QUESTION PRÉALABLE 1 — Un but ACTIF DU MATCH est-il visible dans l'image ? Un but actif du match se situe à l'une des DEUX EXTRÉMITÉS du terrain, dans l'alignement du jeu (généralement en fond de cadre, face à la caméra ou tournant le dos à elle).
 Si oui → NON automatique.
+⚠️ NE COMPTE PAS comme "but actif du match" : un petit but d'entraînement, de rangement, ou toute structure de type cage/poteaux positionnée SUR LE CÔTÉ du terrain (près d'une clôture, d'un bâtiment, ou hors de l'alignement des deux extrémités du terrain). Ce type de structure secondaire ne doit PAS déclencher le rejet automatique - seul un vrai but de match, aligné avec le terrain de jeu, compte ici.
 
 QUESTION PRÉALABLE 2 — Le jeu est-il MANIFESTEMENT déjà actif (joueurs en mouvement de jeu réel, ballon en circulation loin du centre) ?
 Si oui → NON automatique (ce n'est plus une scène d'avant-match, c'est déjà du jeu).
@@ -101,7 +102,7 @@ CRITÈRES (jugés ensemble, pas un ET strict)
 4. PAS UNE AUTRE REMISE EN JEU LOCALISÉE : la scène n'est pas clairement un corner, une touche, ou un coup franc loin du centre.
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
-{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false}"""
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "raisonnement": "..."}"""
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -309,7 +310,7 @@ NE RÉPONDS PAS "oui" SIMPLEMENT PARCE QUE
 Réponds "non" si la scène ressemble à : échauffement dispersé (souvent plusieurs ballons visibles), entrée des joueurs sur le terrain, présentation ou animation avant-match, ou une formation de coup d'envoi en préparation.
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
-{"match_deja_commence": true/false}"""
+{"match_deja_commence": true/false, "raisonnement": "..."}"""
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -497,6 +498,10 @@ def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME)
         result.get("amorce_separation", False),
         result.get("pas_autre_remise_en_jeu", False),
     ]
+    # V5.2 DIAGNOSTIC TEMPORAIRE : affiche le raisonnement complet pour
+    # investiguer la divergence observee sur Andrimont/t=360s - a
+    # retirer une fois le diagnostic termine.
+    print(f"      [Q1_DIAG t={t:.0f}s] critères={criteres} — {result.get('raisonnement', 'non fourni')}")
     return sum(criteres) >= SEUIL_Q1
 
 
@@ -577,6 +582,10 @@ def _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME)
     result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q2_RIGOUREUX, etat, model_name=model_name)
     if result is None:
         return None
+    # V5.2 DIAGNOSTIC TEMPORAIRE : affiche le raisonnement complet pour
+    # investiguer la divergence observee sur Andrimont/t=360s - a
+    # retirer une fois le diagnostic termine.
+    print(f"      [Q2_DIAG t={t:.0f}s] match_deja_commence={result.get('match_deja_commence')} — {result.get('raisonnement', 'non fourni')}")
     return bool(result.get("match_deja_commence", False))
 
 
@@ -681,7 +690,7 @@ def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, mod
     return t_haut
 
 
-def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, fonction_q2=_q2_une_lecture):
+def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, delai_verif_q2_precoce=30, fonction_q2=_q2_une_lecture):
     # V5.2 Phase A : t_debut parametrable (defaut=60, comportement KO1
     # inchange) - necessaire pour reutiliser cette meme cascade pour KO2,
     # qui doit demarrer sa recherche a KO1+quelque chose, pas a t=60s.
@@ -703,8 +712,21 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
     # inchange) - permet de passer _q2_avant_apres_une_lecture pour le
     # signal alternatif AVANT/APRES, moins fragile que "match deja
     # commence" (qui dependait trop de la visibilite du ballon).
-    # AUCUN changement de logique/prompts/seuils, uniquement le pas, le
-    # point de depart du scan, le modele, et ce delai.
+    #
+    # V5.2 STRATEGIE C (09/09/2026, suite diagnostic Andrimont) :
+    # verification Q2 en DEUX temps - d'abord a +delai_verif_q2_precoce
+    # (30s), et SEULEMENT si NON, a +delai_verif_q2 (60s), avant de
+    # rejeter le candidat. Justification empirique : test reel sur les
+    # 10 matchs de reference (09/09/2026) a montre un cas (Andrimont,
+    # candidat a t=300s, tres proche du vrai KO1) ou +30s confirmait
+    # correctement (OUI) alors que +60s rejetait a tort (NON) - sans
+    # cette verification precoce, le systeme continuait a scanner et
+    # finissait par confirmer un candidat errone 480s plus tard
+    # (erreur +472s au lieu de +7.5s). Teste sans regression sur les 9
+    # autres matchs (les 2 seuls autres cas de divergence trouves,
+    # Raeren et Juprelle, vont dans l'autre sens - +60 confirme la ou
+    # +30 ne confirme pas encore - et sont donc deja couverts par le
+    # filet de securite +60s existant, sans perte).
     t = t_debut  # t=0 (ou avant t_debut) toujours "avant-match" pour KO1,
                  # mais pour KO2 t_debut sera deja loin dans la video
     while t <= t_max:
@@ -717,19 +739,32 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
             print(f"  [KICKOFF_GEMINI] aucun candidat Q1 trouvé jusqu'à t={t_max:.0f}s")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
 
-        t_verif = premier_oui + delai_verif_q2
-        if t_verif > t_max:
+        t_verif_precoce = premier_oui + delai_verif_q2_precoce
+        t_verif_tardif = premier_oui + delai_verif_q2
+        if t_verif_tardif > t_max:
             print(f"  [KICKOFF_GEMINI] candidat à t={premier_oui:.0f}s mais vérification hors limite")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
 
-        print(f"  [KICKOFF_GEMINI] candidat Q1 à t={premier_oui:.0f}s, vote Q2 à t={t_verif:.0f}s...")
-        decision_q2 = _voter_q2(client, video_path, t_verif, tmp_dir, etat, model_name=model_name, fonction_q2=fonction_q2)
-        print(f"  [KICKOFF_GEMINI] vote Q2 : {'OUI' if decision_q2 else 'NON' if decision_q2 is not None else 'ERREUR'}")
+        print(f"  [KICKOFF_GEMINI] candidat Q1 à t={premier_oui:.0f}s, vote Q2 précoce à t={t_verif_precoce:.0f}s...")
+        decision_q2 = _voter_q2(client, video_path, t_verif_precoce, tmp_dir, etat, model_name=model_name, fonction_q2=fonction_q2)
+        print(f"  [KICKOFF_GEMINI] vote Q2 précoce : {'OUI' if decision_q2 else 'NON' if decision_q2 is not None else 'ERREUR'}")
+        t_verif = t_verif_precoce
 
         raison_arret = etat.budget_epuise()
         if raison_arret:
             print(f"  [KICKOFF_GEMINI] arrêt : {raison_arret}")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": raison_arret}
+
+        if not decision_q2 and t_verif_tardif != t_verif_precoce:
+            print(f"  [KICKOFF_GEMINI] candidat rejeté par vote précoce, vote Q2 tardif à t={t_verif_tardif:.0f}s...")
+            decision_q2 = _voter_q2(client, video_path, t_verif_tardif, tmp_dir, etat, model_name=model_name, fonction_q2=fonction_q2)
+            print(f"  [KICKOFF_GEMINI] vote Q2 tardif : {'OUI' if decision_q2 else 'NON' if decision_q2 is not None else 'ERREUR'}")
+            t_verif = t_verif_tardif
+
+            raison_arret = etat.budget_epuise()
+            if raison_arret:
+                print(f"  [KICKOFF_GEMINI] arrêt : {raison_arret}")
+                return {"status": "NOT_FOUND", "kickoff_s": None, "reason": raison_arret}
 
         if not decision_q2:
             print(f"  [KICKOFF_GEMINI] candidat rejeté, reprise à t={t_verif:.0f}s")
@@ -755,7 +790,7 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
 def detect_kickoff_gemini(video_path, max_search_s,
                             max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                             max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT,
-                            tmp_dir="/tmp", t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, fonction_q2=_q2_une_lecture):
+                            tmp_dir="/tmp", t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, delai_verif_q2_precoce=30, fonction_q2=_q2_une_lecture):
     """
     Détecte le premier coup d'envoi d'un match par cascade Gemini
     (Q1 scan 60s -> Q2 confirmation -> recherche fine 15/5/1s).
@@ -811,7 +846,7 @@ def detect_kickoff_gemini(video_path, max_search_s,
     etat = _EtatRecherche(max_gemini_calls, max_wallclock_s)
 
     try:
-        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut, pas_scan=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name, delai_verif_q2=delai_verif_q2, fonction_q2=fonction_q2)
+        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut, pas_scan=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name, delai_verif_q2=delai_verif_q2, delai_verif_q2_precoce=delai_verif_q2_precoce, fonction_q2=fonction_q2)
     except Exception as e:
         resultat = {"status": "ERROR", "kickoff_s": None, "reason": f"UNEXPECTED_EXCEPTION: {e}"}
     finally:
