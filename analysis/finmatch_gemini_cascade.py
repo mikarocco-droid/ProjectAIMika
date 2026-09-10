@@ -280,17 +280,20 @@ def find_finmatch_gemini(video_path, ko2_s, marge_avant_min=40, marge_apres_min=
         dernier_non_confirme = t_debut
         premier_de_la_serie = None
         serie_actuelle = 0
-        # V5.2 FIX (09/09/2026) : remplace la verification narrative +
-        # Q2 par la meme architecture que Fin1MT (3 confirmations Q1
-        # consecutives -> pause etablie au premier point de la serie).
-        # Diagnostic Andrimont : la verification narrative rejetait
-        # systematiquement un vrai signal de sortie a cause d'un jeu de
-        # ballon informel post-match (enfants/jeunes sur le terrain),
-        # menant a 15+ rejets consecutifs et un repli a +175s de la
-        # verite. 3 confirmations consecutives absorbent ce bruit
-        # ponctuel sans dependre d'un jugement narratif fragile sur 2
-        # images. ⚠️ Non valide sur les 9 matchs de reference au moment
-        # de l'integration - a confirmer avant deploiement large.
+        meilleur_candidat_narratif = None  # V5.2 FIX (09/09/2026, suite
+        # diagnostic Franchimont) : combine les deux architectures.
+        # Chemin rapide (3 confirmations Q1 consecutives) reste
+        # prioritaire - rapide et peu couteux quand l'etat est stable
+        # plusieurs minutes (cas majoritaire). Mais un signal isole qui
+        # casse la serie (ex. Franchimont : signal C legitime a
+        # t=6599s, suivi d'un NON a t=6659s avant de repartir) n'est
+        # plus purement perdu : verifie UNE fois par le narratif (leger,
+        # pas le Q2 couteux de l'ancienne architecture), et si coherent,
+        # retenu comme meilleur candidat de repli - utilise comme
+        # ancrage pour la recherche fine SEULEMENT si aucune serie de 3
+        # n'est jamais atteinte, avant de tomber sur le repli Q2 (qui
+        # atterrit typiquement bien plus loin du vrai instant).
+        meilleur_candidat_borne_basse = None
         while t <= t_fin:
             raison_arret = etat.budget_epuise()
             if raison_arret:
@@ -312,12 +315,44 @@ def find_finmatch_gemini(video_path, ko2_s, marge_avant_min=40, marge_apres_min=
                                                           dernier_non_confirme, premier_de_la_serie, model_name=model_name)
                     print(f"  [FINMATCH_GEMINI] FinMatch détecté à t={resultat:.0f}s")
                     return {"finmatch_s": float(resultat), "n_appels_gemini": etat.n_appels}
+
+                # V5.2 FIX (suite remarque utilisateur) : verifier le
+                # narratif a CHAQUE signal isole qui ne complete pas une
+                # serie de 3 - pas seulement le tout premier tente. Si
+                # le premier signal est rejete par le narratif (ex.
+                # activite informelle post-match), les signaux suivants
+                # ont quand meme leur chance d'etre retenus comme
+                # candidat de secours. On garde le PREMIER jugee
+                # coherent (pas le dernier), toujours par coherence avec
+                # le principe "le signal le plus precoce valide est le
+                # plus fiable" utilise ailleurs dans le pipeline.
+                if meilleur_candidat_narratif is None:
+                    print(f"  [FINMATCH_GEMINI] vérification narrative de secours (t={t:.0f}s, t+5s={t+5:.0f}s)...")
+                    histoire_coherente, raisonnement_histoire = _verifier_histoire(
+                        client, video_path, t, tmp_dir, etat, delai_s=5,
+                        prompt_histoire=PROMPT_HISTOIRE_FINMATCH, model_name=model_name)
+                    print(f"  [FINMATCH_GEMINI] histoire : {'COHÉRENTE' if histoire_coherente else 'CONTREDITE' if histoire_coherente is not None else 'ERREUR'} — {raisonnement_histoire}")
+                    if histoire_coherente:
+                        meilleur_candidat_narratif = t
+                        meilleur_candidat_borne_basse = dernier_non_confirme
+                        print(f"  [FINMATCH_GEMINI] candidat de secours retenu à t={t:.0f}s")
+                    else:
+                        print(f"  [FINMATCH_GEMINI] candidat rejeté par le narratif, prochain signal isolé tenté si trouvé")
             else:
                 serie_actuelle = 0
                 premier_de_la_serie = None
                 dernier_non_confirme = t
 
             t += pas_scan
+
+        if meilleur_candidat_narratif is not None:
+            print(f"  [FINMATCH_GEMINI] aucune série de 3 atteinte, mais candidat de secours "
+                  f"retenu à t={meilleur_candidat_narratif:.0f}s — recherche fine dans "
+                  f"[{meilleur_candidat_borne_basse:.0f}s, {meilleur_candidat_narratif:.0f}s]...")
+            resultat = _recherche_fine_finmatch(client, video_path, tmp_dir, etat,
+                                                  meilleur_candidat_borne_basse, meilleur_candidat_narratif, model_name=model_name)
+            print(f"  [FINMATCH_GEMINI] FinMatch détecté à t={resultat:.0f}s")
+            return {"finmatch_s": float(resultat), "n_appels_gemini": etat.n_appels}
 
         print(f"  [FINMATCH_GEMINI] aucun candidat Q1 confirmé dans la fenêtre")
 
