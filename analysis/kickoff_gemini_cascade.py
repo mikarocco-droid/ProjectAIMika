@@ -102,7 +102,7 @@ CRITÈRES (jugés ensemble, pas un ET strict)
 4. PAS UNE AUTRE REMISE EN JEU LOCALISÉE : la scène n'est pas clairement un corner, une touche, ou un coup franc loin du centre.
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
-{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "raisonnement": "..."}"""
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false}"""
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -310,7 +310,7 @@ NE RÉPONDS PAS "oui" SIMPLEMENT PARCE QUE
 Réponds "non" si la scène ressemble à : échauffement dispersé (souvent plusieurs ballons visibles), entrée des joueurs sur le terrain, présentation ou animation avant-match, ou une formation de coup d'envoi en préparation.
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
-{"match_deja_commence": true/false, "raisonnement": "..."}"""
+{"match_deja_commence": true/false}"""
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -498,10 +498,6 @@ def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME)
         result.get("amorce_separation", False),
         result.get("pas_autre_remise_en_jeu", False),
     ]
-    # V5.2 DIAGNOSTIC TEMPORAIRE : affiche le raisonnement complet pour
-    # investiguer la divergence observee sur Andrimont/t=360s - a
-    # retirer une fois le diagnostic termine.
-    print(f"      [Q1_DIAG t={t:.0f}s] critères={criteres} — {result.get('raisonnement', 'non fourni')}")
     return sum(criteres) >= SEUIL_Q1
 
 
@@ -582,10 +578,6 @@ def _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME)
     result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q2_RIGOUREUX, etat, model_name=model_name)
     if result is None:
         return None
-    # V5.2 DIAGNOSTIC TEMPORAIRE : affiche le raisonnement complet pour
-    # investiguer la divergence observee sur Andrimont/t=360s - a
-    # retirer une fois le diagnostic termine.
-    print(f"      [Q2_DIAG t={t:.0f}s] match_deja_commence={result.get('match_deja_commence')} — {result.get('raisonnement', 'non fourni')}")
     return bool(result.get("match_deja_commence", False))
 
 
