@@ -63,7 +63,9 @@ def _update_state(task, step, total, message):
 )
 def run_analysis(self, video_path, sport="football", output_dir=None,
                  mode="match", plan="free", analysis_id=None,
-                 use_coarse_scan=True):
+                 use_coarse_scan=True, team_names=None,
+                 kickoff_s_precalcule=None,
+                 team_colors_gemini_precalcule=None):
     """
     Tâche Celery : lance run_pipeline() en arrière-plan.
 
@@ -94,6 +96,9 @@ def run_analysis(self, video_path, sport="football", output_dir=None,
             plan            = plan,
             analysis_id     = analysis_id,
             use_coarse_scan = use_coarse_scan,
+            team_names      = team_names,
+            kickoff_s_precalcule = kickoff_s_precalcule,
+            team_colors_gemini_precalcule = team_colors_gemini_precalcule,
         )
 
         elapsed = time.time() - t0

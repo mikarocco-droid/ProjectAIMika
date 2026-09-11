@@ -539,6 +539,16 @@ def upload():
     preview_upload_id = request.form.get("preview_upload_id", "").strip() or None
     user_team_id_raw  = request.form.get("user_team_id", "").strip()
 
+    # V5.2 (11/09/2026) : couleurs Gemini detectees pendant la pre-analyse,
+    # dans le MEME ordre (team_0/team_1) que team_name_0/1 ci-dessus - donc
+    # AVANT toute inversion liee a user_team_id (l'association couleur<->nom
+    # saisie par l'utilisateur est invariante a "quelle equipe est la
+    # mienne", contrairement a team_names ci-dessous qui lui en depend).
+    team_color_0      = request.form.get("team_color_0", "").strip() or None
+    team_color_1      = request.form.get("team_color_1", "").strip() or None
+    team_confidence_0 = request.form.get("team_confidence_0", "").strip() or None
+    team_confidence_1 = request.form.get("team_confidence_1", "").strip() or None
+
     # V5.2 §12.17 : KO detecte (ou saisi manuellement) pendant l'etape de
     # preview - transmis a run_pipeline() pour eviter une re-detection.
     # Chaine vide = le champ existe dans le formulaire mais n'a pas de
@@ -569,6 +579,26 @@ def upload():
     else:
         if team_name_0: team_names["0"] = team_name_0
         if team_name_1: team_names["1"] = team_name_1
+
+    # V5.2 (11/09/2026) : construit team_colors_gemini_precalcule pour
+    # pipeline.py (voir analysis/team_color_matching.py) - permet de
+    # re-apparier team_names au bon team_id du TRACKER (clustering interne,
+    # independant de celui de la pre-analyse - l'ordre 0/1 n'est PAS
+    # garanti identique entre les deux). Construit a partir des paires
+    # ORIGINALES team_color_X/team_name_X (avant inversion user_team_id,
+    # cf. note ci-dessus) - None si couleurs ou noms absents (pre-analyse
+    # non faite ou ratee), pipeline.py gere deja ce cas (conserve
+    # team_names soumis tel quel, sans correction).
+    team_colors_gemini_precalcule = None
+    if team_color_0 and team_color_1 and (team_name_0 or team_name_1):
+        _noms_par_couleur = {}
+        if team_name_0: _noms_par_couleur[team_color_0] = team_name_0
+        if team_name_1: _noms_par_couleur[team_color_1] = team_name_1
+        team_colors_gemini_precalcule = {
+            "couleurs": [team_color_0, team_color_1],
+            "confiances": [team_confidence_0, team_confidence_1],
+            "noms": _noms_par_couleur,
+        }
 
     if not f or f.filename == "":
         flash("Aucune video selectionnee")
@@ -614,6 +644,7 @@ def upload():
                 "use_coarse_scan": True,
                 "team_names":      team_names or None,
                 "kickoff_s_precalcule": kickoff_s_precalcule,
+                "team_colors_gemini_precalcule": team_colors_gemini_precalcule,
             },
             task_id = f"analysis_{analysis.id}",
             queue   = "pipeline",
@@ -627,7 +658,8 @@ def upload():
             args   = (analysis.id, path, sport, current_user.plan,
                       mode, player_id, None, team_names or None),
             kwargs = {"player_position": player_position,
-                      "kickoff_s_precalcule": kickoff_s_precalcule},
+                      "kickoff_s_precalcule": kickoff_s_precalcule,
+                      "team_colors_gemini_precalcule": team_colors_gemini_precalcule},
             daemon = True
         )
         thread.start()
@@ -642,7 +674,8 @@ def upload():
 def run_analysis(
     analysis_id, video_path, sport, plan,
     mode="match", player_id=None, r2_key=None, team_names=None,
-    player_position=None, kickoff_s_precalcule=None
+    player_position=None, kickoff_s_precalcule=None,
+    team_colors_gemini_precalcule=None
 ):
     with app.app_context():
         a              = db.session.get(Analysis, analysis_id)
@@ -679,6 +712,7 @@ def run_analysis(
             player_position = player_position,
             team_names      = team_names or None,
             kickoff_s_precalcule = kickoff_s_precalcule,
+            team_colors_gemini_precalcule = team_colors_gemini_precalcule,
         )
 
         # ── Supprime la vidéo brute dès que l'analyse est terminée ──

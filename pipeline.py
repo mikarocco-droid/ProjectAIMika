@@ -924,24 +924,52 @@ def run_pipeline(
                     print(f"  [COULEURS GEMINI] Appariement : {_team_labels_gemini} "
                           f"(distances : {_appariement[0]['distance']}, {_appariement[1]['distance']})")
 
-                    # Deduire automatiquement team_names (team_id -> vrai nom
-                    # d'equipe) via team_id -> couleur -> nom, UNIQUEMENT si
-                    # team_names n'a pas deja ete fourni explicitement (celui-ci
-                    # prime toujours - jamais ecrase par une deduction automatique).
+                    # V5.2 (11/09/2026) : deduire/CORRIGER team_names (team_id
+                    # -> vrai nom d'equipe) via team_id -> couleur -> nom.
+                    #
+                    # IMPORTANT (correction suite a l'examen de app.py) : ce
+                    # n'est PAS un simple "combler si absent". Le formulaire
+                    # /upload soumet team_names={0: "RSC Stavelot B", 1: "FC
+                    # Liege"} en supposant que "team_0" de la PRE-ANALYSE
+                    # (detection Gemini isolee, quelques frames) correspond a
+                    # team_id=0 du TRACKER (clustering KMeans interne,
+                    # independant, initialisation aleatoire) - CETTE
+                    # HYPOTHESE N'EST PAS GARANTIE, ce sont deux processus de
+                    # clustering completement separes qui peuvent ordonner les
+                    # 2 equipes differemment. team_names est donc PRESQUE
+                    # TOUJOURS deja fourni (l'utilisateur le tape a la
+                    # pre-analyse), mais peut etre associe au MAUVAIS team_id.
+                    #
+                    # Donc : des qu'un appariement couleur FIABLE est
+                    # disponible pour les 2 equipes (nom_assigne non None des
+                    # 2 cotes), il PRIME et RECALCULE team_names via
+                    # team_id->couleur->nom - potentiellement en l'inversant
+                    # par rapport a ce qui avait ete soumis. Si l'appariement
+                    # est absent/peu fiable, le team_names original soumis est
+                    # conserve tel quel (mieux que rien, hypothese par defaut
+                    # raisonnable si aucune correction fiable n'est possible).
                     _noms_par_couleur = team_colors_gemini_precalcule.get("noms") or {}
-                    if not team_names and _noms_par_couleur:
-                        _team_names_deduits = {}
+                    if _noms_par_couleur:
+                        _team_names_corriges = {}
                         for _tid, _couleur in _team_labels_gemini.items():
                             if _couleur and _couleur in _noms_par_couleur:
-                                _team_names_deduits[_tid] = _noms_par_couleur[_couleur]
-                        if len(_team_names_deduits) == 2:
-                            team_names = _team_names_deduits
-                            print(f"  [COULEURS GEMINI] team_names déduit automatiquement : {team_names}")
-                        elif _team_names_deduits:
-                            print(f"  [COULEURS GEMINI] Déduction partielle uniquement "
-                                  f"({_team_names_deduits}) - au moins une couleur non appariée "
-                                  f"avec confiance suffisante, team_names non déduit pour éviter "
-                                  f"un résultat à moitié correct")
+                                _team_names_corriges[_tid] = _noms_par_couleur[_couleur]
+                        if len(_team_names_corriges) == 2:
+                            if team_names and team_names != _team_names_corriges:
+                                print(f"  [COULEURS GEMINI] ⚠️ Correction team_names : "
+                                      f"soumis={team_names} -> corrigé={_team_names_corriges} "
+                                      f"(pre-analyse et tracker avaient ordonné les 2 équipes différemment)")
+                            else:
+                                print(f"  [COULEURS GEMINI] team_names confirmé/déduit : {_team_names_corriges}")
+                            team_names = _team_names_corriges
+                        elif _team_names_corriges:
+                            print(f"  [COULEURS GEMINI] Correction partielle uniquement "
+                                  f"({_team_names_corriges}) - au moins une couleur non appariée "
+                                  f"avec confiance suffisante, team_names soumis conservé tel quel "
+                                  f"par prudence (pas de correction à moitié faite)")
+                        else:
+                            print(f"  [COULEURS GEMINI] Aucun appariement fiable - "
+                                  f"team_names soumis conservé tel quel (non vérifié)")
                 else:
                     print(f"  [COULEURS GEMINI] Centroides tracker indisponibles - "
                           f"appariement impossible, libelles generiques conserves")
