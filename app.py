@@ -773,6 +773,16 @@ def run_analysis(
     local_tmp = None  # chemin temporaire si téléchargé depuis R2
 
     try:
+        # V5.2 (11/09/2026) : import manquant — run_pipeline() etait
+        # appelee plus bas (ligne originale ~776) sans jamais etre
+        # importee nulle part dans ce fichier, causant systematiquement
+        # NameError: name 'run_pipeline' is not defined des qu'une
+        # analyse etait lancee via ce chemin (fallback threading, sans
+        # Celery). Bug preexistant, jamais visible dans le terminal car
+        # le except ci-dessous stockait l'erreur sans la logger (corrige
+        # egalement ci-dessous).
+        from pipeline import run_pipeline
+
         # ── Mode R2 : télécharge la vidéo localement pour le pipeline ──
         if r2_key and config.R2_ENABLED:
             local_tmp  = os.path.join(
@@ -829,7 +839,15 @@ def run_analysis(
             a.status       = "error"
             a.progress_msg = str(e)[:200]
             db.session.commit()
-        print(f"ERROR analyse {analysis_id} : {e}")
+        # V5.2 (11/09/2026) : trace complete (pas seulement str(e)) - le
+        # print precedent n'affichait que le message court, facile a
+        # manquer dans le flot des logs de requetes Flask. Le
+        # NameError('run_pipeline' is not defined) precedent est passe
+        # inapercu un moment pour cette raison.
+        import traceback
+        print(f"\n{'='*80}\nERREUR analyse #{analysis_id}\n{'='*80}")
+        traceback.print_exc()
+        print(f"{'='*80}\n")
 
 
 # ─────────────────────────────────────────
