@@ -600,6 +600,18 @@ function updateSubmitBtn() {
 const uploadForm = document.getElementById("upload-form");
 if (uploadForm) {
     uploadForm.addEventListener("submit", () => {
+        // V5.2 (11/09/2026) : si la pre-analyse a reussi (preview_upload_id
+        // rempli), le fichier est DEJA sur le serveur (uploads/previews/) -
+        // on vide le champ fichier natif juste avant la soumission finale
+        // pour eviter que le navigateur ne retransmette les memes octets
+        // une seconde fois. Le backend (/upload) reutilise alors le fichier
+        // de preview via preview_upload_id au lieu d'exiger un nouvel envoi
+        // (cf. app.py::upload()). Sans ce vidage, une video de plusieurs GB
+        // etait transferee ET stockee deux fois pour rien.
+        if (previewUploadId && previewUploadId.value && fileInput) {
+            fileInput.value = "";
+        }
+
         if (submitBtn) {
             submitBtn.disabled    = true;
             submitBtn.textContent = "Envoi en cours...";
