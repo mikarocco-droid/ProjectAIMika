@@ -359,6 +359,15 @@ class Analysis(db.Model):
     progress_msg       = db.Column(db.String(200), default="En attente...")
     result_json        = db.Column(db.Text)
     output_dir         = db.Column(db.String(300))
+    # V5.2 (11/09/2026) : colonnes manquantes - app.py::upload() les
+    # passait deja au constructeur Analysis(...) mais elles n'etaient
+    # jamais definies ici, causant TypeError: 'team_name_0' is an
+    # invalid keyword argument for Analysis a chaque soumission avec
+    # des noms d'equipe saisis (donc systematiquement, la pre-analyse
+    # les demandant toujours). Bug preexistant, non lie aux changements
+    # de ce soir.
+    team_name_0        = db.Column(db.String(200), nullable=True)
+    team_name_1        = db.Column(db.String(200), nullable=True)
     # Champs R2 (null si stockage local)
     r2_video_key       = db.Column(db.String(500), nullable=True)
     r2_output_prefix   = db.Column(db.String(500), nullable=True)
