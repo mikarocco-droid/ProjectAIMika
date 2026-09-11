@@ -274,6 +274,19 @@ def run_pipeline(
                                   # 0 ou None => pas de KO connu, comportement
                                   # inchange (detection normale, ou NOT_FOUND si
                                   # explicitement 0 suite a une saisie manuelle vide).
+    team_colors_gemini_precalcule = None,  # V5.2 (11/09/2026) : si fourni, dict
+                                  # {"couleurs": [nom_equipe_A, nom_equipe_B],
+                                  # "confiances": [conf_A, conf_B]} - couleurs
+                                  # confirmees par l'utilisateur pendant la
+                                  # pre-analyse (pre_analyse_upload.py). N'evite
+                                  # PAS un appel Gemini (la detection de couleurs
+                                  # du pipeline principal n'en fait pas, elle est
+                                  # basee sur le clustering pixel du tracker) -
+                                  # sert uniquement a ETIQUETER les 2 equipes
+                                  # deja separees par le tracker avec les noms
+                                  # que l'utilisateur a deja vus/confirmes,
+                                  # pour la coherence. None => pas de couleurs
+                                  # pre-analysees, libelles generiques utilises.
     _match_data       = None,    # Replay Engine : dict depuis replay.load_cache() — skip YOLO/tracking si fourni
 ):
     os.makedirs(output_dir, exist_ok=True)
@@ -871,6 +884,39 @@ def run_pipeline(
                 print(f"  Couleurs equipes depuis tracker : {_captured_team_colors}")
         except Exception:
             pass
+
+        # V5.2 (11/09/2026) : appariement des 2 equipes (centroides du
+        # tracker) avec les couleurs nommees confirmees par l'utilisateur
+        # pendant la pre-analyse Gemini (si fournies via
+        # team_colors_gemini_precalcule). Labellisation SEULEMENT - le
+        # clustering du tracker n'est jamais modifie par cet appariement
+        # (cf. discussion : injecter "rouge"/"jaune" dans le clustering
+        # risquerait de forcer une correspondance fausse, ex. bordeaux
+        # mesure force a "rouge" - voir analysis/team_color_matching.py
+        # pour le detail du raisonnement et le seuil de confiance).
+        _team_labels_gemini = {0: None, 1: None}
+        if team_colors_gemini_precalcule:
+            try:
+                from vision import tracker as _tracker_mod
+                from analysis.team_color_matching import apparier_couleurs_equipes
+                _centroides = getattr(_tracker_mod, "_LAST_TEAM_CENTROIDS", None)
+                if _centroides is not None:
+                    _appariement = apparier_couleurs_equipes(
+                        centroides_tracker=_centroides,
+                        couleurs_gemini=team_colors_gemini_precalcule.get("couleurs", [None, None]),
+                        confiances_gemini=team_colors_gemini_precalcule.get("confiances"),
+                    )
+                    _team_labels_gemini = {
+                        0: _appariement[0]["nom_assigne"],
+                        1: _appariement[1]["nom_assigne"],
+                    }
+                    print(f"  [COULEURS GEMINI] Appariement : {_team_labels_gemini} "
+                          f"(distances : {_appariement[0]['distance']}, {_appariement[1]['distance']})")
+                else:
+                    print(f"  [COULEURS GEMINI] Centroides tracker indisponibles - "
+                          f"appariement impossible, libelles generiques conserves")
+            except Exception as _ecoul:
+                print(f"  [COULEURS GEMINI] Appariement échoué : {_ecoul}")
 
         # Capturer les couleurs équipes depuis le tracker dès le Step 1
         # Elles sont dans frames_data[*].players[*].color ou team_color
