@@ -306,6 +306,14 @@ async function runTeamDetection(uploadId) {
             const colorHidden = document.getElementById(`team-color-${tid}-input`);
             if (colorHidden && team.color_name)
                 colorHidden.value = team.color_name.split("/")[0];
+            // NOTE : team-confidence-${tid}-input reste volontairement VIDE ici -
+            // _detect_teams_colors_autour_ko() (app.py) n'expose pas de
+            // confiance par équipe dans son résultat final (seulement en
+            // interne, par frame individuelle, pour filtrer quoi agréger) -
+            // rien à lire depuis `team` pour remplir ce champ. Confirmé sans
+            // impact : analysis/team_color_matching.py traite une confiance
+            // absente/vide comme utilisable (seul "low" explicite désactive
+            // l'appariement).
 
             // Select équipe joueur
             const opt = document.getElementById(`team-side-opt-${tid}`);
