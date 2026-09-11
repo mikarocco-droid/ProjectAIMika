@@ -55,6 +55,8 @@ from analysis.goal_posthoc    import detect_fast_goals_from_ball
 from analysis.terminal_events import detect_terminal_events, build_candidate_windows
 from analysis.kickoff_detector import find_kickoff_offset, apply_kickoff_offset, apply_kickoff_offset_frames, reset_pre_kickoff_state, find_match_end, apply_match_end, apply_pause_filter
 from analysis.match_boundaries_v2 import find_ko2_gemini, find_fin1mt_audio, find_finmatch_audio  # V5.2 Phase A
+from analysis.fin1mt_gemini_cascade import find_fin1mt_gemini  # V5.2 (11/09/2026) : methode principale Fin1MT
+from analysis.finmatch_gemini_cascade import find_finmatch_gemini  # V5.2 (11/09/2026) : methode principale FinMatch
 # V5.2 : find_kickoff_offset n'est plus appelee (remplacee par detect_kickoff_gemini,
 # voir bloc KICKOFF ci-dessous) - import gardee pour reference/rollback facile, pas
 # du code mort accidentel. apply_kickoff_offset/apply_kickoff_offset_frames/
@@ -931,19 +933,34 @@ def run_pipeline(
                 _ko2_absolu = _ko2_result["ko2_s"]
                 print(f"  [KO2] Détecté à t={_ko2_absolu:.0f}s (absolu)")
 
-                print(f"  [FIN1MT] Recherche audio dans [KO2-16min, KO2-8min]...")
-                _fin1mt_absolu = find_fin1mt_audio(video_path, ko2_s=_ko2_absolu)
+                print(f"  [FIN1MT] Recherche via Gemini vision (3x confirmations)...")
+                # V5.2 (11/09/2026) : find_fin1mt_gemini() devient la methode
+                # PRINCIPALE (architecture validee sur les 9 matchs de
+                # reference le 09/09/2026 - narratif+3x confirmations,
+                # remplace l'ancienne logique narratif+Q2). find_fin1mt_audio()
+                # (methode precedente) reste en repli de securite SI Gemini
+                # echoue (fin1mt_s=None) - ne perd jamais la detection meme si
+                # la nouvelle methode a un souci sur un match particulier.
+                _fin1mt_gemini_result = find_fin1mt_gemini(video_path, ko2_s=_ko2_absolu)
+                _fin1mt_absolu = _fin1mt_gemini_result.get("fin1mt_s")
                 if _fin1mt_absolu is not None:
-                    print(f"  [FIN1MT] Détecté à t={_fin1mt_absolu:.0f}s (absolu)")
+                    print(f"  [FIN1MT] Détecté à t={_fin1mt_absolu:.0f}s (absolu, via Gemini vision)")
                 else:
-                    print(f"  [FIN1MT] Aucun signal crédible — pas de filtrage de pause pour ce match")
+                    print(f"  [FIN1MT] Gemini vision sans résultat — repli sur la méthode audio...")
+                    _fin1mt_absolu = find_fin1mt_audio(video_path, ko2_s=_ko2_absolu)
+                    if _fin1mt_absolu is not None:
+                        print(f"  [FIN1MT] Détecté à t={_fin1mt_absolu:.0f}s (absolu, via audio, repli)")
+                    else:
+                        print(f"  [FIN1MT] Aucun signal crédible (Gemini ni audio) — pas de filtrage de pause pour ce match")
 
                 print(f"  [FINMATCH_AUDIO] Recherche audio dans [KO2+40min, KO2+55min] "
-                      f"(comparaison uniquement, Phase A — find_match_end() reste la borne active)...")
+                      f"(comparaison uniquement — V5.2 11/09/2026 : find_finmatch_gemini() "
+                      f"est maintenant la borne active, cf. plus bas, find_match_end() "
+                      f"n'est plus que le repli de sécurité)...")
                 _finmatch_audio_absolu = find_finmatch_audio(video_path, ko2_s=_ko2_absolu)
                 if _finmatch_audio_absolu is not None:
                     print(f"  [FINMATCH_AUDIO] Détecté à t={_finmatch_audio_absolu:.0f}s (absolu) "
-                          f"— à comparer avec find_match_end() ci-dessous")
+                          f"— à comparer avec find_finmatch_gemini ci-dessous")
             else:
                 print(f"  [KO2] {_ko2_result['status']} ({_ko2_result.get('reason', '?')}) "
                       f"— Fin1MT/FinMatch audio non calculés (dépendent de KO2)")
@@ -970,14 +987,35 @@ def run_pipeline(
         except Exception:
             pass
 
-        _match_end_s = find_match_end(
-            frames_data          = frames_data,
-            fps                  = fps,
-            team_colors          = _team_colors,
-            silence_threshold_s  = 1500.0,   # 25 min sans jeu = fin du match
-            min_match_duration_s = 2700.0,   # chercher fin seulement après 45 min de jeu
-            video_duration_s     = _video_duration_s,  # adaptatif selon durée vidéo
-        )
+        # V5.2 (11/09/2026) : find_finmatch_gemini() devient la methode
+        # PRINCIPALE pour la fin de match (architecture combinee 3xQ1 +
+        # narratif de secours, validee aujourd'hui sur Franchimont et
+        # Andrimont). find_match_end() (heuristique par densite de
+        # joueurs sur frames_data) reste en repli de securite SI Gemini
+        # echoue ou si KO2 n'a pas ete detecte (necessaire comme ancrage
+        # pour find_finmatch_gemini) - ne perd jamais la detection.
+        _match_end_s = None
+        if _ko2_absolu is not None:
+            print(f"  [FINMATCH] Recherche via Gemini vision (3x confirmations + narratif)...")
+            _finmatch_gemini_result = find_finmatch_gemini(video_path, ko2_s=_ko2_absolu)
+            _finmatch_gemini_absolu = _finmatch_gemini_result.get("finmatch_s")
+            if _finmatch_gemini_absolu is not None:
+                _match_end_s = _finmatch_gemini_absolu - _kickoff_offset  # absolu -> relatif
+                print(f"  [FINMATCH] Détecté à t={_finmatch_gemini_absolu:.0f}s (absolu, via Gemini vision)")
+            else:
+                print(f"  [FINMATCH] Gemini vision sans résultat — repli sur find_match_end()...")
+
+        if _match_end_s is None:
+            _match_end_s = find_match_end(
+                frames_data          = frames_data,
+                fps                  = fps,
+                team_colors          = _team_colors,
+                silence_threshold_s  = 1500.0,   # 25 min sans jeu = fin du match
+                min_match_duration_s = 2700.0,   # chercher fin seulement après 45 min de jeu
+                video_duration_s     = _video_duration_s,  # adaptatif selon durée vidéo
+            )
+            if _match_end_s is not None:
+                print(f"  [FINMATCH] Détecté à t={_match_end_s:.0f}s (relatif, via find_match_end, repli)")
 
         if _match_end_s is not None:
             events, frames_data = apply_match_end(events, frames_data, _match_end_s, fps=fps)
