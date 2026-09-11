@@ -7,6 +7,15 @@ import numpy as np
 import config
 from analysis.player_reid import PlayerReID
 
+# V5.2 : expose les 2 derniers centroides d'equipe calibres (mis a jour a
+# chaque appel de update(), une fois la calibration terminee) - permet a
+# pipeline.py de les lire apres coup pour l'appariement avec les couleurs
+# nommees confirmees par Gemini pendant la pre-analyse (voir
+# analysis/team_color_matching.py). None tant qu'aucune calibration n'a
+# encore eu lieu. Meme pattern que _LAST_TEAM_COLORS deja attendu par
+# pipeline.py (mais celui-ci n'existait pas encore - non touche ici).
+_LAST_TEAM_CENTROIDS = None
+
 
 class Tracker:
     def __init__(self):
@@ -32,6 +41,16 @@ class Tracker:
 
         results = self._update_deepsort(players, frame)
         results = self.reid.process(frame, results)
+
+        # V5.2 : expose les centroides d'equipe calibres (si disponibles)
+        # au niveau du module, pour lecture externe par pipeline.py. Appel
+        # peu couteux (juste une lecture d'attribut si deja calibre, cf.
+        # get_team_centroids()) - laisse a chaque frame par simplicite, la
+        # valeur se stabilise naturellement une fois la calibration faite.
+        global _LAST_TEAM_CENTROIDS
+        _centroides = self.reid.get_team_centroids()
+        if _centroides is not None:
+            _LAST_TEAM_CENTROIDS = _centroides
 
         # V5.2 FIX : ne PLUS ecraser "tracker_id" ici. player_reid.py le
         # definit DEJA correctement (det.get("id"), le vrai id DeepSort,
