@@ -12,6 +12,21 @@ SECRET_KEY   = os.getenv("SECRET_KEY",   "dev-only-change-me")
 DATABASE_URI = os.getenv("DATABASE_URI", "sqlite:///db.sqlite3")
 DEBUG        = os.getenv("DEBUG",        "false").lower() == "true"
 
+# V5.2 (11/09/2026) : avertissement explicite si SQLite reste actif hors
+# mode DEBUG (donc probablement en production) - a la demande explicite
+# de l'utilisateur. SQLite n'est pas concu pour un usage concurrent
+# multi-utilisateurs (verrouillage de fichier au niveau ecriture) -
+# adapte au dev local, pas a la production reelle avec plusieurs
+# analyses simultanees. N'empeche PAS le demarrage (pourrait casser un
+# deploiement en cours de configuration) - avertit fortement dans les
+# logs pour ne pas passer inapercu.
+if not DEBUG and "sqlite" in DATABASE_URI.lower():
+    print("\n" + "!" * 80)
+    print("!! ATTENTION : SQLite utilise en mode NON-DEBUG (probablement production) !!")
+    print("!! SQLite n'est pas adapte a un usage concurrent multi-utilisateurs.      !!")
+    print("!! Configurez DATABASE_URI vers PostgreSQL/MySQL avant un vrai deploiement !!")
+    print("!" * 80 + "\n")
+
 # ─────────────────────────────────────────
 # UPLOADS
 # ─────────────────────────────────────────
@@ -180,8 +195,27 @@ DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 # ─────────────────────────────────────────
 def validate():
     warnings = []
-    if SECRET_KEY == "dev-only-change-me":
-        warnings.append("⚠️  SECRET_KEY non définie")
+    # V5.2 (11/09/2026) : detection elargie (pas seulement la valeur par
+    # defaut exacte "dev-only-change-me") - couvre aussi d'autres valeurs
+    # manifestement de developpement (ex. "local-dev") ou trop courtes
+    # pour etre une vraie cle secrete generee aleatoirement. Avertissement
+    # renforce (bloc tres visible) si en plus DEBUG=False (probablement
+    # production) - une SECRET_KEY faible/predictible en production
+    # permettrait de falsifier des sessions utilisateurs.
+    _valeurs_dev_connues = {"dev-only-change-me", "local-dev", "changeme", "secret", "test"}
+    _secret_key_faible = (
+        SECRET_KEY.lower() in _valeurs_dev_connues
+        or len(SECRET_KEY) < 24
+    )
+    if _secret_key_faible:
+        warnings.append("⚠️  SECRET_KEY non définie ou trop faible pour la production")
+        if not DEBUG:
+            print("\n" + "!" * 80)
+            print("!! ATTENTION : SECRET_KEY faible/de developpement en mode NON-DEBUG !!")
+            print(f"!! Valeur actuelle : \"{SECRET_KEY}\" (probablement production)         !!")
+            print("!! Generez une vraie cle avant deploiement :                             !!")
+            print("!!   python -c \"import secrets; print(secrets.token_hex(32))\"           !!")
+            print("!" * 80 + "\n")
     if not CLAUDE_API_KEY:
         warnings.append("⚠️  CLAUDE_API_KEY manquante — résumé IA désactivé")
     if not STRIPE_SECRET_KEY:

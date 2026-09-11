@@ -13,10 +13,10 @@ with app.app_context():
         user.is_admin = True
         db.session.commit()
         print(f"Admin OK -> {user.email}")
-        
-@app.route("/make-admin")
-def make_admin():
-    user = User.query.first()
-    user.is_admin = True
-    db.session.commit()
-    return "admin ok"
+
+# V5.2 (11/09/2026) : route /make-admin RETIREE - etait exposee
+# publiquement sans AUCUNE protection (donnait les droits admin au
+# premier utilisateur de la base a quiconque visitait cette URL, en
+# production comme en dev). Utiliser desormais UNIQUEMENT ce script
+# en ligne de commande (python Set_Admin.py) pour se donner les
+# droits admin - jamais expose via HTTP.
