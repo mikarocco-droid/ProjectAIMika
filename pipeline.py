@@ -275,18 +275,29 @@ def run_pipeline(
                                   # inchange (detection normale, ou NOT_FOUND si
                                   # explicitement 0 suite a une saisie manuelle vide).
     team_colors_gemini_precalcule = None,  # V5.2 (11/09/2026) : si fourni, dict
-                                  # {"couleurs": [nom_equipe_A, nom_equipe_B],
-                                  # "confiances": [conf_A, conf_B]} - couleurs
-                                  # confirmees par l'utilisateur pendant la
-                                  # pre-analyse (pre_analyse_upload.py). N'evite
-                                  # PAS un appel Gemini (la detection de couleurs
-                                  # du pipeline principal n'en fait pas, elle est
-                                  # basee sur le clustering pixel du tracker) -
-                                  # sert uniquement a ETIQUETER les 2 equipes
-                                  # deja separees par le tracker avec les noms
-                                  # que l'utilisateur a deja vus/confirmes,
-                                  # pour la coherence. None => pas de couleurs
-                                  # pre-analysees, libelles generiques utilises.
+                                  # {"couleurs": [nom_A, nom_B],
+                                  #  "confiances": [conf_A, conf_B],
+                                  #  "noms": {nom_A: "vrai nom equipe A", ...}}
+                                  # - couleurs confirmees par l'utilisateur
+                                  # pendant la pre-analyse (pre_analyse_upload.py),
+                                  # et correspondance couleur->nom reel de
+                                  # l'equipe (ex. "rouge"->"RSC Stavelot B") si
+                                  # deja saisie par l'utilisateur a ce stade.
+                                  # UTILITE : team_id (0/1) est attribue de facon
+                                  # NON DETERMINISTE par le clustering interne du
+                                  # tracker a CHAQUE run (KMeans, initialisation
+                                  # aleatoire) - impossible de savoir a l'avance
+                                  # si "rouge" sera team_id=0 ou 1 sur CE match
+                                  # precis. Ce parametre permet de resoudre
+                                  # automatiquement team_id->nom reel (via
+                                  # team_id->couleur->nom), sans que l'utilisateur
+                                  # ait a deviner/fournir team_names={0:.., 1:..}
+                                  # lui-meme (fiabilite impossible a garantir).
+                                  # Si team_names est EXPLICITEMENT fourni en
+                                  # parallele, team_names prime (jamais ecrase).
+                                  # N'evite PAS un appel Gemini supplementaire -
+                                  # la detection de couleurs du pipeline principal
+                                  # n'en fait pas (clustering pixel du tracker).
     _match_data       = None,    # Replay Engine : dict depuis replay.load_cache() — skip YOLO/tracking si fourni
 ):
     os.makedirs(output_dir, exist_ok=True)
@@ -912,6 +923,25 @@ def run_pipeline(
                     }
                     print(f"  [COULEURS GEMINI] Appariement : {_team_labels_gemini} "
                           f"(distances : {_appariement[0]['distance']}, {_appariement[1]['distance']})")
+
+                    # Deduire automatiquement team_names (team_id -> vrai nom
+                    # d'equipe) via team_id -> couleur -> nom, UNIQUEMENT si
+                    # team_names n'a pas deja ete fourni explicitement (celui-ci
+                    # prime toujours - jamais ecrase par une deduction automatique).
+                    _noms_par_couleur = team_colors_gemini_precalcule.get("noms") or {}
+                    if not team_names and _noms_par_couleur:
+                        _team_names_deduits = {}
+                        for _tid, _couleur in _team_labels_gemini.items():
+                            if _couleur and _couleur in _noms_par_couleur:
+                                _team_names_deduits[_tid] = _noms_par_couleur[_couleur]
+                        if len(_team_names_deduits) == 2:
+                            team_names = _team_names_deduits
+                            print(f"  [COULEURS GEMINI] team_names déduit automatiquement : {team_names}")
+                        elif _team_names_deduits:
+                            print(f"  [COULEURS GEMINI] Déduction partielle uniquement "
+                                  f"({_team_names_deduits}) - au moins une couleur non appariée "
+                                  f"avec confiance suffisante, team_names non déduit pour éviter "
+                                  f"un résultat à moitié correct")
                 else:
                     print(f"  [COULEURS GEMINI] Centroides tracker indisponibles - "
                           f"appariement impossible, libelles generiques conserves")
