@@ -1,0 +1,420 @@
+"""
+finmatch_gemini_cascade.py
+===============================
+V5.2 - Detection FinMatch (fin de match / fin de 2e mi-temps) par
+vision Gemini, architecture IDENTIQUE a fin1mt_gemini_cascade.py (Q1
+signal directionnel/degarni + Q2 verification terrain vide, dichotomie
+Q1 elargie jusqu'au dernier NON confirme).
+
+⚠️ Ne gere PAS les prolongations, tirs au but, etc. - fenetre calibree
+pour un temps reglementaire standard (2x periodes). A traiter separement
+si necessaire (cf. items GELES du roadmap V5.2).
+
+Recherche dans la fenetre [KO2+marge_avant_min, KO2+marge_apres_min] -
+fenetre officielle historique [KO2+40min, KO2+55min], deja validee 9/9
+pour contenir le vrai FinMatch, verifiee avec >=248s de marge sur les 9
+matchs de reference (pas besoin de reduction comme pour Fin1MT, la
+marge etait deja largement suffisante).
+
+Reutilise l'infrastructure generique de kickoff_gemini_cascade.py -
+AUCUNE modification de ce fichier ni de fin1mt_gemini_cascade.py,
+uniquement des imports.
+"""
+
+import json
+
+from analysis.kickoff_gemini_cascade import (
+    _EtatRecherche,
+    _appeler_json_robuste,
+    _extraire_frame,
+    PALIERS_RECHERCHE_FINE,
+    MAX_GEMINI_CALLS_DEFAUT,
+    MAX_WALLCLOCK_S_DEFAUT,
+    obtenir_duree_video,
+)
+
+MODEL_NAME_DEFAUT = "gemini-3.5-flash"
+
+# ─────────────────────────────────────────────────────────────────────────
+# PROMPTS — IDENTIQUES a fin1mt_gemini_cascade.py (meme transition
+# conceptuelle : jeu actif -> joueurs quittent le terrain)
+# ─────────────────────────────────────────────────────────────────────────
+PROMPT_Q1_FINMATCH = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur, autour du moment supposé de la fin du match (fin de la 2e mi-temps).
+
+OBJECTIF : détecter un signe précoce que la fin du match vient d'être sifflée - PAS déterminer si le terrain est déjà vide, juste si un mouvement de sortie a commencé.
+
+═══════════════════════════════════════════════════
+CRITÈRE PRINCIPAL — SENS DE LA MARCHE, OU TERRAIN DÉJÀ DÉGARNI
+═══════════════════════════════════════════════════
+
+Le critère décisif n'est PAS "les joueurs sont-ils calmes" (un arrêt de jeu normal, ou un instant juste après un but marqué, montrent aussi des joueurs calmes, y compris près d'un but). Réponds OUI si L'UN OU L'AUTRE des trois signaux suivants est présent :
+
+SIGNAL A — MOUVEMENT DE SORTIE : plusieurs joueurs (idéalement des deux équipes) sont clairement orientés/en mouvement vers une ligne de touche (peu importe laquelle), plutôt que de rester sur le terrain ou de se diriger vers son centre.
+
+SIGNAL B — TERRAIN DÉJÀ DÉGARNI : le nombre de joueurs visibles sur le terrain est nettement inférieur à un effectif de match complet (moins de la moitié des joueurs habituels), ET ceux qui restent ne sont pas dans une configuration de jeu actif (pas de ballon disputé, pas de course de jeu). Ce signal capte le cas où la sortie a déjà eu lieu avant cette image - tu n'as pas besoin de voir le mouvement lui-même, juste constater que le terrain est déjà nettement plus vide qu'un terrain de match normal.
+
+⚠️ EXCEPTION IMPORTANTE au Signal B : si les quelques joueurs visibles sont REGROUPÉS ENSEMBLE autour d'un point précis (un joueur au sol/blessé, une discussion avec l'arbitre, un incident quelconque), plutôt que dispersés/immobiles chacun de leur côté, NE PAS déclencher le Signal B. Un attroupement autour d'un incident (blessure, contestation) est une scène de MATCH EN COURS avec arrêt de jeu temporaire - le reste des joueurs peut simplement être hors du cadre de la caméra à cet instant (cadrage centré sur l'incident), pas absent du terrain. Le Signal B doit décrire des joueurs dispersés/épars qui ne sont PAS regroupés autour d'un événement précis.
+
+⚠️ AUTRE EXCEPTION IMPORTANTE au Signal B : un ballon immobile et SEUL au sol, avec un ou plusieurs joueurs à distance (parfois un mur de joueurs alignés à quelques mètres), est une configuration typique de PRÉPARATION D'UN COUP FRANC OU D'UN COUP DE PIED ARRÊTÉ - PAS un signe de fin de match, même si peu de joueurs sont visibles et qu'aucune action n'est en cours à cet instant précis (le botteur n'a pas encore frappé). Un ballon visible et positionné seul sur la pelouse, quel que soit le nombre de joueurs autour, doit plutôt orienter vers NON (jeu en cours, coup de pied arrêté en préparation), sauf si DEUX ballons ou plus sont visibles (voir critère séparé pour Q2).
+
+SIGNAL C — POIGNÉES DE MAIN / SALUT DE FIN DE MATCH : plusieurs joueurs des deux équipes se serrent la main, se félicitent, s'alignent pour se saluer, ou se regroupent de manière non liée au jeu (accolades, échanges de maillots) - même s'ils sont encore regroupés au centre ou n'ont pas commencé à marcher vers la sortie. C'est un rituel de fin de match qui survient généralement juste après le coup de sifflet final, avant même que le mouvement de sortie ne commence. Ce signal est spécifique à la fin de MATCH (n'existe pas à la mi-temps).
+
+Si AUCUN des 3 signaux n'est présent (terrain avec un effectif normal, joueurs qui restent sur le terrain en configuration de jeu, pas de rituel de fin visible) → NON.
+Un seul joueur qui s'éloigne (ex: pour une touche, un ballon sorti) ne suffit pas pour le signal A - il faut un mouvement collectif. Mais un terrain visiblement clairsemé suffit pour le signal B, et une poignée de main collective suffit pour le signal C, même sans mouvement de sortie visible.
+
+Réponds STRICTEMENT en JSON, en précisant lequel des 3 signaux (A, B, C, plusieurs, ou aucun) a motivé ta réponse :
+{"signal_sortie_detecte": true/false, "signal_utilise": "A"|"B"|"C"|"aucun"}"""
+
+PROMPT_Q2_FINMATCH = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur, pour vérifier si la fin du match est bien confirmée.
+
+OBJECTIF : déterminer si le terrain est maintenant vide, ou quasiment vide, DES JOUEURS DES DEUX ÉQUIPES DU MATCH (celles visibles avant cet instant, en tenue de match) - PAS déterminer si le terrain est totalement désert.
+
+═══════════════════════════════════════════════════
+IMPORTANT — TOLÉRANCE EXPLICITE
+═══════════════════════════════════════════════════
+
+D'autres personnes peuvent être présentes sur ou près du terrain SANS que cela invalide la fin du match :
+- jeunes joueurs (enfants) qui utilisent le terrain après le match
+- pom-pom girls, animation, présentateur
+- personnel du club, arbitres assistants, remplaçants
+Leur présence NE COMPTE PAS comme "le match est en cours" - seule la présence ou l'absence des JOUEURS DES DEUX ÉQUIPES DU MATCH (en tenue de match, ceux qui jouaient) compte pour ce critère.
+
+═══════════════════════════════════════════════════
+CRITÈRES
+═══════════════════════════════════════════════════
+
+- Terrain vide ou quasiment vide des joueurs des deux équipes du match → OUI (fin de match confirmée)
+- Uniquement d'autres personnes (enfants, pom-pom girls, staff) visibles, aucun joueur des équipes du match → OUI (fin de match confirmée)
+- DEUX ballons ou plus visibles simultanément sur le terrain → OUI (fin de match confirmée). Un vrai match ne se joue qu'avec UN SEUL ballon - la présence de plusieurs ballons est une preuve objective et certaine qu'il ne s'agit pas d'une phase de jeu réelle (échauffement informel, jeu libre après le match), quel que soit le nombre de joueurs présents ou leur niveau d'activité.
+- MOINS DE 2 JOUEURS d'une des deux équipes visibles (une équipe a plusieurs joueurs présents, mais l'autre équipe n'a plus qu'un seul joueur isolé, ou zéro) → OUI (fin de match confirmée). Un vrai match implique la présence de PLUSIEURS joueurs de CHAQUE équipe simultanément - un seul joueur isolé d'une équipe (même très visible) ne compte PAS comme "l'équipe est encore là", c'est probablement un retardataire ou quelqu'un qui traîne, pas un signe que le match continue. Il faut au moins 2-3 joueurs identifiables de chaque équipe pour considérer que les deux équipes sont réellement encore présentes.
+- AUCUN gardien visible à proximité des buts (si un but ou sa zone est visible dans l'image) → signe FAIBLE, à ne considérer QUE combiné avec d'autres signes (effectif réduit, un seul ballon, etc.) - JAMAIS suffisant à lui seul. ⚠️ Un gardien peut être temporairement absent de sa zone pour des raisons de jeu tout à fait normales (aller chercher le ballon sorti en corner pour un renvoi/coup de pied de but, dégagement lointain, etc.) - ce n'est PAS un signe de fin de match dans ces cas-là. N'utilise ce critère que si l'absence de gardien s'accompagne d'autres signes clairs (peu de joueurs, pas d'action de jeu généralisée).
+- AUCUN arbitre visible nulle part dans l'image → signe FAIBLE, à ne considérer QUE combiné avec d'autres signes, JAMAIS suffisant à lui seul (l'arbitre peut être hors-cadre à un instant donné pendant un vrai match).
+- Joueurs des deux équipes REGROUPÉS ENSEMBLE en un seul point du terrain pour discuter/socialiser (pas répartis sur le terrain en formation de jeu) → signe en faveur de OUI, même si plusieurs joueurs de chaque équipe et un seul ballon sont visibles. De vrais joueurs en match, même à l'arrêt (touche, faute), restent globalement RÉPARTIS sur le terrain selon leurs positions - un attroupement compact et informel de joueurs des deux équipes qui discutent ensemble ressemble plutôt à un rassemblement social (fin de match, pause) qu'à une phase de jeu, même sans ballon multiple ni effectif réduit.
+- Effectif à peu près normal/complet, avec PLUSIEURS joueurs identifiables de CHAQUE équipe RÉPARTIS SUR LE TERRAIN en formation de jeu (pas regroupés ensemble pour discuter), UN SEUL ballon ou aucun visible (même sans action de jeu à cet instant précis - un match peut avoir des moments calmes : touche, discussion, arrêt de jeu) → NON (le match est très probablement encore en cours)
+- Effectif visiblement REDUIT (nettement moins de joueurs qu'un effectif complet), joueurs DISPERSÉS/épars (pas regroupés autour d'un point précis) ET aucune action de jeu active → OUI (fin de match confirmée)
+
+⚠️ EXCEPTION : si les joueurs visibles, même en nombre réduit, sont REGROUPÉS ENSEMBLE autour d'un point précis (joueur au sol/blessé, discussion avec l'arbitre, incident quelconque), ce n'est PAS un signe de fin de match - c'est un arrêt de jeu temporaire en cours de match, le reste des joueurs étant probablement hors du cadre de la caméra à cet instant. Réponds NON dans ce cas.
+
+⚠️ AUTRE EXCEPTION : un ballon UNIQUE et immobile visible sur la pelouse (préparation d'un coup franc ou coup de pied arrêté), même avec peu de joueurs visibles ou aucune action en cours, doit orienter vers NON (jeu en cours, pas fin de match) - sauf si le terrain est par ailleurs clairement désert de toute présence des deux équipes.
+
+⚠️ IMPORTANT : ne réponds OUI sur la base de "pas d'action de jeu" QUE SI le nombre de joueurs visibles est ÉGALEMENT nettement réduit par rapport à un effectif complet (SAUF si le critère des 2 ballons ou celui d'une seule équipe visible ci-dessus s'applique, chacun décisif à lui seul). Un effectif complet ou quasi-complet DES DEUX ÉQUIPES avec un seul ballon, même immobile à cet instant précis, ne suffit PAS à conclure à la fin du match - ça peut être un simple flottement de jeu.
+
+Réponds STRICTEMENT en JSON :
+{"terrain_vide_des_2_equipes": true/false}"""
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# PROMPT HISTOIRE — verification narrative a 2 images (t et t+5s), au
+# moment ou Q1 declenche un candidat au scan grossier, AVANT de lancer
+# la verification Q2 a +90s. Objectif : rejeter tot les faux signaux
+# transitoires (faute/coup franc en cours), sans gaspiller un appel Q2
+# a +90s dessus.
+# ─────────────────────────────────────────────────────────────────────────
+PROMPT_HISTOIRE_FINMATCH = """Tu vas analyser DEUX images extraites de la même vidéo de match de football amateur, prises à exactement 5 secondes d'intervalle (Image 1 = instant t, Image 2 = instant t+5s).
+
+CONTEXTE : un signal potentiel de fin de match a été détecté sur l'Image 1 (terrain semblant dégarni, ou joueurs en train de sortir). Ta tâche est de juger si ces deux images, prises ENSEMBLE comme une courte séquence, racontent une histoire COHÉRENTE avec une vraie fin de match en cours.
+
+═══════════════════════════════════════════════════
+CE QUI RACONTE UNE HISTOIRE COHÉRENTE DE FIN DE MATCH (répondre OUI)
+═══════════════════════════════════════════════════
+⚠️ IMPORTANT : "le jeu n'a pas repris en 5 secondes" n'est PAS suffisant à lui seul - un simple arrêt de jeu normal (faute, blessure, discussion) montre exactement la même chose sur une fenêtre aussi courte. Il faut un signe POSITIF et actif de fin de match, pas juste l'absence de reprise :
+- Un mouvement de sortie vers la ligne de touche (déjà amorcé sur l'Image 1) qui se confirme ou progresse sur l'Image 2 (joueurs clairement plus proches de la touche, ou plus nombreux à s'y diriger)
+- Des poignées de main, accolades, ou rituel de salutation visible sur l'une des 2 images
+- Le nombre de joueurs qui DIMINUE encore entre l'Image 1 et l'Image 2 (départ progressif confirmé, pas juste un nombre stable)
+
+═══════════════════════════════════════════════════
+CE QUI CONTREDIT L'HISTOIRE DE FIN DE MATCH (répondre NON)
+═══════════════════════════════════════════════════
+- L'Image 2 montre un retour à une action de jeu active (ballon disputé, courses)
+- Un ballon apparaît sur l'Image 2 alors qu'il était absent sur l'Image 1 (signe qu'un coup franc/coup de pied arrêté était juste en préparation, pas une fin de match)
+- Les joueurs se replacent pour une reprise du jeu plutôt que de continuer à sortir/rester dispersés
+- Tout signe que la scène de l'Image 1 était un simple arrêt de jeu temporaire (faute, blessure, discussion) qui se résout normalement sur l'Image 2
+- L'Image 2 montre EXACTEMENT LA MÊME SCÈNE que l'Image 1 (même joueurs, mêmes positions, même calme) SANS aucun signe positif nouveau (pas de mouvement de sortie qui progresse, pas de salutations, pas de départ supplémentaire) - l'absence de reprise du jeu sur seulement 5 secondes ne prouve RIEN, un arrêt de jeu normal ressemble exactement à ça aussi
+
+Réponds STRICTEMENT en JSON, avec un raisonnement TRÈS COURT (15 mots maximum, style mots-clés factuels, pas de phrase complète) décrivant ce qui change entre les 2 images :
+{"histoire_coherente": true/false, "raisonnement": "..."}"""
+
+
+def _verifier_histoire(client, video_path, t, tmp_dir, etat, delai_s=5, prompt_histoire=None, model_name=MODEL_NAME_DEFAUT):
+    """Envoie 2 images (t et t+delai_s) ENSEMBLE dans un seul appel
+    Gemini, pour un jugement de coherence narrative - pas 2 appels
+    independants compares apres coup. Retourne (bool_ou_None,
+    raisonnement)."""
+    from google.genai import types
+
+    image_1 = _extraire_frame(video_path, t, tmp_dir)
+    image_2 = _extraire_frame(video_path, t + delai_s, tmp_dir)
+    if image_1 is None or image_2 is None:
+        return None, "échec extraction d'une des 2 images"
+
+    etat.n_appels += 1
+
+    def _appel():
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[
+                types.Part.from_bytes(data=image_1, mime_type="image/jpeg"),
+                types.Part.from_bytes(data=image_2, mime_type="image/jpeg"),
+                prompt_histoire,
+            ],
+            config=types.GenerateContentConfig(temperature=0.0),
+        )
+        texte = response.text.strip()
+        if texte.startswith("```"):
+            texte = texte.split("```")[1]
+            if texte.startswith("json"):
+                texte = texte[4:]
+        return json.loads(texte.strip())
+
+    try:
+        future = etat.executor.submit(_appel)
+        resultat = future.result(timeout=30)
+    except Exception as e:
+        return None, f"échec appel : {e}"
+
+    if resultat is None:
+        return None, "échec appel"
+    return bool(resultat.get("histoire_coherente", False)), resultat.get("raisonnement", "non fourni")
+
+
+def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME_DEFAUT):
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q1_FINMATCH, etat, model_name=model_name)
+    if result is None:
+        return None, "échec API"
+    signal_utilise = result.get("signal_utilise", "?")
+    raisonnement = f"[signal={signal_utilise}] {result.get('raisonnement', 'non fourni')}"
+    return bool(result.get("signal_sortie_detecte", False)), raisonnement
+
+
+def _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME_DEFAUT):
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q2_FINMATCH, etat, model_name=model_name)
+    if result is None:
+        return None, "échec API"
+    return bool(result.get("terrain_vide_des_2_equipes", False)), result.get("raisonnement", "non fourni")
+
+
+def _voter(client, video_path, t, tmp_dir, etat, fonction_lecture, max_appels=3, model_name=MODEL_NAME_DEFAUT):
+    """Vote majoritaire avec arret anticipe - identique a fin1mt."""
+    votes = []
+    dernier_raisonnement = None
+    for _ in range(max_appels):
+        v, raisonnement = fonction_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
+        dernier_raisonnement = raisonnement
+        if v is None:
+            if not votes:
+                return None, raisonnement
+            break
+        votes.append(v)
+        n_true = sum(votes)
+        n_false = len(votes) - n_true
+        restants = max_appels - len(votes)
+        if n_true > n_false + restants or n_false > n_true + restants:
+            break
+    if not votes:
+        return None, dernier_raisonnement
+    return (sum(votes) > len(votes) / 2), dernier_raisonnement
+
+
+def _recherche_fine_finmatch(client, video_path, tmp_dir, etat, t_avant, t_apres, model_name=MODEL_NAME_DEFAUT):
+    """Dichotomie 15/5/1s utilisant Q1 (signal large), pas Q2 (trop
+    strict) - identique a fin1mt_gemini_cascade.py."""
+    t_bas, t_haut = t_avant, t_apres
+    for pas in PALIERS_RECHERCHE_FINE:
+        tt = t_bas + pas
+        dernier_non = t_bas
+        while tt < t_haut:
+            d, raisonnement = _q1_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
+            print(f"    [FINMATCH FINE pas={pas}s] t={tt:.0f}s : {'SORTIE' if d else 'PAS_ENCORE' if d is not None else 'ERREUR'} — {raisonnement}")
+            if d:
+                t_haut = tt
+                t_bas = dernier_non
+                break
+            dernier_non = tt
+            tt += pas
+        else:
+            t_bas = dernier_non
+    return t_haut
+
+
+def find_finmatch_gemini(video_path, ko2_s, marge_avant_min=40, marge_apres_min=55,
+                          pas_scan=60, delai_verif_q2=90, model_name=MODEL_NAME_DEFAUT,
+                          max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
+                          max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT, tmp_dir="/tmp"):
+    """
+    Cherche FinMatch par vision Gemini - architecture identique a
+    find_fin1mt_gemini (Q1 large + Q2 verification + dichotomie Q1).
+
+    ⚠️ Ne gere PAS prolongations/tirs au but - fenetre calibree pour un
+    temps reglementaire standard.
+
+    Fenetre [KO2+marge_avant_min, KO2+marge_apres_min] - fenetre
+    officielle historique, verifiee >=248s de marge sur les 9 matchs de
+    reference (pas de reduction necessaire, contrairement a Fin1MT).
+
+    Retourne un dict {"finmatch_s": float|None, "n_appels_gemini": int}.
+    """
+    from google import genai
+    client = genai.Client()
+
+    etat = _EtatRecherche(max_gemini_calls, max_wallclock_s)
+    try:
+        t_debut = ko2_s + marge_avant_min * 60
+        t_fin = ko2_s + marge_apres_min * 60
+
+        # V5.2 FIX : ne jamais chercher au-dela de la duree reelle de la
+        # video - decouvert en production (MineroisSter) : la fenetre
+        # [KO2+40min, KO2+55min] peut depasser la duree reelle du
+        # fichier, une extraction hors bornes fait echouer ffmpeg
+        # silencieusement. Marge de securite de 5s.
+        duree_video = obtenir_duree_video(video_path)
+        if duree_video is not None and t_fin > duree_video - 5:
+            t_fin_originale = t_fin
+            t_fin = max(t_debut, duree_video - 5)
+            print(f"  [FINMATCH_GEMINI] fenêtre limitée par la durée réelle de la vidéo "
+                  f"({duree_video:.0f}s) : t_fin {t_fin_originale:.0f}s → {t_fin:.0f}s")
+
+        if t_fin <= t_debut:
+            return {"finmatch_s": None, "n_appels_gemini": etat.n_appels}
+
+        t = t_debut
+        dernier_non_confirme = t_debut
+        premier_de_la_serie = None
+        serie_actuelle = 0
+        meilleur_candidat_narratif = None  # V5.2 FIX (09/09/2026, suite
+        # diagnostic Franchimont) : combine les deux architectures.
+        # Chemin rapide (3 confirmations Q1 consecutives) reste
+        # prioritaire - rapide et peu couteux quand l'etat est stable
+        # plusieurs minutes (cas majoritaire). Mais un signal isole qui
+        # casse la serie (ex. Franchimont : signal C legitime a
+        # t=6599s, suivi d'un NON a t=6659s avant de repartir) n'est
+        # plus purement perdu : verifie UNE fois par le narratif (leger,
+        # pas le Q2 couteux de l'ancienne architecture), et si coherent,
+        # retenu comme meilleur candidat de repli - utilise comme
+        # ancrage pour la recherche fine SEULEMENT si aucune serie de 3
+        # n'est jamais atteinte, avant de tomber sur le repli Q2 (qui
+        # atterrit typiquement bien plus loin du vrai instant).
+        meilleur_candidat_borne_basse = None
+        while t <= t_fin:
+            raison_arret = etat.budget_epuise()
+            if raison_arret:
+                print(f"  [FINMATCH_GEMINI] arrêt : {raison_arret}")
+                return {"finmatch_s": None, "n_appels_gemini": etat.n_appels}
+
+            decision_q1, raisonnement_q1 = _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
+            print(f"  [FINMATCH_GEMINI] Q1 à t={t:.0f}s : {'SIGNAL_SORTIE' if decision_q1 else 'NON' if decision_q1 is not None else 'ERREUR'} — {raisonnement_q1}")
+
+            if decision_q1:
+                if serie_actuelle == 0:
+                    premier_de_la_serie = t
+                serie_actuelle += 1
+                if serie_actuelle >= 3:
+                    print(f"  [FINMATCH_GEMINI] pause établie (3 confirmations Q1 consécutives), "
+                          f"1er point={premier_de_la_serie:.0f}s — recherche fine dans "
+                          f"[{dernier_non_confirme:.0f}s, {premier_de_la_serie:.0f}s]...")
+                    resultat = _recherche_fine_finmatch(client, video_path, tmp_dir, etat,
+                                                          dernier_non_confirme, premier_de_la_serie, model_name=model_name)
+                    print(f"  [FINMATCH_GEMINI] FinMatch détecté à t={resultat:.0f}s")
+                    return {"finmatch_s": float(resultat), "n_appels_gemini": etat.n_appels}
+
+                # V5.2 FIX (suite remarque utilisateur) : verifier le
+                # narratif a CHAQUE signal isole qui ne complete pas une
+                # serie de 3 - pas seulement le tout premier tente. Si
+                # le premier signal est rejete par le narratif (ex.
+                # activite informelle post-match), les signaux suivants
+                # ont quand meme leur chance d'etre retenus comme
+                # candidat de secours. On garde le PREMIER jugee
+                # coherent (pas le dernier), toujours par coherence avec
+                # le principe "le signal le plus precoce valide est le
+                # plus fiable" utilise ailleurs dans le pipeline.
+                if meilleur_candidat_narratif is None:
+                    print(f"  [FINMATCH_GEMINI] vérification narrative de secours (t={t:.0f}s, t+5s={t+5:.0f}s)...")
+                    histoire_coherente, raisonnement_histoire = _verifier_histoire(
+                        client, video_path, t, tmp_dir, etat, delai_s=5,
+                        prompt_histoire=PROMPT_HISTOIRE_FINMATCH, model_name=model_name)
+                    print(f"  [FINMATCH_GEMINI] histoire : {'COHÉRENTE' if histoire_coherente else 'CONTREDITE' if histoire_coherente is not None else 'ERREUR'} — {raisonnement_histoire}")
+                    if histoire_coherente:
+                        meilleur_candidat_narratif = t
+                        meilleur_candidat_borne_basse = dernier_non_confirme
+                        print(f"  [FINMATCH_GEMINI] candidat de secours retenu à t={t:.0f}s")
+                    else:
+                        print(f"  [FINMATCH_GEMINI] candidat rejeté par le narratif, prochain signal isolé tenté si trouvé")
+            else:
+                serie_actuelle = 0
+                premier_de_la_serie = None
+                dernier_non_confirme = t
+
+            t += pas_scan
+
+        if meilleur_candidat_narratif is not None:
+            print(f"  [FINMATCH_GEMINI] aucune série de 3 atteinte, mais candidat de secours "
+                  f"retenu à t={meilleur_candidat_narratif:.0f}s — recherche fine dans "
+                  f"[{meilleur_candidat_borne_basse:.0f}s, {meilleur_candidat_narratif:.0f}s]...")
+            resultat = _recherche_fine_finmatch(client, video_path, tmp_dir, etat,
+                                                  meilleur_candidat_borne_basse, meilleur_candidat_narratif, model_name=model_name)
+            print(f"  [FINMATCH_GEMINI] FinMatch détecté à t={resultat:.0f}s")
+            return {"finmatch_s": float(resultat), "n_appels_gemini": etat.n_appels}
+
+        print(f"  [FINMATCH_GEMINI] aucun candidat Q1 confirmé dans la fenêtre")
+
+        # V5.2 FIX : plutot que d'essayer de deviner une borne inferieure
+        # fiable (le "vrai" instant n'est de toute facon jamais observable
+        # directement, seulement deductible de ce qui se passe apres),
+        # on balaie simplement en AVANT avec Q2 (pas Q1) depuis le
+        # dernier point connu jusqu'a la fin de la video, a la recherche
+        # du premier moment ou le terrain est reellement vide. On accepte
+        # un leger biais en retard plutot que de deviner une fourchette
+        # de dichotomie qui peut etre completement fausse (cas Goe :
+        # premier_signal_jamais_vu=6841s etait beaucoup trop loin en
+        # arriere pour etre une bonne borne).
+        if duree_video is not None and dernier_non_confirme < duree_video:
+            borne_sup = min(duree_video - 5, duree_video)
+            if borne_sup > dernier_non_confirme:
+                print(f"  [FINMATCH_GEMINI] repli : balayage Q2 en avant depuis "
+                      f"{dernier_non_confirme:.0f}s jusqu'à {borne_sup:.0f}s")
+                PAS_BALAYAGE_REPLI = 15
+                dernier_pas_vide = dernier_non_confirme
+                tt = dernier_non_confirme + PAS_BALAYAGE_REPLI
+                trouve = None
+                while tt <= borne_sup:
+                    d, raisonnement = _q2_une_lecture(client, video_path, tt, tmp_dir, etat, model_name=model_name)
+                    print(f"    [REPLI pas={PAS_BALAYAGE_REPLI}s] t={tt:.0f}s : "
+                          f"{'VIDE' if d else 'PAS_VIDE' if d is not None else 'ERREUR'} — {raisonnement}")
+                    if d:
+                        trouve = tt
+                        break
+                    dernier_pas_vide = tt
+                    tt += PAS_BALAYAGE_REPLI
+                if trouve is not None:
+                    # affinage 5s/1s entre dernier_pas_vide et trouve, EN
+                    # UTILISANT Q2 (pas Q1) - coherent avec le balayage
+                    # ci-dessus, qui cherche "terrain vide", pas "signal
+                    # de sortie".
+                    t_bas, t_haut = dernier_pas_vide, trouve
+                    for pas in (5, 1):
+                        tt2 = t_bas + pas
+                        dernier_non2 = t_bas
+                        while tt2 < t_haut:
+                            d2, raisonnement2 = _q2_une_lecture(client, video_path, tt2, tmp_dir, etat, model_name=model_name)
+                            print(f"    [REPLI FINE pas={pas}s] t={tt2:.0f}s : "
+                                  f"{'VIDE' if d2 else 'PAS_VIDE' if d2 is not None else 'ERREUR'} — {raisonnement2}")
+                            if d2:
+                                t_haut = tt2
+                                t_bas = dernier_non2
+                                break
+                            dernier_non2 = tt2
+                            tt2 += pas
+                        else:
+                            t_bas = dernier_non2
+                    resultat = t_haut
+                    print(f"  [FINMATCH_GEMINI] FinMatch détecté (via repli) à t={resultat:.0f}s")
+                    return {"finmatch_s": float(resultat), "n_appels_gemini": etat.n_appels}
+                print(f"  [FINMATCH_GEMINI] repli : jamais VIDE jusqu'à la fin de la vidéo, "
+                      f"utilisation de la fin de la vidéo ({duree_video:.0f}s) comme estimation")
+                return {"finmatch_s": duree_video, "n_appels_gemini": etat.n_appels}
+            print(f"  [FINMATCH_GEMINI] repli : utilisation de la fin de la vidéo "
+                  f"({duree_video:.0f}s) comme estimation de FinMatch (pas de marge)")
+            return {"finmatch_s": duree_video, "n_appels_gemini": etat.n_appels}
+
+        return {"finmatch_s": None, "n_appels_gemini": etat.n_appels}
+    finally:
+        etat.fermer()
