@@ -476,6 +476,18 @@ class PlayerReID:
                 dist[t] += 1
         return dict(dist)
 
+    def get_team_centroids(self):
+        """V5.2 : expose les 2 centroides calibres (vecteurs 19D
+        histogramme-teinte + LAB, cf. _extract_color/_calibrate_teams)
+        pour un usage externe - notamment l'appariement avec les
+        couleurs nommees confirmees par Gemini pendant la pre-analyse
+        (voir analysis/team_color_matching.py). Retourne None si la
+        calibration n'a pas encore eu lieu (pas assez d'echantillons
+        ou de frames vues)."""
+        if not self._team_colors_calibrated or self._team_centroids is None:
+            return None
+        return [self._team_centroids[0].copy(), self._team_centroids[1].copy()]
+
     def reset(self):
         self.memory                  = {}
         self.next_id                 = 0
