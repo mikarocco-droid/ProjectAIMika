@@ -679,11 +679,32 @@ def upload():
         if _matches_preview:
             _preview_path = _matches_preview[0]
 
+    # V5.2 (11/09/2026) : identifiant UNIQUE pour cette soumission - a la
+    # demande explicite de l'utilisateur, pour eviter toute collision de
+    # fichiers si plusieurs analyses tournent en meme temps en production.
+    # BUG PREEXISTANT CORRIGE ICI (pas introduit ce soir, present avant
+    # meme mes changements anterieurs) : filename se basait uniquement sur
+    # secure_filename(f.filename) - le nom ORIGINAL fourni par
+    # l'utilisateur, jamais rendu unique. Si 2 utilisateurs (ou le meme
+    # utilisateur 2 fois) uploadaient un fichier de MEME NOM (tres courant,
+    # ex. "match.mp4"), le 2e upload ecrasait le fichier du 1er sur le
+    # disque - potentiellement PENDANT que le 1er etait encore en cours
+    # d'analyse (celle-ci est asynchrone, Celery/thread). analysis.id
+    # n'est pas encore disponible ici (objet Analysis cree plus bas) -
+    # utilise donc un identifiant independant (date+heure a la seconde +
+    # suffixe aleatoire court pour eviter toute collision meme si 2
+    # requetes arrivent exactement a la meme seconde).
+    _upload_unique_id = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
     if _preview_path:
         _ext = os.path.splitext(_preview_path)[1] or ".mp4"
         # Nom de fichier "logique" pour l'affichage - le vrai contenu vient
-        # du fichier de preview deplace, pas d'un nouvel upload.
-        filename = secure_filename(f.filename) if (f and f.filename) else f"video{_ext}"
+        # du fichier de preview deplace, pas d'un nouvel upload. Prefixe
+        # par _upload_unique_id pour eviter toute collision (cf. note
+        # ci-dessus) - le nom original de l'utilisateur (s'il existe) est
+        # conserve en suffixe pour rester lisible.
+        _nom_original = secure_filename(f.filename) if (f and f.filename) else f"video{_ext}"
+        filename = f"{_upload_unique_id}_{_nom_original}"
         path     = os.path.join(config.UPLOAD_FOLDER, filename)
         try:
             shutil.move(_preview_path, path)
@@ -702,7 +723,8 @@ def upload():
             flash(f"Format non supporte — formats acceptes : {', '.join(config.ALLOWED_EXTENSIONS)}")
             return redirect(url_for("dashboard"))
 
-        filename = secure_filename(f.filename)
+        # Meme correctif : prefixe unique + nom original en suffixe lisible.
+        filename = f"{_upload_unique_id}_{secure_filename(f.filename)}"
         path     = os.path.join(config.UPLOAD_FOLDER, filename)
         f.save(path)
 
