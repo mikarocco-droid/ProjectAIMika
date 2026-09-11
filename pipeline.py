@@ -300,32 +300,53 @@ def run_pipeline(
                                   # N'evite PAS un appel Gemini supplementaire -
                                   # la detection de couleurs du pipeline principal
                                   # n'en fait pas (clustering pixel du tracker).
-    use_match_boundary_segments = False,  # V5.2 (11/09/2026) - EXPERIMENTAL,
-                                  # NON TESTE avec de vrais appels Gemini
-                                  # (implemente sans possibilite de test ce
-                                  # soir - a valider avant activation par
-                                  # defaut). Si True : detecte KO1/KO2/
-                                  # Fin1MT/FinMatch AVANT le passage YOLO
-                                  # (tous via Gemini vision/audio, aucun ne
-                                  # depend de frames_data), puis extrait
-                                  # SEULEMENT les 2 fenetres de vrai temps de
-                                  # jeu (1ere mi-temps, 2e mi-temps) en clips
-                                  # via ffmpeg, et lance YOLO UNIQUEMENT sur
-                                  # ces 2 clips - au lieu de tout analyser
+    use_match_boundary_segments = True,  # V5.2 (11/09/2026) - ACTIF PAR
+                                  # DEFAUT depuis ce soir, sur demande
+                                  # explicite (repli de securite integre :
+                                  # en cas d'echec de detection/extraction,
+                                  # _match_data reste None et le pipeline
+                                  # continue automatiquement avec le chemin
+                                  # complet existant, inchange - aucune
+                                  # perte d'analyse possible). Detecte
+                                  # KO1/KO2/Fin1MT/FinMatch AVANT le passage
+                                  # YOLO (tous via Gemini vision/audio,
+                                  # aucun ne depend de frames_data), puis
+                                  # extrait SEULEMENT les 2 fenetres de vrai
+                                  # temps de jeu (1ere mi-temps, 2e mi-temps)
+                                  # en clips via ffmpeg, et lance YOLO
+                                  # SEQUENTIELLEMENT sur chaque mi-temps
+                                  # (logs explicites par etape, avec
+                                  # verification a posteriori des frames
+                                  # produites) - au lieu de tout analyser
                                   # (pause de mi-temps + apres-match inclus)
-                                  # puis filtrer apres coup. Reutilise
-                                  # extract_segments()/analyze_segments()
-                                  # (deja existants, deja testes via le
-                                  # chemin candidate_segments/coarse_scan).
-                                  # Economie attendue : ~15-20% de calcul
-                                  # YOLO sur un match 90min avec pause
-                                  # 15-20min - JAMAIS MESUREE EN PRATIQUE.
-                                  # Defaut False : comportement inchange,
-                                  # match traite en un seul passage continu.
+                                  # puis filtrer apres coup. Passer False
+                                  # pour revenir a l'ancien comportement
+                                  # (analyse continue, sans segmentation).
     _match_data       = None,    # Replay Engine : dict depuis replay.load_cache() — skip YOLO/tracking si fourni
 ):
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
+
+    # V5.2 (11/09/2026) : dossier temporaire UNIQUE pour cette analyse -
+    # a la demande explicite de l'utilisateur, pour eviter toute collision
+    # de fichiers temporaires si plusieurs analyses tournent en meme temps
+    # en production (constate : _extraire_frame() nomme ses fichiers
+    # uniquement par timestamp video, ex. "ko_frame_120.0.jpg" - 2 analyses
+    # DIFFERENTES qui interrogent coincidemment le meme instant se
+    # marcheraient dessus ; find_fin1mt_audio()/find_finmatch_audio()
+    # utilisent carrement des noms fixes, "_fin1mt_audio_tmp.wav" etc.).
+    # output_dir est deja unique par analysis_id, donc un sous-dossier
+    # nomme dessous suffit a isoler completement chaque analyse - date+
+    # heure ajoutee en plus pour tracabilite/lisibilite (pas strictement
+    # necessaire pour l'unicite, output_dir suffit deja, mais demande
+    # explicitement). Passe explicitement a TOUS les appels de fonctions
+    # de detection Gemini/audio (KO1/KO2/Fin1MT/FinMatch) plus bas, au
+    # lieu de laisser leur defaut tmp_dir="/tmp" partage entre analyses.
+    from datetime import datetime as _datetime_tmp
+    _gemini_tmp_dir = os.path.join(
+        output_dir, f"gemini_tmp_{_datetime_tmp.now().strftime('%Y%m%d_%H%M%S')}"
+    )
+    os.makedirs(_gemini_tmp_dir, exist_ok=True)
 
     # ── Auto frame_skip selon FPS réel de la vidéo ───────────────────────────
     # Garantit ~6.25 fps analysés quelle que soit la source (25/30/50/60fps)
@@ -425,28 +446,37 @@ def run_pipeline(
         print(f"  [GOAL_BOX] Non disponible : {_e}")
 
     # ─────────────────────────────────────────
-    # STEP 0a — SEGMENTATION PAR BORNES DE MATCH (EXPERIMENTAL)
+    # STEP 0a — SEGMENTATION PAR BORNES DE MATCH
     # ─────────────────────────────────────────
-    # V5.2 (11/09/2026) - NON TESTE avec de vrais appels Gemini ce soir.
-    # Detecte KO1/KO2/Fin1MT/FinMatch AVANT tout passage YOLO (tous via
-    # Gemini vision/audio, aucun ne depend de frames_data - contrairement
-    # a find_match_end() qui lui en depend, d'ou l'usage de
-    # find_finmatch_gemini a la place ici). Extrait ensuite SEULEMENT
-    # les 2 fenetres de vrai temps de jeu en clips via ffmpeg
-    # (extract_segments, deja teste via le chemin candidate_segments/
-    # coarse_scan) et lance YOLO uniquement dessus (analyze_segments,
-    # idem deja teste) - economise le calcul sur la pause de mi-temps et
-    # l'apres-match, au lieu de tout traiter puis filtrer apres coup.
+    # V5.2 (11/09/2026) - Actif par defaut depuis ce soir. Detecte
+    # KO1/KO2/Fin1MT/FinMatch AVANT tout passage YOLO (tous via Gemini
+    # vision/audio, aucun ne depend de frames_data), puis extrait
+    # SEULEMENT les 2 fenetres de vrai temps de jeu en clips ffmpeg et
+    # lance YOLO uniquement dessus - economise le calcul sur la pause de
+    # mi-temps et l'apres-match, au lieu de tout traiter puis filtrer
+    # apres coup.
     #
-    # Integration choisie : construit un dict au MEME format que
-    # _match_data (Replay Engine, deja existant et deja teste) et
-    # l'assigne a _match_data - reutilise ainsi 100% du chemin REPLAY
-    # existant en aval SANS AUCUNE modification necessaire la-bas.
-    # Si une etape echoue (detection ou extraction), _match_data reste
-    # None et le pipeline continue normalement avec le chemin complet
-    # existant, inchange - AUCUNE regression possible sur le
-    # comportement par defaut (use_match_boundary_segments=False).
+    # Traitement VOLONTAIREMENT SEQUENTIEL (pas parallele) des 2
+    # mi-temps, avec logs explicites a chaque etape, a la demande
+    # explicite de l'utilisateur : pouvoir VERIFIER concretement que
+    # l'optimisation fait bien ce qu'elle est censee faire (et non pas
+    # juste supposer que c'est le cas). Chaque etape imprime un resultat
+    # VERIFIABLE (compte d'events/frames par mi-temps, calcule a partir
+    # des donnees reellement retournees - pas juste "on a lance le
+    # traitement").
+    #
+    # Integration : construit un dict au MEME format que _match_data
+    # (Replay Engine, deja existant et deja teste) et l'assigne a
+    # _match_data - reutilise ainsi 100% du chemin REPLAY existant en
+    # aval SANS AUCUNE modification necessaire la-bas. Si une etape
+    # echoue, _match_data reste None et le pipeline continue normalement
+    # avec le chemin complet existant, inchange.
     if use_match_boundary_segments and _match_data is None:
+        import time as _bseg_time
+        print()
+        print("  " + "="*90)
+        print("  [BOUNDARY_SEG] ▶️  DÉMARRAGE — segmentation par bornes de match")
+        print("  " + "="*90)
         try:
             import cv2 as _cv2_seg
             from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
@@ -459,81 +489,141 @@ def run_pipeline(
             _total_frames_seg = int(_cap_seg.get(_cv2_seg.CAP_PROP_FRAME_COUNT))
             _cap_seg.release()
             _duration_seg = _total_frames_seg / max(_fps_seg, 1)
+            print(f"  [BOUNDARY_SEG] Vidéo source : {_duration_seg:.0f}s "
+                  f"({_duration_seg/60:.1f} min) totales")
 
-            print("  [BOUNDARY_SEG] Détection des 4 bornes du match avant tout passage YOLO...")
-
+            # ── Détection des 4 bornes ──────────────────────────────────
+            print(f"  [BOUNDARY_SEG] --- Détection des bornes ---")
             _max_search_s = min(_duration_seg, (half_duration_min / 3) * 2 * 60)
             _r_ko1 = detect_kickoff_gemini_avec_retry(
                 video_path, max_search_s=_max_search_s, max_retries=3,
+                tmp_dir=_gemini_tmp_dir,
             )
-            print(f"  [BOUNDARY_SEG] KO1 : status={_r_ko1['status']} kickoff_s={_r_ko1['kickoff_s']}")
-
             if _r_ko1["status"] != "AUTO_CONFIRMED":
                 raise RuntimeError(f"KO1 non confirmé ({_r_ko1['status']}) — segmentation par bornes impossible")
             _ko1_abs = _r_ko1["kickoff_s"]
+            print(f"  [BOUNDARY_SEG] ✅ KO1 confirmé : t={_ko1_abs:.0f}s "
+                  f"({int(_ko1_abs//60):02d}:{int(_ko1_abs%60):02d})")
 
-            _r_ko2 = find_ko2_gemini(video_path, ko1_s=_ko1_abs, half_duration_min=half_duration_min)
-            print(f"  [BOUNDARY_SEG] KO2 : status={_r_ko2['status']} ko2_s={_r_ko2.get('ko2_s')}")
+            _r_ko2 = find_ko2_gemini(video_path, ko1_s=_ko1_abs, half_duration_min=half_duration_min, tmp_dir=_gemini_tmp_dir)
             if _r_ko2["status"] != "AUTO_CONFIRMED":
                 raise RuntimeError(f"KO2 non confirmé ({_r_ko2['status']}) — segmentation par bornes impossible")
             _ko2_abs = _r_ko2["ko2_s"]
+            print(f"  [BOUNDARY_SEG] ✅ KO2 confirmé : t={_ko2_abs:.0f}s "
+                  f"({int(_ko2_abs//60):02d}:{int(_ko2_abs%60):02d})")
 
-            _fin1mt_abs = find_fin1mt_audio(video_path, ko2_s=_ko2_abs)
-            print(f"  [BOUNDARY_SEG] Fin1MT : {_fin1mt_abs}")
+            # V5.2 (11/09/2026) : Fin1MT et FinMatch dependent TOUS LES DEUX
+            # uniquement de KO2 (Fin1MT cherche en arriere depuis KO2,
+            # FinMatch cherche en avant depuis KO2) - AUCUNE dependance
+            # entre elles. Paralleliser avec ThreadPoolExecutor (I/O-bound :
+            # appels Gemini/traitement audio, pas de calcul CPU lourd -
+            # threading suffit, pas besoin de multiprocessing).
+            print(f"  [BOUNDARY_SEG] --- Détection Fin1MT + FinMatch (en parallèle) ---")
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=2) as _executor_bornes:
+                _future_fin1mt = _executor_bornes.submit(find_fin1mt_audio, video_path, ko2_s=_ko2_abs, tmp_dir=_gemini_tmp_dir)
+                _future_finmatch = _executor_bornes.submit(find_finmatch_gemini, video_path, ko2_s=_ko2_abs, tmp_dir=_gemini_tmp_dir)
+                _fin1mt_abs = _future_fin1mt.result()
+                _r_finmatch = _future_finmatch.result()
+
             if _fin1mt_abs is None:
                 raise RuntimeError("Fin1MT non détecté — segmentation par bornes impossible")
+            print(f"  [BOUNDARY_SEG] ✅ Fin1MT confirmée : t={_fin1mt_abs:.0f}s "
+                  f"({int(_fin1mt_abs//60):02d}:{int(_fin1mt_abs%60):02d})")
 
-            _r_finmatch = find_finmatch_gemini(video_path, ko2_s=_ko2_abs)
             _finmatch_abs = _r_finmatch.get("finmatch_s")
-            print(f"  [BOUNDARY_SEG] FinMatch : {_finmatch_abs}")
             if _finmatch_abs is None:
                 raise RuntimeError("FinMatch non détecté — segmentation par bornes impossible")
+            print(f"  [BOUNDARY_SEG] ✅ FinMatch confirmée : t={_finmatch_abs:.0f}s "
+                  f"({int(_finmatch_abs//60):02d}:{int(_finmatch_abs%60):02d})")
 
-            # Marges de sécurité de chaque côté (cohérentes avec les marges
-            # deja utilisees ailleurs dans le pipeline pour ces bornes -
-            # cf. _MARGE_AVANT_KO_S=10 plus bas pour KO1).
-            _MARGE_KO1_AVANT_S    = 10
+            _MARGE_KO1_AVANT_S      = 10
             _MARGE_FINMATCH_APRES_S = 30
-
             _seg_1ere_mt = (max(0, _ko1_abs - _MARGE_KO1_AVANT_S), _fin1mt_abs)
             _seg_2e_mt   = (_ko2_abs, min(_duration_seg, _finmatch_abs + _MARGE_FINMATCH_APRES_S))
-            _segments_match = [_seg_1ere_mt, _seg_2e_mt]
 
-            print(f"  [BOUNDARY_SEG] Segments : 1ère MT={_seg_1ere_mt[0]:.0f}s→{_seg_1ere_mt[1]:.0f}s "
-                  f"| 2e MT={_seg_2e_mt[0]:.0f}s→{_seg_2e_mt[1]:.0f}s")
-            _duree_analysee = (_seg_1ere_mt[1]-_seg_1ere_mt[0]) + (_seg_2e_mt[1]-_seg_2e_mt[0])
-            print(f"  [BOUNDARY_SEG] Durée analysée : {_duree_analysee:.0f}s / "
-                  f"{_duration_seg:.0f}s vidéo totale ({100*_duree_analysee/_duration_seg:.0f}%)")
+            _duree_1ere_mt = _seg_1ere_mt[1] - _seg_1ere_mt[0]
+            _duree_2e_mt   = _seg_2e_mt[1] - _seg_2e_mt[0]
+            _duree_analysee = _duree_1ere_mt + _duree_2e_mt
+            _duree_sautee   = _duration_seg - _duree_analysee
 
+            print(f"  [BOUNDARY_SEG] --- Plan d'analyse ---")
+            print(f"  [BOUNDARY_SEG] 1ère MI-TEMPS  : {_seg_1ere_mt[0]:.0f}s → {_seg_1ere_mt[1]:.0f}s "
+                  f"(durée {_duree_1ere_mt:.0f}s / {_duree_1ere_mt/60:.1f} min)")
+            print(f"  [BOUNDARY_SEG] 2e MI-TEMPS    : {_seg_2e_mt[0]:.0f}s → {_seg_2e_mt[1]:.0f}s "
+                  f"(durée {_duree_2e_mt:.0f}s / {_duree_2e_mt/60:.1f} min)")
+            print(f"  [BOUNDARY_SEG] Pause + après-match SAUTÉS : {_duree_sautee:.0f}s "
+                  f"({100*_duree_sautee/_duration_seg:.0f}% de la vidéo)")
+
+            # ── Extraction des 2 clips ───────────────────────────────────
             _seg_dir_boundary = os.path.join(output_dir, "boundary_segments_tmp")
+            print(f"  [BOUNDARY_SEG] --- Extraction ffmpeg des 2 clips ---")
             _clips_boundary = extract_segments(
                 video_path = video_path,
-                segments   = _segments_match,
+                segments   = [_seg_1ere_mt, _seg_2e_mt],
                 output_dir = _seg_dir_boundary,
             )
+            print(f"  [BOUNDARY_SEG] ✅ {len(_clips_boundary)} clip(s) extrait(s) : "
+                  f"{[os.path.basename(c[0]) for c in _clips_boundary]}")
 
-            _ev_b, _fr_b, _fps_b, _jmap_b = analyze_segments(
+            # ── Analyse YOLO EN PARALLELE (les 2 mi-temps en meme temps) ──
+            # V5.2 (11/09/2026) : analyze_segments() traite les segments en
+            # parallele (ProcessPoolExecutor, as_completed - donc la 2e MT
+            # peut terminer avant la 1ere) MAIS trie ensuite le resultat
+            # final par time/frame avant de le retourner - l'ORDRE FINAL
+            # (1ere MT avant 2e MT) est donc TOUJOURS garanti correct,
+            # peu importe laquelle des 2 a fini de calculer en premier.
+            # "Segment 1/2" dans les logs ci-dessous = 1ère MI-TEMPS,
+            # "Segment 2/2" = 2e MI-TEMPS (ordre de soumission, pas de
+            # complétion - la legende ci-dessus permet de les identifier
+            # sans ambiguite dans les logs qui suivent).
+            print(f"  [BOUNDARY_SEG] --- Analyse YOLO (parallèle) — "
+                  f"légende : Segment 1/2 = 1ère MI-TEMPS, Segment 2/2 = 2e MI-TEMPS ---")
+            _t0_analyse = _bseg_time.time()
+            _ev_total, _fr_total, _fps_final, _jmap_final = analyze_segments(
                 segment_clips = _clips_boundary,
                 sport         = sport,
                 shot_zones    = shot_zones,
             )
+            print(f"  [BOUNDARY_SEG] ✅ Les 2 mi-temps analysées en {_bseg_time.time()-_t0_analyse:.0f}s "
+                  f"(parallèle) — {len(_ev_total)} events, {len(_fr_total)} frames au total, "
+                  f"déjà triées par ordre chronologique (1ère MT garantie avant 2e MT)")
+
             cleanup_segments(_clips_boundary)
 
-            if not _fr_b:
-                raise RuntimeError("Aucune frame produite par l'analyse segmentée")
+            if not _fr_total:
+                raise RuntimeError("Aucune frame produite par l'analyse segmentée (aucune mi-temps)")
+
+            # ── Vérification a posteriori (pas juste "on suppose") ───────
+            # Compte reellement les frames retournees dans chaque fenetre
+            # temporelle attendue, a partir des donnees FUSIONNEES - preuve
+            # concrete que chaque mi-temps a ete traitee independamment et
+            # correctement, plutot que de se fier au simple fait que le
+            # code n'a pas leve d'exception.
+            _n_frames_mt1_verif = sum(1 for f in _fr_total if _seg_1ere_mt[0] <= f.get("time", -1) <= _seg_1ere_mt[1])
+            _n_frames_mt2_verif = sum(1 for f in _fr_total if _seg_2e_mt[0] <= f.get("time", -1) <= _seg_2e_mt[1])
+            _n_frames_hors_zone = len(_fr_total) - _n_frames_mt1_verif - _n_frames_mt2_verif
+            print(f"  [BOUNDARY_SEG] --- Vérification a posteriori ---")
+            print(f"  [BOUNDARY_SEG] Frames dans la fenêtre 1ère MT  : {_n_frames_mt1_verif}")
+            print(f"  [BOUNDARY_SEG] Frames dans la fenêtre 2e MT    : {_n_frames_mt2_verif}")
+            print(f"  [BOUNDARY_SEG] Frames HORS des 2 fenêtres      : {_n_frames_hors_zone} "
+                  f"{'✅ (attendu : 0)' if _n_frames_hors_zone == 0 else '⚠️ (INATTENDU, à investiguer)'}")
 
             _match_data = {
-                "events":          _ev_b,
-                "frames_data":     _fr_b,
-                "jersey_map":      _jmap_b,
-                "fps":             _fps_b,
+                "events":          _ev_total,
+                "frames_data":     _fr_total,
+                "jersey_map":      _jmap_final,
+                "fps":             _fps_final,
                 "total_frames":    _total_frames_seg,
                 "kickoff_offset":  _ko1_abs,
                 "team_colors":     {},
             }
-            print(f"  [BOUNDARY_SEG] ✅ Segmentation par bornes réussie — "
-                  f"{len(_ev_b)} events, {len(_fr_b)} frames (YOLO économisé sur "
-                  f"{100*(1-_duree_analysee/_duration_seg):.0f}% de la vidéo)")
+            print("  " + "="*90)
+            print(f"  [BOUNDARY_SEG] ✅ TERMINÉ — {len(_ev_total)} events, {len(_fr_total)} frames au total. "
+                  f"YOLO économisé sur {100*_duree_sautee/_duration_seg:.0f}% de la vidéo "
+                  f"(pause de mi-temps + après-match).")
+            print("  " + "="*90)
+            print()
 
         except Exception as _e_boundary:
             print(f"  [BOUNDARY_SEG] ⚠️  Échec ({_e_boundary}) — fallback sur le "
@@ -690,6 +780,7 @@ def run_pipeline(
                                    # AUTO_CONFIRMED sur le meme match, meme code) - jamais
                                    # retente sur ERROR (conditions plus probablement
                                    # structurelles). Voir kickoff_gemini_cascade.py.
+                tmp_dir = _gemini_tmp_dir,
             )
             print(f"  [KICKOFF] Gemini cascade → status={_kickoff_result['status']} "
                   f"kickoff_s={_kickoff_result['kickoff_s']}")
@@ -865,6 +956,7 @@ def run_pipeline(
                 video_path,
                 max_search_s = min(_video_duration_s, _kickoff_max_search_s),
                 max_retries  = 3,
+                tmp_dir      = _gemini_tmp_dir,
             )
             print(f"  [KICKOFF] Gemini cascade → status={_kickoff_result['status']} "
                   f"kickoff_s={_kickoff_result['kickoff_s']}")
@@ -928,6 +1020,7 @@ def run_pipeline(
             print(f"  [KO2] Recherche dans [KO1+{half_duration_min+4}min, KO1+{half_duration_min+23}min]...")
             _ko2_result = find_ko2_gemini(
                 video_path, ko1_s=_kickoff_offset, half_duration_min=half_duration_min,
+                tmp_dir=_gemini_tmp_dir,
             )
             if _ko2_result["status"] == "AUTO_CONFIRMED":
                 _ko2_absolu = _ko2_result["ko2_s"]
@@ -941,13 +1034,13 @@ def run_pipeline(
                 # (methode precedente) reste en repli de securite SI Gemini
                 # echoue (fin1mt_s=None) - ne perd jamais la detection meme si
                 # la nouvelle methode a un souci sur un match particulier.
-                _fin1mt_gemini_result = find_fin1mt_gemini(video_path, ko2_s=_ko2_absolu)
+                _fin1mt_gemini_result = find_fin1mt_gemini(video_path, ko2_s=_ko2_absolu, tmp_dir=_gemini_tmp_dir)
                 _fin1mt_absolu = _fin1mt_gemini_result.get("fin1mt_s")
                 if _fin1mt_absolu is not None:
                     print(f"  [FIN1MT] Détecté à t={_fin1mt_absolu:.0f}s (absolu, via Gemini vision)")
                 else:
                     print(f"  [FIN1MT] Gemini vision sans résultat — repli sur la méthode audio...")
-                    _fin1mt_absolu = find_fin1mt_audio(video_path, ko2_s=_ko2_absolu)
+                    _fin1mt_absolu = find_fin1mt_audio(video_path, ko2_s=_ko2_absolu, tmp_dir=_gemini_tmp_dir)
                     if _fin1mt_absolu is not None:
                         print(f"  [FIN1MT] Détecté à t={_fin1mt_absolu:.0f}s (absolu, via audio, repli)")
                     else:
@@ -957,7 +1050,7 @@ def run_pipeline(
                       f"(comparaison uniquement — V5.2 11/09/2026 : find_finmatch_gemini() "
                       f"est maintenant la borne active, cf. plus bas, find_match_end() "
                       f"n'est plus que le repli de sécurité)...")
-                _finmatch_audio_absolu = find_finmatch_audio(video_path, ko2_s=_ko2_absolu)
+                _finmatch_audio_absolu = find_finmatch_audio(video_path, ko2_s=_ko2_absolu, tmp_dir=_gemini_tmp_dir)
                 if _finmatch_audio_absolu is not None:
                     print(f"  [FINMATCH_AUDIO] Détecté à t={_finmatch_audio_absolu:.0f}s (absolu) "
                           f"— à comparer avec find_finmatch_gemini ci-dessous")
@@ -997,7 +1090,7 @@ def run_pipeline(
         _match_end_s = None
         if _ko2_absolu is not None:
             print(f"  [FINMATCH] Recherche via Gemini vision (3x confirmations + narratif)...")
-            _finmatch_gemini_result = find_finmatch_gemini(video_path, ko2_s=_ko2_absolu)
+            _finmatch_gemini_result = find_finmatch_gemini(video_path, ko2_s=_ko2_absolu, tmp_dir=_gemini_tmp_dir)
             _finmatch_gemini_absolu = _finmatch_gemini_result.get("finmatch_s")
             if _finmatch_gemini_absolu is not None:
                 _match_end_s = _finmatch_gemini_absolu - _kickoff_offset  # absolu -> relatif

@@ -656,16 +656,13 @@ def upload():
             "noms": _noms_par_couleur,
         }
 
-    # V5.2 (11/09/2026) : use_match_boundary_segments - chemin
-    # EXPERIMENTAL (jamais teste avec de vrais appels Gemini), cable ici
-    # pour ne pas l'oublier lors des futures modifications, mais AUCUN
-    # controle dans le formulaire HTML actuel pour l'activer - reste donc
-    # toujours False en usage normal via le site. Prevu pour etre teste
-    # d'abord via appel direct (notebook), puis expose dans l'interface
-    # une fois valide (checkbox a ajouter dans dashboard.html a ce
-    # moment-la). default=False cote form.get -> comportement inchange
-    # tant que personne ne l'active explicitement.
-    use_match_boundary_segments = request.form.get("use_match_boundary_segments", "").strip().lower() in ("1", "true", "on")
+    # V5.2 (11/09/2026) : use_match_boundary_segments - ACTIF PAR DEFAUT
+    # depuis ce soir (opt-out, pas opt-in) - repli de securite integre
+    # cote pipeline.py si detection/extraction echoue. Aucun controle
+    # dans le formulaire HTML actuel pour le desactiver - prevu pour
+    # etre expose (checkbox "désactiver l'optimisation avancée") une
+    # fois observe en conditions reelles sur plusieurs matchs.
+    use_match_boundary_segments = request.form.get("use_match_boundary_segments", "1").strip().lower() not in ("0", "false", "off")
 
     # V5.2 (11/09/2026) : si preview_upload_id est fourni et que le
     # fichier de pre-analyse existe encore sur disque, on le DEPLACE vers
@@ -775,7 +772,7 @@ def run_analysis(
     mode="match", player_id=None, r2_key=None, team_names=None,
     player_position=None, kickoff_s_precalcule=None,
     team_colors_gemini_precalcule=None,
-    use_match_boundary_segments=False
+    use_match_boundary_segments=True
 ):
     with app.app_context():
         a              = db.session.get(Analysis, analysis_id)
