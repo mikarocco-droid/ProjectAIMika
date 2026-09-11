@@ -298,6 +298,28 @@ def run_pipeline(
                                   # N'evite PAS un appel Gemini supplementaire -
                                   # la detection de couleurs du pipeline principal
                                   # n'en fait pas (clustering pixel du tracker).
+    use_match_boundary_segments = False,  # V5.2 (11/09/2026) - EXPERIMENTAL,
+                                  # NON TESTE avec de vrais appels Gemini
+                                  # (implemente sans possibilite de test ce
+                                  # soir - a valider avant activation par
+                                  # defaut). Si True : detecte KO1/KO2/
+                                  # Fin1MT/FinMatch AVANT le passage YOLO
+                                  # (tous via Gemini vision/audio, aucun ne
+                                  # depend de frames_data), puis extrait
+                                  # SEULEMENT les 2 fenetres de vrai temps de
+                                  # jeu (1ere mi-temps, 2e mi-temps) en clips
+                                  # via ffmpeg, et lance YOLO UNIQUEMENT sur
+                                  # ces 2 clips - au lieu de tout analyser
+                                  # (pause de mi-temps + apres-match inclus)
+                                  # puis filtrer apres coup. Reutilise
+                                  # extract_segments()/analyze_segments()
+                                  # (deja existants, deja testes via le
+                                  # chemin candidate_segments/coarse_scan).
+                                  # Economie attendue : ~15-20% de calcul
+                                  # YOLO sur un match 90min avec pause
+                                  # 15-20min - JAMAIS MESUREE EN PRATIQUE.
+                                  # Defaut False : comportement inchange,
+                                  # match traite en un seul passage continu.
     _match_data       = None,    # Replay Engine : dict depuis replay.load_cache() — skip YOLO/tracking si fourni
 ):
     os.makedirs(output_dir, exist_ok=True)
@@ -401,6 +423,122 @@ def run_pipeline(
         print(f"  [GOAL_BOX] Non disponible : {_e}")
 
     # ─────────────────────────────────────────
+    # STEP 0a — SEGMENTATION PAR BORNES DE MATCH (EXPERIMENTAL)
+    # ─────────────────────────────────────────
+    # V5.2 (11/09/2026) - NON TESTE avec de vrais appels Gemini ce soir.
+    # Detecte KO1/KO2/Fin1MT/FinMatch AVANT tout passage YOLO (tous via
+    # Gemini vision/audio, aucun ne depend de frames_data - contrairement
+    # a find_match_end() qui lui en depend, d'ou l'usage de
+    # find_finmatch_gemini a la place ici). Extrait ensuite SEULEMENT
+    # les 2 fenetres de vrai temps de jeu en clips via ffmpeg
+    # (extract_segments, deja teste via le chemin candidate_segments/
+    # coarse_scan) et lance YOLO uniquement dessus (analyze_segments,
+    # idem deja teste) - economise le calcul sur la pause de mi-temps et
+    # l'apres-match, au lieu de tout traiter puis filtrer apres coup.
+    #
+    # Integration choisie : construit un dict au MEME format que
+    # _match_data (Replay Engine, deja existant et deja teste) et
+    # l'assigne a _match_data - reutilise ainsi 100% du chemin REPLAY
+    # existant en aval SANS AUCUNE modification necessaire la-bas.
+    # Si une etape echoue (detection ou extraction), _match_data reste
+    # None et le pipeline continue normalement avec le chemin complet
+    # existant, inchange - AUCUNE regression possible sur le
+    # comportement par defaut (use_match_boundary_segments=False).
+    if use_match_boundary_segments and _match_data is None:
+        try:
+            import cv2 as _cv2_seg
+            from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
+            from analysis.match_boundaries_v2 import find_ko2_gemini, find_fin1mt_audio
+            from analysis.finmatch_gemini_cascade import find_finmatch_gemini
+            from segment_extractor import extract_segments, analyze_segments, cleanup_segments
+
+            _cap_seg = _cv2_seg.VideoCapture(video_path)
+            _fps_seg = _cap_seg.get(_cv2_seg.CAP_PROP_FPS) or 25.0
+            _total_frames_seg = int(_cap_seg.get(_cv2_seg.CAP_PROP_FRAME_COUNT))
+            _cap_seg.release()
+            _duration_seg = _total_frames_seg / max(_fps_seg, 1)
+
+            print("  [BOUNDARY_SEG] Détection des 4 bornes du match avant tout passage YOLO...")
+
+            _max_search_s = min(_duration_seg, (half_duration_min / 3) * 2 * 60)
+            _r_ko1 = detect_kickoff_gemini_avec_retry(
+                video_path, max_search_s=_max_search_s, max_retries=3,
+            )
+            print(f"  [BOUNDARY_SEG] KO1 : status={_r_ko1['status']} kickoff_s={_r_ko1['kickoff_s']}")
+
+            if _r_ko1["status"] != "AUTO_CONFIRMED":
+                raise RuntimeError(f"KO1 non confirmé ({_r_ko1['status']}) — segmentation par bornes impossible")
+            _ko1_abs = _r_ko1["kickoff_s"]
+
+            _r_ko2 = find_ko2_gemini(video_path, ko1_s=_ko1_abs, half_duration_min=half_duration_min)
+            print(f"  [BOUNDARY_SEG] KO2 : status={_r_ko2['status']} ko2_s={_r_ko2.get('ko2_s')}")
+            if _r_ko2["status"] != "AUTO_CONFIRMED":
+                raise RuntimeError(f"KO2 non confirmé ({_r_ko2['status']}) — segmentation par bornes impossible")
+            _ko2_abs = _r_ko2["ko2_s"]
+
+            _fin1mt_abs = find_fin1mt_audio(video_path, ko2_s=_ko2_abs)
+            print(f"  [BOUNDARY_SEG] Fin1MT : {_fin1mt_abs}")
+            if _fin1mt_abs is None:
+                raise RuntimeError("Fin1MT non détecté — segmentation par bornes impossible")
+
+            _r_finmatch = find_finmatch_gemini(video_path, ko2_s=_ko2_abs)
+            _finmatch_abs = _r_finmatch.get("finmatch_s")
+            print(f"  [BOUNDARY_SEG] FinMatch : {_finmatch_abs}")
+            if _finmatch_abs is None:
+                raise RuntimeError("FinMatch non détecté — segmentation par bornes impossible")
+
+            # Marges de sécurité de chaque côté (cohérentes avec les marges
+            # deja utilisees ailleurs dans le pipeline pour ces bornes -
+            # cf. _MARGE_AVANT_KO_S=10 plus bas pour KO1).
+            _MARGE_KO1_AVANT_S    = 10
+            _MARGE_FINMATCH_APRES_S = 30
+
+            _seg_1ere_mt = (max(0, _ko1_abs - _MARGE_KO1_AVANT_S), _fin1mt_abs)
+            _seg_2e_mt   = (_ko2_abs, min(_duration_seg, _finmatch_abs + _MARGE_FINMATCH_APRES_S))
+            _segments_match = [_seg_1ere_mt, _seg_2e_mt]
+
+            print(f"  [BOUNDARY_SEG] Segments : 1ère MT={_seg_1ere_mt[0]:.0f}s→{_seg_1ere_mt[1]:.0f}s "
+                  f"| 2e MT={_seg_2e_mt[0]:.0f}s→{_seg_2e_mt[1]:.0f}s")
+            _duree_analysee = (_seg_1ere_mt[1]-_seg_1ere_mt[0]) + (_seg_2e_mt[1]-_seg_2e_mt[0])
+            print(f"  [BOUNDARY_SEG] Durée analysée : {_duree_analysee:.0f}s / "
+                  f"{_duration_seg:.0f}s vidéo totale ({100*_duree_analysee/_duration_seg:.0f}%)")
+
+            _seg_dir_boundary = os.path.join(output_dir, "boundary_segments_tmp")
+            _clips_boundary = extract_segments(
+                video_path = video_path,
+                segments   = _segments_match,
+                output_dir = _seg_dir_boundary,
+            )
+
+            _ev_b, _fr_b, _fps_b, _jmap_b = analyze_segments(
+                segment_clips = _clips_boundary,
+                sport         = sport,
+                shot_zones    = shot_zones,
+            )
+            cleanup_segments(_clips_boundary)
+
+            if not _fr_b:
+                raise RuntimeError("Aucune frame produite par l'analyse segmentée")
+
+            _match_data = {
+                "events":          _ev_b,
+                "frames_data":     _fr_b,
+                "jersey_map":      _jmap_b,
+                "fps":             _fps_b,
+                "total_frames":    _total_frames_seg,
+                "kickoff_offset":  _ko1_abs,
+                "team_colors":     {},
+            }
+            print(f"  [BOUNDARY_SEG] ✅ Segmentation par bornes réussie — "
+                  f"{len(_ev_b)} events, {len(_fr_b)} frames (YOLO économisé sur "
+                  f"{100*(1-_duree_analysee/_duration_seg):.0f}% de la vidéo)")
+
+        except Exception as _e_boundary:
+            print(f"  [BOUNDARY_SEG] ⚠️  Échec ({_e_boundary}) — fallback sur le "
+                  f"chemin complet existant (comportement inchangé)")
+            _match_data = None
+
+    # ─────────────────────────────────────────
     # 1. TRACKING + EVENTS
     # ─────────────────────────────────────────
     # ─────────────────────────────────────────
@@ -413,7 +551,13 @@ def run_pipeline(
     # une fois dans le bloc partage plus bas, encore necessaire pour le
     # chemin candidate_segments/analyze_segments, non touche par ce chantier)
 
-    if use_coarse_scan and mode == "match":
+    if use_coarse_scan and mode == "match" and _match_data is None:
+        # V5.2 (11/09/2026) : garde _match_data is None ajoutee - si
+        # STEP 0a (segmentation par bornes) a deja reussi, _match_data
+        # est deja rempli et candidate_segments serait de toute facon
+        # ignore par le chemin REPLAY ci-dessous (prioritaire) - sans
+        # cette garde, coarse_scan tournerait quand meme inutilement
+        # sur TOUTE la video (calcul gaspille, resultat jamais utilise).
         try:
             from coarse_scan import run_coarse_scan
             candidate_segments, coarse_stats = run_coarse_scan(

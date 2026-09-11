@@ -65,7 +65,8 @@ def run_analysis(self, video_path, sport="football", output_dir=None,
                  mode="match", plan="free", analysis_id=None,
                  use_coarse_scan=True, team_names=None,
                  kickoff_s_precalcule=None,
-                 team_colors_gemini_precalcule=None):
+                 team_colors_gemini_precalcule=None,
+                 use_match_boundary_segments=False):
     """
     Tâche Celery : lance run_pipeline() en arrière-plan.
 
@@ -99,6 +100,7 @@ def run_analysis(self, video_path, sport="football", output_dir=None,
             team_names      = team_names,
             kickoff_s_precalcule = kickoff_s_precalcule,
             team_colors_gemini_precalcule = team_colors_gemini_precalcule,
+            use_match_boundary_segments = use_match_boundary_segments,
         )
 
         elapsed = time.time() - t0
