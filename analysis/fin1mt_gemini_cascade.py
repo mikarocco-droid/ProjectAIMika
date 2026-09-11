@@ -28,12 +28,9 @@ Reutilise l'infrastructure generique de kickoff_gemini_cascade.py -
 AUCUNE modification de ce fichier, uniquement des imports.
 """
 
-import json
-
 from analysis.kickoff_gemini_cascade import (
     _EtatRecherche,
     _appeler_json_robuste,
-    _extraire_frame,
     PALIERS_RECHERCHE_FINE,
     MAX_GEMINI_CALLS_DEFAUT,
     MAX_WALLCLOCK_S_DEFAUT,
@@ -70,117 +67,15 @@ Réponds STRICTEMENT en JSON, en précisant lequel des 2 signaux (A, B, les deux
 {"signal_sortie_detecte": true/false, "signal_utilise": "A"|"B"|"aucun"}"""
 
 # ─────────────────────────────────────────────────────────────────────────
-# PROMPT Q2 — verification (terrain vide des 2 equipes du match)
+# NOTE V5.2 (11/09/2026) : les anciens PROMPT_Q2_FIN1MT,
+# PROMPT_HISTOIRE_FIN1MT et les fonctions _verifier_histoire,
+# _q2_une_lecture, _voter ont ete retires ici (code mort confirme,
+# jamais appeles) - reliquats de l'ancienne architecture
+# narratif+Q2, remplacee le 09/09/2026 par les 3 confirmations Q1
+# consecutives (voir _recherche_fine_fin1mt et find_fin1mt_gemini
+# plus bas). Audit de code effectue avant nettoyage : verifie
+# qu'aucun appel externe ne dependait de ces elements.
 # ─────────────────────────────────────────────────────────────────────────
-PROMPT_Q2_FIN1MT = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur, pour vérifier si la pause de mi-temps est bien en cours.
-
-OBJECTIF : déterminer si le terrain est maintenant vide, ou quasiment vide, DES JOUEURS DES DEUX ÉQUIPES DU MATCH (celles visibles avant cet instant, en tenue de match) - PAS déterminer si le terrain est totalement désert.
-
-═══════════════════════════════════════════════════
-IMPORTANT — TOLÉRANCE EXPLICITE
-═══════════════════════════════════════════════════
-
-D'autres personnes peuvent être présentes sur ou près du terrain SANS que cela invalide la pause de mi-temps :
-- jeunes joueurs (enfants) qui utilisent le terrain pendant la pause
-- pom-pom girls, animation, présentateur
-- personnel du club, arbitres assistants, remplaçants au repos
-Leur présence NE COMPTE PAS comme "le match est en cours" - seule la présence ou l'absence des JOUEURS DES DEUX ÉQUIPES DU MATCH (en tenue de match, ceux qui jouaient) compte pour ce critère.
-
-═══════════════════════════════════════════════════
-CRITÈRES
-═══════════════════════════════════════════════════
-
-- Terrain vide ou quasiment vide des joueurs des deux équipes du match → OUI (pause confirmée)
-- Uniquement d'autres personnes (enfants, pom-pom girls, staff) visibles, aucun joueur des équipes du match → OUI (pause confirmée, le terrain leur appartient pendant la pause)
-- DEUX ballons ou plus visibles simultanément sur le terrain → OUI (pause confirmée). Un vrai match ne se joue qu'avec UN SEUL ballon - la présence de plusieurs ballons est une preuve objective et certaine qu'il ne s'agit pas d'une phase de jeu réelle (échauffement informel, jeu libre pendant la pause), quel que soit le nombre de joueurs présents ou leur niveau d'activité.
-- MOINS DE 2 JOUEURS d'une des deux équipes visibles (une équipe a plusieurs joueurs présents, mais l'autre équipe n'a plus qu'un seul joueur isolé, ou zéro) → OUI (pause confirmée). Un vrai match implique la présence de PLUSIEURS joueurs de CHAQUE équipe simultanément - un seul joueur isolé d'une équipe (même très visible) ne compte PAS comme "l'équipe est encore là", c'est probablement un retardataire ou quelqu'un qui traîne, pas un signe que le match continue. Il faut au moins 2-3 joueurs identifiables de chaque équipe pour considérer que les deux équipes sont réellement encore présentes.
-- AUCUN gardien visible à proximité des buts (si un but ou sa zone est visible dans l'image) → signe FAIBLE, à ne considérer QUE combiné avec d'autres signes (effectif réduit, un seul ballon, etc.) - JAMAIS suffisant à lui seul. ⚠️ Un gardien peut être temporairement absent de sa zone pour des raisons de jeu tout à fait normales (aller chercher le ballon sorti en corner pour un renvoi/coup de pied de but, dégagement lointain, etc.) - ce n'est PAS un signe de pause dans ces cas-là. N'utilise ce critère que si l'absence de gardien s'accompagne d'autres signes clairs (peu de joueurs, pas d'action de jeu généralisée).
-- AUCUN arbitre visible nulle part dans l'image → signe FAIBLE, à ne considérer QUE combiné avec d'autres signes, JAMAIS suffisant à lui seul (l'arbitre peut être hors-cadre à un instant donné pendant un vrai match).
-- Joueurs des deux équipes REGROUPÉS ENSEMBLE en un seul point du terrain pour discuter/socialiser (pas répartis sur le terrain en formation de jeu) → signe en faveur de OUI, même si plusieurs joueurs de chaque équipe et un seul ballon sont visibles. De vrais joueurs en match, même à l'arrêt (touche, faute), restent globalement RÉPARTIS sur le terrain selon leurs positions - un attroupement compact et informel de joueurs des deux équipes qui discutent ensemble ressemble plutôt à un rassemblement social (pause) qu'à une phase de jeu, même sans ballon multiple ni effectif réduit.
-- Effectif à peu près normal/complet, avec PLUSIEURS joueurs identifiables de CHAQUE équipe RÉPARTIS SUR LE TERRAIN en formation de jeu (pas regroupés ensemble pour discuter), UN SEUL ballon ou aucun visible (même sans action de jeu à cet instant précis - un match peut avoir des moments calmes : touche, discussion, arrêt de jeu) → NON (le match est très probablement encore en cours)
-- Effectif visiblement REDUIT (nettement moins de joueurs qu'un effectif complet), joueurs DISPERSÉS/épars (pas regroupés autour d'un point précis) ET aucune action de jeu active → OUI (pause confirmée)
-
-⚠️ EXCEPTION : si les joueurs visibles, même en nombre réduit, sont REGROUPÉS ENSEMBLE autour d'un point précis (joueur au sol/blessé, discussion avec l'arbitre, incident quelconque), ce n'est PAS un signe de pause - c'est un arrêt de jeu temporaire en cours de match, le reste des joueurs étant probablement hors du cadre de la caméra à cet instant. Réponds NON dans ce cas.
-
-⚠️ AUTRE EXCEPTION : un ballon UNIQUE et immobile visible sur la pelouse (préparation d'un coup franc ou coup de pied arrêté), même avec peu de joueurs visibles ou aucune action en cours, doit orienter vers NON (jeu en cours, pas pause) - sauf si le terrain est par ailleurs clairement désert de toute présence des deux équipes.
-
-⚠️ IMPORTANT : ne réponds OUI sur la base de "pas d'action de jeu" QUE SI le nombre de joueurs visibles est ÉGALEMENT nettement réduit par rapport à un effectif complet (SAUF si le critère des 2 ballons ou celui d'une seule équipe visible ci-dessus s'applique, chacun décisif à lui seul). Un effectif complet ou quasi-complet DES DEUX ÉQUIPES avec un seul ballon, même immobile à cet instant précis, ne suffit PAS à conclure à la pause - ça peut être un simple flottement de jeu.
-
-Réponds STRICTEMENT en JSON :
-{"terrain_vide_des_2_equipes": true/false}"""
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# PROMPT HISTOIRE — verification narrative a 2 images (t et t+5s), au
-# moment ou Q1 declenche un candidat au scan grossier, AVANT de lancer
-# la verification Q2 a +delai. Objectif : rejeter tot les faux signaux
-# transitoires (faute/coup franc en cours), sans gaspiller un appel Q2
-# a +90s dessus.
-# ─────────────────────────────────────────────────────────────────────────
-PROMPT_HISTOIRE_FIN1MT = """Tu vas analyser DEUX images extraites de la même vidéo de match de football amateur, prises à exactement 5 secondes d'intervalle (Image 1 = instant t, Image 2 = instant t+5s).
-
-CONTEXTE : un signal potentiel de pause de mi-temps a été détecté sur l'Image 1 (terrain semblant dégarni, ou joueurs en train de sortir). Ta tâche est de juger si ces deux images, prises ENSEMBLE comme une courte séquence, racontent une histoire COHÉRENTE avec une vraie pause de mi-temps en cours.
-
-═══════════════════════════════════════════════════
-CE QUI RACONTE UNE HISTOIRE COHÉRENTE DE PAUSE (répondre OUI)
-═══════════════════════════════════════════════════
-⚠️ IMPORTANT : "le jeu n'a pas repris en 5 secondes" n'est PAS suffisant à lui seul - un simple arrêt de jeu normal (faute, blessure, discussion) montre exactement la même chose sur une fenêtre aussi courte. Il faut un signe POSITIF et actif de pause, pas juste l'absence de reprise :
-- Un mouvement de sortie vers la ligne de touche (déjà amorcé sur l'Image 1) qui se confirme ou progresse sur l'Image 2 (joueurs clairement plus proches de la touche, ou plus nombreux à s'y diriger)
-- Le nombre de joueurs qui DIMINUE encore entre l'Image 1 et l'Image 2 (départ progressif confirmé, pas juste un nombre stable)
-
-═══════════════════════════════════════════════════
-CE QUI CONTREDIT L'HISTOIRE DE PAUSE (répondre NON)
-═══════════════════════════════════════════════════
-- L'Image 2 montre un retour à une action de jeu active (ballon disputé, courses)
-- Un ballon apparaît sur l'Image 2 alors qu'il était absent sur l'Image 1 (signe qu'un coup franc/coup de pied arrêté était juste en préparation, pas une pause)
-- Les joueurs se replacent pour une reprise du jeu plutôt que de continuer à sortir/rester dispersés
-- Tout signe que la scène de l'Image 1 était un simple arrêt de jeu temporaire (faute, blessure, discussion) qui se résout normalement sur l'Image 2
-- L'Image 2 montre EXACTEMENT LA MÊME SCÈNE que l'Image 1 SANS aucun signe positif nouveau - l'absence de reprise du jeu sur seulement 5 secondes ne prouve RIEN, un arrêt de jeu normal ressemble exactement à ça aussi
-
-Réponds STRICTEMENT en JSON :
-{"histoire_coherente": true/false}"""
-
-
-def _verifier_histoire(client, video_path, t, tmp_dir, etat, delai_s=5, prompt_histoire=None, model_name=MODEL_NAME_DEFAUT):
-    """Envoie 2 images (t et t+delai_s) ENSEMBLE dans un seul appel
-    Gemini, pour un jugement de coherence narrative - pas 2 appels
-    independants compares apres coup. Retourne (bool_ou_None,
-    raisonnement)."""
-    from google.genai import types
-
-    image_1 = _extraire_frame(video_path, t, tmp_dir)
-    image_2 = _extraire_frame(video_path, t + delai_s, tmp_dir)
-    if image_1 is None or image_2 is None:
-        return None, "échec extraction d'une des 2 images"
-
-    etat.n_appels += 1
-
-    def _appel():
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[
-                types.Part.from_bytes(data=image_1, mime_type="image/jpeg"),
-                types.Part.from_bytes(data=image_2, mime_type="image/jpeg"),
-                prompt_histoire,
-            ],
-            config=types.GenerateContentConfig(temperature=0.0),
-        )
-        texte = response.text.strip()
-        if texte.startswith("```"):
-            texte = texte.split("```")[1]
-            if texte.startswith("json"):
-                texte = texte[4:]
-        return json.loads(texte.strip())
-
-    try:
-        future = etat.executor.submit(_appel)
-        resultat = future.result(timeout=30)
-    except Exception as e:
-        return None, f"échec appel : {e}"
-
-    if resultat is None:
-        return None, "échec appel"
-    return bool(resultat.get("histoire_coherente", False)), resultat.get("raisonnement", "non fourni")
 
 
 def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME_DEFAUT):
@@ -190,36 +85,6 @@ def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME_
     signal_utilise = result.get("signal_utilise", "?")
     raisonnement = f"[signal={signal_utilise}] {result.get('raisonnement', 'non fourni')}"
     return bool(result.get("signal_sortie_detecte", False)), raisonnement
-
-
-def _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME_DEFAUT):
-    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q2_FIN1MT, etat, model_name=model_name)
-    if result is None:
-        return None, "échec API"
-    return bool(result.get("terrain_vide_des_2_equipes", False)), result.get("raisonnement", "non fourni")
-
-
-def _voter(client, video_path, t, tmp_dir, etat, fonction_lecture, max_appels=3, model_name=MODEL_NAME_DEFAUT):
-    """Vote majoritaire avec arret anticipe - meme principe que
-    _voter_q2 de KO2."""
-    votes = []
-    dernier_raisonnement = None
-    for _ in range(max_appels):
-        v, raisonnement = fonction_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
-        dernier_raisonnement = raisonnement
-        if v is None:
-            if not votes:
-                return None, raisonnement
-            break
-        votes.append(v)
-        n_true = sum(votes)
-        n_false = len(votes) - n_true
-        restants = max_appels - len(votes)
-        if n_true > n_false + restants or n_false > n_true + restants:
-            break
-    if not votes:
-        return None, dernier_raisonnement
-    return (sum(votes) > len(votes) / 2), dernier_raisonnement
 
 
 def _recherche_fine_fin1mt(client, video_path, tmp_dir, etat, t_avant, t_apres, model_name=MODEL_NAME_DEFAUT):

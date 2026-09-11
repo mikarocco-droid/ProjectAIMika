@@ -721,6 +721,43 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
     # filet de securite +60s existant, sans perte).
     t = t_debut  # t=0 (ou avant t_debut) toujours "avant-match" pour KO1,
                  # mais pour KO2 t_debut sera deja loin dans la video
+
+    # V5.2 FIX (11/09/2026) : verification ponctuelle a t=0 avant de
+    # commencer le scan normal. Hypothese implicite du code (aucun KO
+    # avant t_debut, generalement 60s) violee sur un match reel ou
+    # KO1~8s. Si Q1(t=0)=True, le signal existe quelque part dans
+    # [0, t_debut] - injecte directement comme "premier_oui" (comme si
+    # le scan grossier l'avait trouve a t=0), pour reutiliser TOUTE la
+    # logique existante (verification Q2, recherche fine) sans dupliquer
+    # de code. Cout : 1 seul appel Gemini supplementaire dans le cas
+    # normal (signal absent a t=0, comportement inchange).
+    # GARDE : uniquement pertinent pour KO1 (t_debut proche de 0, ex.
+    # 60s) - pour KO2, t_debut est deja loin dans la video (~KO1+49min)
+    # et verifier "formation de coup d'envoi a t=0" n'a aucun sens
+    # (c'est la 1ere mi-temps, pas la reprise). Sans cette garde,
+    # chaque recherche KO2 gaspillerait 1 appel pour rien.
+    # Validation : match reel KO1~8s corrige (431s errone -> 10s
+    # correct, +2s d'ecart, moins cher : 10 appels au lieu de 23).
+    # Non-regression testee sur 5/11 matchs de reference (Andrimont,
+    # Franchimont, Goe, MelenP1, Spa) : 5/5 corrects, ecarts <=3s.
+    SEUIL_T_DEBUT_PROCHE_ZERO = 120
+    if 0 < t_debut <= SEUIL_T_DEBUT_PROCHE_ZERO:
+        print(f"  [KICKOFF_GEMINI] vérification préalable à t=0s (hypothèse 'jamais de KO avant t_début' à confirmer)...")
+        signal_t0 = fonction_q1(client, video_path, 0, tmp_dir, etat, model_name=model_name)
+        if signal_t0:
+            print(f"  [KICKOFF_GEMINI] signal détecté à t=0s - le KO est probablement avant t_début={t_debut:.0f}s, recherche fine directe dans [0s, {t_debut:.0f}s]...")
+            premier_oui_t0 = 0
+            t_verif_precoce_t0 = min(premier_oui_t0 + delai_verif_q2_precoce, t_debut)
+            decision_q2_t0 = _voter_q2(client, video_path, t_verif_precoce_t0, tmp_dir, etat, model_name=model_name, fonction_q2=fonction_q2)
+            if decision_q2_t0:
+                kickoff_s_t0 = _recherche_fine(client, video_path, tmp_dir, etat, premier_oui_t0, t_verif_precoce_t0, model_name=model_name, fonction_q2=fonction_q2)
+                print(f"  [KICKOFF_GEMINI] KO détecté à t={kickoff_s_t0:.0f}s (via vérification t=0)")
+                return {"status": "AUTO_CONFIRMED", "kickoff_s": float(kickoff_s_t0), "reason": None}
+            else:
+                print(f"  [KICKOFF_GEMINI] signal à t=0s non confirmé par Q2, poursuite du scan normal depuis t_début={t_debut:.0f}s")
+        else:
+            print(f"  [KICKOFF_GEMINI] aucun signal à t=0s, hypothèse confirmée, scan normal depuis t_début={t_debut:.0f}s")
+
     while t <= t_max:
         print(f"  [KICKOFF_GEMINI] scan Q1 depuis t={t:.0f}s (max={t_max:.0f}s, pas={pas_scan}s, modele={model_name})")
         premier_oui, t, raison_arret = _scan_q1_par_lots(client, video_path, tmp_dir, etat, t, t_max, pas=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name)
