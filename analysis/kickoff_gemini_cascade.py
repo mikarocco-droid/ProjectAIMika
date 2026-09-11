@@ -682,7 +682,7 @@ def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, mod
     return t_haut
 
 
-def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, delai_verif_q2_precoce=30, fonction_q2=_q2_une_lecture):
+def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, delai_verif_q2_precoce=30, fonction_q2=_q2_une_lecture, pas_scan_fin=None):
     # V5.2 Phase A : t_debut parametrable (defaut=60, comportement KO1
     # inchange) - necessaire pour reutiliser cette meme cascade pour KO2,
     # qui doit demarrer sa recherche a KO1+quelque chose, pas a t=60s.
@@ -758,15 +758,28 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
         else:
             print(f"  [KICKOFF_GEMINI] aucun signal à t=0s, hypothèse confirmée, scan normal depuis t_début={t_debut:.0f}s")
 
+    # V5.2 (11/09/2026) : pas adaptatif. Tant qu'aucun signal Q1 n'a
+    # jamais ete vu (meme rejete ensuite par Q2), on scanne au pas
+    # grossier (pas_scan) - bon marche, loin de la vraie transition. Des
+    # qu'un premier signal Q1=OUI est rencontre (signe qu'on est entre
+    # dans la "zone chaude"), on passe au pas fin (pas_scan_fin) pour
+    # TOUTE la suite du scan - objectif : ne plus rater la vraie
+    # transition a cause d'un decalage de grille (valide sur KO2/Goe,
+    # KO1=1082/1083 corriges), sans payer le cout du pas fin sur toute
+    # la fenetre. pas_scan_fin=None (defaut) = comportement inchange
+    # (KO1 n'utilise pas ce parametre, garde pas_scan=60 fixe).
+    a_vu_premier_signal = False
     while t <= t_max:
-        print(f"  [KICKOFF_GEMINI] scan Q1 depuis t={t:.0f}s (max={t_max:.0f}s, pas={pas_scan}s, modele={model_name})")
-        premier_oui, t, raison_arret = _scan_q1_par_lots(client, video_path, tmp_dir, etat, t, t_max, pas=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name)
+        pas_scan_actuel = pas_scan_fin if (a_vu_premier_signal and pas_scan_fin is not None) else pas_scan
+        print(f"  [KICKOFF_GEMINI] scan Q1 depuis t={t:.0f}s (max={t_max:.0f}s, pas={pas_scan_actuel}s, modele={model_name})")
+        premier_oui, t, raison_arret = _scan_q1_par_lots(client, video_path, tmp_dir, etat, t, t_max, pas=pas_scan_actuel, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name)
         if raison_arret:
             print(f"  [KICKOFF_GEMINI] arrêt : {raison_arret}")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": raison_arret}
         if premier_oui is None:
             print(f"  [KICKOFF_GEMINI] aucun candidat Q1 trouvé jusqu'à t={t_max:.0f}s")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
+        a_vu_premier_signal = True
 
         t_verif_precoce = premier_oui + delai_verif_q2_precoce
         t_verif_tardif = premier_oui + delai_verif_q2
@@ -819,7 +832,7 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
 def detect_kickoff_gemini(video_path, max_search_s,
                             max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                             max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT,
-                            tmp_dir="/tmp", t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, delai_verif_q2_precoce=30, fonction_q2=_q2_une_lecture):
+                            tmp_dir="/tmp", t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, delai_verif_q2_precoce=30, fonction_q2=_q2_une_lecture, pas_scan_fin=None):
     """
     Détecte le premier coup d'envoi d'un match par cascade Gemini
     (Q1 scan 60s -> Q2 confirmation -> recherche fine 15/5/1s).
@@ -875,7 +888,7 @@ def detect_kickoff_gemini(video_path, max_search_s,
     etat = _EtatRecherche(max_gemini_calls, max_wallclock_s)
 
     try:
-        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut, pas_scan=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name, delai_verif_q2=delai_verif_q2, delai_verif_q2_precoce=delai_verif_q2_precoce, fonction_q2=fonction_q2)
+        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut, pas_scan=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name, delai_verif_q2=delai_verif_q2, delai_verif_q2_precoce=delai_verif_q2_precoce, fonction_q2=fonction_q2, pas_scan_fin=pas_scan_fin)
     except Exception as e:
         resultat = {"status": "ERROR", "kickoff_s": None, "reason": f"UNEXPECTED_EXCEPTION: {e}"}
     finally:

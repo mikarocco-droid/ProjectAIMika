@@ -38,9 +38,17 @@ except ImportError:
 # KO2 — cascade Gemini Q1/Q2 (reutilise celle de KO1), fenetre parametrique
 # ─────────────────────────────────────────────────────────────────────────
 
-def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=4,
+def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=6,
                      marge_apres_min=23, max_retries=3, nom_fonction_q1="vote_economique",
-                     model_name="gemini-3.1-pro-preview", nom_fonction_q2="standard", tmp_dir="/tmp"):
+                     model_name="gemini-3.1-pro-preview", nom_fonction_q2="standard", tmp_dir="/tmp",
+                     pas_scan=20, pas_scan_fin=10):
+    # V5.2 (11/09/2026) : pas adaptatif (20s->10s des le 1er signal Q1) +
+    # marge_avant_min=6 (etait 4) integres comme NOUVEAU DEFAUT de
+    # production - valide 11/11 sur les matchs de reference avec les
+    # vrais KO1 detectes (pas la verite terrain, methodologie corrigee
+    # suite a une remarque sur cette meme distinction). Anciens defauts
+    # (marge_avant_min=4, pas fixe 20s) restent accessibles en les
+    # passant explicitement si besoin de comparaison.
     """
     Cherche KO2 (coup d'envoi 2e mi-temps) via la MEME cascade Gemini
     Q1/Q2 deja validee pour KO1 - structure visuelle identique (joueurs
@@ -104,12 +112,17 @@ def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=4,
                                             # pas relatif a t_debut - verifie dans le
                                             # code source (boucle "while t <= t_max")
         t_debut      = t_debut_recherche,
-        pas_scan     = 20,   # V5.2 : pas plus fin que le defaut KO1 (60s) - valide
+        pas_scan     = pas_scan,   # V5.2 : pas plus fin que le defaut KO1 (60s) - valide
                              # empiriquement sur Franchimont (la camera ne se stabilise
                              # sur le centre que brievement lors de la reprise de 2e
                              # mi-temps, un pas de 60s peut sauter par-dessus). Diagnostic
                              # confirme en production : sans ce fix, Franchimont et
                              # Stembert donnaient des erreurs KO2 de plusieurs minutes.
+        pas_scan_fin = pas_scan_fin,  # V5.2 (11/09/2026) : pas adaptatif -
+                             # bascule a ce pas plus fin des le premier signal
+                             # Q1 rencontre (zone chaude), pour ne plus rater
+                             # la vraie transition a cause d'un decalage de
+                             # grille (valide sur Goe, KO1=1082/1083 corriges).
         delai_verif_q2 = 30, # V5.2 FIX (09/09/2026) : filet de securite tardif,
                              # PASSE DE 22 A 30 suite au diagnostic Spa (candidat
                              # legitime a t=3798s rejete par une verification tombee
