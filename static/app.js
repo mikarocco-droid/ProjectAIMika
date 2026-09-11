@@ -169,8 +169,16 @@ function showUploadError(msg) {
 async function runTeamDetection(uploadId) {
     const prog = document.getElementById("detecting-progress");
 
-    // Timeout de sécurité : max 90s, puis on révèle quand même le dashboard
-    const TIMEOUT_MS = 240000;  // 4 minutes
+    // V5.2 (11/09/2026) : augmenté de 240s a 480s (8 min) suite a un cas
+    // reel observe ou le traitement serveur (KO1 avec plusieurs candidats
+    // rejetes + detection couleurs) a pris 267s - depassant l'ancien
+    // timeout de 245s (240+5s marge), causant un abort cote client AVANT
+    // que la reponse serveur (pourtant valide) n'arrive. Le frontend
+    // affichait alors le cadre "detecte automatiquement" VIDE (aucune
+    // donnee recue) plutot qu'une vraie erreur - bug diagnostique via les
+    // logs serveur (200 a 267s) vs "signal is aborted without reason"
+    // cote client.
+    const TIMEOUT_MS = 480000;  // 8 minutes (marge large sur le cas observé à 267s)
     let   timedOut   = false;
     const timeoutId  = setTimeout(() => {
         timedOut = true;
@@ -197,7 +205,10 @@ async function runTeamDetection(uploadId) {
         if (prog) prog.textContent = msgs[0];
         // Durée estimée affichée
         const dur = document.getElementById("detecting-duration");
-        if (dur) dur.textContent = "~1 min 30";
+        // V5.2 (11/09/2026) : estimation corrigee (etait "~1 min 30",
+        // trompeuse face a un cas reel observe a 267s/4min27s - le temps
+        // varie selon le nombre de candidats Q1 rejetes avant confirmation).
+        if (dur) dur.textContent = "~2 à 5 min";
 
         // Fetch avec AbortController pour pouvoir annuler
         const controller = new AbortController();
