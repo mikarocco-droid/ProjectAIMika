@@ -279,6 +279,23 @@ async function runTeamDetection(uploadId) {
             if (inp && !inp.value && team.color_name)
                 inp.placeholder = "Ex: Équipe " + team.color_name.split("/")[0];
 
+            // V5.2 (11/09/2026) : champs cachés couleur, pour que
+            // pipeline.py puisse re-apparier team_name_X au bon team_id du
+            // tracker (voir analysis/team_color_matching.py — le clustering
+            // du tracker est INDEPENDANT de celui de cette pre-analyse,
+            // l'ordre 0/1 n'est pas garanti identique entre les deux).
+            // Seule la couleur MAILLOT est retenue (avant le "/" éventuel
+            // séparant maillot/short, cf. team.color_name).
+            // ⚠️ Pas de confiance par équipe exposée par
+            // _detect_teams_colors_autour_ko() actuellement (seulement un
+            // filtre interne high/medium par FRAME, pas par équipe finale) -
+            // champ confiance laissé vide plutôt que d'inventer une valeur;
+            // team_color_matching.py traite une confiance absente comme
+            // utilisable (seul "low" explicite désactive l'appariement).
+            const colorHidden = document.getElementById(`team-color-${tid}-input`);
+            if (colorHidden && team.color_name)
+                colorHidden.value = team.color_name.split("/")[0];
+
             // Select équipe joueur
             const opt = document.getElementById(`team-side-opt-${tid}`);
             if (opt && team.color_name)
