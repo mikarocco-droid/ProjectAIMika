@@ -56,6 +56,17 @@
       <input type="hidden" name="preview_upload_id" id="preview-upload-id">
       <input type="hidden" name="user_team_id" id="user-team-id" value="">
       <input type="hidden" name="user_team_id" id="user-team-id" value="">
+      <!-- V5.2 (11/09/2026) : couleur + confiance Gemini detectees pendant
+           la pre-analyse, pour chaque equipe (0/1 dans l'ORDRE de la
+           pre-analyse). Necessaire pour que pipeline.py puisse re-apparier
+           team_name_0/1 au bon team_id du tracker (clustering INDEPENDANT
+           de celui de la pre-analyse, ordre non garanti identique) - voir
+           analysis/team_color_matching.py. Rempli par app.js des que la
+           reponse de /api/detect-teams arrive. -->
+      <input type="hidden" name="team_color_0" id="team-color-0-input" value="">
+      <input type="hidden" name="team_confidence_0" id="team-confidence-0-input" value="">
+      <input type="hidden" name="team_color_1" id="team-color-1-input" value="">
+      <input type="hidden" name="team_confidence_1" id="team-confidence-1-input" value="">
 
       <!-- ── ÉTAPE 1 : Zone upload ──────────────────────────────── -->
       <div id="step-upload">
