@@ -245,6 +245,52 @@ def _r2_delete_prefix(prefix):
         print(f"  R2 delete prefix error: {e}")
 
 
+def cleanup_orphaned_previews(max_age_hours=24):
+    """
+    V5.2 (11/09/2026) : supprime les fichiers uploads/previews/prev_*
+    orphelins - restes d'utilisateurs ayant uploadé une video pour la
+    pre-analyse (KO1 + couleurs) sans jamais aller au bout (abandon avant
+    de cliquer "Lancer l'analyse"). Ces fichiers ne sont PAS suivis dans
+    Analysis (aucune ligne DB), donc jamais couverts par
+    cleanup_expired_outputs() - constate concretement : accumulation
+    silencieuse de plusieurs dizaines de GB au fil du temps (une video
+    complete par tentative, meme abandonnee). Un flux normal
+    upload->preview->soumission se termine en quelques minutes, donc
+    24h est une marge tres large avant de considerer un fichier comme
+    abandonne (pas juste "l'utilisateur reflechit encore").
+    """
+    tmp_dir = os.path.join(config.UPLOAD_FOLDER, "previews")
+    if not os.path.isdir(tmp_dir):
+        return
+
+    import time
+    now      = time.time()
+    max_age_s = max_age_hours * 3600
+    deleted  = 0
+    freed_mb = 0.0
+
+    for entry in os.listdir(tmp_dir):
+        full_path = os.path.join(tmp_dir, entry)
+        try:
+            age_s = now - os.path.getmtime(full_path)
+            if age_s < max_age_s:
+                continue
+            if os.path.isfile(full_path):
+                freed_mb += os.path.getsize(full_path) / (1024 * 1024)
+                os.remove(full_path)
+                deleted += 1
+            elif os.path.isdir(full_path):
+                # dossiers preview_<uid>/ (images d'apercu couleurs)
+                shutil.rmtree(full_path, ignore_errors=True)
+                deleted += 1
+        except Exception as e:
+            print(f"  Erreur suppression preview orpheline {entry}: {e}")
+
+    if deleted:
+        print(f"  Nettoyage previews : {deleted} élément(s) orphelin(s) "
+              f"purgé(s) ({freed_mb:.0f} Mo libérés)")
+
+
 def start_cleanup_scheduler():
     """Lance le nettoyage automatique toutes les 24h en background."""
     def _loop():
@@ -252,6 +298,7 @@ def start_cleanup_scheduler():
         while True:
             try:
                 cleanup_expired_outputs()
+                cleanup_orphaned_previews()
             except Exception as e:
                 print(f"Cleanup scheduler error: {e}")
             time.sleep(86400)  # 24h
@@ -600,13 +647,47 @@ def upload():
             "noms": _noms_par_couleur,
         }
 
-    if not f or f.filename == "":
-        flash("Aucune video selectionnee")
-        return redirect(url_for("dashboard"))
+    # V5.2 (11/09/2026) : si preview_upload_id est fourni et que le
+    # fichier de pre-analyse existe encore sur disque, on le DEPLACE vers
+    # sa destination finale au lieu d'exiger un nouvel envoi complet du
+    # fichier via 'f' - evite de faire transiter et stocker la meme
+    # video 2 fois (une fois pour /api/upload-preview, une seconde fois
+    # ici) - constate concretement : une video de plusieurs GB fait
+    # doubler l'usage disque et la bande passante pour rien, le fichier
+    # de preview etant deja identique a celui qu'on recevrait ici.
+    _preview_path = None
+    if preview_upload_id:
+        _tmp_dir_preview = os.path.join(config.UPLOAD_FOLDER, "previews")
+        _matches_preview = _glob.glob(os.path.join(_tmp_dir_preview, f"prev_{preview_upload_id}.*"))
+        if _matches_preview:
+            _preview_path = _matches_preview[0]
 
-    if not allowed_file(f.filename):
-        flash(f"Format non supporte — formats acceptes : {', '.join(config.ALLOWED_EXTENSIONS)}")
-        return redirect(url_for("dashboard"))
+    if _preview_path:
+        _ext = os.path.splitext(_preview_path)[1] or ".mp4"
+        # Nom de fichier "logique" pour l'affichage - le vrai contenu vient
+        # du fichier de preview deplace, pas d'un nouvel upload.
+        filename = secure_filename(f.filename) if (f and f.filename) else f"video{_ext}"
+        path     = os.path.join(config.UPLOAD_FOLDER, filename)
+        try:
+            shutil.move(_preview_path, path)
+            print(f"  [UPLOAD] Fichier de preview réutilisé (déplacé, pas re-uploadé) : {path}")
+        except Exception as _emv:
+            print(f"  [UPLOAD] Déplacement du fichier de preview échoué ({_emv}) — "
+                  f"fallback sur un nouvel envoi si disponible")
+            _preview_path = None  # force le chemin normal ci-dessous
+
+    if not _preview_path:
+        if not f or f.filename == "":
+            flash("Aucune video selectionnee")
+            return redirect(url_for("dashboard"))
+
+        if not allowed_file(f.filename):
+            flash(f"Format non supporte — formats acceptes : {', '.join(config.ALLOWED_EXTENSIONS)}")
+            return redirect(url_for("dashboard"))
+
+        filename = secure_filename(f.filename)
+        path     = os.path.join(config.UPLOAD_FOLDER, filename)
+        f.save(path)
 
     if sport not in VALID_SPORTS:
         flash(f"Sport non reconnu : {sport}")
@@ -614,10 +695,6 @@ def upload():
 
     if mode not in ["match", "player"]:
         mode = "match"
-
-    filename = secure_filename(f.filename)
-    path     = os.path.join(config.UPLOAD_FOLDER, filename)
-    f.save(path)
 
     analysis = Analysis(
         user_id   = current_user.id,
