@@ -15,6 +15,22 @@ import numpy as np
 import base64
 import json
 
+# V5.2 (11/09/2026) : compteur d'appels Gemini pour la detection de
+# couleurs - a la demande explicite de l'utilisateur, pour connaitre le
+# cout TOTAL d'une analyse (cette detection se fait pendant la
+# pre-analyse, AVANT run_pipeline(), via un client Gemini separe de
+# celui de kickoff_gemini_cascade.py et ai/gemini_validator.py).
+_COULEURS_GEMINI_CALLS_REEL = 0
+
+
+def get_couleurs_calls_count():
+    return _COULEURS_GEMINI_CALLS_REEL
+
+
+def reset_couleurs_calls_count():
+    global _COULEURS_GEMINI_CALLS_REEL
+    _COULEURS_GEMINI_CALLS_REEL = 0
+
 
 # ─────────────────────────────────────────
 # GEMINI
@@ -63,6 +79,8 @@ Si tu ne vois qu'une seule équipe ou si l'image est floue, réponds :
                 }
             ]
         )
+        global _COULEURS_GEMINI_CALLS_REEL
+        _COULEURS_GEMINI_CALLS_REEL += 1
         text = response.text.strip()
         # Nettoyer les backticks si présents
         if text.startswith("```"):
