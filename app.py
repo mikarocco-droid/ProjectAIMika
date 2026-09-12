@@ -1016,7 +1016,17 @@ def _detect_teams_colors_autour_ko(video_path, kickoff_s, preview_dir, upload_id
     V5_2_FIABILITE_ROADMAP.md §12.18 pour le detail du test)."""
     import cv2
     from collections import Counter
-    from analysis.detect_teams_preview import _ask_gemini_colors, _color_name_to_hex, _hex_to_bgr
+    from analysis.detect_teams_preview import (
+        _ask_gemini_colors, _color_name_to_hex, _hex_to_bgr,
+        reset_couleurs_calls_count, get_couleurs_calls_count,
+    )
+    # V5.2 (11/09/2026) : reset du compteur d'appels Gemini pour cette
+    # detection specifique (compteur global de module, persisterait sinon
+    # entre plusieurs appels dans le meme process) - a la demande
+    # explicite de l'utilisateur pour connaitre le cout total (Gemini +
+    # Claude) d'une analyse complete, y compris cette etape de
+    # pre-analyse qui se produit AVANT run_pipeline().
+    reset_couleurs_calls_count()
 
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
@@ -1047,7 +1057,8 @@ def _detect_teams_colors_autour_ko(video_path, kickoff_s, preview_dir, upload_id
     cap.release()
 
     if not resultats:
-        return {"success": False, "error": "Gemini n'a identifié aucune équipe autour du KO"}
+        return {"success": False, "error": "Gemini n'a identifié aucune équipe autour du KO",
+                "gemini_calls": get_couleurs_calls_count()}
 
     def majorite(key, subkey):
         votes = [r[key][subkey].lower() for r in resultats if r.get(key) and r[key].get(subkey)]
@@ -1068,10 +1079,18 @@ def _detect_teams_colors_autour_ko(video_path, kickoff_s, preview_dir, upload_id
         except Exception:
             pass
 
+    # V5.2 (11/09/2026) : compte d'appels Gemini reellement effectues
+    # pour cette detection - a la demande explicite de l'utilisateur,
+    # pour connaitre le cout total (Gemini + Claude) d'une analyse
+    # complete, y compris cette etape de pre-analyse.
+    _n_appels_couleurs = get_couleurs_calls_count()
+    print(f"  [COULEURS] {_n_appels_couleurs} appel(s) Gemini pour cette détection")
+
     return {
         "success": True,
         "method": "gemini_autour_ko",
         "n_frames_exploitees": len(resultats),
+        "gemini_calls": _n_appels_couleurs,
         "team_0": {
             "color_bgr": _hex_to_bgr(_color_name_to_hex(j_a)),
             "color_name": name_a,

@@ -348,6 +348,27 @@ def run_pipeline(
     )
     os.makedirs(_gemini_tmp_dir, exist_ok=True)
 
+    # V5.2 (11/09/2026) : compteur d'appels Gemini par categorie, a la
+    # demande explicite de l'utilisateur - objectif : connaitre le cout
+    # reel d'une analyse de bout en bout (KO1 -> couleurs -> Fin1MT -> KO2
+    # -> FinMatch -> reste de l'analyse) pour calibrer un prix utilisateur.
+    # Inclus dans le resultat final retourne par run_pipeline() sous la
+    # cle "gemini_calls_breakdown".
+    _compteur_gemini = {
+        "ko1": 0, "ko2": 0, "fin1mt": 0, "finmatch": 0, "autres": 0,
+    }
+    # "autres" = validation buts/tirs (validate_event) + lecture numeros
+    # de maillot (read_jersey_numbers), toutes deux dans
+    # ai/gemini_validator.py - comptees via un compteur global instrumente
+    # directement au point d'entree unique (_call_gemini), reset ici pour
+    # ne compter que CETTE analyse (le compteur est un global de module,
+    # persisterait sinon entre plusieurs analyses dans le meme process).
+    try:
+        from ai.gemini_validator import reset_gemini_calls_count
+        reset_gemini_calls_count()
+    except Exception:
+        pass  # module non disponible ou incompatible - compteur "autres" restera a 0
+
     # ── Auto frame_skip selon FPS réel de la vidéo ───────────────────────────
     # Garantit ~6.25 fps analysés quelle que soit la source (25/30/50/60fps)
     # Override LOCAL uniquement — n'affecte pas les runs parallèles
@@ -494,21 +515,35 @@ def run_pipeline(
 
             # ── Détection des 4 bornes ──────────────────────────────────
             print(f"  [BOUNDARY_SEG] --- Détection des bornes ---")
-            _max_search_s = min(_duration_seg, (half_duration_min / 3) * 2 * 60)
-            _r_ko1 = detect_kickoff_gemini_avec_retry(
-                video_path, max_search_s=_max_search_s, max_retries=3,
-                tmp_dir=_gemini_tmp_dir,
-            )
-            if _r_ko1["status"] != "AUTO_CONFIRMED":
-                raise RuntimeError(f"KO1 non confirmé ({_r_ko1['status']}) — segmentation par bornes impossible")
-            _ko1_abs = _r_ko1["kickoff_s"]
-            print(f"  [BOUNDARY_SEG] ✅ KO1 confirmé : t={_ko1_abs:.0f}s "
-                  f"({int(_ko1_abs//60):02d}:{int(_ko1_abs%60):02d})")
+            # V5.2 (11/09/2026) : reutilise kickoff_s_precalcule si deja
+            # fourni (detecte pendant la pre-analyse cote site, avant meme
+            # l'upload complet) - EVITE de redetecter KO1 une seconde fois
+            # ici, ce qui gaspillerait un appel Gemini complet a chaque
+            # analyse (bug trouve en construisant le compteur de couts -
+            # STEP 0a ne verifiait pas ce parametre avant, contrairement
+            # au flux normal plus bas qui le fait deja correctement).
+            if kickoff_s_precalcule is not None and kickoff_s_precalcule > 0:
+                _ko1_abs = float(kickoff_s_precalcule)
+                print(f"  [BOUNDARY_SEG] ✅ KO1 réutilisé (pré-analysé) : t={_ko1_abs:.0f}s "
+                      f"({int(_ko1_abs//60):02d}:{int(_ko1_abs%60):02d}) — 0 appel Gemini")
+            else:
+                _max_search_s = min(_duration_seg, (half_duration_min / 3) * 2 * 60)
+                _r_ko1 = detect_kickoff_gemini_avec_retry(
+                    video_path, max_search_s=_max_search_s, max_retries=3,
+                    tmp_dir=_gemini_tmp_dir,
+                )
+                if _r_ko1["status"] != "AUTO_CONFIRMED":
+                    raise RuntimeError(f"KO1 non confirmé ({_r_ko1['status']}) — segmentation par bornes impossible")
+                _ko1_abs = _r_ko1["kickoff_s"]
+                _compteur_gemini["ko1"] += _r_ko1.get("n_appels_gemini", 0)
+                print(f"  [BOUNDARY_SEG] ✅ KO1 confirmé : t={_ko1_abs:.0f}s "
+                      f"({int(_ko1_abs//60):02d}:{int(_ko1_abs%60):02d})")
 
             _r_ko2 = find_ko2_gemini(video_path, ko1_s=_ko1_abs, half_duration_min=half_duration_min, tmp_dir=_gemini_tmp_dir)
             if _r_ko2["status"] != "AUTO_CONFIRMED":
                 raise RuntimeError(f"KO2 non confirmé ({_r_ko2['status']}) — segmentation par bornes impossible")
             _ko2_abs = _r_ko2["ko2_s"]
+            _compteur_gemini["ko2"] += _r_ko2.get("n_appels_gemini", 0)
             print(f"  [BOUNDARY_SEG] ✅ KO2 confirmé : t={_ko2_abs:.0f}s "
                   f"({int(_ko2_abs//60):02d}:{int(_ko2_abs%60):02d})")
 
@@ -518,7 +553,9 @@ def run_pipeline(
             # entre elles. Paralleliser avec ThreadPoolExecutor (I/O-bound :
             # appels Gemini/traitement audio, pas de calcul CPU lourd -
             # threading suffit, pas besoin de multiprocessing).
-            print(f"  [BOUNDARY_SEG] --- Détection Fin1MT + FinMatch (en parallèle) ---")
+            # NOTE COMPTEUR : find_fin1mt_audio est base sur l'AUDIO, pas
+            # Gemini - 0 appel Gemini pour cette borne dans ce chemin.
+            print(f"  [BOUNDARY_SEG] --- Détection Fin1MT (audio) + FinMatch (Gemini) en parallèle ---")
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=2) as _executor_bornes:
                 _future_fin1mt = _executor_bornes.submit(find_fin1mt_audio, video_path, ko2_s=_ko2_abs, tmp_dir=_gemini_tmp_dir)
@@ -532,6 +569,7 @@ def run_pipeline(
                   f"({int(_fin1mt_abs//60):02d}:{int(_fin1mt_abs%60):02d})")
 
             _finmatch_abs = _r_finmatch.get("finmatch_s")
+            _compteur_gemini["finmatch"] += _r_finmatch.get("n_appels_gemini", 0)
             if _finmatch_abs is None:
                 raise RuntimeError("FinMatch non détecté — segmentation par bornes impossible")
             print(f"  [BOUNDARY_SEG] ✅ FinMatch confirmée : t={_finmatch_abs:.0f}s "
@@ -782,6 +820,7 @@ def run_pipeline(
                                    # structurelles). Voir kickoff_gemini_cascade.py.
                 tmp_dir = _gemini_tmp_dir,
             )
+            _compteur_gemini["ko1"] += _kickoff_result.get("n_appels_gemini", 0)
             print(f"  [KICKOFF] Gemini cascade → status={_kickoff_result['status']} "
                   f"kickoff_s={_kickoff_result['kickoff_s']}")
 
@@ -958,6 +997,7 @@ def run_pipeline(
                 max_retries  = 3,
                 tmp_dir      = _gemini_tmp_dir,
             )
+            _compteur_gemini["ko1"] += _kickoff_result.get("n_appels_gemini", 0)
             print(f"  [KICKOFF] Gemini cascade → status={_kickoff_result['status']} "
                   f"kickoff_s={_kickoff_result['kickoff_s']}")
 
@@ -1022,6 +1062,7 @@ def run_pipeline(
                 video_path, ko1_s=_kickoff_offset, half_duration_min=half_duration_min,
                 tmp_dir=_gemini_tmp_dir,
             )
+            _compteur_gemini["ko2"] += _ko2_result.get("n_appels_gemini", 0)
             if _ko2_result["status"] == "AUTO_CONFIRMED":
                 _ko2_absolu = _ko2_result["ko2_s"]
                 print(f"  [KO2] Détecté à t={_ko2_absolu:.0f}s (absolu)")
@@ -1035,6 +1076,7 @@ def run_pipeline(
                 # echoue (fin1mt_s=None) - ne perd jamais la detection meme si
                 # la nouvelle methode a un souci sur un match particulier.
                 _fin1mt_gemini_result = find_fin1mt_gemini(video_path, ko2_s=_ko2_absolu, tmp_dir=_gemini_tmp_dir)
+                _compteur_gemini["fin1mt"] += _fin1mt_gemini_result.get("n_appels_gemini", 0)
                 _fin1mt_absolu = _fin1mt_gemini_result.get("fin1mt_s")
                 if _fin1mt_absolu is not None:
                     print(f"  [FIN1MT] Détecté à t={_fin1mt_absolu:.0f}s (absolu, via Gemini vision)")
@@ -1091,6 +1133,7 @@ def run_pipeline(
         if _ko2_absolu is not None:
             print(f"  [FINMATCH] Recherche via Gemini vision (3x confirmations + narratif)...")
             _finmatch_gemini_result = find_finmatch_gemini(video_path, ko2_s=_ko2_absolu, tmp_dir=_gemini_tmp_dir)
+            _compteur_gemini["finmatch"] += _finmatch_gemini_result.get("n_appels_gemini", 0)
             _finmatch_gemini_absolu = _finmatch_gemini_result.get("finmatch_s")
             if _finmatch_gemini_absolu is not None:
                 _match_end_s = _finmatch_gemini_absolu - _kickoff_offset  # absolu -> relatif
@@ -3695,6 +3738,64 @@ def run_pipeline(
         "player_reel":     _player_reel_path,
         "geometry":        _geom_state,   # BC.4 : anchor + bc4 VP/FP report
     }
+
+    # V5.2 (11/09/2026) : bilan complet des appels Gemini/Claude, a la
+    # demande explicite de l'utilisateur - objectif : connaitre le cout
+    # reel d'une analyse de bout en bout pour calibrer un prix
+    # utilisateur. Regroupe TOUTES les sources trouvees lors du balayage
+    # complet du projet (4 sources distinctes, 2 API differentes) :
+    #   - KO1/KO2/Fin1MT/FinMatch (analysis/kickoff_gemini_cascade.py,
+    #     analysis/match_boundaries_v2.py, analysis/fin1mt_gemini_cascade.py,
+    #     analysis/finmatch_gemini_cascade.py) -> Gemini
+    #   - Validation buts/tirs + lecture numeros de maillot
+    #     (ai/gemini_validator.py) -> Gemini
+    #   - Resume IA du match (ai/claude.py) -> Claude (API DIFFERENTE,
+    #     tarification differente, ne pas additionner aveuglement avec
+    #     les appels Gemini)
+    # NOTE IMPORTANTE : la detection des couleurs d'equipe (pre-analyse,
+    # app.py, avant meme l'upload complet) N'EST PAS incluse ici - elle
+    # se produit AVANT l'appel a run_pipeline(), dans un processus
+    # separe (voir analysis/detect_teams_preview.py::get_couleurs_calls_count()
+    # a lire cote app.py directement pour un total vraiment complet).
+    try:
+        from ai.gemini_validator import get_gemini_calls_count as _get_autres_gemini
+        _compteur_gemini["autres"] = _get_autres_gemini()
+    except Exception:
+        pass
+
+    _appels_claude = 0
+    try:
+        from ai.claude import get_claude_calls_count
+        _appels_claude = get_claude_calls_count()
+    except Exception:
+        pass
+
+    _total_gemini = sum(_compteur_gemini.values())
+    result["gemini_calls_breakdown"] = dict(_compteur_gemini)
+    result["gemini_calls_total"]     = _total_gemini
+    result["claude_calls_total"]     = _appels_claude
+    result["gemini_calls_note"] = (
+        "Ne couvre PAS la detection des couleurs (pre-analyse, avant "
+        "run_pipeline(), processus separe - voir "
+        "analysis/detect_teams_preview.py::get_couleurs_calls_count())."
+    )
+
+    print()
+    print("  " + "="*90)
+    print("  [COUT_GEMINI] BILAN DES APPELS — pour cette analyse (run_pipeline uniquement)")
+    print("  " + "="*90)
+    print(f"  [COUT_GEMINI] KO1                          : {_compteur_gemini['ko1']} appel(s)")
+    print(f"  [COUT_GEMINI] KO2                          : {_compteur_gemini['ko2']} appel(s)")
+    print(f"  [COUT_GEMINI] Fin1MT                       : {_compteur_gemini['fin1mt']} appel(s)")
+    print(f"  [COUT_GEMINI] FinMatch                     : {_compteur_gemini['finmatch']} appel(s)")
+    print(f"  [COUT_GEMINI] Validation buts/tirs + maillots : {_compteur_gemini['autres']} appel(s)")
+    print(f"  [COUT_GEMINI] {'─'*40}")
+    print(f"  [COUT_GEMINI] TOTAL GEMINI (cette fonction) : {_total_gemini} appel(s)")
+    print(f"  [COUT_GEMINI] TOTAL CLAUDE (résumé IA)      : {_appels_claude} appel(s) (API séparée, tarif différent)")
+    print(f"  [COUT_GEMINI] ⚠️  Ne couvre PAS la détection des couleurs "
+          f"(pré-analyse, avant cet appel — processus séparé)")
+    print("  " + "="*90)
+    print()
 
     result = sanitize_for_json(result)
 
