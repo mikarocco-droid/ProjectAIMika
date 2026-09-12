@@ -8,6 +8,21 @@ import config
 # FIX — instanciation lazy pour éviter crash si CLAUDE_API_KEY vide au démarrage
 _client = None
 
+# V5.2 (11/09/2026) : compteur d'appels Claude - a la demande explicite
+# de l'utilisateur, pour connaitre le cout TOTAL (Gemini + Claude,
+# tarifications distinctes) d'une analyse complete.
+_CLAUDE_CALLS_REEL = 0
+
+
+def get_claude_calls_count():
+    return _CLAUDE_CALLS_REEL
+
+
+def reset_claude_calls_count():
+    global _CLAUDE_CALLS_REEL
+    _CLAUDE_CALLS_REEL = 0
+
+
 def get_client():
     global _client
     if _client is None:
@@ -111,5 +126,7 @@ Sois précis, factuel et concis.
         max_tokens = config.CLAUDE_MAX_TOKENS,
         messages   = [{"role": "user", "content": prompt}]
     )
+    global _CLAUDE_CALLS_REEL
+    _CLAUDE_CALLS_REEL += 1
 
     return res.content[0].text
