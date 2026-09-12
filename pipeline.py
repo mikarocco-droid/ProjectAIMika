@@ -501,7 +501,8 @@ def run_pipeline(
         try:
             import cv2 as _cv2_seg
             from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
-            from analysis.match_boundaries_v2 import find_ko2_gemini, find_fin1mt_audio
+            from analysis.match_boundaries_v2 import find_ko2_gemini, find_fin1mt_audio, find_finmatch_audio
+            from analysis.fin1mt_gemini_cascade import find_fin1mt_gemini
             from analysis.finmatch_gemini_cascade import find_finmatch_gemini
             from segment_extractor import extract_segments, analyze_segments, cleanup_segments
 
@@ -522,10 +523,34 @@ def run_pipeline(
             # analyse (bug trouve en construisant le compteur de couts -
             # STEP 0a ne verifiait pas ce parametre avant, contrairement
             # au flux normal plus bas qui le fait deja correctement).
+            # V5.2 (11/09/2026, corrige suite a une remarque de l'utilisateur) :
+            # 3 cas distincts pour kickoff_s_precalcule, cohérents avec le
+            # flux normal (§12.17) :
+            #   - valeur > 0  : KO1 deja connu (pre-analyse reussie) -
+            #     reutilise directement, 0 appel Gemini.
+            #   - 0.0 EXACT   : signal EXPLICITE "KO1 inconnu, ne pas
+            #     redetecter" (pre-analyse ratee ou saisie vide cote
+            #     utilisateur). PRINCIPE (demande explicite de
+            #     l'utilisateur) : en cas de doute, mieux vaut que
+            #     l'analyse parte de 0.0 (comportement sûr, deja eprouve
+            #     par le flux normal) que de tenter autre chose d'incertain
+            #     ici. On abandonne donc la segmentation par bornes
+            #     PROPREMENT (pas de nouvel appel Gemini gaspille) et on
+            #     laisse le repli normal (deja teste, fiable) prendre le
+            #     relais.
+            #   - None        : aucun signal fourni du tout (pas de
+            #     pre-analyse effectuee) - on tente une detection fraiche,
+            #     comme avant.
             if kickoff_s_precalcule is not None and kickoff_s_precalcule > 0:
                 _ko1_abs = float(kickoff_s_precalcule)
                 print(f"  [BOUNDARY_SEG] ✅ KO1 réutilisé (pré-analysé) : t={_ko1_abs:.0f}s "
                       f"({int(_ko1_abs//60):02d}:{int(_ko1_abs%60):02d}) — 0 appel Gemini")
+            elif kickoff_s_precalcule is not None and kickoff_s_precalcule == 0.0:
+                raise RuntimeError(
+                    "kickoff_s_precalcule=0.0 (signal explicite 'KO1 inconnu') — "
+                    "segmentation par bornes abandonnée par prudence, repli sur "
+                    "l'analyse complète depuis le début (comportement sûr)"
+                )
             else:
                 _max_search_s = min(_duration_seg, (half_duration_min / 3) * 2 * 60)
                 _r_ko1 = detect_kickoff_gemini_avec_retry(
@@ -547,33 +572,69 @@ def run_pipeline(
             print(f"  [BOUNDARY_SEG] ✅ KO2 confirmé : t={_ko2_abs:.0f}s "
                   f"({int(_ko2_abs//60):02d}:{int(_ko2_abs%60):02d})")
 
-            # V5.2 (11/09/2026) : Fin1MT et FinMatch dependent TOUS LES DEUX
-            # uniquement de KO2 (Fin1MT cherche en arriere depuis KO2,
-            # FinMatch cherche en avant depuis KO2) - AUCUNE dependance
-            # entre elles. Paralleliser avec ThreadPoolExecutor (I/O-bound :
-            # appels Gemini/traitement audio, pas de calcul CPU lourd -
-            # threading suffit, pas besoin de multiprocessing).
-            # NOTE COMPTEUR : find_fin1mt_audio est base sur l'AUDIO, pas
-            # Gemini - 0 appel Gemini pour cette borne dans ce chemin.
-            print(f"  [BOUNDARY_SEG] --- Détection Fin1MT (audio) + FinMatch (Gemini) en parallèle ---")
+            # V5.2 (11/09/2026, corrige suite a une remarque de l'utilisateur) :
+            # Fin1MT et FinMatch dependent TOUS LES DEUX uniquement de KO2
+            # (Fin1MT cherche en arriere depuis KO2, FinMatch cherche en
+            # avant depuis KO2) - AUCUNE dependance entre elles.
+            # Paralleliser avec ThreadPoolExecutor (I/O-bound : appels
+            # Gemini, pas de calcul CPU lourd - threading suffit).
+            #
+            # CORRECTIF : find_fin1mt_gemini() (methode PRINCIPALE, comme
+            # dans le flux normal) est maintenant essayee EN PREMIER, en
+            # parallele avec FinMatch (les deux sont Gemini, independantes).
+            # find_fin1mt_audio() ne sert plus que de repli SI Gemini
+            # echoue - avant ce correctif, STEP 0a utilisait l'audio
+            # directement, sans jamais essayer Gemini d'abord (incoherent
+            # avec le flux normal, corrige apres qu'un ecart de 318s ait
+            # ete observe sur Franchimont avec la seule methode audio).
+            print(f"  [BOUNDARY_SEG] --- Détection Fin1MT (Gemini) + FinMatch (Gemini) en parallèle ---")
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=2) as _executor_bornes:
-                _future_fin1mt = _executor_bornes.submit(find_fin1mt_audio, video_path, ko2_s=_ko2_abs, tmp_dir=_gemini_tmp_dir)
+                _future_fin1mt = _executor_bornes.submit(find_fin1mt_gemini, video_path, ko2_s=_ko2_abs, tmp_dir=_gemini_tmp_dir)
                 _future_finmatch = _executor_bornes.submit(find_finmatch_gemini, video_path, ko2_s=_ko2_abs, tmp_dir=_gemini_tmp_dir)
-                _fin1mt_abs = _future_fin1mt.result()
+                _r_fin1mt_gemini = _future_fin1mt.result()
                 _r_finmatch = _future_finmatch.result()
 
+            _compteur_gemini["fin1mt"] += _r_fin1mt_gemini.get("n_appels_gemini", 0)
+            _fin1mt_abs = _r_fin1mt_gemini.get("fin1mt_s")
+            if _fin1mt_abs is not None:
+                print(f"  [BOUNDARY_SEG] ✅ Fin1MT confirmée (Gemini) : t={_fin1mt_abs:.0f}s "
+                      f"({int(_fin1mt_abs//60):02d}:{int(_fin1mt_abs%60):02d})")
+            else:
+                print(f"  [BOUNDARY_SEG] Fin1MT Gemini sans résultat — repli sur la méthode audio...")
+                _fin1mt_abs = find_fin1mt_audio(video_path, ko2_s=_ko2_abs, tmp_dir=_gemini_tmp_dir)
+                if _fin1mt_abs is not None:
+                    print(f"  [BOUNDARY_SEG] ✅ Fin1MT confirmée (audio, repli) : t={_fin1mt_abs:.0f}s "
+                          f"({int(_fin1mt_abs//60):02d}:{int(_fin1mt_abs%60):02d})")
+
             if _fin1mt_abs is None:
-                raise RuntimeError("Fin1MT non détecté — segmentation par bornes impossible")
-            print(f"  [BOUNDARY_SEG] ✅ Fin1MT confirmée : t={_fin1mt_abs:.0f}s "
-                  f"({int(_fin1mt_abs//60):02d}:{int(_fin1mt_abs%60):02d})")
+                raise RuntimeError("Fin1MT non détecté (ni Gemini ni audio) — segmentation par bornes impossible")
 
             _finmatch_abs = _r_finmatch.get("finmatch_s")
             _compteur_gemini["finmatch"] += _r_finmatch.get("n_appels_gemini", 0)
+            if _finmatch_abs is not None:
+                print(f"  [BOUNDARY_SEG] ✅ FinMatch confirmée (Gemini) : t={_finmatch_abs:.0f}s "
+                      f"({int(_finmatch_abs//60):02d}:{int(_finmatch_abs%60):02d})")
+            else:
+                # V5.2 (11/09/2026) : repli audio ajoute suite au meme
+                # constat que pour Fin1MT (cf. plus haut) - AVANT ce
+                # correctif, FinMatch n'avait AUCUN repli dans STEP 0a
+                # (contrairement au flux normal, qui retombe sur
+                # find_match_end()) - abandonnait toute la segmentation
+                # au 1er echec Gemini, incoherent. NOTE : find_match_end()
+                # (utilise en repli dans le flux normal) N'EST PAS
+                # utilisable ici - il depend de frames_data, qui n'existe
+                # pas encore a ce stade (avant tout passage YOLO) - seul
+                # find_finmatch_audio() (independant de frames_data,
+                # comme Fin1MT) est un repli valide dans ce chemin.
+                print(f"  [BOUNDARY_SEG] FinMatch Gemini sans résultat — repli sur la méthode audio...")
+                _finmatch_abs = find_finmatch_audio(video_path, ko2_s=_ko2_abs, tmp_dir=_gemini_tmp_dir)
+                if _finmatch_abs is not None:
+                    print(f"  [BOUNDARY_SEG] ✅ FinMatch confirmée (audio, repli) : t={_finmatch_abs:.0f}s "
+                          f"({int(_finmatch_abs//60):02d}:{int(_finmatch_abs%60):02d})")
+
             if _finmatch_abs is None:
-                raise RuntimeError("FinMatch non détecté — segmentation par bornes impossible")
-            print(f"  [BOUNDARY_SEG] ✅ FinMatch confirmée : t={_finmatch_abs:.0f}s "
-                  f"({int(_finmatch_abs//60):02d}:{int(_finmatch_abs%60):02d})")
+                raise RuntimeError("FinMatch non détecté (ni Gemini ni audio) — segmentation par bornes impossible")
 
             _MARGE_KO1_AVANT_S      = 10
             _MARGE_FINMATCH_APRES_S = 30
