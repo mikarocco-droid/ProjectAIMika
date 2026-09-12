@@ -679,10 +679,26 @@ def run_pipeline(
             print(f"  [BOUNDARY_SEG] --- Analyse YOLO (parallèle) — "
                   f"légende : Segment 1/2 = 1ère MI-TEMPS, Segment 2/2 = 2e MI-TEMPS ---")
             _t0_analyse = _bseg_time.time()
+            # V5.2 (11/09/2026, corrige suite a un run reel qui a pris >7h) :
+            # analyze_segments() a son PROPRE defaut code en dur
+            # (frame_skip=2), qui ignorait completement le calcul AUTO SKIP
+            # fait plus haut dans run_pipeline() (qui vise ~6.25 fps
+            # analyses, quelle que soit la source - ici calcule 5 pour une
+            # video a 30fps). Sans le transmettre explicitement, le chemin
+            # de segmentation tournait a ~15fps analyses (2x trop) au lieu
+            # des ~6fps prevus - explique une grande partie du temps
+            # d'analyse anormalement long observe (>7h au lieu de 1-2h).
+            # Le chemin candidate_segments/coarse_scan (preexistant, plus
+            # bas) le faisait deja correctement (frame_skip=_deep_skip) -
+            # meme pattern applique ici.
             _ev_total, _fr_total, _fps_final, _jmap_final = analyze_segments(
                 segment_clips = _clips_boundary,
                 sport         = sport,
                 shot_zones    = shot_zones,
+                frame_skip    = config.FRAME_SKIP_EVERY,
+                batch_size    = config.YOLO_BATCH_SIZE,  # V5.2 : meme correctif que
+                                # frame_skip - analyze_segments() codait en dur
+                                # batch_size=8, ignorant config.YOLO_BATCH_SIZE (=4).
             )
             print(f"  [BOUNDARY_SEG] ✅ Les 2 mi-temps analysées en {_bseg_time.time()-_t0_analyse:.0f}s "
                   f"(parallèle) — {len(_ev_total)} events, {len(_fr_total)} frames au total, "
