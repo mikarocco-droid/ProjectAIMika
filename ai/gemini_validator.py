@@ -80,6 +80,34 @@ _METRICS = {
     "cache_misses": 0,
 }
 
+# V5.2 (11/09/2026) : compteur GLOBAL du nombre REEL d'appels a l'API
+# Gemini effectues via _call_gemini() - le point d'entree UNIQUE par
+# lequel transitent toutes les fonctions de ce fichier (validation buts/
+# tirs, lecture numeros de maillot, etc.). _METRICS["cache_misses"]
+# n'est PAS un proxy fiable (ne couvre pas forcement tous les chemins
+# d'appel de ce fichier) - ce compteur, lui, s'incremente au point exact
+# ou l'appel reseau reussit, quel que soit le chemin de code appelant.
+# Objectif : connaitre le cout Gemini reel d'une analyse complete, y
+# compris la validation des buts/tirs et la lecture des maillots - pas
+# seulement les detections KO1/KO2/Fin1MT/FinMatch deja comptees
+# separement dans pipeline.py.
+_GEMINI_CALLS_REEL = 0
+
+
+def get_gemini_calls_count():
+    """Retourne le nombre total d'appels Gemini reussis effectues par ce
+    module depuis le dernier reset_gemini_calls_count()."""
+    return _GEMINI_CALLS_REEL
+
+
+def reset_gemini_calls_count():
+    """Remet le compteur a 0 - a appeler en debut d'analyse pour ne
+    compter que les appels de CETTE analyse (le compteur est un global
+    de module, qui persisterait sinon entre plusieurs analyses dans le
+    meme process)."""
+    global _GEMINI_CALLS_REEL
+    _GEMINI_CALLS_REEL = 0
+
 
 def get_dynamic_threshold(event):
     """
@@ -122,7 +150,7 @@ _gemini_unavailable = False
 rebound_sig         = 0.15   # bonus signal pour candidats avec rebond filet
 
 def _call_gemini(client, parts, max_retries=2):
-    global _quota_exhausted, _gemini_unavailable
+    global _quota_exhausted, _gemini_unavailable, _GEMINI_CALLS_REEL
 
     if _quota_exhausted:
         return None
@@ -137,7 +165,8 @@ def _call_gemini(client, parts, max_retries=2):
                 )
             finally :
                 _METRICS["gemini_time"] += time.time() - t0
-            
+
+            _GEMINI_CALLS_REEL += 1
             _gemini_unavailable = False
             return response
 
@@ -482,6 +511,8 @@ Default to is_goal=false if any doubt."""
                 model    = "gemini-2.5-flash",
                 contents = [_early_prompt] + list(early_parts),
             )
+            global _GEMINI_CALLS_REEL
+            _GEMINI_CALLS_REEL += 1
             _data = _safe_json_load(_resp.text.strip())
             if (_data and _data.get("is_goal")
                     and _data.get("confidence", 0) >= EARLY_STOP_MIN_CONF):
