@@ -314,10 +314,11 @@ Question : Un BUT a-t-il ete marque dans cette fenetre ? Si oui, a quel instant 
 Regles — a lire attentivement :
 - OUI : le ballon est clairement A L'INTERIEUR du but (derriere la ligne, dans les filets), les FILETS SONT VISIBLEMENT DEFORMES/GONFLES par le ballon
 - OUI : le gardien est accroupi ou plonge pour recuperer le ballon DEPUIS L'INTERIEUR des filets
-- NON : le ballon est pres des filets ou devant, mais les filets sont plats/non deformes
+- OUI : un joueur (autre que le gardien) est visible PRES DU BUT ou A L'INTERIEUR de la surface, avec une POSTURE DE CELEBRATION CLAIRE (bras leves, course de joie, saut, poings serres) — sur les videos filmees a distance, le ballon lui-meme dans les filets est souvent trop petit/flou pour etre visible, mais la celebration d'un joueur juste apres reste un signal fiable a elle seule, MEME SANS voir le ballon dans les filets
+- NON : le ballon est pres des filets ou devant, mais les filets sont plats/non deformes, ET aucun joueur ne celebre
 - NON : le ballon est a cote du poteau ou hors du cadre du but
-- NON : le gardien tient/attrape le ballon dans ses mains ou ses bras (meme dans la surface)
-- NON : le gardien est debout, avec ou sans ballon
+- NON : le gardien tient/attrape le ballon dans ses mains ou ses bras (meme dans la surface), SANS celebration adverse visible
+- NON : le gardien est debout, avec ou sans ballon, SANS celebration adverse visible
 - NON : le ballon est DERRIERE le but (hors des filets, de l'autre cote de la structure) → corner ou but de gardien, PAS un but
 - NON : situation de remise en touche — joueur sur la ligne de touche tenant ou lancant le ballon
 - NON : joueurs regroupes pres de la LIGNE DE TOUCHE → remise en touche, PAS un but
@@ -327,10 +328,12 @@ Regles — a lire attentivement :
 - NON : contenu hors-match — enfants qui jouent, terrain vide, activite informelle
 
 CRITIQUE : si le ballon et les joueurs sont pres de la LIGNE DE TOUCHE, c'est presque certainement une remise en touche, PAS un but. Reponds NON immediatement dans ce cas.
+IMPORTANT : ne confonds pas une celebration (bras leves, joie, joueur qui court en criant) avec une simple attente ou un rassemblement calme de joueurs (mains sur les hanches, discussion, position d'attente) — seule une posture de joie ACTIVE et CLAIRE compte comme signal OUI.
 
 Reponds UNIQUEMENT en JSON valide, sans texte avant/apres, sans balises markdown :
-{{"is_goal": true ou false, "timestamp_dans_fenetre": <secondes ou null>, "confidence": <0.0-1.0>, "evidence": "<decris precisement : position du ballon par rapport aux filets/ligne, et tout signal negatif observe>"}}
+{{"is_goal": true ou false, "timestamp_dans_fenetre": <secondes ou null>, "confidence": <0.0-1.0>, "evidence": "<decris precisement : position du ballon par rapport aux filets/ligne, presence/absence de celebration, et tout signal negatif observe>"}}
 confidence=0.90+ uniquement si le ballon est sans ambiguite a l'interieur des filets avec deformation visible.
+confidence=0.60-0.75 si la seule preuve est une celebration claire pres du but, sans voir le ballon dans les filets.
 Si le moindre doute, is_goal=false."""
 
 
