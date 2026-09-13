@@ -23,6 +23,38 @@ import json
 import time
 import re
 
+
+def _safe_seek_frame(cap, target_frame, max_jump=30):
+    """
+    Seek précis vers une frame en avançant depuis un keyframe antérieur.
+    cap.set(CAP_PROP_POS_FRAMES) est approximatif sur MP4 (arrondit au
+    keyframe le plus proche, potentiellement plusieurs secondes
+    d'écart) — repris tel quel de ai/gemini_validator.py, où ce
+    problème est déjà documenté et corrigé pour le reste du pipeline.
+    Sans cette correction, un échantillon visé à t=382.35s peut en
+    réalité lire une frame à plusieurs secondes de distance — constaté
+    empiriquement le 12/09/2026 (but confirmé par l'utilisateur à
+    6:22-6:23, manqué par le micro-scan malgré un échantillon calculé
+    à 382.35s).
+    """
+    import cv2
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    target_frame = max(0, min(target_frame, total_frames - 1)) if total_frames > 0 else max(0, target_frame)
+
+    start_frame = max(0, target_frame - max_jump)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    current = start_frame
+    last_frame = None
+    while current <= target_frame:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        last_frame = frame
+        current += 1
+
+    return last_frame
+
 STATES = ["NORMAL", "ATTACK", "SHOT", "CELEBRATION", "RESTART_KO", "DEAD_BALL"]
 
 PROMPT_MACRO_SCAN = """Analyse cette image d'un match de football amateur/semi-pro.
@@ -163,9 +195,8 @@ def macro_scan(video_path, pas_scan=5.0, t_debut=0.0, t_fin=None,
     _t0 = time.time()
 
     for t in timestamps:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
-        ret, frame = cap.read()
-        if not ret:
+        frame = _safe_seek_frame(cap, int(t * fps))
+        if frame is None:
             print(f"  [MACRO_SCAN] ⚠️ lecture échouée à t={t:.0f}s — ignoré")
             continue
 
@@ -362,9 +393,8 @@ def micro_scan_confirm_goal(video_path, window_start, window_end,
     offsets_valides = []
     for off in offsets:
         t_abs = window_start + off
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(t_abs * fps))
-        ret, frame = cap.read()
-        if not ret:
+        frame = _safe_seek_frame(cap, int(t_abs * fps))
+        if frame is None:
             continue
         _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
         parts.append({"inline_data": {"mime_type": "image/jpeg", "data": buf.tobytes()}})
