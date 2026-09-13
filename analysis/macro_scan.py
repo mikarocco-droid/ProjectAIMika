@@ -23,17 +23,40 @@ import json
 import time
 import re
 
-STATES = ["NORMAL", "ATTACK", "CELEBRATION", "RESTART_KO", "DEAD_BALL"]
+STATES = ["NORMAL", "ATTACK", "SHOT", "CELEBRATION", "RESTART_KO", "DEAD_BALL"]
 
 PROMPT_MACRO_SCAN = """Analyse cette image d'un match de football amateur/semi-pro.
 Reponds UNIQUEMENT avec un objet JSON, sans aucun texte avant ou apres, sans balises markdown.
 
 Etats possibles (choisis EXACTEMENT un seul) :
 - "NORMAL" : jeu en cours, rien de particulier a signaler
-- "ATTACK" : action offensive dangereuse, ballon proche de la surface de reparation adverse
+- "ATTACK" : action offensive dangereuse, ballon proche de la surface de reparation adverse, mais PAS un tir en train de se produire
+- "SHOT" : un tir est visiblement en train de se produire — voir criteres ci-dessous
 - "CELEBRATION" : joueurs celebrant clairement (bras leves, embrassades, course de joie, groupe de joueurs qui se rassemble en euphorie)
 - "RESTART_KO" : UNIQUEMENT un vrai coup d'envoi au centre du terrain (voir criteres stricts ci-dessous)
 - "DEAD_BALL" : arret de jeu (touche, corner, coup franc, faute, joueur au sol, arbitre qui intervient) — INCLUT toute remise en jeu qui se joue pres du centre mais qui n'est PAS un vrai coup d'envoi (ex. coup franc central, remise apres une sortie de balle proche du milieu)
+
+═══════════════════════════════════════════════════
+CRITERES POUR "SHOT" — au moins UN signal fort suffit
+═══════════════════════════════════════════════════
+Un tir est difficile a capter sur une seule image (action tres breve) —
+cherche ACTIVEMENT ces indices, meme partiels :
+
+1. POSTURE DE FRAPPE : un joueur en pleine extension de jambe vers le
+   ballon, jambe d'appui plantee, corps penche — position caracteristique
+   d'un tir au moment de l'impact ou juste apres.
+2. BALLON EN TRAJECTOIRE VERS LE BUT : ballon visiblement en l'air ou en
+   mouvement rapide, dirige vers l'un des deux buts (pas juste au sol
+   pres d'un joueur qui marche).
+3. REACTION DU GARDIEN : gardien en train de plonger, sauter, ou tendre
+   les bras vers un ballon qui arrive — signal tres fiable meme si le
+   tir lui-meme n'est pas visible dans le cadre.
+4. JOUEURS FIGES REGARDANT VERS LE BUT : plusieurs joueurs immobiles,
+   tous tournes vers le meme but, dans une posture d'attente du resultat
+   d'un tir qui vient d'avoir lieu.
+
+Si un SEUL de ces 4 signaux est present, meme sans les autres, reponds
+"SHOT" plutot que "ATTACK" ou "NORMAL".
 
 ═══════════════════════════════════════════════════
 CRITERES STRICTS POUR "RESTART_KO" — TOUS obligatoires
@@ -58,7 +81,7 @@ NE CHOISIS PAS "RESTART_KO".
 
 Reponds avec exactement ce format :
 {"state": "NORMAL"}
-(en remplacant par l'etat detecte parmi les 5 listes ci-dessus)
+(en remplacant par l'etat detecte parmi les 6 listes ci-dessus)
 """
 
 
