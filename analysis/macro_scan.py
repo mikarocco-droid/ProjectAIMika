@@ -30,7 +30,7 @@ Reponds UNIQUEMENT avec un objet JSON, sans aucun texte avant ou apres, sans bal
 
 Etats possibles (choisis EXACTEMENT un seul) :
 - "NORMAL" : jeu en cours, rien de particulier a signaler
-- "ATTACK" : action offensive dangereuse, ballon proche de la surface de reparation adverse, mais PAS un tir en train de se produire
+- "ATTACK" : le BALLON est visiblement DANS LE GRAND RECTANGLE (surface de reparation) de l'une des deux equipes — peu importe l'action precise en cours (centre, une-deux, remise, dribble) ; c'est la PRESENCE du ballon dans cette zone qui compte, pas un jugement sur si l'action parait "dangereuse". PAS un tir en train de se produire (voir "SHOT" ci-dessous).
 - "SHOT" : un tir est visiblement en train de se produire — voir criteres ci-dessous
 - "CELEBRATION" : joueurs celebrant clairement (bras leves, embrassades, course de joie, groupe de joueurs qui se rassemble en euphorie)
 - "RESTART_KO" : UNIQUEMENT un vrai coup d'envoi au centre du terrain (voir criteres stricts ci-dessous)
@@ -63,21 +63,27 @@ CRITERES STRICTS POUR "RESTART_KO" — TOUS obligatoires
 ═══════════════════════════════════════════════════
 Un vrai coup d'envoi (RESTART_KO) exige TOUS ces elements ensemble :
 
-1. BALLON EXACTEMENT au point/rond central (pas juste "proche du centre").
-2. LES DEUX EQUIPES clairement separees, CHACUNE sur SA moitie de terrain
-   respective — pas un seul joueur isole pres du ballon avec les autres
-   disperses sans repartition claire par moitie.
+1. BALLON IMMOBILE, exactement au point/rond central (pas en mouvement,
+   pas juste "quelque part pres du centre").
+2. JOUEURS NON MELANGES PAR EQUIPE, avec tolerance pour les traineurs —
+   c'est le critere qui separe un vrai coup d'envoi d'un COUP FRANC
+   CENTRAL : sur un coup franc (meme loin du but), les joueurs des deux
+   equipes sont generalement MELANGES ensemble pres du ballon
+   (contestation, discussion, positionnement defensif improvise) ; sur
+   un coup d'envoi, LA MAJORITE des joueurs d'une equipe sont d'UN cote
+   et LA MAJORITE des joueurs de l'autre equipe sont de L'AUTRE cote —
+   quelques joueurs encore en transition (pas totalement revenus dans
+   leur moitie, arbitre qui n'attend pas que tout le monde soit range)
+   sont NORMAUX et NE DOIVENT PAS faire rejeter un vrai coup d'envoi.
+   Seul un melange GENERALISE des deux equipes au meme endroit doit
+   faire rejeter "RESTART_KO".
 3. Joueurs RELATIVEMENT STATIQUES ou en train de se placer calmement
    (pas en pleine course/action de jeu).
-4. CE N'EST PAS une autre remise en jeu localisee qui se joue pres du
-   centre par coincidence (coup franc central, remise apres sortie de
-   balle) — si un SEUL joueur s'apprete a jouer le ballon sans que les
-   DEUX equipes soient visiblement organisees chacune sur leur moitie,
-   c'est "DEAD_BALL", PAS "RESTART_KO".
 
-Si le MOINDRE de ces 4 criteres n'est pas clairement rempli, reponds
-"DEAD_BALL" ou "NORMAL" plutot que "RESTART_KO" — en cas de doute,
-NE CHOISIS PAS "RESTART_KO".
+Si le MOINDRE de ces 3 criteres n'est pas clairement rempli, reponds
+"DEAD_BALL" (ballon immobile mais joueurs melanges ou hors du point
+central) ou "NORMAL" (ballon en mouvement) plutot que "RESTART_KO" — en
+cas de doute, NE CHOISIS PAS "RESTART_KO".
 
 Reponds avec exactement ce format :
 {"state": "NORMAL"}
@@ -201,7 +207,7 @@ def macro_scan(video_path, pas_scan=5.0, t_debut=0.0, t_fin=None,
 
 def detect_goal_candidates_via_ko(macro_scan_results, ko1_s, ko2_s,
                                     marge_avant_goal=30.0,
-                                    marge_exclusion_ko=120.0):
+                                    marge_exclusion_ko=60.0):
     """
     À partir des résultats d'un macro_scan(), identifie les RESTART_KO
     qui ne correspondent ni à KO1 ni à KO2 (déjà connus) — chacun de ces
@@ -215,7 +221,14 @@ def detect_goal_candidates_via_ko(macro_scan_results, ko1_s, ko2_s,
                               RESTART_KO candidat, pour y chercher le but
                               (micro-scan, non implémenté dans ce POC)
         marge_exclusion_ko  : tolérance (secondes) pour exclure les
-                              RESTART_KO trop proches de KO1/KO2 connus
+                              RESTART_KO trop proches de KO1/KO2 connus.
+                              Défaut 60s : compromis entre tolérer le
+                              bruit de détection autour de KO1/KO2 (qui
+                              peut s'étaler sur plusieurs échantillons)
+                              et ne pas exclure à tort un but précoce
+                              (ex. un but 90s après KO1 a été observé
+                              sur Andrimont — une marge de 120s
+                              l'excluait à tort, cf. test du 12/09/2026)
 
     Returns:
         liste de tuples (t_debut_fenetre, t_restart_ko) à analyser finement
@@ -245,3 +258,162 @@ def detect_goal_candidates_via_ko(macro_scan_results, ko1_s, ko2_s,
             fusionnees.append((debut, fin))
 
     return fusionnees
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# MICRO-SCAN — confirmation fine d'un candidat de but (V5.2, 12/09/2026)
+# ─────────────────────────────────────────────────────────────────────────
+# Contrairement au macro-scan (1 appel Gemini par échantillon, 5s d'écart),
+# le micro-scan analyse UNE SEULE fenêtre candidate (issue de
+# detect_goal_candidates_via_ko) avec PLUSIEURS frames envoyées ensemble
+# en UN SEUL appel Gemini — permet une décision beaucoup mieux étayée
+# qu'une classification isolée, avec un coût qui reste faible car il n'y
+# a que quelques fenêtres candidates par match (pas 134 comme l'ancien
+# système par trajectoire de ballon).
+#
+# Les critères ci-dessous reprennent volontairement le langage déjà
+# éprouvé de find_goal_after_shot() (ai/gemini_validator.py, prompt
+# "early-stop") — distinction but/touche/dégagement/corner déjà validée
+# en production, pas réinventée ici.
+
+PROMPT_MICRO_SCAN_GOAL = """Analyse football match — {n} images extraites de la fenetre {debut} a {fin} (juste avant une reprise au centre du terrain detectee).
+
+Question : Un BUT a-t-il ete marque dans cette fenetre ? Si oui, a quel instant approximatif (en secondes depuis le debut de la fenetre, 0 = premiere image) ?
+
+Regles — a lire attentivement :
+- OUI : le ballon est clairement A L'INTERIEUR du but (derriere la ligne, dans les filets), les FILETS SONT VISIBLEMENT DEFORMES/GONFLES par le ballon
+- OUI : le gardien est accroupi ou plonge pour recuperer le ballon DEPUIS L'INTERIEUR des filets
+- NON : le ballon est pres des filets ou devant, mais les filets sont plats/non deformes
+- NON : le ballon est a cote du poteau ou hors du cadre du but
+- NON : le gardien tient/attrape le ballon dans ses mains ou ses bras (meme dans la surface)
+- NON : le gardien est debout, avec ou sans ballon
+- NON : le ballon est DERRIERE le but (hors des filets, de l'autre cote de la structure) → corner ou but de gardien, PAS un but
+- NON : situation de remise en touche — joueur sur la ligne de touche tenant ou lancant le ballon
+- NON : joueurs regroupes pres de la LIGNE DE TOUCHE → remise en touche, PAS un but
+- NON : degagement au but — gardien ou defenseur qui tape un ballon immobile depuis la surface de 6 metres, vers l'exterieur
+- NON : gardien qui degage le ballon (au pied ou aux poings) depuis l'interieur de son but
+- NON : degagement defensif — defenseur qui tete ou tape le ballon loin du but
+- NON : contenu hors-match — enfants qui jouent, terrain vide, activite informelle
+
+CRITIQUE : si le ballon et les joueurs sont pres de la LIGNE DE TOUCHE, c'est presque certainement une remise en touche, PAS un but. Reponds NON immediatement dans ce cas.
+
+Reponds UNIQUEMENT en JSON valide, sans texte avant/apres, sans balises markdown :
+{{"is_goal": true ou false, "timestamp_dans_fenetre": <secondes ou null>, "confidence": <0.0-1.0>, "evidence": "<decris precisement : position du ballon par rapport aux filets/ligne, et tout signal negatif observe>"}}
+confidence=0.90+ uniquement si le ballon est sans ambiguite a l'interieur des filets avec deformation visible.
+Si le moindre doute, is_goal=false."""
+
+
+def micro_scan_confirm_goal(video_path, window_start, window_end,
+                             pas_echantillon=2.0, max_frames=25,
+                             model_name="gemini-3.5-flash",
+                             jpeg_quality=75):
+    """
+    Analyse finement une fenêtre candidate (typiquement produite par
+    detect_goal_candidates_via_ko) pour confirmer si un but a réellement
+    eu lieu à l'intérieur, et à quel instant précis.
+
+    Envoie des frames ESPACÉES DE pas_echantillon SECONDES (pas un
+    nombre fixe réparti sur la fenêtre) — un but est un événement bref
+    (1-2s) : avec un nombre de frames fixe, une fenêtre plus longue
+    dilue l'espacement et peut manquer le but exactement comme le
+    macro-scan (constaté empiriquement le 12/09/2026 : 8 frames sur 35s
+    donnait un espacement de ~5s, identique au macro-scan, et a manqué
+    un but confirmé). TOUTES les frames sont envoyées dans un SEUL appel
+    Gemini — le coût reste 1 appel par fenêtre, seule la quantité de
+    frames dans cet appel augmente.
+
+    Args:
+        video_path      : chemin de la vidéo
+        window_start    : début de la fenêtre à analyser (secondes, absolu)
+        window_end      : fin de la fenêtre (secondes, absolu)
+        pas_echantillon : espacement cible entre deux frames (secondes) —
+                          défaut 2.0s, dense mais raisonnable pour capter
+                          un événement de 1-2s
+        max_frames      : plafond de sécurité (évite un appel démesuré
+                          sur une fenêtre anormalement longue)
+        model_name      : modèle Gemini à utiliser
+        jpeg_quality    : qualité JPEG d'encodage
+
+    Returns:
+        dict {"is_goal": bool, "timestamp_absolu": float|None,
+              "confidence": float, "evidence": str, "n_appels_gemini": int}
+        ou None si l'extraction vidéo échoue
+    """
+    import cv2
+    from google import genai
+
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY manquante")
+    client = genai.Client(api_key=api_key)
+
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+
+    duree_fenetre = window_end - window_start
+    if duree_fenetre <= 0:
+        cap.release()
+        return None
+
+    n_frames = max(2, min(max_frames, int(duree_fenetre / pas_echantillon) + 1))
+    offsets = [i * duree_fenetre / (n_frames - 1) for i in range(n_frames)]
+
+    parts = []
+    offsets_valides = []
+    for off in offsets:
+        t_abs = window_start + off
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(t_abs * fps))
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": buf.tobytes()}})
+        offsets_valides.append(off)
+    cap.release()
+
+    if not parts:
+        print(f"  [MICRO_SCAN] ⚠️ aucune frame extraite pour la fenêtre [{window_start:.0f}s, {window_end:.0f}s]")
+        return None
+
+    _mm_d, _ss_d = int(window_start // 60), int(window_start % 60)
+    _mm_f, _ss_f = int(window_end // 60), int(window_end % 60)
+    prompt = PROMPT_MICRO_SCAN_GOAL.format(
+        n=len(parts), debut=f"{_mm_d:02d}:{_ss_d:02d}", fin=f"{_mm_f:02d}:{_ss_f:02d}",
+    )
+
+    print(f"  [MICRO_SCAN] Analyse fenêtre [{window_start:.0f}s, {window_end:.0f}s] "
+          f"({len(parts)} frame(s), 1 appel Gemini)...")
+
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[{"parts": [{"text": prompt}] + parts}],
+        )
+        data = _safe_json_load(response.text.strip())
+    except Exception as e:
+        print(f"  [MICRO_SCAN] ⚠️ erreur Gemini : {e}")
+        return {"is_goal": False, "timestamp_absolu": None, "confidence": 0.0,
+                "evidence": f"erreur: {e}", "n_appels_gemini": 1}
+
+    if not data:
+        print(f"  [MICRO_SCAN] ⚠️ réponse invalide : {response.text[:150]!r}")
+        return {"is_goal": False, "timestamp_absolu": None, "confidence": 0.0,
+                "evidence": "réponse Gemini invalide", "n_appels_gemini": 1}
+
+    is_goal = bool(data.get("is_goal", False))
+    ts_relatif = data.get("timestamp_dans_fenetre")
+    ts_absolu = (window_start + float(ts_relatif)) if (is_goal and ts_relatif is not None) else None
+    confidence = float(data.get("confidence", 0.0) or 0.0)
+    evidence = data.get("evidence", "")
+
+    _verdict = "BUT CONFIRMÉ" if is_goal else "pas de but"
+    print(f"  [MICRO_SCAN] → {_verdict} (confidence={confidence:.2f})"
+          + (f", t≈{ts_absolu:.0f}s" if ts_absolu is not None else ""))
+
+    return {
+        "is_goal": is_goal,
+        "timestamp_absolu": ts_absolu,
+        "confidence": confidence,
+        "evidence": evidence,
+        "n_appels_gemini": 1,
+    }
