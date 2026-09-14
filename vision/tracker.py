@@ -32,8 +32,27 @@ class Tracker:
         self.mode = "deepsort"
         print(f"  Tracker : DeepSort (mobilenet {'FP16 GPU' if _has_gpu else 'FP32 CPU'})")
 
-        self.reid = PlayerReID(fps=config.FPS)
-        self.reid.set_spatial_max_dist(80)
+        # V5.2 (13/09/2026) : fps EFFECTIF (post frame_skip), pas le fps
+        # natif — meme correctif que celui applique dans player_reid.py
+        # (TTL_ACTIVE_SECONDS/TTL_SLEEP_SECONDS). config.FPS=30 (natif)
+        # ne reflete pas le rythme reel d'appel de update().
+        # ATTENTION FORMULE : verifiee a 100% dans main.py ligne ~388
+        # (`if frame_id % skip_every == (skip_every - 1): skip`) — ce
+        # mecanisme SAUTE 1 frame sur skip_every, il n'en GARDE PAS 1
+        # sur skip_every (comprehension initiale erronee, corrigee
+        # apres verification directe du code appelant). Frames
+        # effectivement traitees = (skip_every-1)/skip_every, PAS
+        # 1/skip_every. Pour skip_every=4, fps natif=30 : rythme reel
+        # = 30 * 3/4 = 22.5fps, pas 30/4=7.5fps.
+        _frame_skip = max(1, getattr(config, "FRAME_SKIP_EVERY", 1))
+        _fps_effectif = config.FPS * (_frame_skip - 1) / _frame_skip
+        self.reid = PlayerReID(fps=_fps_effectif)
+        # V5.2 (13/09/2026) : 80px -> 150px, valide empiriquement sur
+        # 11 matchs de reference (voir player_reid.py et
+        # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.6) -
+        # reduit fortement la fragmentation d'identite et les vols
+        # MAX_PLAYERS, hausse mesuree du risque de fusion a tort minime.
+        self.reid.set_spatial_max_dist(150)
 
     def update(self, players, frame):
         if not players:
