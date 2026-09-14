@@ -85,7 +85,17 @@ class PlayerReID:
     TTL_SLEEP_SECONDS  = 20.0   # durée réelle avant oubli définitif
     MAX_PLAYERS = 25
 
-    SPATIAL_MAX_DIST = 200.0
+    SPATIAL_MAX_DIST = 150.0  # V5.2 (13/09/2026) : 80px (ancienne valeur
+    # de production, via vision/tracker.py) causait 77,5% des blocages
+    # d'assignation par MAX_PLAYERS_STEAL (vol d'identite) sur un
+    # diagnostic instrumente. Teste empiriquement sur 11 matchs de
+    # reference (80/100/120/150/200px) : 80->100px ne change RIEN
+    # (aucun candidat ne bascule) ; 150px reduit la fragmentation de
+    # ~32% (103->70 ID median) et les vols de ~80% (427->84 median),
+    # pour une hausse mesuree du risque de fusion a tort de seulement
+    # ~7% (metrique quasi-ex-aequo) et une derive de couleur des
+    # appariements acceptes (col_d_P99) stable. Voir
+    # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.6.
     THRESHOLD_ACTIVE = 90.0
     THRESHOLD_SLEEP  = 120.0
 
