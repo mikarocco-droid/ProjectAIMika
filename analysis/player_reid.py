@@ -81,8 +81,8 @@ class PlayerReID:
     - jersey_map intégré : stabilise les IDs via numéro maillot
     """
 
-    TTL_ACTIVE  = 125    # 5s  @25fps
-    TTL_SLEEP   = 500    # 20s @25fps
+    TTL_ACTIVE_SECONDS = 5.0    # durée réelle avant passage en veille
+    TTL_SLEEP_SECONDS  = 20.0   # durée réelle avant oubli définitif
     MAX_PLAYERS = 25
 
     SPATIAL_MAX_DIST = 200.0
@@ -93,6 +93,19 @@ class PlayerReID:
     CALIB_MIN_SAMPLE = 8
 
     def __init__(self, fps=25):
+        # V5.2 (13/09/2026) : TTL calculés en fonction du fps EFFECTIF
+        # (rythme réel des appels à process(), pas le fps natif de la
+        # vidéo) — corrige un bug où TTL_ACTIVE/TTL_SLEEP étaient des
+        # constantes fixes en nombre d'appels, implicitement calibrées
+        # pour un appel par frame à 25fps. Si process() est appelé à un
+        # rythme réduit (frame_skip en production, ou échantillonnage
+        # dans un test), les fenêtres de mémoire étaient en réalité
+        # étirées d'un facteur egal au frame_skip - potentiellement
+        # ~4-5x trop longues en production (frame_skip=5, ~6fps
+        # effectif). Passer ici le fps EFFECTIF (appels/seconde réels,
+        # pas le fps natif de la vidéo) pour un calcul correct.
+        self.TTL_ACTIVE = max(1, int(round(self.TTL_ACTIVE_SECONDS * fps)))
+        self.TTL_SLEEP  = max(1, int(round(self.TTL_SLEEP_SECONDS * fps)))
         self.fps         = fps
         self.memory      = {}
         self.next_id     = 0
