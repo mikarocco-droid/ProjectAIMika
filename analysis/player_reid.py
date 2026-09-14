@@ -35,15 +35,23 @@ def _charger_osnet():
     if _OSNET_DISPONIBLE is not None:
         return _OSNET_EXTRACTOR
     try:
-        from torchreid.utils import FeatureExtractor
+        try:
+            from torchreid.utils import FeatureExtractor
+        except ImportError:
+            # Certaines versions de torchreid n'exposent pas le raccourci
+            # top-level torchreid.utils — chemin réel du sous-module
+            from torchreid.reid.utils import FeatureExtractor
         _OSNET_EXTRACTOR = FeatureExtractor(model_name="osnet_x0_25", device="cpu")
         _OSNET_DISPONIBLE = True
         print("  [REID] OSNet (osnet_x0_25) chargé — embedding d'apparence profond actif")
     except Exception as e:
         _OSNET_DISPONIBLE = False
         _OSNET_EXTRACTOR = None
+        import traceback
         print(f"  [REID] ⚠️ OSNet indisponible ({e}) — repli sur histogramme de couleur "
               f"(insuffisant pour distinguer 2 joueurs du même maillot)")
+        print(f"  [REID] Détail de l'erreur (diagnostic) :")
+        traceback.print_exc()
     return _OSNET_EXTRACTOR
 
 
