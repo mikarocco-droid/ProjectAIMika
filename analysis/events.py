@@ -754,6 +754,9 @@ def detect_events(
                               f"(xG=0.000 — pas de tir récent → faux positif)")
                     else:
                         # Tir récent confirmé → but valide
+                        print(f"  ✅ goal CONFIRMÉ à t={current_time:.1f}s "
+                              f"(xG_tir_lié={_recent_shot_xg:.3f}, "
+                              f"joueur={current['id']}, team={_locked_team(current, team_map)})")
                         events.append({
                             "type":        "goal",
                             "player":      str(current["id"]),
