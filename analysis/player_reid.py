@@ -3,7 +3,30 @@
 
 import numpy as np
 import cv2
+import time
 from collections import defaultdict
+
+# V5.2 (13/09/2026) : profilage fin de process() - couleur/inference
+# equipe/embedding/assignation - pour confirmer precisement si OSNet
+# (embedding) domine le temps, suite au diagnostic montrant
+# tracker_update = 92,3% du temps total dans main.py.
+_PROFILING_REID = defaultdict(float)
+_PROFILING_REID_N = defaultdict(int)
+
+
+def print_profiling_reid_summary():
+    print()
+    print("=" * 80)
+    print("PROFILAGE FIN — PlayerReID.process() décomposé")
+    print("=" * 80)
+    _total = sum(_PROFILING_REID.values())
+    for cle, secondes in sorted(_PROFILING_REID.items(), key=lambda x: -x[1]):
+        _pct = 100 * secondes / _total if _total > 0 else 0
+        _n = _PROFILING_REID_N.get(cle)
+        _detail = f", {secondes/_n*1000:.2f}ms/appel" if _n else ""
+        print(f"  {cle:15s} : {secondes:8.1f}s ({_pct:5.1f}%){_detail}")
+    print(f"  {'TOTAL':15s} : {_total:8.1f}s")
+    print("=" * 80)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -478,23 +501,35 @@ class PlayerReID:
             bbox   = det.get("bbox", [0, 0, 0, 0])
             x1, y1, x2, y2 = bbox
             center = ((x1 + x2) / 2, (y1 + y2) / 2)
+
+            _t0 = time.perf_counter()
             color  = self._extract_color(frame, bbox)
+            _PROFILING_REID["color"] += time.perf_counter() - _t0
 
             existing_team = det.get("team")
+            _t0 = time.perf_counter()
             inferred = self._infer_team(color)
+            _PROFILING_REID["infer_team"] += time.perf_counter() - _t0
             team = existing_team if existing_team is not None else inferred
             # Marquer comme gardien si détecté
             if inferred == "gk" and not existing_team:
                 det["is_goalkeeper"] = True
 
+            _t0 = time.perf_counter()
+            _embedding = self._extract_embedding(frame, bbox)
+            _PROFILING_REID["embedding"] += time.perf_counter() - _t0
+            _PROFILING_REID_N["embedding"] += 1
+
             enriched = {
                 "center":    center,
                 "color":     color,
-                "embedding": self._extract_embedding(frame, bbox),
+                "embedding": _embedding,
                 "team":      team,
             }
 
+            _t0 = time.perf_counter()
             reid_id = self._assign_id(enriched)
+            _PROFILING_REID["assign_id"] += time.perf_counter() - _t0
 
             results.append({
                 **det,
