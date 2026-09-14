@@ -16,6 +16,42 @@ from config import FRAME_SKIP_EVERY, YOLO_BATCH_SIZE
 PROCESS_W = 960
 PROCESS_H = 540
 
+# V5.2 (13/09/2026) : profilage par etape, pour identifier precisement
+# ou passe le temps de traitement (2 bugs deja trouves et corriges ce
+# soir - frame_skip qui gardait 4x trop de frames, OSNet sur CPU au
+# lieu de GPU - mais le temps mesure reste ~6.5h extrapole pour un
+# match complet, encore loin des ~4h visees ; mesure plutot que deviner
+# un 3e bug). Accumule le temps total (secondes) et le nombre d'appels
+# par etape, a travers TOUS les appels a process_batch() d'un meme run.
+import time as _time_profiling
+from collections import defaultdict as _defaultdict_profiling
+_PROFILING = _defaultdict_profiling(float)
+_PROFILING_COUNTS = _defaultdict_profiling(int)
+
+
+def _profile_start():
+    return _time_profiling.perf_counter()
+
+
+def _profile_end(t0, key):
+    _PROFILING[key] += _time_profiling.perf_counter() - t0
+    _PROFILING_COUNTS[key] += 1
+
+
+def print_profiling_summary():
+    print()
+    print("=" * 80)
+    print("PROFILAGE PAR ÉTAPE (temps cumulé sur tout le run)")
+    print("=" * 80)
+    _total = sum(_PROFILING.values())
+    for cle, secondes in sorted(_PROFILING.items(), key=lambda x: -x[1]):
+        _n = _PROFILING_COUNTS[cle]
+        _pct = 100 * secondes / _total if _total > 0 else 0
+        print(f"  {cle:20s} : {secondes:8.1f}s ({_pct:5.1f}%) — "
+              f"{_n} appel(s), {secondes/_n*1000:.1f}ms/appel en moyenne" if _n else "")
+    print(f"  {'TOTAL PROFILÉ':20s} : {_total:8.1f}s")
+    print("=" * 80)
+
 
 def default_progress(pct):
     print(f"  {pct}%", end="\r")
@@ -98,12 +134,14 @@ def process_batch(
     effective_batch = b_size if b_size is not None else YOLO_BATCH_SIZE
 
     small_frames  = [bf[2] for bf in batch_frames]
+    _t0 = _profile_start()
     batch_results = detector.model(
         small_frames,
         conf    = config.YOLO_CONFIDENCE,
         verbose = False,
         imgsz   = int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))
     )
+    _profile_end(_t0, "yolo_batch")
 
     batch_data = []
 
@@ -143,24 +181,36 @@ def process_batch(
             lx, ly = detector._last_ball_pos
             last_pos_small = (lx / scale_x, ly / scale_y)
 
+        _t0 = _profile_start()
         yolo_ball = detector._detect_ball(
             frame_small, yolo_ball,
             last_pos_override=last_pos_small
         )
+        _profile_end(_t0, "ball_detect")
 
+        _t0 = _profile_start()
         players, yolo_ball = rescale_detections(
             players, yolo_ball, scale_x, scale_y
         )
+        _profile_end(_t0, "rescale")
 
+        _t0 = _profile_start()
         tracked = tracker.update(players, frame_orig)
+        _profile_end(_t0, "tracker_update")
+
+        _t0 = _profile_start()
         tracked = assign_teams_by_color(frame_orig, tracked, color_detector)
+        _profile_end(_t0, "team_color")
         # V5.2 FIX (meme bug que ball["frame"] ci-dessous, §12.15) : frame_id
         # absolu, pas analyzed (relatif a la session) - le frame_orig fourni
         # est deja la bonne image, mais l'etiquette frame_id doit rester
         # coherente avec le reste du pipeline pour eviter toute confusion
         # en aval (apply_kickoff_offset_frames, correlation temporelle).
+        _t0 = _profile_start()
         tracked = ocr.read_all(frame_orig, tracked, frame_id=frame_id)
+        _profile_end(_t0, "ocr")
 
+        _t0 = _profile_start()
         if ball_tracker is not None:
             yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
             balls_list      = [yolo_ball_tuple] if yolo_ball_tuple else []
@@ -172,6 +222,7 @@ def process_batch(
             ball = ball_tuple_to_dict(ball_result, interpolated=was_interpolated)
         else:
             ball = yolo_ball
+        _profile_end(_t0, "ball_tracker")
 
         # PATCH : injecter le frame courant dans ball pour que detect_events
         # puisse calculer current_time = frame / fps correctement
@@ -190,6 +241,7 @@ def process_batch(
         if ball is not None:
             ball["frame"] = frame_id
 
+        _t0 = _profile_start()
         frame_events, events_state = detect_events(
             players    = tracked,
             ball       = ball,
@@ -200,6 +252,7 @@ def process_batch(
             frame_h    = h,
             fps        = fps,
         )
+        _profile_end(_t0, "detect_events")
         for e in frame_events:
             e["frame"] = frame_id
             if e.get("team") is None:
@@ -557,6 +610,8 @@ def process_video(
             print(f"  [DIAG PlayerReID] aucun crop a zipper ({_crops_dir} vide ou absent)")
     except Exception as _e_zip:
         print(f"  [DIAG PlayerReID] zip des crops échoué : {_e_zip}")
+
+    print_profiling_summary()
 
     if return_frames:
         return events, jersey_map, fps, total_frames, frames_data
