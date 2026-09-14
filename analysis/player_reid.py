@@ -89,18 +89,45 @@ def _charger_osnet():
     return _OSNET_EXTRACTOR
 
 
-def _extraire_embedding_osnet(crop_bgr, extractor):
-    """Extrait un embedding profond (512-d, normalisé L2) via OSNet à
-    partir d'un crop BGR (format OpenCV natif). Normalisé pour rester
-    à une échelle comparable à l'ancien histogramme (lui-même normalisé
-    via cv2.normalize) — ne nécessite pas de retoucher les poids de
-    _compute_score (0.5/0.3/0.2)."""
-    emb = extractor([crop_bgr])[0]
-    emb = emb.cpu().numpy() if hasattr(emb, "cpu") else np.asarray(emb)
-    norme = np.linalg.norm(emb)
-    if norme > 0:
-        emb = emb / norme
-    return emb.astype(np.float32)
+def _extraire_crop(frame, bbox):
+    """Extrait et borne un crop depuis bbox, retourne None si invalide.
+    Même logique de bornage que l'ancienne _extract_embedding (évite
+    l'indexation négative NumPy sur bbox partiellement hors cadre)."""
+    h_f, w_f = frame.shape[:2]
+    x1, y1, x2, y2 = bbox
+    x1 = max(0, min(x1, w_f))
+    x2 = max(0, min(x2, w_f))
+    y1 = max(0, min(y1, h_f))
+    y2 = max(0, min(y2, h_f))
+    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
+    return crop
+
+
+def _extraire_embeddings_batch(crops, extractor):
+    """Extrait les embeddings de PLUSIEURS crops en UN SEUL appel OSNet
+    (V5.2, 13/09/2026) — bien plus efficace sur GPU qu'un appel par
+    crop. Constaté empiriquement : 13,18ms/appel individuel, 95,6% du
+    temps total de PlayerReID.process() (838s sur 876,6s, segment de
+    5 min) — dominé par l'overhead fixe par appel (lancement GPU,
+    transfert mémoire) plutôt que le calcul lui-même sur ce petit
+    réseau (203k paramètres). Le traitement par lot amortit cet
+    overhead sur tous les joueurs d'une frame en un seul appel."""
+    if not crops:
+        return []
+    embeddings = extractor(crops)
+    resultats = []
+    for emb in embeddings:
+        emb = emb.cpu().numpy() if hasattr(emb, "cpu") else np.asarray(emb)
+        norme = np.linalg.norm(emb)
+        if norme > 0:
+            emb = emb / norme
+        resultats.append(emb.astype(np.float32))
+    return resultats
 
 
 class PlayerReID:
@@ -389,7 +416,7 @@ class PlayerReID:
         extractor = _charger_osnet()
         if extractor is not None:
             try:
-                return _extraire_embedding_osnet(crop, extractor)
+                return _extraire_embeddings_batch([crop], extractor)[0]
             except Exception as e:
                 print(f"  [REID] ⚠️ erreur extraction OSNet, repli histogramme : {e}")
 
@@ -496,14 +523,17 @@ class PlayerReID:
         self.frame_count += 1
         self._cleanup_memory()
 
-        results = []
-        for det in detections:
-            bbox   = det.get("bbox", [0, 0, 0, 0])
+        # Étape 1 (rapide, par détection) : centre, couleur, équipe, crop
+        partiels = []
+        crops_valides = []
+        indices_avec_crop = []
+        for i, det in enumerate(detections):
+            bbox = det.get("bbox", [0, 0, 0, 0])
             x1, y1, x2, y2 = bbox
             center = ((x1 + x2) / 2, (y1 + y2) / 2)
 
             _t0 = time.perf_counter()
-            color  = self._extract_color(frame, bbox)
+            color = self._extract_color(frame, bbox)
             _PROFILING_REID["color"] += time.perf_counter() - _t0
 
             existing_team = det.get("team")
@@ -511,33 +541,67 @@ class PlayerReID:
             inferred = self._infer_team(color)
             _PROFILING_REID["infer_team"] += time.perf_counter() - _t0
             team = existing_team if existing_team is not None else inferred
-            # Marquer comme gardien si détecté
             if inferred == "gk" and not existing_team:
                 det["is_goalkeeper"] = True
 
-            _t0 = time.perf_counter()
-            _embedding = self._extract_embedding(frame, bbox)
-            _PROFILING_REID["embedding"] += time.perf_counter() - _t0
-            _PROFILING_REID_N["embedding"] += 1
+            crop = _extraire_crop(frame, bbox)
+            if crop is not None:
+                crops_valides.append(crop)
+                indices_avec_crop.append(i)
 
+            partiels.append({"det": det, "center": center, "color": color, "team": team})
+
+        # Étape 2 (LE CORRECTIF) : TOUS les embeddings OSNet de cette
+        # frame en UN SEUL appel groupé, au lieu d'un appel par joueur
+        # (V5.2, 13/09/2026 — voir _extraire_embeddings_batch pour la
+        # justification empirique : 95,6% du temps total auparavant).
+        _t0 = time.perf_counter()
+        extractor = _charger_osnet()
+        embeddings_batch = None
+        if extractor is not None and crops_valides:
+            try:
+                embeddings_batch = _extraire_embeddings_batch(crops_valides, extractor)
+            except Exception as e:
+                print(f"  [REID] ⚠️ erreur extraction OSNet par lot, repli histogramme : {e}")
+
+        embeddings_par_indice = {}
+        if embeddings_batch is not None:
+            for idx, emb in zip(indices_avec_crop, embeddings_batch):
+                embeddings_par_indice[idx] = emb
+        else:
+            # Repli histogramme (ou OSNet indisponible) : par crop,
+            # comme le comportement historique — pas de gain de lot
+            # possible ici (cv2.calcHist est déjà peu coûteux par appel).
+            for idx in indices_avec_crop:
+                det_repli = partiels[idx]["det"]
+                embeddings_par_indice[idx] = self._extract_embedding(
+                    frame, det_repli.get("bbox", [0, 0, 0, 0]))
+        _PROFILING_REID["embedding"] += time.perf_counter() - _t0
+        _PROFILING_REID_N["embedding"] += 1
+
+        # Étape 3 (rapide, par détection) : assignation d'identité
+        results = []
+        for i, partiel in enumerate(partiels):
+            embedding = embeddings_par_indice.get(i, np.zeros(512))
             enriched = {
-                "center":    center,
-                "color":     color,
-                "embedding": _embedding,
-                "team":      team,
+                "center":    partiel["center"],
+                "color":     partiel["color"],
+                "embedding": embedding,
+                "team":      partiel["team"],
             }
 
             _t0 = time.perf_counter()
             reid_id = self._assign_id(enriched)
             _PROFILING_REID["assign_id"] += time.perf_counter() - _t0
 
+            det = partiel["det"]
             results.append({
                 **det,
                 "id":         reid_id,
                 "player_id":  reid_id,
                 "tracker_id": det.get("id"),
-                "center":     list(center),
-                "team":       team,
+                "center":     list(partiel["center"]),
+                "team":       partiel["team"],
             })
 
         return results
