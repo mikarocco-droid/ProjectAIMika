@@ -4,8 +4,35 @@
 # ByteTrack natif testé et abandonné : Kalman+Hungarian Python pur > GPU batch
 
 import numpy as np
+import time as _time_profiling_tracker
 import config
 from analysis.player_reid import PlayerReID
+
+# V5.2 (13/09/2026) : profilage fin pour distinguer DeepSort de
+# PlayerReID.process() (qui inclut l'extraction OSNet) - suite au
+# diagnostic montrant tracker_update = 92,3% du temps total dans
+# main.py, sans savoir laquelle des 2 sous-etapes domine.
+_PROFILING_TRACKER = {"deepsort": 0.0, "reid": 0.0}
+_PROFILING_TRACKER_N = {"deepsort": 0, "reid": 0}
+
+
+def print_profiling_tracker_summary():
+    print()
+    print("=" * 80)
+    print("PROFILAGE FIN — Tracker.update() décomposé (DeepSort vs PlayerReID)")
+    print("=" * 80)
+    for cle, secondes in _PROFILING_TRACKER.items():
+        _n = _PROFILING_TRACKER_N[cle]
+        if _n:
+            print(f"  {cle:12s} : {secondes:8.1f}s — {_n} appel(s), "
+                  f"{secondes/_n*1000:.1f}ms/appel en moyenne")
+    print("=" * 80)
+
+    try:
+        from analysis.player_reid import print_profiling_reid_summary
+        print_profiling_reid_summary()
+    except Exception as _e_profil_reid:
+        print(f"  ⚠️ Profilage fin de PlayerReID indisponible : {_e_profil_reid}")
 
 # V5.2 : expose les 2 derniers centroides d'equipe calibres (mis a jour a
 # chaque appel de update(), une fois la calibration terminee) - permet a
@@ -58,8 +85,15 @@ class Tracker:
         if not players:
             return []
 
+        _t0 = _time_profiling_tracker.perf_counter()
         results = self._update_deepsort(players, frame)
+        _PROFILING_TRACKER["deepsort"] += _time_profiling_tracker.perf_counter() - _t0
+        _PROFILING_TRACKER_N["deepsort"] += 1
+
+        _t0 = _time_profiling_tracker.perf_counter()
         results = self.reid.process(frame, results)
+        _PROFILING_TRACKER["reid"] += _time_profiling_tracker.perf_counter() - _t0
+        _PROFILING_TRACKER_N["reid"] += 1
 
         # V5.2 : expose les centroides d'equipe calibres (si disponibles)
         # au niveau du module, pour lecture externe par pipeline.py. Appel
