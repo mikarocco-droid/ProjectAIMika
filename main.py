@@ -338,7 +338,16 @@ def process_video(
     overlay = Overlay(fps=fps) if save_annotated else None
     writer  = None
     if save_annotated and annotated_path:
-        out_fps = fps * (2 / skip_every)
+        # V5.2 (13/09/2026) FIX : cohérent avec la correction de la
+        # logique de skip ci-dessus (1 frame gardée sur skip_every,
+        # writer.write() appelé une seule fois par frame traitée,
+        # vérifié directement dans process_batch). Pour que la vidéo
+        # annotée respecte le temps réel du match, out_fps doit être
+        # fps/skip_every, pas fps*2/skip_every (l'ancien facteur "2"
+        # n'a pas d'explication trouvée, ne correspond proprement ni à
+        # l'ancienne logique de skip ni à la nouvelle - a surveiller
+        # si la vidéo annotée semble mal synchronisée après ce correctif).
+        out_fps = fps / skip_every
         writer  = cv2.VideoWriter(
             annotated_path,
             cv2.VideoWriter_fourcc(*"mp4v"),
