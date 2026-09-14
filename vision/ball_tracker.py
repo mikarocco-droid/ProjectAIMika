@@ -5,6 +5,49 @@ import numpy as np
 from collections import deque
 import math
 
+# V5.2 (14/09/2026) : diagnostic structuré de is_shot_candidate() — pour
+# comprendre l'écart entre le taux attendu (commentaire dans events.py :
+# "~33 → ~8-12 tirs") et le taux mesuré (38 tirs pour 3 buts dans
+# events__1_.pkl, un run antérieur). Accumule chaque vérification
+# (passée ou échouée) avec le détail de CHAQUE critère, pour voir
+# précisément lequel bloque le plus — pas juste un résumé texte à
+# reparser dans les logs DEBUG existants.
+_DIAG_SHOT_CANDIDATE = {
+    "total_checks": 0,
+    "rejets_lost_frames": 0,
+    "rejets_zone_offensive": 0,
+    "rejets_speed": 0,
+    "rejets_toward_goal": 0,
+    "rejets_stability": 0,
+    "rejets_accel": 0,
+    "rejets_direction_verticale": 0,
+    "acceptes": 0,
+    "speeds": [],
+}
+
+
+def print_diag_shot_candidate_summary():
+    d = _DIAG_SHOT_CANDIDATE
+    print()
+    print("=" * 80)
+    print("DIAGNOSTIC — is_shot_candidate() décomposé par critère")
+    print("=" * 80)
+    print(f"  Total vérifications        : {d['total_checks']}")
+    print(f"  Rejets lost_frames         : {d['rejets_lost_frames']}")
+    print(f"  Rejets zone offensive      : {d['rejets_zone_offensive']}")
+    print(f"  Rejets vitesse             : {d['rejets_speed']}")
+    print(f"  Rejets alignement (toward) : {d['rejets_toward_goal']}")
+    print(f"  Rejets stabilité           : {d['rejets_stability']}")
+    print(f"  Rejets accélération        : {d['rejets_accel']}")
+    print(f"  Rejets direction verticale : {d['rejets_direction_verticale']}")
+    print(f"  ACCEPTÉS (is_shot=True)    : {d['acceptes']}")
+    if d["speeds"]:
+        _s = np.array(d["speeds"])
+        print(f"  Vitesses observées (px/s) — médiane={np.median(_s):.0f}, "
+              f"P75={np.percentile(_s,75):.0f}, P90={np.percentile(_s,90):.0f}, "
+              f"max={np.max(_s):.0f}")
+    print("=" * 80)
+
 
 def distance(p1, p2):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
@@ -432,9 +475,12 @@ class BallTracker:
         if speed_threshold_px_per_sec is None:
             speed_threshold_px_per_sec = self._dynamic_shot_threshold(frame_w)
 
+        _DIAG_SHOT_CANDIDATE["total_checks"] += 1
+
         # Rejeter si position interpolée (Kalman/vélocité)
         # Tolérance 2 frames pour imgsz=640 qui perd plus souvent le ballon
         if self.lost_frames > 2:
+            _DIAG_SHOT_CANDIDATE["rejets_lost_frames"] += 1
             return False
 
         # Filtre zone offensive — tirs partent des 25% proches des buts
@@ -452,9 +498,11 @@ class BallTracker:
                 _off_left  = _gl + _tw * 0.30   # 30% depuis but gauche
                 _off_right = _gr - _tw * 0.30   # 30% depuis but droit
                 if not (bx < _off_left or bx > _off_right):
+                    _DIAG_SHOT_CANDIDATE["rejets_zone_offensive"] += 1
                     return False
             else:
                 if not (bx < frame_w * 0.25 or bx > frame_w * 0.75):
+                    _DIAG_SHOT_CANDIDATE["rejets_zone_offensive"] += 1
                     return False
 
         spd       = self.get_speed_per_second()
@@ -495,6 +543,22 @@ class BallTracker:
                   and stability > _stability_min
                   and accel_ok
                   and _toward_goal_height)
+
+        # Diagnostic : attribue le rejet au PREMIER critère qui échoue
+        # (même ordre que le "and" ci-dessus), ou compte comme accepté.
+        _DIAG_SHOT_CANDIDATE["speeds"].append(spd)
+        if not (spd > speed_threshold_px_per_sec):
+            _DIAG_SHOT_CANDIDATE["rejets_speed"] += 1
+        elif not toward:
+            _DIAG_SHOT_CANDIDATE["rejets_toward_goal"] += 1
+        elif not (stability > _stability_min):
+            _DIAG_SHOT_CANDIDATE["rejets_stability"] += 1
+        elif not accel_ok:
+            _DIAG_SHOT_CANDIDATE["rejets_accel"] += 1
+        elif not _toward_goal_height:
+            _DIAG_SHOT_CANDIDATE["rejets_direction_verticale"] += 1
+        else:
+            _DIAG_SHOT_CANDIDATE["acceptes"] += 1
 
         # Log DEBUG — activé via config.DEBUG
         try:
