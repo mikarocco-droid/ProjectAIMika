@@ -41,9 +41,20 @@ def _charger_osnet():
             # Certaines versions de torchreid n'exposent pas le raccourci
             # top-level torchreid.utils — chemin réel du sous-module
             from torchreid.reid.utils import FeatureExtractor
-        _OSNET_EXTRACTOR = FeatureExtractor(model_name="osnet_x0_25", device="cpu")
+        # V5.2 (13/09/2026) FIX CRITIQUE DE PERFORMANCE : device="cpu"
+        # etait code en dur depuis la premiere integration d'OSNet,
+        # jamais revu lors du passage au pipeline complet. Sur un
+        # test reel (15 min de match, Andrimont), le traitement a pris
+        # 89,8 min (extrapolation ~10h/match) alors que le GPU est
+        # disponible et deja utilise par DeepSort ("FP16 GPU"). OSNet
+        # tournait sur CPU pour CHAQUE joueur detecte a CHAQUE frame
+        # traitee - tres probablement la cause dominante du
+        # ralentissement, plus que le bug frame_skip deja corrige.
+        import torch as _torch_reid
+        _device = "cuda" if _torch_reid.cuda.is_available() else "cpu"
+        _OSNET_EXTRACTOR = FeatureExtractor(model_name="osnet_x0_25", device=_device)
         _OSNET_DISPONIBLE = True
-        print("  [REID] OSNet (osnet_x0_25) chargé — embedding d'apparence profond actif")
+        print(f"  [REID] OSNet (osnet_x0_25) chargé sur {_device} — embedding d'apparence profond actif")
     except Exception as e:
         _OSNET_DISPONIBLE = False
         _OSNET_EXTRACTOR = None
