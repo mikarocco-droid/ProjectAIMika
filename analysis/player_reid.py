@@ -6,6 +6,61 @@ import cv2
 from collections import defaultdict
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# EMBEDDING D'APPARENCE PROFOND (V5.2, 13/09/2026)
+# ─────────────────────────────────────────────────────────────────────────
+# Remplace l'ancien "_extract_embedding" qui n'était qu'un histogramme de
+# couleur (cv2.calcHist) malgré son nom — incapable de distinguer deux
+# joueurs du même maillot, confirmé par lecture de code le 12/09/2026
+# (voir ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.2). Sur un
+# vrai export (frames_data_complet.pkl), ce défaut était corrélé à 389
+# tracker_id distincts pour ~22 personnes réelles sur le terrain.
+#
+# Chargement paresseux (1 seule fois, mis en cache globalement) — le
+# modèle est lourd à charger, pas à faire à chaque frame. Repli
+# automatique et silencieux sur l'ancien histogramme de couleur si
+# torch/torchreid indisponibles ou le téléchargement des poids échoue
+# (ex. environnement sans accès réseau complet) — ne doit jamais faire
+# planter le pipeline de production.
+
+_OSNET_EXTRACTOR = None
+_OSNET_DISPONIBLE = None  # None = pas encore testé, True/False après 1ère tentative
+
+
+def _charger_osnet():
+    """Charge (une seule fois) l'extracteur d'embedding OSNet. Retourne
+    None si indisponible - l'appelant doit alors utiliser le repli
+    histogramme de couleur."""
+    global _OSNET_EXTRACTOR, _OSNET_DISPONIBLE
+    if _OSNET_DISPONIBLE is not None:
+        return _OSNET_EXTRACTOR
+    try:
+        from torchreid.utils import FeatureExtractor
+        _OSNET_EXTRACTOR = FeatureExtractor(model_name="osnet_x0_25", device="cpu")
+        _OSNET_DISPONIBLE = True
+        print("  [REID] OSNet (osnet_x0_25) chargé — embedding d'apparence profond actif")
+    except Exception as e:
+        _OSNET_DISPONIBLE = False
+        _OSNET_EXTRACTOR = None
+        print(f"  [REID] ⚠️ OSNet indisponible ({e}) — repli sur histogramme de couleur "
+              f"(insuffisant pour distinguer 2 joueurs du même maillot)")
+    return _OSNET_EXTRACTOR
+
+
+def _extraire_embedding_osnet(crop_bgr, extractor):
+    """Extrait un embedding profond (512-d, normalisé L2) via OSNet à
+    partir d'un crop BGR (format OpenCV natif). Normalisé pour rester
+    à une échelle comparable à l'ancien histogramme (lui-même normalisé
+    via cv2.normalize) — ne nécessite pas de retoucher les poids de
+    _compute_score (0.5/0.3/0.2)."""
+    emb = extractor([crop_bgr])[0]
+    emb = emb.cpu().numpy() if hasattr(emb, "cpu") else np.asarray(emb)
+    norme = np.linalg.norm(emb)
+    if norme > 0:
+        emb = emb / norme
+    return emb.astype(np.float32)
+
+
 class PlayerReID:
     """
     ReID hybride calibré :
@@ -247,7 +302,12 @@ class PlayerReID:
     def _extract_embedding(self, frame, bbox):
         """FIX : même bornage correct que _extract_color (voir plus haut) —
         x1/x2/y1/y2 bornés à [0, largeur/hauteur] avant slicing, pour éviter
-        l'indexation négative de NumPy sur les bbox partiellement hors cadre."""
+        l'indexation négative de NumPy sur les bbox partiellement hors cadre.
+
+        V5.2 (13/09/2026) : utilise OSNet (embedding profond, distingue
+        les joueurs du même maillot) si disponible, sinon repli sur
+        l'histogramme de couleur (comportement historique, insuffisant
+        pour maillots identiques — voir commentaire en tête de fichier)."""
         h_f, w_f = frame.shape[:2]
         x1, y1, x2, y2 = bbox
         x1 = max(0, min(x1, w_f))
@@ -260,9 +320,18 @@ class PlayerReID:
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             return np.zeros(512)
-        crop = cv2.resize(crop, (32, 64))
+
+        extractor = _charger_osnet()
+        if extractor is not None:
+            try:
+                return _extraire_embedding_osnet(crop, extractor)
+            except Exception as e:
+                print(f"  [REID] ⚠️ erreur extraction OSNet, repli histogramme : {e}")
+
+        # Repli historique : histogramme de couleur
+        crop_resized = cv2.resize(crop, (32, 64))
         hist = cv2.calcHist(
-            [crop], [0, 1, 2], None,
+            [crop_resized], [0, 1, 2], None,
             [8, 8, 8], [0, 256, 0, 256, 0, 256]
         )
         return cv2.normalize(hist, hist).flatten()
