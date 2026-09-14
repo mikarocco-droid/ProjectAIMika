@@ -307,7 +307,9 @@ def process_video(
     scale_x = w / PROCESS_W
     scale_y = h / PROCESS_H
 
-    analyzed_count = total_frames - (total_frames // skip_every)
+    # V5.2 (13/09/2026) FIX : cohérent avec la correction de la boucle
+    # ci-dessous — ne garde qu'1 frame sur skip_every, pas (skip_every-1)
+    analyzed_count = total_frames // skip_every
 
     print(f"Video : {video_path}")
     print(f"  {total_frames} frames | {fps:.1f} fps | {total_frames / fps:.1f}s")
@@ -385,7 +387,15 @@ def process_video(
         if not ret:
             break
 
-        if frame_id % skip_every == (skip_every - 1):
+        # V5.2 (13/09/2026) FIX CRITIQUE : l'ancienne condition
+        # (`frame_id % skip_every == skip_every - 1`) SAUTAIT 1 frame
+        # sur skip_every et en GARDAIT (skip_every-1) sur skip_every —
+        # l'inverse de l'effet recherche. Pour skip_every=5 (vise
+        # 30fps->6fps), l'ancien code analysait ~24fps (4/5 gardees),
+        # pas 6fps (1/5 gardee) - explique une partie du temps de
+        # traitement ~590min mesure plus tot. Corrige : ne garde que
+        # les frames ou frame_id % skip_every == 0 (1 sur skip_every).
+        if frame_id % skip_every != 0:
             frame_id += 1
             continue
 
