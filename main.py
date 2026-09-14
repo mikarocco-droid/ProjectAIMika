@@ -60,6 +60,12 @@ def print_profiling_summary():
     except Exception as _e_profil_tracker:
         print(f"  ⚠️ Profilage fin du tracker indisponible : {_e_profil_tracker}")
 
+    try:
+        from vision.ball_tracker import print_diag_shot_candidate_summary
+        print_diag_shot_candidate_summary()
+    except Exception as _e_diag_shots:
+        print(f"  ⚠️ Diagnostic is_shot_candidate indisponible : {_e_diag_shots}")
+
 
 def default_progress(pct):
     print(f"  {pct}%", end="\r")
