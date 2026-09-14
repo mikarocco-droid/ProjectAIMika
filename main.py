@@ -52,6 +52,14 @@ def print_profiling_summary():
     print(f"  {'TOTAL PROFILÉ':20s} : {_total:8.1f}s")
     print("=" * 80)
 
+    # V5.2 (13/09/2026) : décomposition fine de tracker_update
+    # (DeepSort vs PlayerReID/OSNet) - voir vision/tracker.py
+    try:
+        from vision.tracker import print_profiling_tracker_summary
+        print_profiling_tracker_summary()
+    except Exception as _e_profil_tracker:
+        print(f"  ⚠️ Profilage fin du tracker indisponible : {_e_profil_tracker}")
+
 
 def default_progress(pct):
     print(f"  {pct}%", end="\r")
