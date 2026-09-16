@@ -529,7 +529,18 @@ def detect_events(
     shot_cd_max     = state.get("_shot_cd_max",      75)
     goal_cd_max     = state.get("_goal_cd_max",      3750)
 
-    if current:
+    # V5.2 (14/09/2026) FIX MAJEUR : "if current:" retiré ici. Ce bloc
+    # entier (détection tirs/buts) était conditionné à la présence d'un
+    # joueur proche du ballon (current, seuil 6% largeur image) — brisant
+    # la détection pendant tout le vol du ballon lors d'un penalty
+    # (aucun joueur proche pendant 7-9s, confirmé empiriquement via les
+    # logs [BALL] : current=None en continu de t=380.4s à t=387.9s,
+    # exactement la fenêtre du tir + but réels). La détection (position/
+    # vitesse du ballon) ne doit dépendre que du ballon lui-même ;
+    # seule l'ATTRIBUTION au joueur (current["id"]) a besoin de current,
+    # et gère maintenant explicitement le cas current=None (buteur
+    # inconnu) au lieu de sauter toute la détection.
+    if True:
         x, y = ball["center"]
 
         if learner and learner.is_fp_zone(x, y, frame_w, frame_h):
@@ -570,7 +581,7 @@ def detect_events(
                 state["_shot_blocked_cd"] = state["_shot_blocked_cd_max"]
                 events.append({
                     "type":   "shot_blocked",
-                    "player": str(current["id"]),
+                    "player": str(current["id"]) if current else None,
                     "team":   _locked_team(current, team_map),
                     "x":      state["_last_shot_x"],
                     "y":      state["_last_shot_y"],
@@ -602,7 +613,7 @@ def detect_events(
                 )
                 shot = {
                     "type":      "shot",
-                    "player":    str(current["id"]),
+                    "player":    str(current["id"]) if current else None,
                     "team":      _locked_team(current, team_map),
                     "x":         x,
                     "y":         y,
@@ -628,7 +639,7 @@ def detect_events(
                     _bt.register_shot_candidate(
                         x=x, y=y, t=current_time,
                         xg=xg_val,
-                        player=str(current["id"]),
+                        player=str(current["id"]) if current else None,
                         team=_locked_team(current, team_map)
                     )
                 if state["events_buffer"]:
@@ -685,7 +696,7 @@ def detect_events(
 
                         events.append({
                             "type":        "goal",
-                            "player":      sc.player or str(current["id"]),
+                            "player":      sc.player or (str(current["id"]) if current else None),
                             "team":        sc.team   or _locked_team(current, team_map),
                             "x":           x,
                             "y":           y,
@@ -817,12 +828,13 @@ def detect_events(
                               f"[{_detail_buffer}]")
                     else:
                         # Tir récent confirmé → but valide
+                        _joueur_str = str(current["id"]) if current else "inconnu (aucun joueur proche)"
                         print(f"  ✅ goal CONFIRMÉ à t={current_time:.1f}s "
                               f"(xG_tir_lié={_recent_shot_xg:.3f}, "
-                              f"joueur={current['id']}, team={_locked_team(current, team_map)})")
+                              f"joueur={_joueur_str}, team={_locked_team(current, team_map)})")
                         events.append({
                             "type":        "goal",
-                            "player":      str(current["id"]),
+                            "player":      str(current["id"]) if current else None,
                             "team":        _locked_team(current, team_map),
                             "x":           x,
                             "y":           y,
