@@ -623,7 +623,7 @@ def detect_events(
                     if (_bt is not None
                             and hasattr(_bt, "is_shot_candidate")
                             and not ball_interpolated):
-                        if _bt.is_shot_candidate(frame_w, frame_h):
+                        if _bt.is_shot_candidate(frame_w, frame_h, current_time=current_time):
                             _register_shot(
                                 compute_xg(x, y, frame_w, frame_h, learner),
                                 source    = "events_standard",
