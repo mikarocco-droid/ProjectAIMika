@@ -241,12 +241,35 @@ class ShotCandidate:
         self.team   = team
         self.frames = 0
         self.active = True
+        self.speeds = []  # V5.2 (14/09/2026) : vitesses relevées pendant les
+        # ticks en zone de but, pour verifier que le ballon RALENTIT (se
+        # stabilise dans les filets) plutot que de juste traverser la zone
+        # brievement - meme logique de tolerance que le chemin standard
+        # (state["_goal_zone_speeds"]), absente ici auparavant.
 
-    def tick_in_goal_zone(self):
+    def tick_in_goal_zone(self, speed=None):
         self.frames += 1
+        if speed is not None:
+            self.speeds.append(speed)
 
-    def is_confirmed_goal(self, min_frames=3):
-        return self.active and self.frames >= min_frames
+    def is_confirmed_goal(self, min_frames=8, max_avg_speed=None):
+        # V5.2 (14/09/2026) FIX : min_frames releve de 3 a 8 (aligne sur
+        # le chemin standard goal_frames_min=8) - 3 etait beaucoup trop
+        # permissif (~0,5s a 6fps effectif), confirmait a tort un but sur
+        # un ballon qui traverse brievement la zone sans vraiment y rester
+        # (tir contre, degagement precipite, corner). Constate concretement
+        # sur Andrimont : faux but confirme a t=324,3s, verrouillant tout
+        # detection ulterieure pendant la duree du cooldown (voir
+        # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.8).
+        # Ajout aussi d'une verification de vitesse moyenne (le ballon doit
+        # ralentir dans la zone, pas juste y passer vite) - absente avant.
+        if not (self.active and self.frames >= min_frames):
+            return False
+        if max_avg_speed is not None and self.speeds:
+            avg_speed = sum(self.speeds) / len(self.speeds)
+            if avg_speed > max_avg_speed:
+                return False
+        return True
 
     def expire(self, current_t, max_age=2.0):
         """Expire après 2s sans but — évite les faux liens."""
@@ -594,11 +617,14 @@ class BallTracker:
             player=player, team=team
         )
 
-    def tick_shot_candidate(self, in_goal_zone, current_t):
+    def tick_shot_candidate(self, in_goal_zone, current_t, speed=None, frame_w=1280):
         """
         Appelé à chaque frame.
         Timeout systématique à 2s — évite les faux liens.
         Retourne True si le lien tir→but est confirmé.
+        V5.2 (14/09/2026) : speed + frame_w propagés pour la vérification
+        de stabilisation (voir ShotCandidate.is_confirmed_goal) — même
+        seuil que le chemin standard (frame_w * 0.09).
         """
         if self.shot_candidate is None:
             return False
@@ -610,8 +636,9 @@ class BallTracker:
             return False
 
         if in_goal_zone:
-            self.shot_candidate.tick_in_goal_zone()
-            if self.shot_candidate.is_confirmed_goal(min_frames=3):
+            self.shot_candidate.tick_in_goal_zone(speed=speed)
+            if self.shot_candidate.is_confirmed_goal(
+                    min_frames=8, max_avg_speed=frame_w * 0.09):
                 return True
 
         return False
