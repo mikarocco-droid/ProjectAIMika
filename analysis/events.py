@@ -310,6 +310,63 @@ def init_state(learner=None, fps=25):
 # ─────────────────────────────────────────
 # MAIN DETECTOR
 # ─────────────────────────────────────────
+def _diag_kickoff_geometrique(players, frame_w, frame_h, current_time, state):
+    """
+    V5.2 (14/09/2026) - PROTOTYPE EXPERIMENTAL, DIAGNOSTIQUE UNIQUEMENT.
+    N'intervient PAS dans la decision CONFIRME/REJETE existante - log
+    seulement un signal, pour validation avant integration reelle.
+
+    CORRECTIF IMPORTANT (suite a une remarque juste de l'utilisateur) :
+    ce signal ne doit PAS se declencher en continu - un regroupement de
+    joueurs pres du centre arrive aussi en jeu normal (melee au milieu,
+    touche pres du centre), sans rapport avec un but. Le signal n'a de
+    valeur que comme CORROBORATION d'un candidat deja suspect : ne
+    s'active que dans une fenetre de surveillance ouverte par un rejet
+    "pas de tir recent" (state["_kickoff_watch_until"], pose au moment
+    du rejet, voir plus bas dans ce fichier), pas en continu.
+
+    Detecte une formation "coup d'envoi" approximative : au moins 2
+    joueurs regroupes pres du centre estime du terrain.
+
+    LIMITE HONNETE ET IMPORTANTE : centre_x/y estimes comme le simple
+    centre de l'image (frame_w/2, frame_h/2) - PAS une vraie calibration
+    geometrique du terrain. Casse silencieusement si la camera n'est
+    pas fixe/centree sur le terrain (zoom, pan, angle lateral prononce).
+    """
+    try:
+        from config import DEBUG as _DBG_KO
+    except ImportError:
+        _DBG_KO = False
+    if not _DBG_KO or not players:
+        return
+
+    # Ne rien faire hors fenêtre de surveillance active
+    _watch_until = state.get("_kickoff_watch_until", 0) if state else 0
+    if current_time > _watch_until:
+        return
+
+    centre_x = frame_w / 2
+    centre_y = frame_h / 2
+    rayon    = frame_w * 0.08  # ~ rayon du cercle central, approximatif
+
+    proches = []
+    for p in players:
+        cx, cy = p.get("center", [None, None])
+        if cx is None:
+            continue
+        d = math.hypot(cx - centre_x, cy - centre_y)
+        if d < rayon:
+            proches.append(p)
+
+    if len(proches) >= 2:
+        _origine = state.get("_kickoff_watch_origin", "?") if state else "?"
+        print(f"  [KICKOFF_GEO] t={current_time:.1f}s ⚠️ CORROBORATION : "
+              f"formation possible coup d'envoi ({len(proches)} joueurs "
+              f"près du centre estimé), dans la fenêtre de surveillance "
+              f"ouverte par le candidat rejeté à t={_origine}s — "
+              f"signal EXPERIMENTAL, centre non calibré géométriquement")
+
+
 def detect_events(
     players,
     ball,
@@ -359,6 +416,11 @@ def detect_events(
 
     current_frame = ball.get("frame", 0) or 0
     current_time  = current_frame / fps
+
+    # V5.2 (14/09/2026) : prototype expérimental, purement diagnostique
+    # (voir _diag_kickoff_geometrique ci-dessus) - n'affecte aucune
+    # decision existante.
+    _diag_kickoff_geometrique(players, frame_w, frame_h, current_time, state)
 
     # ── POSSESSION ───────────────────────
     closest, dist = get_closest_player(players, ball)
@@ -877,6 +939,13 @@ def detect_events(
                         print(f"  goal REJETÉ à t={current_time:.1f}s "
                               f"(xG=0.000 — pas de tir récent → faux positif) "
                               f"[{_detail_buffer}]")
+                        # V5.2 (14/09/2026) : ouvre la fenêtre de
+                        # surveillance pour le signal experimental
+                        # _diag_kickoff_geometrique - 30s, temps
+                        # plausible pour celebration + recuperation du
+                        # ballon + replacement + reprise au centre.
+                        state["_kickoff_watch_until"]  = current_time + 30.0
+                        state["_kickoff_watch_origin"] = f"{current_time:.1f}"
                     else:
                         # Tir récent confirmé → but valide
                         _joueur_str = str(current["id"]) if current else "inconnu (aucun joueur proche)"
