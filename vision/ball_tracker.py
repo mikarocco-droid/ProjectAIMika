@@ -289,16 +289,35 @@ class ShotCandidate:
 # ─────────────────────────────────────────
 # ANTI-SAUT — filtre faux positifs tracking
 # ─────────────────────────────────────────
-def is_valid_jump(prev, new_pos, max_dist=250, velocity=(0.0, 0.0)):
+def is_valid_jump(prev, new_pos, max_dist=250, velocity=(0.0, 0.0), fps_scale=1.0):
     """
     Rejette les sauts impossibles du ballon.
     Un ballon ne peut pas téléporter à > 150px entre 2 frames.
+
+    V5.2 (14/09/2026) FIX : max_dist/350 étaient des plafonds fixes en
+    pixels, calibrés implicitement pour un suivi proche de 25fps (fps de
+    référence historique de ce module, cf. BallTracker.__init__ avant
+    correctif). Avec frame_skip, le rythme réel d'appel est bien plus
+    bas (~6fps effectif) - le ballon parcourt donc bien plus de distance
+    reelle entre 2 frames ANALYSEES, sans que ce plafond en tienne
+    compte. Resultat concret observe : lors d'un penalty (tir rapide),
+    le premier saut rapide est rejete (saut > plafond fixe), la
+    velocite n'est alors JAMAIS mise a jour (ne se met a jour que si le
+    saut est accepte) - verrouillage auto-entretenu, ballon fige sur sa
+    derniere position acceptee pendant tout le vol (~7s observes,
+    t=376-383s sur Andrimont, voir
+    ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.9).
+    fps_scale = fps_reference / fps_effectif (calcule par BallTracker,
+    >1 si le rythme reel est plus lent que la reference) - agrandit le
+    plafond proportionnellement au temps reel ecoule entre 2 frames.
     """
     if prev is None:
         return True
     dx = prev[0] - new_pos[0]
     dy = prev[1] - new_pos[1]
-    dyn = min(350, max_dist + math.hypot(velocity[0], velocity[1]) * 1.5)
+    max_dist_scaled = max_dist * fps_scale
+    plafond_scaled  = 350 * fps_scale
+    dyn = min(plafond_scaled, max_dist_scaled + math.hypot(velocity[0], velocity[1]) * 1.5)
     return (dx * dx + dy * dy) < dyn * dyn
 
 
@@ -309,6 +328,14 @@ class BallTracker:
 
     def __init__(self, max_history=30, fps=25):
         self.fps           = fps
+        # V5.2 (14/09/2026) : fps_scale pour is_valid_jump() - voir le
+        # commentaire complet dans is_valid_jump() ci-dessus. 25 = fps de
+        # reference historique implicite de ce module (avant tout
+        # correctif frame_skip). Si self.fps est le rythme EFFECTIF reel
+        # (a fixer par l'appelant, ex. main.py, apres construction si
+        # necessaire - fps natif/skip_every), fps_scale > 1 agrandit le
+        # plafond de saut proportionnellement au temps reel ecoule.
+        self._FPS_REFERENCE = 25.0
         self.ball_buffer   = BallBuffer(size=max_history)
         self.kalman        = SimpleKalman()
         self.last_seen     = 0
@@ -385,7 +412,8 @@ class BallTracker:
             cy = y + h // 2
 
             # MODIF 3 — anti-saut : rejeter faux positifs
-            if is_valid_jump(self.last_valid_ball, (cx, cy), velocity=self.velocity):
+            _fps_scale = self._FPS_REFERENCE / max(1.0, self.fps)
+            if is_valid_jump(self.last_valid_ball, (cx, cy), velocity=self.velocity, fps_scale=_fps_scale):
                 # MODIF 4 — lissage exponentiel vélocité (alpha=0.6)
                 if self.last_valid_ball is not None:
                     vx = cx - self.last_valid_ball[0]
