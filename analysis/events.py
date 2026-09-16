@@ -254,10 +254,11 @@ def compute_xg(x, y, frame_w=1280, frame_h=720, learner=None):
 # ─────────────────────────────────────────
 # INIT STATE
 # ─────────────────────────────────────────
-def init_state(learner=None):
+def init_state(learner=None, fps=25):
     thr = learner.get_thresholds() if learner else {}
-    fps            = 25
-    # V9.7 — shot_cooldown relevé 3s → 8s pour réduire les clusters de tirs
+    # V5.2 (14/09/2026) : fps reçu en paramètre (rythme EFFECTIF d'appel,
+    # pas le fps natif codé en dur auparavant) - voir le commentaire au
+    # point d'appel pour le détail du bug corrigé.
     shot_cd_frames = int(thr.get("shot_cooldown",   8.0) * fps)
     goal_cd_frames = int(thr.get("goal_cooldown", 150.0) * fps)
     ball_speed_min = thr.get("ball_speed_min",    0.02)
@@ -322,7 +323,26 @@ def detect_events(
     team_map   = None,
 ):
     if state is None:
-        state = init_state(learner)
+        # V5.2 (14/09/2026) FIX CRITIQUE : init_state() utilisait fps=25
+        # codé en dur pour convertir goal_cooldown/shot_cooldown (en
+        # secondes) en nombre d'appels - mais le compteur decremente une
+        # fois par appel ANALYSE (state["goal_cd"] -= 1 par appel a
+        # detect_events()), pas une fois par frame native. Avec
+        # frame_skip, le rythme reel d'appel est bien plus bas que 25fps
+        # - meme bug que celui deja corrige dans player_reid.py (TTL) et
+        # main.py (fps_effectif pour PlayerReID). Constate concretement :
+        # cooldown de but voulu = 150s, reel mesure = 625s (x4.17 trop
+        # long) - bloquait un vrai penalty a 382s a cause d'un faux
+        # positif a 324s (voir ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md
+        # section 3.8). fps ici est le fps NATIF (necessaire pour
+        # current_time = frame_id/fps, correct) - PAS le rythme reel
+        # d'appel, qu'on calcule ici separement via FRAME_SKIP_EVERY.
+        try:
+            from config import FRAME_SKIP_EVERY as _FSE
+        except ImportError:
+            _FSE = 1
+        _fps_effectif_pour_cooldowns = max(1.0, fps / max(1, _FSE))
+        state = init_state(learner, fps=_fps_effectif_pour_cooldowns)
 
     events = []
 
@@ -683,7 +703,9 @@ def detect_events(
             if _bt is not None and hasattr(_bt, "tick_shot_candidate"):
                 _goal_confirmed = _bt.tick_shot_candidate(
                     in_goal_zone = _in_goal_zone_now,
-                    current_t    = current_time
+                    current_t    = current_time,
+                    speed        = ball_speed,
+                    frame_w      = frame_w
                 )
                 if _goal_confirmed and state["goal_cd"] == 0:
                     sc = _bt.get_shot_candidate()
@@ -693,6 +715,20 @@ def detect_events(
                         xg_from_dist = round(max(0.01, min(0.5,
                             1.0 - shot_dist / max_dist)), 3)
                         final_xg = max(sc.xg, xg_from_dist)
+
+                        # V5.2 (14/09/2026) : ce chemin (_bt.tick_shot_candidate)
+                        # enregistrait un but SANS AUCUN PRINT - silencieux,
+                        # avec un cooldown de goal_cd_max (3750 appels, ~10min+
+                        # a notre rythme effectif) qui bloque ensuite tout le
+                        # reste, y compris le chemin standard REJETÉ/CONFIRMÉ.
+                        # Decouvert en observant un compteur ball_in_goal_zone
+                        # depassant le seuil de x5+ sans jamais imprimer -
+                        # ce but silencieux (potentiellement un faux positif
+                        # anterieur) explique le blocage complet observe.
+                        _joueur_str_bt = sc.player or (str(current["id"]) if current else "inconnu")
+                        print(f"  ✅ goal CONFIRMÉ (chemin _bt/tick_shot_candidate) "
+                              f"à t={current_time:.1f}s (xg={final_xg:.3f}, "
+                              f"joueur={_joueur_str_bt}, cooldown={goal_cd_max} appels)")
 
                         events.append({
                             "type":        "goal",
@@ -786,8 +822,23 @@ def detect_events(
                       f"is_goal_zone={is_goal_zone} "
                       f"gk_blocking={gk_blocking_goal} "
                       f"compteur={state['ball_in_goal_zone']}/{goal_frames_threshold} "
+                      f"goal_cd={state['goal_cd']} "
                       f"ball_is_real={ball_is_real} "
                       f"speed={ball_speed:.0f}")
+                # V5.2 (14/09/2026) : log explicite quand le seuil est
+                # atteint/dépassé mais bloqué par goal_cd>0 (cooldown
+                # partagé entre le chemin standard et _bt/tick_shot_candidate,
+                # cf. lignes 688 et 807 - meme cle state["goal_cd"]). Sans ce
+                # log, ce blocage est invisible : le compteur peut depasser le
+                # seuil x5+ sans jamais rien imprimer, comme observe a t=387s
+                # (compteur=47/8) suite a un but confirme (peut-etre a tort)
+                # a t=324.3s par le chemin _bt, verrouillant tout pour ~625s.
+                if (state["ball_in_goal_zone"] >= goal_frames_threshold
+                        and state["goal_cd"] > 0):
+                    print(f"  [GOALZONE] ⚠️ seuil atteint mais BLOQUÉ par "
+                          f"goal_cd={state['goal_cd']} (cooldown actif, "
+                          f"encore ~{state['goal_cd']/6:.0f}s avant déblocage "
+                          f"à ~6fps effectif)")
 
             if (state["ball_in_goal_zone"] >= goal_frames_threshold
                     and state["goal_cd"] == 0
