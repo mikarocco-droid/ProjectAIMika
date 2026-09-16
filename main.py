@@ -370,6 +370,19 @@ def process_video(
     w            = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h            = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    # V5.2 (14/09/2026) FIX : ball_tracker cree plus haut (avant que fps/
+    # skip_every soient connus) avec fps=25 par defaut - jamais corrige,
+    # utilise par is_valid_jump() pour plafonner les sauts de position
+    # acceptables. Avec frame_skip, le rythme reel d'appel est plus bas
+    # que 25fps, rendant ce plafond trop strict pour un ballon qui se
+    # deplace vite (tir, penalty) - voir le commentaire complet dans
+    # is_valid_jump() (vision/ball_tracker.py). Corrige ici en fixant le
+    # vrai rythme effectif une fois connu.
+    if ball_tracker is not None:
+        ball_tracker.fps = fps / max(1, skip_every)
+        print(f"  [BALL TRACKER] fps effectif fixé à {ball_tracker.fps:.1f} "
+              f"(natif={fps:.1f}, skip_every={skip_every})")
+
     start_frame = int(start_time_s * fps) if start_time_s > 0 else 0
     if start_frame > 0:
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
