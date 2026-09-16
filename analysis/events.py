@@ -712,6 +712,19 @@ def detect_events(
                     state["_goal_zone_speeds"]     = []
                     state["_goal_zone_speeds_gap"] = 0
             else:
+                # V5.2 (14/09/2026) FIX : les 3 lignes de reset
+                # inconditionnel qui suivaient ici (a la meme
+                # indentation que le "if" ci-dessous) ecrasaient
+                # systematiquement la logique conditionnelle de
+                # tolerance (qui ne remet a 0 que si avg_speed etait
+                # trop eleve) - rendant le compteur ball_in_goal_zone
+                # fragile a la moindre sortie, meme d'un seul appel,
+                # de la zone de but. Constate concretement : 0 but
+                # confirme sur 5 vrais buts connus dans une fenetre de
+                # test (~61 min), aucun rejet local meme a proximite
+                # de ces timestamps - le compteur ne semble jamais
+                # atteindre le seuil requis. Repli desormais SEULEMENT
+                # conditionnel, comme le code semblait l'avoir prevu.
                 if state["ball_in_goal_zone"] > 0 and not gk_blocking_goal:
                     speeds = state["_goal_zone_speeds"]
                     if speeds:
@@ -720,9 +733,6 @@ def detect_events(
                             state["ball_in_goal_zone"]     = 0
                             state["_goal_zone_speeds"]     = []
                             state["_goal_zone_speeds_gap"] = 0
-                state["ball_in_goal_zone"]     = 0
-                state["_goal_zone_speeds"]     = []
-                state["_goal_zone_speeds_gap"] = 0
 
             goal_frames_threshold = goal_frames_min
             if state.get("_shot_blocked_cd", 0) > 0:
