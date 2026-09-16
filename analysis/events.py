@@ -759,6 +759,25 @@ def detect_events(
             if state.get("_shot_blocked_cd", 0) > 0:
                 goal_frames_threshold = max(4, goal_frames_min // 2)
 
+            # V5.2 (14/09/2026) : log de progression du compteur
+            # ball_in_goal_zone, à CHAQUE frame - pour voir son évolution
+            # complète (montée, plateau, reset) plutôt que seulement le
+            # résultat final (REJETÉ/CONFIRMÉ). Utile pour distinguer :
+            # ballon jamais vu dans la zone (compteur toujours 0),
+            # compteur qui progresse mais reset avant le seuil, ou
+            # gardien qui bloque (gk_blocking_goal=True) au mauvais moment.
+            try:
+                from config import DEBUG as _DBG_GOALZONE
+            except ImportError:
+                _DBG_GOALZONE = False
+            if _DBG_GOALZONE and (is_goal_zone or state["ball_in_goal_zone"] > 0):
+                print(f"  [GOALZONE] t={current_time:.1f}s "
+                      f"is_goal_zone={is_goal_zone} "
+                      f"gk_blocking={gk_blocking_goal} "
+                      f"compteur={state['ball_in_goal_zone']}/{goal_frames_threshold} "
+                      f"ball_is_real={ball_is_real} "
+                      f"speed={ball_speed:.0f}")
+
             if (state["ball_in_goal_zone"] >= goal_frames_threshold
                     and state["goal_cd"] == 0
                     and not gk_blocking_goal
@@ -781,8 +800,21 @@ def detect_events(
 
                     if _recent_shot_xg <= 0.01:
                         # Pas de tir récent avec xG > 0 → faux positif
+                        # V5.2 (14/09/2026) : détail du buffer de tirs
+                        # récents, pour distinguer précisément POURQUOI
+                        # aucun tir n'a qualifié - buffer vide (aucun tir
+                        # jamais enregistré), tirs trop vieux (>5s), ou
+                        # tirs présents mais xG trop faible (<=0.01).
+                        _buffer = list(state.get("_recent_shots_buffer", []))
+                        if not _buffer:
+                            _detail_buffer = "buffer vide (aucun tir jamais enregistré)"
+                        else:
+                            _ages = [f"{current_time - s['time']:.1f}s(xg={s.get('xg',0):.2f})"
+                                     for s in reversed(_buffer[-5:])]
+                            _detail_buffer = f"{len(_buffer)} tir(s) en mémoire, plus récents : {', '.join(_ages)}"
                         print(f"  goal REJETÉ à t={current_time:.1f}s "
-                              f"(xG=0.000 — pas de tir récent → faux positif)")
+                              f"(xG=0.000 — pas de tir récent → faux positif) "
+                              f"[{_detail_buffer}]")
                     else:
                         # Tir récent confirmé → but valide
                         print(f"  ✅ goal CONFIRMÉ à t={current_time:.1f}s "
