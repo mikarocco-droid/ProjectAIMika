@@ -254,6 +254,16 @@ def process_batch(
         # par coincidence).
         if ball is not None:
             ball["frame"] = frame_id
+            # V5.2 (14/09/2026) FIX : _tracker_ref n'etait jamais assigne,
+            # rendant is_shot_candidate() (le filtre principal vitesse+
+            # alignement+stabilite+acceleration+direction, cf. commentaire
+            # dans events.py "~33 -> ~8-12 tirs") totalement inatteignable -
+            # is_valid_shot() (repli) retournait True instantanement des
+            # que _bt est None, sans verifier aucun critere. Resultat mesure
+            # sans ce fix : 430 tirs pour 11 buts (6 reels) sur un match
+            # complet, 0 appel a is_shot_candidate(). Ce fix connecte enfin
+            # le vrai filtre.
+            ball["_tracker_ref"] = ball_tracker
 
         _t0 = _profile_start()
         frame_events, events_state = detect_events(
