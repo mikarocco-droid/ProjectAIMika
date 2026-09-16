@@ -364,6 +364,28 @@ class BallTracker:
             return balls[0]
         best       = None
         best_score = 1e9
+        # V5.2 (14/09/2026) : diagnostic - log quand PLUSIEURS candidats
+        # ballon sont detectes simultanement, pour verifier l'hypothese
+        # d'une confusion entre 2 objets ronds proches (ballon + autre
+        # chose - mains du gardien, structure du but) dans une zone
+        # encombree. Observe concretement : y oscille entre ~0,31 et
+        # ~0,45 de facon repetee juste apres un penalty (t=381-383s sur
+        # Andrimont), alors que x reste quasi fixe - pas une trajectoire
+        # de ballon coherente. Voir
+        # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.9.
+        try:
+            from config import DEBUG as _DBG_BALLSEL
+        except ImportError:
+            _DBG_BALLSEL = False
+        if _DBG_BALLSEL and len(balls) > 1:
+            _candidats = []
+            for b in balls:
+                _x, _y, _w, _h = b
+                _cx, _cy = _x + _w // 2, _y + _h // 2
+                _d = distance((_cx, _cy), last_pos)
+                _candidats.append(f"({_cx},{_cy}) dist={_d:.0f}")
+            print(f"  [BALL_SELECT] {len(balls)} candidats : {' | '.join(_candidats)} "
+                  f"— last_pos=({last_pos[0]:.0f},{last_pos[1]:.0f})")
         for b in balls:
             x, y, w, h = b
             cx = x + w // 2
