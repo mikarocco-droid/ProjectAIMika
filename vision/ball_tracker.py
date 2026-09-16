@@ -465,7 +465,8 @@ class BallTracker:
     def is_shot_candidate(self, frame_w, frame_h,
                           speed_threshold_px_per_sec=None,
                           alignment_threshold=0.55,
-                          stability_threshold=0.55):
+                          stability_threshold=0.55,
+                          current_time=None):
         # V9.7+ — seuils assouplis pour imgsz=640 (positions moins précises)
         # alignment 0.75→0.55, stability 0.75→0.55 : ballon moins précis à 640
         """
@@ -481,6 +482,14 @@ class BallTracker:
         # Tolérance 2 frames pour imgsz=640 qui perd plus souvent le ballon
         if self.lost_frames > 2:
             _DIAG_SHOT_CANDIDATE["rejets_lost_frames"] += 1
+            try:
+                from config import DEBUG as _DBG_LF
+            except ImportError:
+                _DBG_LF = False
+            if _DBG_LF:
+                _t_str_lf = f"t={current_time:.1f}s " if current_time is not None else ""
+                print(f"  [SHOT] {_t_str_lf}REJET PRÉCOCE lost_frames={self.lost_frames} "
+                      f"(>2, ballon considéré perdu/interpolé) → ❌")
             return False
 
         # Filtre zone offensive — tirs partent des 25% proches des buts
@@ -567,8 +576,10 @@ class BallTracker:
             DEBUG = False
         if DEBUG and last is not None:
             ratio_str = f"{spd_recent/(spd_before+1e-6):.2f}" if len(pts) >= 4 else "n/a"
-            print(f"  [SHOT] spd={spd:.0f} stab={stability:.2f} "
-                  f"accel={ratio_str} x={last[0]/frame_w:.2f} → {'✅' if result else '❌'}")
+            _t_str = f"t={current_time:.1f}s " if current_time is not None else ""
+            print(f"  [SHOT] {_t_str}spd={spd:.0f} stab={stability:.2f} "
+                  f"accel={ratio_str} x={last[0]/frame_w:.2f} y={last[1]/frame_h:.2f} "
+                  f"lost={self.lost_frames} → {'✅' if result else '❌'}")
 
         return result
 
