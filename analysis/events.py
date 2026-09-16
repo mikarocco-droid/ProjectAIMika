@@ -345,6 +345,27 @@ def detect_events(
     threshold     = frame_w * 0.06
     current       = closest if dist < threshold else None
 
+    # V5.2 (14/09/2026) : diagnostic complet ballon/proximité joueur, pour
+    # comprendre les cas ou tout le bloc tirs/buts est saute silencieusement
+    # (current=None) - notamment penalties, ou aucun joueur n'est proche du
+    # ballon pendant son vol vers le but. Aide aussi a distinguer un ballon
+    # reellement au sol/en jeu d'un ballon porte dans les mains d'un joueur
+    # (ex. installation du ballon sur le point de penalty), qui peut
+    # produire des positions erratiques ressemblant a tort a un tir rapide.
+    try:
+        from config import DEBUG as _DBG_BALL
+    except ImportError:
+        _DBG_BALL = False
+    if _DBG_BALL:
+        _bx, _by = ball.get("center", [None, None])
+        _interp = ball.get("interpolated", False)
+        _conf   = ball.get("conf", None)
+        print(f"  [BALL] t={current_time:.1f}s pos=({_bx},{_by}) "
+              f"interp={_interp} conf={_conf} "
+              f"dist_joueur_proche={dist:.0f}px seuil={threshold:.0f}px "
+              f"current={'None' if current is None else current.get('id')} "
+              f"n_joueurs={len(players)}")
+
     if current:
         team_key = _locked_team(current, team_map)
         events.append({
