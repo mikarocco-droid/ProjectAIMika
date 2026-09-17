@@ -304,6 +304,15 @@ def init_state(learner=None, fps=25):
         "_shot_candidate_team":     None,
         # ── AJOUT v2 : buffer tirs récents pour filtre xG=0 ──
         "_recent_shots_buffer":     deque(maxlen=20),
+        # V5.2 (14/09/2026) : buffer de vitesses BRUTES du ballon,
+        # independant du filtre strict is_shot_candidate() (4 criteres :
+        # vitesse+alignement+stabilite+acceleration). Necessaire pour le
+        # fallback GOALZONE+vitesse (voir plus bas) - un penalty peut
+        # echouer le filtre strict (stability~0 sur une fenetre trop
+        # courte, ~0,3-0,5s de vol reel) tout en ayant ete genuinement
+        # rapide juste avant. Ne remplace PAS is_shot_candidate(), sert
+        # de preuve complementaire independante.
+        "_recent_ball_speeds":      deque(maxlen=30),
     }
 
 
@@ -644,6 +653,10 @@ def detect_events(
             else:
                 ball_speed = frame_w * 0.025
 
+            # V5.2 (14/09/2026) : alimente le buffer de vitesses brutes,
+            # a chaque frame, independamment de is_shot_candidate().
+            state["_recent_ball_speeds"].append({"time": current_time, "speed": ball_speed})
+
             shot_speed_ok = (
                 ball_speed > frame_w * ball_speed_min
                 or (is_goal_zone and ball_speed > frame_w * 0.01)
@@ -902,6 +915,23 @@ def detect_events(
                           f"encore ~{state['goal_cd']/6:.0f}s avant déblocage "
                           f"à ~6fps effectif)")
 
+            # V5.2 (14/09/2026) : diagnostic explicite des 4 conditions,
+            # au lieu de deviner laquelle bloque - decouvert que goal_cd
+            # n'est PAS toujours la cause (goal_cd=0 confirme dans les
+            # logs alors qu'aucune confirmation n'apparait). Affiche les
+            # 4 valeurs exactes des qu'un seuil est atteint, pour savoir
+            # PRECISEMENT laquelle empeche la confirmation.
+            if _DBG_GOALZONE and state["ball_in_goal_zone"] >= goal_frames_threshold:
+                _speeds_debug = state["_goal_zone_speeds"]
+                _avg_debug = sum(_speeds_debug) / len(_speeds_debug) if _speeds_debug else 0
+                print(f"  [GOALZONE_CHECK] t={current_time:.1f}s "
+                      f"compteur_ok={state['ball_in_goal_zone'] >= goal_frames_threshold} "
+                      f"goal_cd_ok={state['goal_cd'] == 0} (goal_cd={state['goal_cd']}) "
+                      f"gk_ok={not gk_blocking_goal} "
+                      f"goal_already_added_ok={not _goal_already_added} "
+                      f"avg_speed={_avg_debug:.0f} (seuil={frame_w*0.09:.0f}) "
+                      f"n_speeds={len(_speeds_debug)}")
+
             if (state["ball_in_goal_zone"] >= goal_frames_threshold
                     and state["goal_cd"] == 0
                     and not gk_blocking_goal
@@ -923,29 +953,98 @@ def detect_events(
                             break
 
                     if _recent_shot_xg <= 0.01:
-                        # Pas de tir récent avec xG > 0 → faux positif
-                        # V5.2 (14/09/2026) : détail du buffer de tirs
-                        # récents, pour distinguer précisément POURQUOI
-                        # aucun tir n'a qualifié - buffer vide (aucun tir
-                        # jamais enregistré), tirs trop vieux (>5s), ou
-                        # tirs présents mais xG trop faible (<=0.01).
-                        _buffer = list(state.get("_recent_shots_buffer", []))
-                        if not _buffer:
-                            _detail_buffer = "buffer vide (aucun tir jamais enregistré)"
+                        # V5.2 (14/09/2026) — FALLBACK GOALZONE+VITESSE
+                        # (architecture proposee par l'utilisateur, suite
+                        # au debug du penalty a t=382s) : is_shot_candidate()
+                        # a un pouvoir de veto total sur la confirmation
+                        # d'un but, alors que son role est de filtrer les
+                        # TIRS, pas de decider des BUTS. Un penalty (vol
+                        # ~0,3-0,5s) peut echouer son critere de stabilite
+                        # (fenetre trop courte pour notre echantillonnage)
+                        # tout en etant un vrai but. Ce fallback verifie
+                        # 3 conditions INDEPENDANTES de is_shot_candidate,
+                        # comme preuve alternative :
+                        #   1. vitesse elevee recente (buffer brut, pas le
+                        #      filtre strict)
+                        #   2. trajectoire compatible (ballon reellement
+                        #      suivi, pas interpole/perdu, pendant l'approche)
+                        #   3. aucun evenement contradictoire (pas de
+                        #      blocage gardien recent, pas de tir contre
+                        #      juste avant - suggererait un arret, pas un but)
+                        # N'affecte PAS is_shot_candidate() lui-meme - reste
+                        # inchange, continue a filtrer les tirs normalement.
+                        _vitesse_recente_elevee = any(
+                            s["speed"] > frame_w * 0.10
+                            for s in state["_recent_ball_speeds"]
+                            if 0 < current_time - s["time"] <= 3.0
+                        )
+                        _lost_frames_ok = (_bt.lost_frames <= 2) if (_bt is not None and hasattr(_bt, "lost_frames")) else True
+                        _trajectoire_compatible = ball_is_real and _lost_frames_ok
+                        _pas_evenement_contradictoire = (
+                            not gk_blocking_goal
+                            and state.get("_shot_blocked_cd", 0) == 0
+                        )
+                        _fallback_ok = (_vitesse_recente_elevee
+                                        and _trajectoire_compatible
+                                        and _pas_evenement_contradictoire)
+
+                        if _fallback_ok:
+                            _joueur_fb = str(current["id"]) if current else None
+                            print(f"  ✅ goal CONFIRMÉ (GOALZONE_SPEED_FALLBACK) "
+                                  f"à t={current_time:.1f}s — pas de tir lié "
+                                  f"(is_shot_candidate a echoue, probable fenetre "
+                                  f"trop courte), mais vitesse recente elevee + "
+                                  f"trajectoire compatible + aucun evenement "
+                                  f"contradictoire. joueur={_joueur_fb or 'inconnu'}")
+                            events.append({
+                                "type":        "goal",
+                                "player":      _joueur_fb,
+                                "team":        _locked_team(current, team_map),
+                                "x":           x,
+                                "y":           y,
+                                "xg":          0.3,  # valeur conservatrice, non calibrée
+                                "time":        current_time,
+                                "danger":      compute_danger({"type": "goal"}),
+                                "shot_linked": False,
+                                "on_target":   True,
+                                "source":      "goalzone_speed_fallback",
+                                "confidence":  0.5,  # délibérément bas - à valider
+                            })
+                            state["goal_cd"] = goal_cd_max
+                            state["_kickoff_watch_until"]  = current_time + 30.0
+                            state["_kickoff_watch_origin"] = f"{current_time:.1f}"
                         else:
-                            _ages = [f"{current_time - s['time']:.1f}s(xg={s.get('xg',0):.2f})"
-                                     for s in reversed(_buffer[-5:])]
-                            _detail_buffer = f"{len(_buffer)} tir(s) en mémoire, plus récents : {', '.join(_ages)}"
-                        print(f"  goal REJETÉ à t={current_time:.1f}s "
-                              f"(xG=0.000 — pas de tir récent → faux positif) "
-                              f"[{_detail_buffer}]")
-                        # V5.2 (14/09/2026) : ouvre la fenêtre de
-                        # surveillance pour le signal experimental
-                        # _diag_kickoff_geometrique - 30s, temps
-                        # plausible pour celebration + recuperation du
-                        # ballon + replacement + reprise au centre.
-                        state["_kickoff_watch_until"]  = current_time + 30.0
-                        state["_kickoff_watch_origin"] = f"{current_time:.1f}"
+                            # Pas de tir récent avec xG > 0, ET fallback
+                            # non satisfait → faux positif
+                            # V5.2 (14/09/2026) : détail du buffer de tirs
+                            # récents, pour distinguer précisément POURQUOI
+                            # aucun tir n'a qualifié - buffer vide (aucun tir
+                            # jamais enregistré), tirs trop vieux (>5s), ou
+                            # tirs présents mais xG trop faible (<=0.01).
+                            _buffer = list(state.get("_recent_shots_buffer", []))
+                            if not _buffer:
+                                _detail_buffer = "buffer vide (aucun tir jamais enregistré)"
+                            else:
+                                _ages = [f"{current_time - s['time']:.1f}s(xg={s.get('xg',0):.2f})"
+                                         for s in reversed(_buffer[-5:])]
+                                _detail_buffer = f"{len(_buffer)} tir(s) en mémoire, plus récents : {', '.join(_ages)}"
+                            print(f"  goal REJETÉ à t={current_time:.1f}s "
+                                  f"(xG=0.000 — pas de tir récent → faux positif, "
+                                  f"fallback vitesse={_vitesse_recente_elevee} "
+                                  f"trajectoire={_trajectoire_compatible} "
+                                  f"pas_contradictoire={_pas_evenement_contradictoire}) "
+                                  f"[{_detail_buffer}]")
+                            # V5.2 (14/09/2026) : ouvre la fenêtre de
+                            # surveillance pour le signal experimental
+                            # _diag_kickoff_geometrique - 30s, temps
+                            # plausible pour celebration + recuperation du
+                            # ballon + replacement + reprise au centre.
+                            state["_kickoff_watch_until"]  = current_time + 30.0
+                            state["_kickoff_watch_origin"] = f"{current_time:.1f}"
+
+                        state["ball_in_goal_zone"]     = 0
+                        state["_goal_zone_speeds"]     = []
+                        state["_goal_zone_speeds_gap"] = 0
                     else:
                         # Tir récent confirmé → but valide
                         _joueur_str = str(current["id"]) if current else "inconnu (aucun joueur proche)"
