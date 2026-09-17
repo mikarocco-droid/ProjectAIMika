@@ -168,9 +168,18 @@ def filter_goals(events, window, frame_w, position_threshold):
     groups.append(current)
 
     # Log des groupes pour debug
-    print(f"  filter_goals groupes ({len(groups)}) : "
-          + " | ".join(f"[{','.join(f'{g["time"]:.1f}s' for g in grp)}]"
-                       for grp in groups[:10]))
+    # V5.2 (17/09/2026) FIX : la version precedente imbriquait des
+    # f-strings avec le meme type de guillemets (f"..." contenant
+    # f'{g["time"]}...') - syntaxe valide seulement depuis Python 3.12
+    # (PEP 701). Si l'environnement de production/Kaggle utilise une
+    # version anterieure, cette ligne provoque une SyntaxError qui fait
+    # planter l'import de tout le module. Reecrit sans guillemets
+    # imbriques, compatible toutes versions.
+    _groupes_str = " | ".join(
+        "[" + ",".join(f"{g.get('time', 0):.1f}s" for g in grp) + "]"
+        for grp in groups[:10]
+    )
+    print(f"  filter_goals groupes ({len(groups)}) : {_groupes_str}")
 
     # Sélection du meilleur dans chaque groupe de doublons
     candidates_per_group = []

@@ -63,8 +63,16 @@ def _valid_y(by_n):
 def _gk_center(fd):
     players = fd.get("players") or []
     w = fd.get("frame_w") or 1920
+    # V5.2 (17/09/2026) FIX : "role"/"label" ne sont jamais definis nulle
+    # part dans le pipeline reel (verifie) - ce premier check etait donc
+    # du code mort, systematiquement ignore. Le vrai champ calcule par
+    # notre pipeline est "is_goalkeeper" (booleen, voir
+    # analysis/player_reid.py) - jamais consulte ici auparavant, la
+    # fonction retombait toujours sur l'heuristique de position (joueur
+    # le plus proche d'une touche), moins precise que la classification
+    # deja disponible.
     for p in players:
-        if p.get("role") == "goalkeeper" or p.get("label","").lower() in ("gk","goalkeeper"):
+        if p.get("is_goalkeeper") or p.get("role") == "goalkeeper" or p.get("label","").lower() in ("gk","goalkeeper"):
             bbox = p.get("bbox") or []
             if len(bbox) == 4:
                 return (bbox[0]+bbox[2])/2.0, (bbox[1]+bbox[3])/2.0

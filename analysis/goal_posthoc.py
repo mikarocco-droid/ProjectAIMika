@@ -566,7 +566,16 @@ def detect_fast_goals_from_ball(
         _frames_spacing = max(1, _f2 - _f1)
     # ABSENT_MIN_FRAMES adapté : minimum 1 frame (frame_skip élevé = peu de frames)
     # Le score et la vitesse compensent le filtre d'absence
-    ABSENT_MIN_FRAMES = max(1, int(0.3 * 25 / _frames_spacing))
+    # V5.2 (17/09/2026) FIX : "25" codé en dur pour le fps natif, alors
+    # que le vrai fps (parametre de cette fonction, deja transmis
+    # correctement par pipeline.py) est disponible ici. Sur une video a
+    # 30fps natif (comme notre test Andrimont), ABSENT_MIN_FRAMES etait
+    # sous-estime (1 au lieu de 2 pour frame_skip=4) - meme motif
+    # systemique que plusieurs autres corrige ce soir, ici avec un twist
+    # positif : _frames_spacing est deja mesure dynamiquement (plus
+    # robuste que les correctifs manuels appliques ailleurs), seul le
+    # fps natif restait code en dur alors qu'il etait deja disponible.
+    ABSENT_MIN_FRAMES = max(1, int(0.3 * fps / _frames_spacing))
 
     absent_since   = None
     _last_appear_t = -999.0
