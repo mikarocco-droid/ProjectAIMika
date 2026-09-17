@@ -71,17 +71,84 @@ def default_progress(pct):
     print(f"  {pct}%", end="\r")
 
 
+# V5.2 (17/09/2026) : DIAGNOSTIC PUR, aucune decision affectee - mesure
+# le flux team PlayerReID -> TeamColorDetector -> detect_events(), suite
+# a la decouverte que assign_teams_by_color() efface explicitement le
+# "team" deja calcule par PlayerReID (confirme calibre, teams_calibrated=
+# True) pour le remplacer par TeamColorDetector (exigences bien plus
+# strictes : 60 frames VALIDES, chacune avec >=10 joueurs). Objectif :
+# mesurer si ce remplacement degrade reellement la couverture team recue
+# par detect_events() sur un vrai match, ou si c'est une limitation
+# specifique aux fenetres de test courtes/isolees utilisees ce soir.
+# Voir ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.11+.
+_DIAG_TEAM_FLOW = {
+    "n_frames_total":                       0,
+    "n_players_total":                      0,
+    "n_players_playerreid_had_team":        0,  # avant effacement
+    "n_players_teamcolordetector_has_team": 0,  # apres color_detector.update()
+    "n_players_both":                       0,  # les 2 disponibles (avant ET apres)
+    "n_players_wiped":                      0,  # PlayerReID avait une equipe, finit a None
+    "first_frame_tcd_calibrated":           None,
+}
+
+
 def assign_teams_by_color(frame, tracked, color_detector):
+    global _DIAG_TEAM_FLOW
+    _DIAG_TEAM_FLOW["n_frames_total"] += 1
+
+    _avant = {id(p): p.get("team") for p in tracked}
+
     # Supprimer le team déjà assigné pour que color_detector.update()
     # puisse réassigner avec les centroides calibrés.
     # Sans ça, les joueurs avec team=0 (défaut) ne sont jamais corrigés.
     for p in tracked:
+        _DIAG_TEAM_FLOW["n_players_total"] += 1
         if p.get("team") is not None:
+            _DIAG_TEAM_FLOW["n_players_playerreid_had_team"] += 1
             p["team"] = None
 
     color_detector.update(frame, tracked)
 
+    if (_DIAG_TEAM_FLOW["first_frame_tcd_calibrated"] is None
+            and getattr(color_detector, "_calibrated", False)):
+        _DIAG_TEAM_FLOW["first_frame_tcd_calibrated"] = _DIAG_TEAM_FLOW["n_frames_total"]
+
+    for p in tracked:
+        _avait = _avant.get(id(p)) is not None
+        _a_maintenant = p.get("team") is not None
+        if _a_maintenant:
+            _DIAG_TEAM_FLOW["n_players_teamcolordetector_has_team"] += 1
+        if _avait and _a_maintenant:
+            _DIAG_TEAM_FLOW["n_players_both"] += 1
+        if _avait and not _a_maintenant:
+            _DIAG_TEAM_FLOW["n_players_wiped"] += 1
+
     return tracked
+
+
+def print_diag_team_flow():
+    d = _DIAG_TEAM_FLOW
+    print("=" * 80)
+    print("[DIAG TEAM FLOW] PlayerReID → TeamColorDetector → detect_events()")
+    print("=" * 80)
+    print(f"  Frames traitées : {d['n_frames_total']}")
+    print(f"  Joueurs traités (cumulé sur toutes les frames) : {d['n_players_total']}")
+    if d["n_players_total"] > 0:
+        _t = d["n_players_total"]
+        print(f"  1. PlayerReID avait une équipe (avant effacement) : "
+              f"{d['n_players_playerreid_had_team']} ({100*d['n_players_playerreid_had_team']/_t:.1f}%)")
+        print(f"  2. TeamColorDetector fournit une équipe (final) : "
+              f"{d['n_players_teamcolordetector_has_team']} ({100*d['n_players_teamcolordetector_has_team']/_t:.1f}%)")
+        print(f"  3. Les deux disponibles : "
+              f"{d['n_players_both']} ({100*d['n_players_both']/_t:.1f}%)")
+        print(f"  4. PlayerReID avait une équipe MAIS effacée (team=None final) : "
+              f"{d['n_players_wiped']} ({100*d['n_players_wiped']/_t:.1f}%)")
+    print(f"  5. TeamColorDetector calibré à la frame n° : "
+          f"{d['first_frame_tcd_calibrated']}")
+    print(f"  6. Couverture team finale transmise à detect_events() : "
+          f"{100*d['n_players_teamcolordetector_has_team']/max(1,d['n_players_total']):.1f}%")
+    print("=" * 80)
+
 
 
 def rescale_detections(players, yolo_ball, scale_x, scale_y):
@@ -689,6 +756,7 @@ def process_video(
         print(f"  [DIAG PlayerReID] zip des crops échoué : {_e_zip}")
 
     print_profiling_summary()
+    print_diag_team_flow()
 
     if return_frames:
         return events, jersey_map, fps, total_frames, frames_data
