@@ -653,9 +653,21 @@ def detect_events(
             else:
                 ball_speed = frame_w * 0.025
 
-            # V5.2 (14/09/2026) : alimente le buffer de vitesses brutes,
-            # a chaque frame, independamment de is_shot_candidate().
-            state["_recent_ball_speeds"].append({"time": current_time, "speed": ball_speed})
+            # V5.2 (14/09/2026) FIX : ball_speed (ci-dessus) est divisé par
+            # fps pour les usages existants (shot_speed_ok, avg_speed<seuil,
+            # etc.) - ne pas y toucher, deja calibre pour cette echelle
+            # ailleurs dans cette fonction. Pour le buffer du fallback,
+            # calcule une valeur SEPAREE, a la MEME echelle que celle
+            # utilisee par is_shot_candidate() en interne
+            # (self.ball_buffer.speed_px_per_sec(), sans division
+            # supplementaire) - sinon le seuil frame_w*0.10 ne peut
+            # jamais etre depasse (bug constate : fallback vitesse=False
+            # systematiquement, alors que la vraie vitesse etait elevee).
+            if _bt is not None and hasattr(_bt, "get_speed_per_second"):
+                _vitesse_brute_fallback = _bt.get_speed_per_second()
+            else:
+                _vitesse_brute_fallback = ball_speed
+            state["_recent_ball_speeds"].append({"time": current_time, "speed": _vitesse_brute_fallback})
 
             shot_speed_ok = (
                 ball_speed > frame_w * ball_speed_min
