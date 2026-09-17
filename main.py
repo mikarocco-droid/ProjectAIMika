@@ -433,6 +433,11 @@ def process_video(
 
     detector       = Detector(sport=sport)
     tracker        = Tracker()
+    # V5.2 (17/09/2026) : ocr_every_n_frames corrige plus bas dans cette
+    # fonction, une fois le VRAI fps natif de la video connu (pas encore
+    # disponible ici - meme contrainte d'ordonnancement que pour
+    # ball_tracker.fps, voir plus bas). Valeur ici juste un placeholder
+    # sûr, écrasée avant toute utilisation réelle.
     ocr            = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
     ocr._nom_match = os.path.splitext(os.path.basename(video_path))[0]  # V5.2 : evite l'ecrasement entre matchs (outputs/test codé en dur)
     color_detector = TeamColorDetector(
@@ -473,6 +478,26 @@ def process_video(
         ball_tracker.fps = fps / max(1, skip_every)
         print(f"  [BALL TRACKER] fps effectif fixé à {ball_tracker.fps:.1f} "
               f"(natif={fps:.1f}, skip_every={skip_every})")
+
+    # V5.2 (17/09/2026) FIX : ocr_every_n_frames=30 codé en dur a
+    # l'instanciation (commentaire "1 fois par seconde"), mais
+    # OCRReader.read_all() est appelé une fois par frame ANALYSEE
+    # (rythme reduit par frame_skip), pas une fois par frame native -
+    # meme motif systemique que max_lost/TTL deja corriges ce soir. A
+    # skip_every=4, fps natif=30 (rythme effectif=7.5) : 30 appels
+    # effectifs = 4s reels, pas 1s comme suppose. Corrige ici, une fois
+    # le vrai fps natif connu (meme contrainte d'ordonnancement que
+    # ball_tracker.fps ci-dessus).
+    _fps_effectif_ocr = fps / max(1, skip_every)
+    ocr.ocr_every_n_frames = max(1, round(_fps_effectif_ocr))
+    print(f"  [OCR] ocr_every_n_frames fixé à {ocr.ocr_every_n_frames} "
+          f"(~1x/seconde réelle à {_fps_effectif_ocr:.1f}fps effectif)")
+
+    # V5.2 (17/09/2026) : fps effectif du fallback ballon tertiaire
+    # (vision/ball.py BallDetector, dans detector.ball_backup) - meme
+    # correctif de coherence que ball_tracker.fps/ocr ci-dessus.
+    if hasattr(detector, "ball_backup") and detector.ball_backup is not None:
+        detector.ball_backup.fps = fps / max(1, skip_every)
 
     start_frame = int(start_time_s * fps) if start_time_s > 0 else 0
     if start_frame > 0:
