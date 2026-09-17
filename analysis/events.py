@@ -324,7 +324,14 @@ def init_state(learner=None, fps=25):
         # n'est PAS une condition absolue (rebond sur barre qui ressort
         # aussitot = vrai but sans stabilisation) - sert uniquement a
         # AUGMENTER la confiance quand present, jamais a bloquer.
-        "_recent_ball_positions":   deque(maxlen=15),
+        "_recent_ball_positions":   deque(maxlen=30),
+        # V5.2 (17/09/2026) : rendez-vous différés pour vérifier la
+        # stabilisation sur une VRAIE FENÊTRE autour du but (avant ET
+        # après l'instant de confirmation), pas seulement en regardant
+        # vers l'arrière au moment precis ou le seuil est atteint (ce
+        # qui ratait la stabilisation qui se developpe juste APRES la
+        # confirmation, constate concretement sur le penalty a t=382s).
+        "_pending_stabilization_checks": [],
     }
 
 
@@ -629,6 +636,14 @@ def detect_events(
     ball_speed_min  = state.get("_ball_speed_min",   0.02)
     player_near_pct = state.get("_player_near_goal", 0.15)
     goal_frames_min = state.get("_goal_frames_min",  8)
+    # V5.2 (17/09/2026) : les valeurs de repli ci-dessous (75, 3750)
+    # sont les ANCIENNES valeurs pre-correctif fps effectif (25fps code
+    # en dur) - mortes en pratique, puisque init_state() definit TOUJOURS
+    # ces cles (state est cree exclusivement via init_state(), jamais
+    # autrement). Conservees uniquement comme filet de securite si un
+    # jour state etait construit differemment - mais dans ce cas, ces
+    # valeurs seraient DE NOUVEAU fausses (non mises a l'echelle du fps
+    # reel). Ne pas s'y fier comme des defauts "actifs".
     shot_cd_max     = state.get("_shot_cd_max",      75)
     goal_cd_max     = state.get("_goal_cd_max",      3750)
 
@@ -682,6 +697,47 @@ def detect_events(
             state["_recent_ball_speeds"].append({"time": current_time, "speed": _vitesse_brute_fallback})
             state["_recent_ball_positions"].append({"time": current_time, "x": x, "y": y})
 
+            # V5.2 (17/09/2026) : résout les vérifications différées de
+            # stabilisation dont l'échéance est atteinte - regarde
+            # maintenant une VRAIE FENÊTRE [but-1s, but+1.5s], incluant
+            # les positions arrivées APRÈS l'instant de confirmation
+            # (impossibles à voir en temps réel au moment même du but).
+            # Purement diagnostique pour l'instant - n'affecte pas la
+            # confiance déjà émise dans l'événement original.
+            _checks_restants = []
+            for _chk in state["_pending_stabilization_checks"]:
+                if current_time < _chk["check_at"]:
+                    _checks_restants.append(_chk)
+                    continue
+                _goal_t = _chk["goal_time"]
+                _fenetre = [p for p in state["_recent_ball_positions"]
+                            if -1.0 <= p["time"] - _goal_t <= 1.5]
+                _stabilise_fenetre = False
+                _meilleure_serie = 0
+                if len(_fenetre) >= 3:
+                    _fenetre_triee = sorted(_fenetre, key=lambda p: p["time"])
+                    _serie = 1
+                    for _i in range(1, len(_fenetre_triee)):
+                        _dx = abs(_fenetre_triee[_i]["x"] - _fenetre_triee[_i-1]["x"])
+                        _dy = abs(_fenetre_triee[_i]["y"] - _fenetre_triee[_i-1]["y"])
+                        if _dx <= 5 and _dy <= 5:
+                            _serie += 1
+                            _meilleure_serie = max(_meilleure_serie, _serie)
+                        else:
+                            _serie = 1
+                    _stabilise_fenetre = _meilleure_serie >= 3
+                try:
+                    from config import DEBUG as _DBG_STAB
+                except ImportError:
+                    _DBG_STAB = False
+                if _DBG_STAB:
+                    print(f"  [STABILISATION_DIFFÉRÉE] but à t={_goal_t:.1f}s : "
+                          f"stabilisé_sur_fenêtre={_stabilise_fenetre} "
+                          f"(meilleure_série={_meilleure_serie} lectures quasi-identiques, "
+                          f"{len(_fenetre)} positions dans la fenêtre [-1s,+1.5s])")
+            state["_pending_stabilization_checks"] = _checks_restants
+
+
             shot_speed_ok = (
                 ball_speed > frame_w * ball_speed_min
                 or (is_goal_zone and ball_speed > frame_w * 0.01)
@@ -697,7 +753,15 @@ def detect_events(
                     and time_since_last_shot < 8.0
                     and not state["_gk_holding_ball"]
                     and state["_gk_release_cd"] == 0):
-                state["shot_cd"]          = min(state["shot_cd"], 15)
+                # V5.2 (17/09/2026) FIX : "15" etait un nombre d'appels
+                # fixe, jamais mis a l'echelle du fps effectif (meme
+                # motif que TTL/goal_cd deja corriges). A l'ancien fps
+                # suppose (25, code en dur avant nos correctifs), 15
+                # appels = 0,6s reels - preserve cette meme duree reelle
+                # via une regle de 3 sur shot_cd_max (deja correctement
+                # mis a l'echelle : shot_cd_max = 8,0s * fps_effectif).
+                state["shot_cd"]          = min(state["shot_cd"],
+                                                 max(1, int(shot_cd_max * 0.075)))
                 state["_shot_blocked_cd"] = state["_shot_blocked_cd_max"]
                 events.append({
                     "type":   "shot_blocked",
@@ -1066,6 +1130,17 @@ def detect_events(
                             state["goal_cd"] = goal_cd_max
                             state["_kickoff_watch_until"]  = current_time + 30.0
                             state["_kickoff_watch_origin"] = f"{current_time:.1f}"
+                            # V5.2 (17/09/2026) : planifie une vérification
+                            # DIFFÉRÉE de la stabilisation, sur une vraie
+                            # fenêtre [but-1s, but+1.5s] plutôt qu'un
+                            # instant précis - purement diagnostique pour
+                            # l'instant (n'affecte pas la confiance déjà
+                            # émise), pour mesurer si le signal est fiable
+                            # avant de l'intégrer plus profondément.
+                            state["_pending_stabilization_checks"].append({
+                                "goal_time": current_time,
+                                "check_at":  current_time + 1.5,
+                            })
                         else:
                             # Pas de tir récent avec xG > 0, ET fallback
                             # non satisfait → faux positif
@@ -1170,6 +1245,16 @@ def process_match(frames_data, sport="football", shot_zones=None, learner=None, 
     return all_events
     
 def process_events(raw_events):
+    # V5.2 (17/09/2026) : AVERTISSEMENT - fonction non appelee nulle part
+    # dans le pipeline actuel (verifie : aucun appel depuis main.py, ni
+    # depuis ce fichier lui-meme). Contient un filtre dormant (rejet des
+    # buts avec xg=0.0 hors source "goal_posthoc") qui ne s'applique
+    # actuellement a AUCUN evenement genere ce soir - y compris ceux du
+    # fallback goalzone_speed_fallback (xg=0.3, ne serait pas filtre par
+    # cette regle de toute facon). A verifier avant reactivation
+    # eventuelle : ce filtre est-il encore pertinent avec les sources
+    # d'evenements actuelles (events_standard, events_bt,
+    # goalzone_speed_fallback) ?
     clean_events = []
 
     for event in raw_events:
