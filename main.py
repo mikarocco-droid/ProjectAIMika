@@ -228,10 +228,22 @@ def process_batch(
         if ball_tracker is not None:
             yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
             balls_list      = [yolo_ball_tuple] if yolo_ball_tuple else []
+            # V5.2 (17/09/2026) FIX : timestamp jamais transmis avant -
+            # BallTracker utilisait alors self.frame_id/self.fps en
+            # interne, une horloge RELATIVE au debut du tracking (0,
+            # 0.17, 0.33...), pas le temps ABSOLU de la video utilise
+            # partout ailleurs (current_time dans events.py). Sans
+            # consequence active tant que seules des DIFFERENCES de
+            # temps sont utilisees en interne (vitesse, stabilite -
+            # immunes a un decalage constant), mais fragilite latente :
+            # toute comparaison future entre ces deux horloges casserait
+            # silencieusement. Corrige en transmettant le vrai temps
+            # absolu, cohérent avec current_time.
             ball_result, was_interpolated = ball_tracker.update(
                 detected_balls = balls_list,
                 frame_w        = w,
-                frame_h        = h
+                frame_h        = h,
+                timestamp      = frame_id / fps,
             )
             ball = ball_tuple_to_dict(ball_result, interpolated=was_interpolated)
         else:
@@ -576,7 +588,8 @@ def process_video(
         print(f"  [GEMINI JERSEYS] échec, repli intégral sur Tesseract : {_e_gemini_jersey}")
 
     # V5.2 : team_map (identite d'equipe "verrouillee", vote majoritaire par
-    # track_id) - construite ICI pour etre passee a process_match(), afin
+    # track_id) - construite ICI pour etre appliquee en post-traitement aux
+    # evenements deja generes (voir FIX CRITIQUE juste en dessous), afin
     # que les evenements heritent de cette identite stable plutot que de
     # redemander une classification instantanee par frame (cf. events.py,
     # qui utilisait jusqu'ici current.get("team") - une seule frame,
@@ -596,7 +609,34 @@ def process_video(
         for _tid, _votes in _team_votes_evt.items()
     }
 
-    events = process_match(frames_data, sport, shot_zones=shot_zones, team_map=team_map)
+    # V5.2 (17/09/2026) FIX CRITIQUE : process_match() rappelait
+    # detect_events() une SECONDE fois sur frames_data, mais SANS
+    # rappeler ball_tracker.update() - _bt (ball["_tracker_ref"], le
+    # MEME objet partage pour toutes les frames stockees) restait donc
+    # fige a son etat de FIN de traitement pour toutes les frames
+    # retraitees, decorrele de la frame reellement en cours. Tout ce
+    # qui depend de _bt.ball_buffer (is_shot_candidate, tick_shot_
+    # candidate, vitesse de mon fallback goalzone_speed_fallback)
+    # utilisait donc des donnees perimees pendant cette seconde passe -
+    # alors que c'est SA sortie qui etait retournee au final, pas celle
+    # de la passe live (correcte, deja visible dans les logs [SHOT]/
+    # [GOALZONE]/CONFIRME). Explique le "but qui disparait" observe
+    # (run A, t=300,2s) et le double print "CONFIRME" au meme instant
+    # (runs B/C, t=317,8-317,9s et t=380,5s) - une fois pendant la
+    # passe live, une fois pendant cette passe perimee (voir
+    # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.9-3.10).
+    # Corrige : reutilise les evenements DEJA CORRECTS de la passe live
+    # (stockes par frame dans frames_data[i]["events"], construits ligne
+    # ~280 plus haut), applique juste team_map en post-traitement leger
+    # (sans rappeler detect_events() du tout - conserve le benefice de
+    # team_map sans reintroduire le probleme de _bt perime).
+    events = []
+    for _fd in frames_data:
+        for _e in _fd.get("events", []):
+            _pid = _e.get("player")
+            if _pid and str(_pid) in team_map:
+                _e["team"] = team_map[str(_pid)]
+            events.append(_e)
 
     print(f"  {len(events)} events detectes")
     print(f"  {len(jersey_map)} maillots identifies")
