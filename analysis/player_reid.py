@@ -497,7 +497,15 @@ class PlayerReID:
             mem["center"]    = det["center"]
             mem["color"]     = alpha * det["color"] + (1 - alpha) * mem["color"]
             mem["embedding"] = alpha * det["embedding"] + (1 - alpha) * mem["embedding"]
-            mem["team"]      = det.get("team") or mem.get("team")
+            # V5.2 (17/09/2026) FIX : "det.get('team') or mem.get('team')"
+            # traite a tort une classification FRAICHE team=0 comme
+            # absente (0 est faux en Python), retombant sur l'ANCIENNE
+            # valeur en memoire au lieu de la mettre a jour - perdait
+            # silencieusement des classifications team=0 fraiches a
+            # chaque mise a jour. Meme motif que le bug deja documente
+            # et corrige ailleurs dans ce projet (team_cluster.py,
+            # "if _team:"). Fix : verification explicite avec "is not None".
+            mem["team"]      = det.get("team") if det.get("team") is not None else mem.get("team")
             mem["last_seen"] = self.frame_count
             return best_id
 
@@ -541,7 +549,14 @@ class PlayerReID:
             inferred = self._infer_team(color)
             _PROFILING_REID["infer_team"] += time.perf_counter() - _t0
             team = existing_team if existing_team is not None else inferred
-            if inferred == "gk" and not existing_team:
+            # V5.2 (17/09/2026) FIX : "not existing_team" traite a tort
+            # existing_team=0 (equipe 0, une classification VALIDE) comme
+            # "aucune equipe" (0 est faux en Python) - meme motif que le
+            # bug deja trouve/corrige ligne ~500 (mem["team"] = det.get(...)
+            # or mem.get(...)). Un joueur deja classe equipe 0 pouvait donc
+            # se faire marquer is_goalkeeper=True a tort si un seul
+            # echantillon de couleur ambigu tombait sur "gk" ce tour-ci.
+            if inferred == "gk" and existing_team is None:
                 det["is_goalkeeper"] = True
 
             crop = _extraire_crop(frame, bbox)
