@@ -338,6 +338,63 @@ def init_state(learner=None, fps=25):
 # ─────────────────────────────────────────
 # MAIN DETECTOR
 # ─────────────────────────────────────────
+def _diag_gap_equipes(players, current_time):
+    """
+    V5.2 (17/09/2026) - PROTOTYPE EXPERIMENTAL, DIAGNOSTIQUE PUR.
+    N'affecte AUCUNE decision existante - log seulement un indicateur.
+
+    Propose par l'utilisateur suite a l'echec du signal de stabilisation
+    (teste et ferme, cf. ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md
+    section 3.11) : plutot qu'une position absolue en pixels (fragile
+    avec une camera qui zoome/pan), calcule un ecart RELATIF entre les
+    2 equipes deja trackees. Hypothese : un but produit une sequence
+    resserrement -> configuration compacte -> reouverture (coup
+    d'envoi), alors qu'un simple arret de jeu (corner, coup franc, 6m,
+    touche) produit aussi un resserrement mais SANS la reprise au
+    centre qui suit specifiquement un but.
+
+    Cote gauche/droite determine dynamiquement (moyenne des positions
+    x de chaque equipe), pas suppose a l'avance - reste valide meme si
+    les equipes changent de cote (mi-temps) ou si team_id 0/1 ne
+    correspond pas de facon fixe a un cote.
+
+    IMPORTANT : ne PAS interpreter un gap proche de 0 isole comme "coup
+    d'envoi confirme" - un defenseur qui monte et un attaquant qui
+    descend peuvent faire se toucher les frontieres pendant une phase
+    de jeu normale. Ce qui compte est la DYNAMIQUE temporelle
+    (resserrement puis reouverture), a observer sur la serie de logs,
+    pas une valeur instantanee.
+    """
+    try:
+        from config import DEBUG as _DBG_GAP
+    except ImportError:
+        _DBG_GAP = False
+    if not _DBG_GAP or not players:
+        return
+
+    equipe_0 = [p["center"][0] for p in players if p.get("team") == 0 and p.get("center")]
+    equipe_1 = [p["center"][0] for p in players if p.get("team") == 1 and p.get("center")]
+
+    if not equipe_0 or not equipe_1:
+        return
+
+    if sum(equipe_0) / len(equipe_0) <= sum(equipe_1) / len(equipe_1):
+        gauche, droite = equipe_0, equipe_1
+        label_gauche, label_droite = "0", "1"
+    else:
+        gauche, droite = equipe_1, equipe_0
+        label_gauche, label_droite = "1", "0"
+
+    gauche_max = max(gauche)
+    droite_min = min(droite)
+    gap = droite_min - gauche_max
+
+    print(f"  [GAP_EQUIPES] t={current_time:.1f}s gap={gap:.0f}px "
+          f"(gauche=équipe{label_gauche} bord={gauche_max:.0f} | "
+          f"droite=équipe{label_droite} bord={droite_min:.0f}) "
+          f"n_gauche={len(gauche)} n_droite={len(droite)}")
+
+
 def _diag_kickoff_geometrique(players, frame_w, frame_h, current_time, state):
     """
     V5.2 (14/09/2026) - PROTOTYPE EXPERIMENTAL, DIAGNOSTIQUE UNIQUEMENT.
@@ -449,6 +506,7 @@ def detect_events(
     # (voir _diag_kickoff_geometrique ci-dessus) - n'affecte aucune
     # decision existante.
     _diag_kickoff_geometrique(players, frame_w, frame_h, current_time, state)
+    _diag_gap_equipes(players, current_time)
 
     # ── POSSESSION ───────────────────────
     closest, dist = get_closest_player(players, ball)
@@ -1104,7 +1162,21 @@ def detect_events(
 
                         if _fallback_ok:
                             _joueur_fb = str(current["id"]) if current else None
-                            _confidence_fb = 0.7 if _position_stabilisee else 0.5
+                            # V5.2 (17/09/2026) FIX : la stabilisation de
+                            # position ne booste plus la confiance - preuve
+                            # apportee (par l'utilisateur) que l'immobilite
+                            # du ballon est commune a BEAUCOUP de situations
+                            # (coup franc, corner, 6 metres, coup d'envoi),
+                            # pas specifique a un but. Confirme par le run A
+                            # (faux positif, coup d'envoi) qui montrait AUSSI
+                            # une stabilisation (serie=4), quasi autant que
+                            # le vrai penalty du run C (serie=6). Le signal
+                            # reste log (position_stabilisee, cf. plus haut
+                            # et [STABILISATION_DIFFEREE]) pour investigation
+                            # future, mais ne doit plus influencer la
+                            # confiance tant qu'aucun signal fiable de
+                            # discrimination n'est trouve.
+                            _confidence_fb = 0.5
                             print(f"  ✅ goal CONFIRMÉ (GOALZONE_SPEED_FALLBACK) "
                                   f"à t={current_time:.1f}s — pas de tir lié "
                                   f"(is_shot_candidate a echoue, probable fenetre "
