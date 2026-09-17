@@ -98,14 +98,26 @@ def assign_teams_by_color(frame, tracked, color_detector):
 
     _avant = {id(p): p.get("team") for p in tracked}
 
-    # Supprimer le team déjà assigné pour que color_detector.update()
-    # puisse réassigner avec les centroides calibrés.
-    # Sans ça, les joueurs avec team=0 (défaut) ne sont jamais corrigés.
+    # V5.2 (17/09/2026) FIX CRITIQUE : l'effacement inconditionnel ici
+    # jetait la classification de PlayerReID (confirmee mesuree a 90,9%
+    # de couverture sur un run continu de 20 min) pour la remplacer par
+    # TeamColorDetector (confirme mesure a seulement ~20-23% de
+    # couverture en regime stable, meme apres calibration - exigences
+    # bien plus strictes : 60 frames VALIDES avec >=10 joueurs chacune).
+    # Verifie directement dans TeamColorDetector.update() (Phase 2,
+    # rendering/overlay.py) : il fait deja
+    # "if p.get('team') is not None: continue" - il ne force JAMAIS
+    # l'ecrasement, il ne fait que COMPLETER les equipes manquantes.
+    # Le seul responsable de la perte etait cet effacement explicite -
+    # retire ici. PlayerReID garde la main pour les ~91% de joueurs
+    # qu'il classe deja, TeamColorDetector comble le reste (~9%) via son
+    # propre mecanisme, inchange. Voir
+    # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.11+ pour la
+    # mesure complete ayant motive ce correctif.
     for p in tracked:
         _DIAG_TEAM_FLOW["n_players_total"] += 1
         if p.get("team") is not None:
             _DIAG_TEAM_FLOW["n_players_playerreid_had_team"] += 1
-            p["team"] = None
 
     color_detector.update(frame, tracked)
 
