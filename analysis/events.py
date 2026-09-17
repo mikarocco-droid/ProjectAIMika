@@ -313,6 +313,18 @@ def init_state(learner=None, fps=25):
         # rapide juste avant. Ne remplace PAS is_shot_candidate(), sert
         # de preuve complementaire independante.
         "_recent_ball_speeds":      deque(maxlen=30),
+        # V5.2 (17/09/2026) : buffer de POSITIONS brutes du ballon (x,y),
+        # pour un 4e signal corroborant NON-BLOQUANT (stabilisation de
+        # position = plusieurs lectures quasi identiques consecutives,
+        # cohérent avec un ballon qui s'arrête dans les filets apres un
+        # but). Trouve par comparaison de donnees reelles sur 3 cas
+        # labellises avec certitude (2 faux positifs, 1 vrai penalty) :
+        # les faux positifs (coup d'envoi, passes au milieu) ne montrent
+        # JAMAIS de position repetee identique ; le vrai but, si. MAIS ce
+        # n'est PAS une condition absolue (rebond sur barre qui ressort
+        # aussitot = vrai but sans stabilisation) - sert uniquement a
+        # AUGMENTER la confiance quand present, jamais a bloquer.
+        "_recent_ball_positions":   deque(maxlen=15),
     }
 
 
@@ -668,6 +680,7 @@ def detect_events(
             else:
                 _vitesse_brute_fallback = ball_speed
             state["_recent_ball_speeds"].append({"time": current_time, "speed": _vitesse_brute_fallback})
+            state["_recent_ball_positions"].append({"time": current_time, "x": x, "y": y})
 
             shot_speed_ok = (
                 ball_speed > frame_w * ball_speed_min
@@ -1000,14 +1013,41 @@ def detect_events(
                                         and _trajectoire_compatible
                                         and _pas_evenement_contradictoire)
 
+                        # V5.2 (17/09/2026) : 4e signal, NON-BLOQUANT —
+                        # stabilisation de position (plusieurs lectures
+                        # quasi identiques consecutives), cohérent avec un
+                        # ballon qui s'arrete dans les filets. Trouve par
+                        # comparaison de donnees reelles sur 3 cas
+                        # labellises avec certitude (2 faux positifs -
+                        # coup d'envoi, passes au milieu -, 1 vrai penalty)
+                        # : les faux positifs ne montrent JAMAIS de
+                        # position repetee identique ; le vrai but, si.
+                        # PAS une condition absolue (un tir sur la barre
+                        # qui ressort aussitot est un vrai but sans
+                        # stabilisation) - sert UNIQUEMENT a augmenter la
+                        # confiance quand present, jamais a bloquer le
+                        # fallback si absent.
+                        _positions_recentes = [
+                            p for p in state["_recent_ball_positions"]
+                            if 0 <= current_time - p["time"] <= 1.0
+                        ][-4:]
+                        _position_stabilisee = False
+                        if len(_positions_recentes) >= 3:
+                            _px = [p["x"] for p in _positions_recentes]
+                            _py = [p["y"] for p in _positions_recentes]
+                            _position_stabilisee = (max(_px) - min(_px) <= 5
+                                                     and max(_py) - min(_py) <= 5)
+
                         if _fallback_ok:
                             _joueur_fb = str(current["id"]) if current else None
+                            _confidence_fb = 0.7 if _position_stabilisee else 0.5
                             print(f"  ✅ goal CONFIRMÉ (GOALZONE_SPEED_FALLBACK) "
                                   f"à t={current_time:.1f}s — pas de tir lié "
                                   f"(is_shot_candidate a echoue, probable fenetre "
                                   f"trop courte), mais vitesse recente elevee + "
                                   f"trajectoire compatible + aucun evenement "
-                                  f"contradictoire. joueur={_joueur_fb or 'inconnu'}")
+                                  f"contradictoire. position_stabilisée={_position_stabilisee} "
+                                  f"joueur={_joueur_fb or 'inconnu'}")
                             events.append({
                                 "type":        "goal",
                                 "player":      _joueur_fb,
@@ -1020,7 +1060,8 @@ def detect_events(
                                 "shot_linked": False,
                                 "on_target":   True,
                                 "source":      "goalzone_speed_fallback",
-                                "confidence":  0.5,  # délibérément bas - à valider
+                                "position_stabilisee": _position_stabilisee,
+                                "confidence":  _confidence_fb,  # 0.7 si stabilisée, 0.5 sinon - à valider
                             })
                             state["goal_cd"] = goal_cd_max
                             state["_kickoff_watch_until"]  = current_time + 30.0
@@ -1044,7 +1085,8 @@ def detect_events(
                                   f"(xG=0.000 — pas de tir récent → faux positif, "
                                   f"fallback vitesse={_vitesse_recente_elevee} "
                                   f"trajectoire={_trajectoire_compatible} "
-                                  f"pas_contradictoire={_pas_evenement_contradictoire}) "
+                                  f"pas_contradictoire={_pas_evenement_contradictoire} "
+                                  f"position_stabilisée={_position_stabilisee}) "
                                   f"[{_detail_buffer}]")
                             # V5.2 (14/09/2026) : ouvre la fenêtre de
                             # surveillance pour le signal experimental
