@@ -81,7 +81,16 @@ class BallBuffer:
         # V9.7+ : ignorer les positions hors frame (Kalman/interpolation ratée)
         if frame_w is not None and frame_h is not None:
             if x < 0 or x > frame_w or y < 0 or y > frame_h:
-                print(f"  [BALL FILTERED] ({x:.1f},{y:.1f}) t={t:.1f}s")
+                # V5.2 (17/09/2026) FIX : print non conditionne a DEBUG,
+                # contrairement a tous les autres logs de diagnostic de
+                # ce module - pouvait polluer la sortie en production a
+                # chaque position hors-cadre filtree.
+                try:
+                    from config import DEBUG as _DBG_BUF
+                except ImportError:
+                    _DBG_BUF = False
+                if _DBG_BUF:
+                    print(f"  [BALL FILTERED] ({x:.1f},{y:.1f}) t={t:.1f}s")
                 return
         self._buf.append((float(x), float(y), float(t)))
 
@@ -197,12 +206,11 @@ class SimpleKalman:
             if self.state is not None:
                 self.state    = self.state + self.velocity
                 self.velocity = self.velocity * 0.7
-                # Limiter vélocité max — évite divergence Kalman
-                speed = float(np.hypot(self.velocity[0], self.velocity[1]))
-                if speed > 300:
-                    scale = 300 / speed
-                    self.velocity = self.velocity * scale
                 # Limiter la vélocité max — évite divergence Kalman
+                # V5.2 (17/09/2026) : retire un doublon exact de ce bloc
+                # (copier-coller non nettoye, meme calcul repete deux
+                # fois de suite - sans consequence fonctionnelle puisque
+                # idempotent, mais redondant).
                 speed = float(np.hypot(self.velocity[0], self.velocity[1]))
                 if speed > 300:  # max 300px/frame = très rapide
                     scale = 300 / speed
@@ -341,7 +349,16 @@ class BallTracker:
         self.last_seen     = 0
         self.frame_id      = 0
         self.lost_frames   = 0
-        self.max_lost      = 12   # V9.6 : tolérance élargie pour tirs rapides
+        # V5.2 (17/09/2026) FIX : max_lost, _MAX_FILTERED_STREAK, et les
+        # seuils 30/5000 plus bas dans update() etaient des nombres
+        # d'appels fixes, jamais mis a l'echelle du fps effectif - meme
+        # motif systemique que is_valid_jump() (deja corrige) et les
+        # cooldowns d'events.py (deja corriges). Convertis en proprietes
+        # calculees dynamiquement (voir plus bas), via le meme
+        # _FPS_REFERENCE=25 et fps_scale que is_valid_jump - preserve la
+        # duree reelle INTENDED (calculee a l'ancien fps suppose 25),
+        # peu importe le fps effectif reel configure par l'appelant.
+        self._max_lost_base             = 12   # V9.6 : tolérance élargie pour tirs rapides (à 25fps de référence)
         self.shot_candidate: ShotCandidate | None = None
 
         # V9.6 — mémoire position + vélocité prédictive
@@ -349,13 +366,30 @@ class BallTracker:
         self.last_valid_frame = -1     # frame correspondante
         self.velocity         = (0.0, 0.0)
         self._filtered_streak     = 0
-        self._MAX_FILTERED_STREAK = 25  # vélocité estimée
+        self._MAX_FILTERED_STREAK_base = 25  # vélocité estimée (à 25fps de référence)
         # Sprint 2 — camera_profile pour géométrie adaptative
         self._camera_profile = None
         # SHORT_RANGE_SHOT — flag déclenché quand pic vitesse + disparition immédiate
         self.short_range_shot_pending = False
         self._srs_speed               = 0.0
         self._srs_pos                 = None
+
+    @property
+    def _fps_scale(self):
+        """V5.2 (17/09/2026) : facteur d'échelle temps réel, calculé à
+        chaque accès (pas mis en cache) pour toujours refléter le fps
+        effectif ACTUEL de self.fps, même si celui-ci est modifié après
+        __init__ (cas normal : main.py le fixe après construction, une
+        fois le vrai skip_every connu)."""
+        return self._FPS_REFERENCE / max(1.0, self.fps)
+
+    @property
+    def max_lost(self):
+        return max(1, int(self._max_lost_base * self._fps_scale))
+
+    @property
+    def _MAX_FILTERED_STREAK(self):
+        return max(1, int(self._MAX_FILTERED_STREAK_base * self._fps_scale))
 
     def select_best_ball(self, balls, last_pos):
         if not balls:
@@ -402,15 +436,23 @@ class BallTracker:
         self.frame_id += 1
         t = timestamp if timestamp is not None else self.frame_id / self.fps
 
-        # FIX G — reset periodique toutes les 5000 frames
-        if self.frame_id > 0 and self.frame_id % 5000 == 0:
+        # V5.2 (17/09/2026) FIX : 5000 et 30 (ci-dessous) etaient aussi
+        # des nombres d'appels fixes, non mis a l'echelle - meme motif
+        # que max_lost/_MAX_FILTERED_STREAK ci-dessus. A l'ancien fps
+        # suppose (25), 5000 appels = 200s (3min20s), 30 appels = 1,2s -
+        # duree reelle preservee via fps_scale.
+        _reset_periodique_seuil = max(1, int(5000 * self._fps_scale))
+        _expiration_seuil       = max(1, int(30 * self._fps_scale))
+
+        # FIX G — reset periodique
+        if self.frame_id > 0 and self.frame_id % _reset_periodique_seuil == 0:
             print(f"  [BALL TRACKER] reset periodique frame={self.frame_id}")
             self.ball_buffer.clear(); self.kalman.reset()
             self.last_valid_ball=None; self.last_valid_frame=-1
             self.velocity=(0.0,0.0); self._filtered_streak=0
         # FIX B — expiration last_valid_ball
         if (self.last_valid_ball is not None and self.last_valid_frame>=0
-                and self.frame_id - self.last_valid_frame > 30):
+                and self.frame_id - self.last_valid_frame > _expiration_seuil):
             self.last_valid_ball=None; self.last_valid_frame=-1; self.velocity=(0.0,0.0)
         # FIX C+E — streak reset / Kalman reset
         if self._filtered_streak >= self._MAX_FILTERED_STREAK:
