@@ -304,7 +304,7 @@ def compute_shot_zones(sport, camera_angle, play_zone):
 def calibrate(video_path, sport):
     """
     Point d'entrée principal.
-    Analyse les premières frames et retourne
+    Analyse des frames représentatives du match et retourne
     la configuration calibrée.
 
     Retourne :
@@ -320,12 +320,47 @@ def calibrate(video_path, sport):
     if not cap.isOpened():
         raise ValueError(f"Impossible d'ouvrir : {video_path}")
 
-    # Analyser les 5 premières frames et moyenner
+    # V5.2 (17/09/2026) FIX : échantillonnait auparavant les 10 TOUTES
+    # PREMIÈRES frames de la vidéo (t=0), sans jamais avancer dans le
+    # temps - potentiellement pré-match, terrain vide, échauffement,
+    # écran noir/logo d'intro. Ce shot_zones calibré ici est ensuite
+    # utilisé EN DIRECT pour tout le match (detect_events(), voir
+    # pipeline.py) - contrairement au systeme plus robuste
+    # (vision/camera_profile.py, base sur 50+ positions ballon reelles
+    # accumulees), qui lui n'intervient qu'en post-traitement (BC4,
+    # goal_posthoc), trop tard pour influencer cette calibration
+    # initiale. Ne CONNAIT PAS encore l'heure exacte de KO1 a ce stade
+    # (frames_data pas encore construit) - heuristique : avancer a
+    # t=90s (raisonnablement au-dela d'un intro/echauffement typique,
+    # sans supposer un KO1 precis), et etaler les 10 echantillons sur
+    # une fenetre de 10s plutot que des frames consecutives (~0,33s a
+    # 30fps) - plus robuste a un instant malchanceux isole (ballon hors
+    # cadre, joueurs groupes de façon inhabituelle).
+    fps_natif = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    _t_debut_s = 90.0
+    frame_debut = int(_t_debut_s * fps_natif)
+    frame_fin   = int((_t_debut_s + 10.0) * fps_natif)
+    frame_fin   = min(frame_fin, total_frames - 1)
+
     frames_sample = []
-    for _ in range(10):
-        ret, frame = cap.read()
-        if ret:
-            frames_sample.append(frame)
+    if frame_debut < total_frames:
+        indices = [int(x) for x in
+                   (frame_debut + i * (frame_fin - frame_debut) / 9
+                    for i in range(10))]
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap.read()
+            if ret:
+                frames_sample.append(frame)
+    else:
+        # Vidéo plus courte que 90s (rare, mais possible sur un
+        # extrait court) - repli sur le comportement d'origine.
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        for _ in range(10):
+            ret, frame = cap.read()
+            if ret:
+                frames_sample.append(frame)
 
     cap.release()
 

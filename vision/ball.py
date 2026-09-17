@@ -12,15 +12,27 @@ class BallDetector:
     ce module prend le relais avec une détection par couleur + forme.
     """
 
-    # FIX — limite d'interpolation : au-delà de MAX_LOST frames sans
-    # détection réelle, on retourne None plutôt qu'une position figée.
-    # Ça évite que ball_speed = 0 pendant des minutes entières.
-    MAX_LOST = 8   # ~0.3s à 25fps — assez pour combler un saut de frame
+    # V5.2 (17/09/2026) FIX : MAX_LOST=8 etait un nombre de frames fixe
+    # ("~0.3s a 25fps" suppose), jamais mis a l'echelle du fps effectif
+    # reel (frame_skip reduit le rythme d'appel) - meme motif systemique
+    # deja corrige ailleurs ce soir (ball_tracker.py max_lost,
+    # player_reid.py TTL). Ce detecteur est un fallback tertiaire
+    # (rarement sollicite - utilise seulement si YOLO ET HSV echouent
+    # tous les deux), impact probablement faible, mais corrige par
+    # coherence. self.fps doit etre fixe par l'appelant apres
+    # construction si le fps effectif reel differe de la reference.
+    _MAX_LOST_BASE = 8       # a 25fps de reference : ~0.3s
+    _FPS_REFERENCE = 25.0
 
-    def __init__(self, method="hybrid"):
+    def __init__(self, method="hybrid", fps=25.0):
         self.method     = method
         self.last_known = None
         self.lost_count = 0   # frames consécutives sans détection réelle
+        self.fps        = fps
+
+    @property
+    def MAX_LOST(self):
+        return max(1, round(self._MAX_LOST_BASE * self._FPS_REFERENCE / max(1.0, self.fps)))
 
     # ─────────────────────────────────────────
     # DÉTECTION PAR COULEUR (HSV)
