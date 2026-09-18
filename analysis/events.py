@@ -362,6 +362,61 @@ def init_state(learner=None, fps=25):
 # ─────────────────────────────────────────
 # MAIN DETECTOR
 # ─────────────────────────────────────────
+def _diag_kickoff_score_reel(players, ball, current_time, frame_w, frame_h, fps, state):
+    """
+    V5.2 (18/09/2026) - PROTOTYPE, DIAGNOSTIQUE PUR, aucun effet sur la
+    decision. Suite a l'abandon de GAP_EQUIPES comme signal discriminant
+    (section 3.23 - trop sensible au bruit, base sur seulement 2
+    joueurs "frontiere" extremes, ne detecte meme pas KO1 reel), cette
+    fonction reutilise DIRECTEMENT _score_frame() de
+    analysis/kickoff_detector.py - deja valide empiriquement en
+    production (utilise pour detecter KO1/KO2/Fin1MT/FinMatch sur de
+    nombreux matchs) - plutot que de reinventer une metrique plus
+    simple et probablement tout aussi fragile.
+
+    _score_frame() est un score composite a 7 facteurs : purete de
+    separation gauche/droite calculee sur TOUS les joueurs (pas 2
+    extremes), nombre de joueurs avec equipe assignee, ballon au
+    centre, 1-2 joueurs pres du ballon specifiquement (distingue un
+    tir de coup d'envoi d'un attroupement), peu de joueurs dans le
+    rond central (respecte la regle des 9,15m), etalement horizontal,
+    symetrie globale. Beaucoup plus robuste au bruit de tracking
+    individuel que GAP_EQUIPES.
+
+    Ne s'active que dans la fenetre de surveillance deja existante
+    (state["_kickoff_watch_until"], ouverte par un rejet "pas de tir
+    recent"), meme mecanisme que _diag_kickoff_geometrique (tentative
+    precedente, plus simple, deja jugee insuffisante section 3.13).
+    """
+    try:
+        from config import DEBUG as _DBG_KOSCORE
+    except ImportError:
+        _DBG_KOSCORE = False
+    if not _DBG_KOSCORE:
+        return
+
+    _watch_until = state.get("_kickoff_watch_until", 0) if state else 0
+    if current_time > _watch_until:
+        return
+
+    try:
+        from analysis.kickoff_detector import _score_frame
+    except ImportError:
+        return
+
+    fd = {"players": players, "ball": ball, "frame": int(current_time * fps)}
+    try:
+        score, details, _ = _score_frame(fd, fps, None, True, frame_w, frame_h)
+    except Exception as _e_koscore:
+        print(f"  [KICKOFF_SCORE_REEL] erreur (non bloquante) : {_e_koscore}")
+        return
+
+    _origine = state.get("_kickoff_watch_origin", "?") if state else "?"
+    print(f"  [KICKOFF_SCORE_REEL] t={current_time:.1f}s score={score:.2f}/13.5 "
+          f"(fenêtre ouverte par rejet à t={_origine}s) "
+          f"détails={details}")
+
+
 def _diag_gap_equipes(players, current_time):
     """
     V5.2 (17/09/2026) - PROTOTYPE EXPERIMENTAL, DIAGNOSTIQUE PUR.
@@ -531,6 +586,7 @@ def detect_events(
     # decision existante.
     _diag_kickoff_geometrique(players, frame_w, frame_h, current_time, state)
     _diag_gap_equipes(players, current_time)
+    _diag_kickoff_score_reel(players, ball, current_time, frame_w, frame_h, fps, state)
 
     # ── POSSESSION ───────────────────────
     closest, dist = get_closest_player(players, ball)
