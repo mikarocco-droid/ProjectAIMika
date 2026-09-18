@@ -1276,6 +1276,22 @@ def detect_events(
                                   f"pas_contradictoire={_pas_evenement_contradictoire} "
                                   f"(gk_blocking={gk_blocking_goal} shot_blocked_cd={state.get('_shot_blocked_cd', 0)}) "
                                   f"position_stabilisée={_position_stabilisee}")
+                            # V5.2 (18/09/2026) FIX : oublié ici jusqu'a
+                            # present - ce cas (les 3 conditions sont
+                            # satisfaites mais le fallback est desactive)
+                            # n'ouvrait PAS la fenetre de surveillance
+                            # kickoff, contrairement au cas REJETE (plus
+                            # bas). Consequence concrete constatee : a
+                            # t=382,1s (le vrai penalty), le message est
+                            # "SUPPRIME" (pas "REJETE") puisque les 3
+                            # conditions sont justement satisfaites la -
+                            # _kickoff_watch_until ne s'ouvrait donc
+                            # jamais, et KICKOFF_SCORE_REEL/GAP_EQUIPES
+                            # n'avaient aucune donnee sur C (le cas le
+                            # plus important a tester). Corrige : ouvre
+                            # la fenetre ici aussi.
+                            state["_kickoff_watch_until"]  = current_time + 30.0
+                            state["_kickoff_watch_origin"] = f"{current_time:.1f}"
                         elif _fallback_ok:
                             _joueur_fb = str(current["id"]) if current else None
                             # V5.2 (17/09/2026) FIX : la stabilisation de
