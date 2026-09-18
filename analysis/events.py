@@ -1190,14 +1190,35 @@ def detect_events(
                             # (voir FALLBACK_GOALZONE_SPEED_ACTIF en tete
                             # de fichier - mesure sur un run continu de
                             # 20min montrant un faux "but" toutes les
-                            # ~150s). Log distinct pour continuer a
-                            # observer QUAND/OU ce declenchement aurait eu
-                            # lieu (utile pour investiguer la vraie cause),
-                            # sans creer d'evenement ni poser de cooldown.
+                            # ~150s, masque par le cooldown). Log distinct
+                            # pour continuer a observer QUAND/OU ce
+                            # declenchement aurait eu lieu (utile pour
+                            # investiguer la vraie cause), sans creer
+                            # d'evenement ni poser de cooldown.
+                            # V5.2 (18/09/2026) ENRICHI (demande utilisateur) :
+                            # ajout x/y (position brute et normalisee) et
+                            # vitesse exacte, pour permettre de regrouper les
+                            # declenchements par episode et voir si une zone
+                            # fixe du cadre est en cause (position quasi
+                            # identique a chaque fois), une ligne/bord
+                            # recurrent (position qui bouge mais dans une
+                            # meme zone), ou le signal lui-meme qui est trop
+                            # permissif (positions completement dispersees).
+                            _vitesses_recentes = [
+                                s["speed"] for s in state["_recent_ball_speeds"]
+                                if 0 < current_time - s["time"] <= 3.0
+                            ]
+                            _vitesse_max_recente = max(_vitesses_recentes) if _vitesses_recentes else 0
                             print(f"  ⚠️ FALLBACK SUPPRIMÉ (désactivé) à t={current_time:.1f}s "
-                                  f"— les 3 conditions étaient satisfaites "
-                                  f"(vitesse+trajectoire+pas_contradictoire), "
-                                  f"aurait confirmé un but si actif. "
+                                  f"x={x:.0f} y={y:.0f} "
+                                  f"(x_norm={x/frame_w:.3f} y_norm={y/frame_h:.3f}) "
+                                  f"vitesse_max_3s={_vitesse_max_recente:.0f} "
+                                  f"vitesse_instant={ball_speed:.0f} "
+                                  f"— vitesse_ok={_vitesse_recente_elevee} "
+                                  f"trajectoire_ok={_trajectoire_compatible} "
+                                  f"(ball_is_real={ball_is_real} lost_frames_ok={_lost_frames_ok}) "
+                                  f"pas_contradictoire={_pas_evenement_contradictoire} "
+                                  f"(gk_blocking={gk_blocking_goal} shot_blocked_cd={state.get('_shot_blocked_cd', 0)}) "
                                   f"position_stabilisée={_position_stabilisee}")
                         elif _fallback_ok:
                             _joueur_fb = str(current["id"]) if current else None
