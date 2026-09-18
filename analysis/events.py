@@ -485,6 +485,41 @@ def _diag_kickoff_score_reel(players, ball, current_time, frame_w, frame_h, fps,
           f"détails={details}")
 
 
+def _diag_position_joueurs(players, frame_w, current_time):
+    """
+    V5.2 (18/09/2026) - PROTOTYPE, DIAGNOSTIQUE PUR. Propose suite a la
+    decouverte que le ballon, sur 3 fenetres "neutres" choisies loin de
+    tout evenement connu, montre une mediane x_norm~0,08-0,10 (proche
+    du bord gauche) au lieu de ~0,5 attendu pour du jeu reparti sur
+    tout le terrain. Hypothese a verifier : est-ce un effet de
+    perspective camera (le terrain "reel" ne correspond pas
+    symetriquement au cadre 0-1), auquel cas la position des JOUEURS
+    devrait montrer la MEME mediane decalee - ou un phenomene
+    specifique au ballon (confusion de detection, tir/dega
+    gement recurrent), auquel cas les joueurs resteraient repartis
+    normalement (mediane proche de 0,5).
+
+    Log SANS CONDITION (pas de gate is_shot_z/kickoff_watch), pour
+    avoir une mesure continue et directement comparable a la
+    distribution du ballon deja mesuree sur ces memes fenetres.
+    """
+    try:
+        from config import DEBUG as _DBG_POSJ
+    except ImportError:
+        _DBG_POSJ = False
+    if not _DBG_POSJ or not players:
+        return
+
+    xs_norm = sorted(p["center"][0] / frame_w for p in players if p.get("center"))
+    if not xs_norm:
+        return
+    n = len(xs_norm)
+    mediane = xs_norm[n // 2]
+    print(f"  [POSITION_JOUEURS] t={current_time:.1f}s n={n} "
+          f"x_norm_médiane={mediane:.3f} "
+          f"x_norm_min={xs_norm[0]:.3f} x_norm_max={xs_norm[-1]:.3f}")
+
+
 def _diag_gap_equipes(players, current_time):
     """
     V5.2 (17/09/2026) - PROTOTYPE EXPERIMENTAL, DIAGNOSTIQUE PUR.
@@ -654,6 +689,7 @@ def detect_events(
     # decision existante.
     _diag_kickoff_geometrique(players, frame_w, frame_h, current_time, state)
     _diag_gap_equipes(players, current_time)
+    _diag_position_joueurs(players, frame_w, current_time)
     _diag_kickoff_score_reel(players, ball, current_time, frame_w, frame_h, fps, state)
 
     # ── POSSESSION ───────────────────────
