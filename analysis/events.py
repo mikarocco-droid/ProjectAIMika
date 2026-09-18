@@ -11,6 +11,30 @@ from analysis.intelligence import (
     detect_build_up
 )
 
+# V5.2 (18/09/2026) DESACTIVE : le fallback GOALZONE_SPEED_FALLBACK
+# (3 conditions - vitesse recente elevee, trajectoire compatible,
+# aucun evenement contradictoire) a ete mesure sur un run continu de
+# 20 min (Andrimont) : il confirme un "but" presque exactement toutes
+# les 150s (= exactement la duree du cooldown goal_cd) - un signal
+# PERSISTANT sur ce match satisfait les 3 conditions en continu, se
+# redeclenchant des que le cooldown expire. Aucun des timestamps
+# produits (302, 452, 602, 752, 902, 1052, 1202, 1352s) ne correspond
+# a un vrai but (buts reels connus : 382, 1831, 2554, 2938, 3581,
+# 5046s). Sur un match complet (~90min), ce motif produirait environ
+# 36 faux buts. Cause exacte non identifiee (probablement une zone
+# recurrente pres d'un bord de cadre avec mouvement regulier - remplaçants
+# qui s'echauffent, etc.) - a investiguer avant reactivation eventuelle.
+# Desactive plutot que retouche a l'aveugle, pour eviter de reproduire
+# le risque deja identifie ("usine a heuristiques qui reconnait les
+# arrets de jeu, pas les buts"). Voir
+# ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.11+ pour
+# l'historique complet de cette piste (design, mesures, decouverte).
+# Le diagnostic (position_stabilisee, buffers vitesse/position, detail
+# des 3 conditions dans le message REJETE) reste actif meme desactive,
+# pour continuer a investiguer la vraie cause sans reactiver le risque
+# de faux positifs en production.
+FALLBACK_GOALZONE_SPEED_ACTIF = False
+
 # ─────────────────────────────────────────
 # UTILS
 # ─────────────────────────────────────────
@@ -1160,7 +1184,22 @@ def detect_events(
                             _position_stabilisee = (max(_px) - min(_px) <= 5
                                                      and max(_py) - min(_py) <= 5)
 
-                        if _fallback_ok:
+                        if _fallback_ok and not FALLBACK_GOALZONE_SPEED_ACTIF:
+                            # V5.2 (18/09/2026) : les 3 conditions sont
+                            # satisfaites, mais le fallback est DESACTIVE
+                            # (voir FALLBACK_GOALZONE_SPEED_ACTIF en tete
+                            # de fichier - mesure sur un run continu de
+                            # 20min montrant un faux "but" toutes les
+                            # ~150s). Log distinct pour continuer a
+                            # observer QUAND/OU ce declenchement aurait eu
+                            # lieu (utile pour investiguer la vraie cause),
+                            # sans creer d'evenement ni poser de cooldown.
+                            print(f"  ⚠️ FALLBACK SUPPRIMÉ (désactivé) à t={current_time:.1f}s "
+                                  f"— les 3 conditions étaient satisfaites "
+                                  f"(vitesse+trajectoire+pas_contradictoire), "
+                                  f"aurait confirmé un but si actif. "
+                                  f"position_stabilisée={_position_stabilisee}")
+                        elif _fallback_ok:
                             _joueur_fb = str(current["id"]) if current else None
                             # V5.2 (17/09/2026) FIX : la stabilisation de
                             # position ne booste plus la confiance - preuve
