@@ -362,6 +362,74 @@ def init_state(learner=None, fps=25):
 # ─────────────────────────────────────────
 # MAIN DETECTOR
 # ─────────────────────────────────────────
+def _diag_score_dangerosite(players, x, y, is_goal_zone, is_shot_z, ball_speed,
+                             frame_w, frame_h, current_time):
+    """
+    V5.2 (18/09/2026) - PROTOTYPE, DIAGNOSTIQUE PUR, PREMIERE EBAUCHE
+    NON VALIDEE. Suite a la reconsideration des 3 signaux fermes comme
+    confirmateurs de but (goalzone_speed_fallback section 3.22,
+    GAP_EQUIPES 3.23, KICKOFF_SCORE_REEL 3.24) - proposition de
+    l'utilisateur : ces signaux, insuffisamment specifiques pour
+    confirmer UN BUT precis, pourraient etre pertinents pour detecter
+    une ACTION DANGEREUSE (candidat highlight), une exigence plus
+    faible ("il se passe quelque chose d'interessant ici", pas "un but
+    a ete marque"). Un arret spectaculaire du gardien ou un corner
+    dangereux ne sont pas des faux positifs pour cet usage - ce sont
+    des highlights legitimes.
+
+    Combine 4 signaux deja calcules ce soir en un score composite
+    simple (poids arbitraires, premiere ebauche) :
+      1. Zone dangereuse (is_goal_zone vs is_shot_z, zone offensive large)
+      2. Vitesse du ballon (normalisee, plafonnee)
+      3. Densite de joueurs pres du ballon (dans un rayon ~10% du cadre)
+      4. Compacite d'equipe (meme principe que GAP_EQUIPES - gap petit
+         en valeur absolue = zones resserrees/congestion, potentiellement
+         pertinent ICI precisement parce que la specificite manquante
+         pour confirmer un but n'est pas requise pour la dangerosite)
+
+    NON VALIDE - a mesurer/affiner avec la meme methode rigoureuse que
+    les tentatives precedentes (echantillon cible, comparaison actions
+    dangereuses connues vs jeu normal, decision seulement apres mesure)
+    avant tout usage reel en production.
+    """
+    try:
+        from config import DEBUG as _DBG_DANGER
+    except ImportError:
+        _DBG_DANGER = False
+    if not _DBG_DANGER or not is_shot_z:
+        return
+
+    score_zone = 1.0 if is_goal_zone else 0.5
+
+    score_vitesse = min(1.0, ball_speed / max(1.0, frame_w * 0.05))
+
+    n_pres = sum(
+        1 for p in players
+        if p.get("center") and abs(p["center"][0] - x) < frame_w * 0.10
+        and abs(p["center"][1] - y) < frame_h * 0.10
+    )
+    score_densite = min(1.0, n_pres / 4.0)
+
+    score_compacite = 0.0
+    equipe_0 = [p["center"][0] for p in players if p.get("team") == 0 and p.get("center")]
+    equipe_1 = [p["center"][0] for p in players if p.get("team") == 1 and p.get("center")]
+    if equipe_0 and equipe_1:
+        if sum(equipe_0) / len(equipe_0) <= sum(equipe_1) / len(equipe_1):
+            gauche, droite = equipe_0, equipe_1
+        else:
+            gauche, droite = equipe_1, equipe_0
+        gap = min(droite) - max(gauche)
+        score_compacite = 1.0 if abs(gap) < frame_w * 0.15 else 0.0
+
+    score_total = (2.0 * score_zone + 1.5 * score_vitesse
+                   + 1.5 * score_densite + 1.0 * score_compacite)
+    score_max = 6.0  # 2.0 + 1.5 + 1.5 + 1.0
+
+    print(f"  [SCORE_DANGEROSITE] t={current_time:.1f}s score={score_total:.2f}/{score_max:.1f} "
+          f"(zone={score_zone:.1f} vitesse={score_vitesse:.2f} "
+          f"densité={score_densite:.2f}[n={n_pres}] compacité={score_compacite:.1f})")
+
+
 def _diag_kickoff_score_reel(players, ball, current_time, frame_w, frame_h, fps, state):
     """
     V5.2 (18/09/2026) - PROTOTYPE, DIAGNOSTIQUE PUR, aucun effet sur la
@@ -834,6 +902,8 @@ def detect_events(
                 _vitesse_brute_fallback = ball_speed
             state["_recent_ball_speeds"].append({"time": current_time, "speed": _vitesse_brute_fallback})
             state["_recent_ball_positions"].append({"time": current_time, "x": x, "y": y})
+            _diag_score_dangerosite(players, x, y, is_goal_zone, is_shot_z,
+                                     _vitesse_brute_fallback, frame_w, frame_h, current_time)
 
             # V5.2 (17/09/2026) : résout les vérifications différées de
             # stabilisation dont l'échéance est atteinte - regarde
