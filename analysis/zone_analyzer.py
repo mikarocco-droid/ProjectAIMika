@@ -49,14 +49,33 @@ COOLDOWN       = 20.0
 # ─────────────────────────────────────────────────────────────
 
 def _ball_pos(fd: Dict) -> Optional[tuple]:
-    """Retourne (bx, by) normalisés depuis un frame_data, ou None."""
+    """Retourne (bx, by) normalisés depuis un frame_data, ou None.
+
+    V5.2 (17/09/2026) FIX CRITIQUE : ne reconnaissait que le format
+    x/y/cx/cy (celui produit localement par _read_zone_frames, plus
+    bas dans ce fichier) - mais compute_dynamic_window() recoit aussi
+    les frames_data du PIPELINE PRINCIPAL (passees depuis
+    analyze_dense_zones), qui utilisent le format
+    ball_tuple_to_dict() de main.py : {"bbox":..., "center":[cx,cy],
+    ...} - AUCUNE cle "x"/"y"/"cx"/"cy" separee. Consequence :
+    _ball_pos() retournait TOUJOURS None sur les frames_data
+    principales, faisant croire a compute_dynamic_window() que le
+    ballon etait perpetuellement absent - la fenetre dynamique
+    tombait systematiquement sur l'heuristique de repli ("absent 3+
+    frames"), jamais sur la vraie logique de position du ballon.
+    Corrige en reconnaissant aussi le format "center".
+    """
     ball = fd.get("ball")
     if not ball:
         return None
     fw = fd.get("frame_w") or 1920
     fh = fd.get("frame_h") or 1080
-    x = ball.get("x") or ball.get("cx")
-    y = ball.get("y") or ball.get("cy")
+    center = ball.get("center")
+    if center and len(center) >= 2 and center[0] is not None:
+        x, y = center[0], center[1]
+    else:
+        x = ball.get("x") or ball.get("cx")
+        y = ball.get("y") or ball.get("cy")
     if x is None or y is None:
         return None
     return (float(x) / fw, float(y) / fh)

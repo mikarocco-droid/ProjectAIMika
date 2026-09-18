@@ -24,6 +24,13 @@ def rank_highlights(events):
         e["highlight_score"] = round(score, 2)
         ranked.append(e)
 
-    ranked.sort(key=lambda x: x.get("t", 0))
+    # V5.2 (17/09/2026) FIX : triait sur x.get("t", 0), mais tous les
+    # events du pipeline utilisent la cle "time" (pas "t") - confirme
+    # partout ailleurs ce soir (goal_posthoc.py, post_processing.py,
+    # terminal_events.py, zone_analyzer.py, etc.). Ce tri etait donc un
+    # no-op silencieux : "t" est toujours absent, x.get("t",0) retourne
+    # toujours 0 pour tous les events, l'ordre d'insertion original
+    # etait conserve au lieu d'un vrai tri chronologique.
+    ranked.sort(key=lambda x: x.get("time", 0))
 
     return ranked
