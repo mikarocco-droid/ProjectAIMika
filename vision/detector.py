@@ -310,7 +310,14 @@ class Detector:
         )[0]
 
         players   = []
-        yolo_ball = None
+        # V5.2 (19/09/2026) FIX CRITIQUE : meme motif que dans main.py
+        # (process_batch) - "yolo_ball = {...}" ecrasait silencieusement
+        # a chaque iteration, sans comparer confiance ni position, si
+        # YOLO detectait 2+ objets classes "ballon". Corrige de la meme
+        # facon : collecte tous les candidats, selectionne le plus
+        # confiant (cette methode n'a pas de last_pos a ce stade, geree
+        # separement par _detect_ball() juste apres).
+        _candidats_ball = []
 
         for box in results.boxes:
             cls  = int(box.cls[0])
@@ -330,11 +337,13 @@ class Detector:
                     "conf":   conf
                 })
             elif cls == self.ball_cls:
-                yolo_ball = {
+                _candidats_ball.append({
                     "bbox":   bbox,
                     "center": [center[0], center[1]],
                     "conf":   conf
-                }
+                })
+
+        yolo_ball = max(_candidats_ball, key=lambda b: b["conf"]) if _candidats_ball else None
 
         ball = self._detect_ball(frame, yolo_ball)
         return players, ball
