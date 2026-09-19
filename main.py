@@ -254,7 +254,28 @@ def process_batch(
         analyzed = analyzed_offset + i
 
         players   = []
-        yolo_ball = None
+        # V5.2 (19/09/2026) FIX CRITIQUE : "yolo_ball = {...}" a chaque
+        # iteration ECRASAIT silencieusement le candidat precedent sans
+        # comparer confiance ni position - si YOLO detecte 2+ objets
+        # classes "ballon" dans une meme frame, seul le DERNIER de la
+        # liste (ordre interne YOLO, arbitraire) survivait. Aucune
+        # etape plus loin (_detect_ball(), select_best_ball() dans
+        # ball_tracker.py) ne voit jamais les autres candidats - un
+        # seul, potentiellement faux, survit avant meme d'y arriver.
+        # Decouvert suite a une investigation complete ce soir : sur 3
+        # fenetres de jeu neutre choisies loin de tout evenement connu,
+        # les JOUEURS montraient une position mediane variee et normale
+        # (0.30/0.55/0.70) alors que le "ballon" restait fige pres de
+        # x_norm~0.08-0.10 dans les 3 cas - signature d'une detection
+        # parasite persistante (probablement un objet fixe pres du bord
+        # gauche du cadre) plutot qu'un vrai ballon en mouvement. Voir
+        # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md pour l'investigation
+        # complete ayant mene a ce correctif.
+        # Corrige : collecte TOUS les candidats ballon de la frame,
+        # selectionne le plus proche de la derniere position connue
+        # (meme principe que select_best_ball() dans ball_tracker.py),
+        # ou le plus confiant si aucune position precedente.
+        _candidats_ball = []
 
         for box in result.boxes:
             cls  = int(box.cls[0])
@@ -274,16 +295,50 @@ def process_batch(
                     "conf":   conf
                 })
             elif cls == detector.ball_cls:
-                yolo_ball = {
+                _candidats_ball.append({
                     "bbox":   bbox,
                     "center": [center[0], center[1]],
                     "conf":   conf
-                }
+                })
 
         last_pos_small = None
         if detector._last_ball_pos is not None:
             lx, ly = detector._last_ball_pos
             last_pos_small = (lx / scale_x, ly / scale_y)
+
+        if not _candidats_ball:
+            yolo_ball = None
+        elif len(_candidats_ball) == 1:
+            yolo_ball = _candidats_ball[0]
+        elif last_pos_small is not None:
+            # Plusieurs candidats + position precedente connue : le plus proche
+            yolo_ball = min(
+                _candidats_ball,
+                key=lambda b: (b["center"][0]-last_pos_small[0])**2
+                            + (b["center"][1]-last_pos_small[1])**2
+            )
+        else:
+            # Plusieurs candidats, pas de position precedente : le plus confiant
+            yolo_ball = max(_candidats_ball, key=lambda b: b["conf"])
+
+        # V5.2 (19/09/2026) : diagnostic - confirme empiriquement si ce
+        # scenario (2+ candidats "ballon" dans une meme frame) se
+        # produit vraiment, et a quelle frequence, pour valider cette
+        # decouverte comme cause racine avant de la considerer close.
+        if len(_candidats_ball) >= 2:
+            try:
+                from config import DEBUG as _DBG_MULTIBALL
+            except ImportError:
+                _DBG_MULTIBALL = False
+            if _DBG_MULTIBALL:
+                _t_diag = analyzed / fps if fps else 0
+                _cands_str = ", ".join(
+                    f"(x={b['center'][0]:.0f},y={b['center'][1]:.0f},conf={b['conf']:.2f})"
+                    for b in _candidats_ball
+                )
+                print(f"  [MULTI_BALL] frame~t={_t_diag:.1f}s {len(_candidats_ball)} "
+                      f"candidats ballon détectés : {_cands_str} — "
+                      f"sélectionné : (x={yolo_ball['center'][0]:.0f},y={yolo_ball['center'][1]:.0f})")
 
         _t0 = _profile_start()
         yolo_ball = detector._detect_ball(
