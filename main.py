@@ -342,7 +342,15 @@ def process_batch(
         except ImportError:
             _DBG_PERCEPTION = False
         if _DBG_PERCEPTION:
-            _t_diag = analyzed / fps if fps else 0
+            # V5.2 (19/09/2026) FIX : utilisait "analyzed" (compteur de
+            # frames ANALYSEES, post frame_skip) au lieu de "frame_id"
+            # (numero de frame ABSOLU natif) - donnait un timestamp
+            # totalement different de celui utilise par ball_tracker.py
+            # pour le log [BALL] (frame_id/fps, cf. timestamp=frame_id/fps
+            # transmis a ball_tracker.update() plus bas). Consequence :
+            # aucun timestamp en commun entre [PERCEPTION_BALL] et [BALL],
+            # rendant le croisement des deux logs impossible. Corrige.
+            _t_diag = frame_id / fps if fps else 0
             if not _candidats_ball:
                 print(f"  [PERCEPTION_BALL] t={_t_diag:.1f}s n_candidats=0 (aucune détection)")
             else:
@@ -367,7 +375,8 @@ def process_batch(
         _t0 = _profile_start()
         yolo_ball = detector._detect_ball(
             frame_small, yolo_ball,
-            last_pos_override=last_pos_small
+            last_pos_override=last_pos_small,
+            debug_t=frame_id / fps if fps else None
         )
         _profile_end(_t0, "ball_detect")
 
