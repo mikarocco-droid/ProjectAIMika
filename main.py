@@ -321,24 +321,48 @@ def process_batch(
             # Plusieurs candidats, pas de position precedente : le plus confiant
             yolo_ball = max(_candidats_ball, key=lambda b: b["conf"])
 
-        # V5.2 (19/09/2026) : diagnostic - confirme empiriquement si ce
-        # scenario (2+ candidats "ballon" dans une meme frame) se
-        # produit vraiment, et a quelle frequence, pour valider cette
-        # decouverte comme cause racine avant de la considerer close.
-        if len(_candidats_ball) >= 2:
-            try:
-                from config import DEBUG as _DBG_MULTIBALL
-            except ImportError:
-                _DBG_MULTIBALL = False
-            if _DBG_MULTIBALL:
-                _t_diag = analyzed / fps if fps else 0
-                _cands_str = ", ".join(
-                    f"(x={b['center'][0]:.0f},y={b['center'][1]:.0f},conf={b['conf']:.2f})"
-                    for b in _candidats_ball
-                )
-                print(f"  [MULTI_BALL] frame~t={_t_diag:.1f}s {len(_candidats_ball)} "
-                      f"candidats ballon détectés : {_cands_str} — "
-                      f"sélectionné : (x={yolo_ball['center'][0]:.0f},y={yolo_ball['center'][1]:.0f})")
+        # V5.2 (19/09/2026) — AUDIT PERCEPTION BALLON (proposé par
+        # l'utilisateur, suite à la découverte visuelle sur 9 frames
+        # que ball_pos peut être faux - confusion avec des fragments de
+        # joueurs hors-cadre ou la structure du but gauche). Objectif :
+        # distinguer 3 causes possibles avant toute correction :
+        #   A - YOLO faux : un seul candidat, deja errone a la source
+        #   B - mauvaise selection : plusieurs candidats, le bon existait
+        #       mais n'a pas ete choisi
+        #   C - derapage du tracker : la selection est correcte ici,
+        #       mais la position finale de BallTracker (loggee separement
+        #       dans ball_tracker.py/[BALL]) diverge malgre tout
+        # Log INCONDITIONNEL (pas seulement si 2+ candidats) pour avoir
+        # une couverture complete sur l'echantillon controle, avec TOUTES
+        # les metriques demandees : confiance, x, y, largeur/hauteur bbox,
+        # surface, ratio w/h, distance au bord gauche, nombre de
+        # candidats, candidat retenu.
+        try:
+            from config import DEBUG as _DBG_PERCEPTION
+        except ImportError:
+            _DBG_PERCEPTION = False
+        if _DBG_PERCEPTION:
+            _t_diag = analyzed / fps if fps else 0
+            if not _candidats_ball:
+                print(f"  [PERCEPTION_BALL] t={_t_diag:.1f}s n_candidats=0 (aucune détection)")
+            else:
+                _details = []
+                for b in _candidats_ball:
+                    _bw = b["bbox"][2] - b["bbox"][0]
+                    _bh = b["bbox"][3] - b["bbox"][1]
+                    _surface = _bw * _bh
+                    _ratio = _bw / max(_bh, 0.001)
+                    _dist_bord_gauche = b["center"][0]  # en pixels, échelle PROCESS_W
+                    _x_norm = b["center"][0] / PROCESS_W
+                    _est_choisi = (b is yolo_ball)
+                    _details.append(
+                        f"[conf={b['conf']:.2f} x={b['center'][0]:.0f} y={b['center'][1]:.0f} "
+                        f"x_norm={_x_norm:.3f} w={_bw:.0f} h={_bh:.0f} surface={_surface:.0f} "
+                        f"ratio_wh={_ratio:.2f} dist_bord_gauche={_dist_bord_gauche:.0f} "
+                        f"{'←RETENU' if _est_choisi else ''}]"
+                    )
+                print(f"  [PERCEPTION_BALL] t={_t_diag:.1f}s n_candidats={len(_candidats_ball)} "
+                      f"{' '.join(_details)}")
 
         _t0 = _profile_start()
         yolo_ball = detector._detect_ball(
