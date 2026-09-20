@@ -521,6 +521,21 @@ def process_video(
                                 # (§12.15). Verifie une fois par iteration,
                                 # cout negligeable (une comparaison, pas un
                                 # appel supplementaire).
+    camera_type       = "low_side",  # V5.2 (20/09/2026) : parametre
+                                # NORMAL, propage a Detector -> BallHSVDetector.
+                                # Memes valeurs que camera_type existant
+                                # ailleurs (pipeline.py, build_camera_profile()) :
+                                # "low_side" (defaut, comportement inchange),
+                                # "low_side_zoom" (idem low_side pour l'instant),
+                                # "high_side" (nouvelles bornes HSV, plan large
+                                # type VEO). PAS encore alimente automatiquement
+                                # par build_camera_profile() ici - dependance
+                                # circulaire non resolue ce soir (camera_type
+                                # calcule APRES un passage complet sur
+                                # frames_data, qui depend lui-meme de ce
+                                # Detector). Utile pour l'instant comme
+                                # parametre explicite de test/production
+                                # quand la valeur est deja connue par ailleurs.
 ):
     if progress_callback is None:
         progress_callback = default_progress
@@ -530,7 +545,7 @@ def process_video(
 
 
 
-    detector       = Detector(sport=sport)
+    detector       = Detector(sport=sport, camera_type=camera_type)
     tracker        = Tracker()
     # V5.2 (17/09/2026) : ocr_every_n_frames corrige plus bas dans cette
     # fonction, une fois le VRAI fps natif de la video connu (pas encore
