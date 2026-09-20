@@ -121,13 +121,27 @@ class BallHSVDetector:
         "high_side":     (15, 200),
     }
 
-    def __init__(self, sport="football", camera_type="low_side"):
+    def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5):
+        """
+        proximite_poids : V5.2 (20/09/2026) - poids du bonus de
+        proximite a last_pos dans le score final. Defaut 0.5 = valeur
+        D'ORIGINE, INCHANGEE. Ajoute pour un test cible (voir
+        ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.29) suite
+        a la decouverte que ce bonus change le gagnant dans 46,6% des
+        frames a candidats multiples (L/M/N, camera high_side) - les
+        candidats HSV intrinseques etant presque toujours proches/a
+        egalite, ce bonus devient le vrai arbitre. AUCUN changement de
+        la logique elle-meme, uniquement ce poids rendu configurable
+        pour mesurer son effet reel avant de decider s'il faut le
+        modifier en profondeur.
+        """
         self.sport       = sport
         self.camera_type = camera_type
         self.ranges      = self.HSV_RANGES.get(sport, self.HSV_RANGES["default"])
         self.aire_min, self.aire_max = self.AIRE_BORNES.get(
             camera_type, self.AIRE_BORNES["low_side"]
         )
+        self.proximite_poids = proximite_poids
 
     def detect(self, frame, last_pos=None, search_radius=200, debug_t=None):
         """
@@ -229,7 +243,7 @@ class BallHSVDetector:
                 cx_b = x + bw // 2 + offset[0]
                 cy_b = y + bh // 2 + offset[1]
                 dist = np.hypot(cx_b - last_pos[0], cy_b - last_pos[1])
-                score_proximite = max(0, 1.0 - dist / search_radius) * 0.5
+                score_proximite = max(0, 1.0 - dist / search_radius) * self.proximite_poids
                 score += score_proximite
 
             if _diag_actif:
@@ -281,7 +295,7 @@ class BallHSVDetector:
 # ─────────────────────────────────────────
 class Detector:
 
-    def __init__(self, sport="football", camera_type="low_side"):
+    def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5):
         self.sport        = sport
         # V5.2 (20/09/2026) : camera_type - PARAMETRE NORMAL, pas de
         # flag config.py separe (retire suite a une remarque justifiee
@@ -297,26 +311,29 @@ class Detector:
         # positions ballon, qui dependent de ce meme detecteur). Non
         # resolu ce soir - voir
         # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md.
-        self.camera_type  = camera_type
+        self.camera_type      = camera_type
+        self.proximite_poids  = proximite_poids  # V5.2 (20/09/2026) : defaut 0.5 = inchange
         self.zone         = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
         self.model, self.model_name = load_player_model(sport)
 
         # Détecteur ballon — HSV en priorité + BallDetector en fallback
-        self.hsv_ball    = BallHSVDetector(sport=sport, camera_type=self.camera_type)
+        self.hsv_ball    = BallHSVDetector(sport=sport, camera_type=self.camera_type,
+                                            proximite_poids=self.proximite_poids)
         self.ball_backup = BallDetector(method=config.BALL_METHOD)
         self._last_ball_pos = None   # mémorise dernière position ballon
 
         self.player_cls = 0    # COCO : person
         self.ball_cls   = 32   # COCO : sports ball
 
-        print(f"  Detector pret : {self.model_name} | sport={sport} | camera_type={self.camera_type}")
+        print(f"  Detector pret : {self.model_name} | sport={sport} | camera_type={self.camera_type} | proximite_poids={self.proximite_poids}")
 
     def set_sport(self, sport):
         if sport == self.sport:
             return
         self.sport    = sport
         self.zone     = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
-        self.hsv_ball = BallHSVDetector(sport=sport, camera_type=self.camera_type)
+        self.hsv_ball = BallHSVDetector(sport=sport, camera_type=self.camera_type,
+                                         proximite_poids=self.proximite_poids)
         new_model, new_name = load_player_model(sport)
         if new_name != self.model_name:
             self.model      = new_model
