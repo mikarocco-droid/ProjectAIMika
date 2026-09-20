@@ -536,6 +536,18 @@ def process_video(
                                 # Detector). Utile pour l'instant comme
                                 # parametre explicite de test/production
                                 # quand la valeur est deja connue par ailleurs.
+    proximite_poids   = 0.5,   # V5.2 (20/09/2026) : poids du bonus de
+                                # proximite a last_pos dans BallHSVDetector.
+                                # Defaut 0.5 = valeur D'ORIGINE, INCHANGEE.
+                                # Ajoute pour un test cible (section 3.29 de
+                                # l'analyse) suite a la decouverte que ce
+                                # bonus decide du gagnant dans 46,6% des
+                                # frames a candidats multiples sur L/M/N
+                                # (camera_type=high_side) - candidats
+                                # intrinseques presque toujours proches/a
+                                # egalite. AUCUN changement de la logique de
+                                # score elle-meme, uniquement ce poids rendu
+                                # configurable pour mesurer son effet reel.
 ):
     if progress_callback is None:
         progress_callback = default_progress
@@ -545,7 +557,7 @@ def process_video(
 
 
 
-    detector       = Detector(sport=sport, camera_type=camera_type)
+    detector       = Detector(sport=sport, camera_type=camera_type, proximite_poids=proximite_poids)
     tracker        = Tracker()
     # V5.2 (17/09/2026) : ocr_every_n_frames corrige plus bas dans cette
     # fonction, une fois le VRAI fps natif de la video connu (pas encore
