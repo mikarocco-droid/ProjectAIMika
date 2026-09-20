@@ -107,11 +107,18 @@ class BallHSVDetector:
         self.sport  = sport
         self.ranges = self.HSV_RANGES.get(sport, self.HSV_RANGES["default"])
 
-    def detect(self, frame, last_pos=None, search_radius=200):
+    def detect(self, frame, last_pos=None, search_radius=200, debug_t=None):
         """
         Cherche le ballon dans la frame.
         Si last_pos connu, cherche dans un rayon réduit (plus rapide).
         Retourne dict {bbox, center, conf} ou None.
+
+        V5.2 (20/09/2026) : ajout de debug_t (optionnel, timestamp pour
+        le log de diagnostic) - AUCUNE modification de la logique de
+        detection/scoring elle-meme, uniquement instrumentation pour
+        l'audit de la couche perception (voir
+        ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md, decouverte du
+        mecanisme de derive HSV pres du but gauche).
         """
         h, w = frame.shape[:2]
 
@@ -150,6 +157,18 @@ class BallHSVDetector:
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
 
+        # V5.2 (20/09/2026) : diagnostic - active seulement si debug_t
+        # fourni ET DEBUG=true, pour ne jamais impacter les appels
+        # normaux (aucun cout de calcul supplementaire hors diagnostic).
+        _diag_actif = False
+        if debug_t is not None:
+            try:
+                from config import DEBUG as _DBG_HSV
+                _diag_actif = _DBG_HSV
+            except ImportError:
+                _diag_actif = False
+        _diag_candidats = []
+
         best      = None
         best_score = -1
 
@@ -177,18 +196,45 @@ class BallHSVDetector:
                 continue
 
             # Score = circularité × taille normalisée
-            score = circularity * min(area / 200, 1.0)
+            score_forme = circularity * min(area / 200, 1.0)
+            score = score_forme
 
             # Bonus si proche de la dernière position
+            score_proximite = 0.0
+            dist = None
             if last_pos is not None:
                 cx_b = x + bw // 2 + offset[0]
                 cy_b = y + bh // 2 + offset[1]
                 dist = np.hypot(cx_b - last_pos[0], cy_b - last_pos[1])
-                score += max(0, 1.0 - dist / search_radius) * 0.5
+                score_proximite = max(0, 1.0 - dist / search_radius) * 0.5
+                score += score_proximite
+
+            if _diag_actif:
+                _diag_candidats.append({
+                    "cx": x + bw // 2 + offset[0], "cy": y + bh // 2 + offset[1],
+                    "w": bw, "h": bh, "area": area, "circularity": circularity,
+                    "ratio": ratio, "dist": dist,
+                    "score_forme": score_forme, "score_proximite": score_proximite,
+                    "score_final": score,
+                })
 
             if score > best_score:
                 best_score = score
                 best       = (x, y, bw, bh, offset)
+
+        if _diag_actif:
+            _cands_str = " ".join(
+                f"[cx={c['cx']},cy={c['cy']},w={c['w']},h={c['h']},area={c['area']:.0f},"
+                f"circ={c['circularity']:.2f},ratio={c['ratio']:.2f},"
+                f"dist={'%.0f' % c['dist'] if c['dist'] is not None else -1},"
+                f"score_forme={c['score_forme']:.2f},score_prox={c['score_proximite']:.2f},"
+                f"score={c['score_final']:.2f}]"
+                for c in _diag_candidats
+            )
+            _lp_str = f"({last_pos[0]:.0f},{last_pos[1]:.0f})" if last_pos is not None else "None"
+            print(f"  [HSV_DIAG] t={debug_t:.2f}s last_pos={_lp_str} search_radius={search_radius} "
+                  f"n_contours_bruts={len(contours)} n_candidats_valides={len(_diag_candidats)} "
+                  f"{_cands_str}")
 
         if best is None:
             return None
@@ -257,7 +303,7 @@ class Detector:
         ratio = h / w
         return MIN_RATIO <= ratio <= MAX_RATIO
 
-    def _detect_ball(self, frame, yolo_ball, last_pos_override=None):
+    def _detect_ball(self, frame, yolo_ball, last_pos_override=None, debug_t=None):
         """
         Stratégie ballon à 3 niveaux :
         1. YOLO a trouvé le ballon → on l'utilise + on met à jour last_pos
@@ -266,6 +312,9 @@ class Detector:
 
         last_pos_override : position en coordonnées de `frame` (pas originales)
                             Utilisé quand frame est une version réduite.
+        debug_t : V5.2 (20/09/2026) - timestamp optionnel, propage a
+                  hsv_ball.detect() pour l'audit [HSV_DIAG]. N'affecte
+                  aucune logique.
         """
         # 1. YOLO
         if yolo_ball is not None:
@@ -280,7 +329,8 @@ class Detector:
         hsv_result = self.hsv_ball.detect(
             frame,
             last_pos      = search_pos,
-            search_radius = 250
+            search_radius = 250,
+            debug_t       = debug_t
         )
         if hsv_result is not None:
             self._last_ball_pos = hsv_result["center"]
