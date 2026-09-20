@@ -103,9 +103,31 @@ class BallHSVDetector:
         ],
     }
 
-    def __init__(self, sport="football"):
-        self.sport  = sport
-        self.ranges = self.HSV_RANGES.get(sport, self.HSV_RANGES["default"])
+    # V5.2 (20/09/2026) : bornes de surface (aire bbox, px²) par
+    # camera_type - MEMES VALEURS que le systeme camera_type existant
+    # (build_camera_profile(), vision/camera_profile.py). "low_side"/
+    # "low_side_zoom" = valeurs D'ORIGINE, INCHANGEES (30-3000) - deja
+    # validees sur des matchs reels filmes a la barriere, ballon
+    # proche/gros a l'ecran. "high_side" = PREMIERE ESTIMATION,
+    # PROVISOIRE, basee sur une seule mesure ce soir (match Andrimont,
+    # ~5490 candidats HSV analyses : aire mediane 54px2, p25=40,
+    # p75=76) - resserree pour exclure les gros faux positifs
+    # (structure de but, vetement clair) tout en gardant une marge
+    # autour du ballon reel mesure. A RAFFINER avec plus de
+    # donnees/matchs avant de considerer ces valeurs comme definitives.
+    AIRE_BORNES = {
+        "low_side":      (30, 3000),
+        "low_side_zoom": (30, 3000),
+        "high_side":     (15, 200),
+    }
+
+    def __init__(self, sport="football", camera_type="low_side"):
+        self.sport       = sport
+        self.camera_type = camera_type
+        self.ranges      = self.HSV_RANGES.get(sport, self.HSV_RANGES["default"])
+        self.aire_min, self.aire_max = self.AIRE_BORNES.get(
+            camera_type, self.AIRE_BORNES["low_side"]
+        )
 
     def detect(self, frame, last_pos=None, search_radius=200, debug_t=None):
         """
@@ -174,8 +196,9 @@ class BallHSVDetector:
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            # Taille min/max ballon en pixels (adapté résolution 1080p)
-            if area < 30 or area > 3000:
+            # Taille min/max ballon en pixels - depend de self.camera_type
+            # (voir AIRE_BORNES en tete de classe)
+            if area < self.aire_min or area > self.aire_max:
                 continue
 
             perim = cv2.arcLength(cnt, True)
@@ -258,27 +281,42 @@ class BallHSVDetector:
 # ─────────────────────────────────────────
 class Detector:
 
-    def __init__(self, sport="football"):
+    def __init__(self, sport="football", camera_type="low_side"):
         self.sport        = sport
+        # V5.2 (20/09/2026) : camera_type - PARAMETRE NORMAL, pas de
+        # flag config.py separe (retire suite a une remarque justifiee
+        # de l'utilisateur : on veut UN SEUL systeme de classification
+        # camera, pas deux qui pourraient diverger). Defaut "low_side"
+        # preserve le comportement existant. En production, ce
+        # parametre devra etre alimente par la meme source que
+        # camera_type ailleurs dans pipeline.py
+        # (_camera_profile.get("camera_type")) - actuellement calcule
+        # APRES un passage complet sur frames_data (build_camera_profile()),
+        # donc pas encore disponible a la creation de ce Detector pour
+        # un run normal (dependance circulaire : camera_type depend des
+        # positions ballon, qui dependent de ce meme detecteur). Non
+        # resolu ce soir - voir
+        # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md.
+        self.camera_type  = camera_type
         self.zone         = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
         self.model, self.model_name = load_player_model(sport)
 
         # Détecteur ballon — HSV en priorité + BallDetector en fallback
-        self.hsv_ball    = BallHSVDetector(sport=sport)
+        self.hsv_ball    = BallHSVDetector(sport=sport, camera_type=self.camera_type)
         self.ball_backup = BallDetector(method=config.BALL_METHOD)
         self._last_ball_pos = None   # mémorise dernière position ballon
 
         self.player_cls = 0    # COCO : person
         self.ball_cls   = 32   # COCO : sports ball
 
-        print(f"  Detector pret : {self.model_name} | sport={sport}")
+        print(f"  Detector pret : {self.model_name} | sport={sport} | camera_type={self.camera_type}")
 
     def set_sport(self, sport):
         if sport == self.sport:
             return
         self.sport    = sport
         self.zone     = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
-        self.hsv_ball = BallHSVDetector(sport=sport)
+        self.hsv_ball = BallHSVDetector(sport=sport, camera_type=self.camera_type)
         new_model, new_name = load_player_model(sport)
         if new_name != self.model_name:
             self.model      = new_model
