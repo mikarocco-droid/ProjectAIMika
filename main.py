@@ -1,0 +1,981 @@
+import os
+# main.py
+# -*- coding: utf-8 -*-
+
+import cv2
+import numpy as np
+from vision.detector import Detector
+from vision.tracker import Tracker
+from vision.ocr import OCRReader
+from analysis.events import process_match, detect_events
+from rendering.overlay import Overlay, TeamColorDetector
+import config
+
+from config import FRAME_SKIP_EVERY, YOLO_BATCH_SIZE
+
+PROCESS_W = 960
+PROCESS_H = 540
+
+# V5.2 (13/09/2026) : profilage par etape, pour identifier precisement
+# ou passe le temps de traitement (2 bugs deja trouves et corriges ce
+# soir - frame_skip qui gardait 4x trop de frames, OSNet sur CPU au
+# lieu de GPU - mais le temps mesure reste ~6.5h extrapole pour un
+# match complet, encore loin des ~4h visees ; mesure plutot que deviner
+# un 3e bug). Accumule le temps total (secondes) et le nombre d'appels
+# par etape, a travers TOUS les appels a process_batch() d'un meme run.
+import time as _time_profiling
+from collections import defaultdict as _defaultdict_profiling
+_PROFILING = _defaultdict_profiling(float)
+_PROFILING_COUNTS = _defaultdict_profiling(int)
+
+
+def _profile_start():
+    return _time_profiling.perf_counter()
+
+
+def _profile_end(t0, key):
+    _PROFILING[key] += _time_profiling.perf_counter() - t0
+    _PROFILING_COUNTS[key] += 1
+
+
+def print_profiling_summary():
+    print()
+    print("=" * 80)
+    print("PROFILAGE PAR ÉTAPE (temps cumulé sur tout le run)")
+    print("=" * 80)
+    _total = sum(_PROFILING.values())
+    for cle, secondes in sorted(_PROFILING.items(), key=lambda x: -x[1]):
+        _n = _PROFILING_COUNTS[cle]
+        _pct = 100 * secondes / _total if _total > 0 else 0
+        print(f"  {cle:20s} : {secondes:8.1f}s ({_pct:5.1f}%) — "
+              f"{_n} appel(s), {secondes/_n*1000:.1f}ms/appel en moyenne" if _n else "")
+    print(f"  {'TOTAL PROFILÉ':20s} : {_total:8.1f}s")
+    print("=" * 80)
+
+    # V5.2 (13/09/2026) : décomposition fine de tracker_update
+    # (DeepSort vs PlayerReID/OSNet) - voir vision/tracker.py
+    try:
+        from vision.tracker import print_profiling_tracker_summary
+        print_profiling_tracker_summary()
+    except Exception as _e_profil_tracker:
+        print(f"  ⚠️ Profilage fin du tracker indisponible : {_e_profil_tracker}")
+
+    try:
+        from vision.ball_tracker import print_diag_shot_candidate_summary
+        print_diag_shot_candidate_summary()
+    except Exception as _e_diag_shots:
+        print(f"  ⚠️ Diagnostic is_shot_candidate indisponible : {_e_diag_shots}")
+
+
+def default_progress(pct):
+    print(f"  {pct}%", end="\r")
+
+
+# V5.2 (17/09/2026) : DIAGNOSTIC PUR, aucune decision affectee - mesure
+# le flux team PlayerReID -> TeamColorDetector -> detect_events(), suite
+# a la decouverte que assign_teams_by_color() efface explicitement le
+# "team" deja calcule par PlayerReID (confirme calibre, teams_calibrated=
+# True) pour le remplacer par TeamColorDetector (exigences bien plus
+# strictes : 60 frames VALIDES, chacune avec >=10 joueurs). Objectif :
+# mesurer si ce remplacement degrade reellement la couverture team recue
+# par detect_events() sur un vrai match, ou si c'est une limitation
+# specifique aux fenetres de test courtes/isolees utilisees ce soir.
+# Voir ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.11+.
+_DIAG_TEAM_FLOW = {
+    "n_frames_total":                       0,
+    "n_players_total":                      0,
+    "n_players_playerreid_had_team":        0,  # avant effacement
+    "n_players_teamcolordetector_has_team": 0,  # apres color_detector.update()
+    "n_players_both":                       0,  # les 2 disponibles (avant ET apres)
+    "n_players_wiped":                      0,  # PlayerReID avait une equipe, finit a None
+    "first_frame_tcd_calibrated":           None,
+}
+
+
+def assign_teams_by_color(frame, tracked, color_detector):
+    global _DIAG_TEAM_FLOW
+    _DIAG_TEAM_FLOW["n_frames_total"] += 1
+
+    _avant = {id(p): p.get("team") for p in tracked}
+
+    # V5.2 (17/09/2026) FIX CRITIQUE : l'effacement inconditionnel ici
+    # jetait la classification de PlayerReID (confirmee mesuree a 90,9%
+    # de couverture sur un run continu de 20 min) pour la remplacer par
+    # TeamColorDetector (confirme mesure a seulement ~20-23% de
+    # couverture en regime stable, meme apres calibration - exigences
+    # bien plus strictes : 60 frames VALIDES avec >=10 joueurs chacune).
+    # Verifie directement dans TeamColorDetector.update() (Phase 2,
+    # rendering/overlay.py) : il fait deja
+    # "if p.get('team') is not None: continue" - il ne force JAMAIS
+    # l'ecrasement, il ne fait que COMPLETER les equipes manquantes.
+    # Le seul responsable de la perte etait cet effacement explicite -
+    # retire ici. PlayerReID garde la main pour les ~91% de joueurs
+    # qu'il classe deja, TeamColorDetector comble le reste (~9%) via son
+    # propre mecanisme, inchange. Voir
+    # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.11+ pour la
+    # mesure complete ayant motive ce correctif.
+    for p in tracked:
+        _DIAG_TEAM_FLOW["n_players_total"] += 1
+        if p.get("team") is not None:
+            _DIAG_TEAM_FLOW["n_players_playerreid_had_team"] += 1
+        # V5.2 (17/09/2026) FIX ADDITIONNEL : "gk" est un marqueur special
+        # de PlayerReID._infer_team() (couleur trop eloignee des 2 equipes -
+        # probable gardien), PAS une vraie equipe 0/1. Or TeamColorDetector
+        # (juste en dessous) fait "if p.get('team') is not None: continue" -
+        # sans ce correctif, un joueur marque "gk" ne recevrait JAMAIS de
+        # vraie equipe 0/1 de TeamColorDetector (bloque a tort par notre
+        # fix precedent qui, a raison, ne veut plus effacer les VRAIES
+        # classifications 0/1). Efface uniquement ce marqueur special,
+        # laisse TeamColorDetector tenter une vraie classification.
+        elif p.get("team") == "gk":
+            p["team"] = None
+
+    color_detector.update(frame, tracked)
+
+    if (_DIAG_TEAM_FLOW["first_frame_tcd_calibrated"] is None
+            and getattr(color_detector, "_calibrated", False)):
+        _DIAG_TEAM_FLOW["first_frame_tcd_calibrated"] = _DIAG_TEAM_FLOW["n_frames_total"]
+
+    for p in tracked:
+        _avait = _avant.get(id(p)) is not None
+        _a_maintenant = p.get("team") is not None
+        if _a_maintenant:
+            _DIAG_TEAM_FLOW["n_players_teamcolordetector_has_team"] += 1
+        if _avait and _a_maintenant:
+            _DIAG_TEAM_FLOW["n_players_both"] += 1
+        if _avait and not _a_maintenant:
+            _DIAG_TEAM_FLOW["n_players_wiped"] += 1
+
+    return tracked
+
+
+def print_diag_team_flow():
+    d = _DIAG_TEAM_FLOW
+    print("=" * 80)
+    print("[DIAG TEAM FLOW] PlayerReID → TeamColorDetector → detect_events()")
+    print("=" * 80)
+    print(f"  Frames traitées : {d['n_frames_total']}")
+    print(f"  Joueurs traités (cumulé sur toutes les frames) : {d['n_players_total']}")
+    if d["n_players_total"] > 0:
+        _t = d["n_players_total"]
+        print(f"  1. PlayerReID avait une équipe (avant effacement) : "
+              f"{d['n_players_playerreid_had_team']} ({100*d['n_players_playerreid_had_team']/_t:.1f}%)")
+        print(f"  2. TeamColorDetector fournit une équipe (final) : "
+              f"{d['n_players_teamcolordetector_has_team']} ({100*d['n_players_teamcolordetector_has_team']/_t:.1f}%)")
+        print(f"  3. Les deux disponibles : "
+              f"{d['n_players_both']} ({100*d['n_players_both']/_t:.1f}%)")
+        print(f"  4. PlayerReID avait une équipe MAIS effacée (team=None final) : "
+              f"{d['n_players_wiped']} ({100*d['n_players_wiped']/_t:.1f}%)")
+    print(f"  5. TeamColorDetector calibré à la frame n° : "
+          f"{d['first_frame_tcd_calibrated']}")
+    print(f"  6. Couverture team finale transmise à detect_events() : "
+          f"{100*d['n_players_teamcolordetector_has_team']/max(1,d['n_players_total']):.1f}%")
+    print("=" * 80)
+
+
+
+def rescale_detections(players, yolo_ball, scale_x, scale_y):
+    for p in players:
+        x1, y1, x2, y2 = p["bbox"]
+        p["bbox"]   = [x1*scale_x, y1*scale_y, x2*scale_x, y2*scale_y]
+        p["center"] = [(p["bbox"][0]+p["bbox"][2])/2,
+                       (p["bbox"][1]+p["bbox"][3])/2]
+
+    if yolo_ball:
+        x1, y1, x2, y2 = yolo_ball["bbox"]
+        yolo_ball["bbox"]   = [x1*scale_x, y1*scale_y,
+                                x2*scale_x, y2*scale_y]
+        yolo_ball["center"] = [(yolo_ball["bbox"][0]+yolo_ball["bbox"][2])/2,
+                                (yolo_ball["bbox"][1]+yolo_ball["bbox"][3])/2]
+
+    return players, yolo_ball
+
+
+def ball_dict_to_tuple(ball_dict):
+    if ball_dict is None:
+        return None
+    bbox = ball_dict.get("bbox")
+    if not bbox:
+        return None
+    x1, y1, x2, y2 = bbox
+    return (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
+
+
+def ball_tuple_to_dict(ball_tuple, interpolated=False):
+    if ball_tuple is None:
+        return None
+    x, y, w, h = ball_tuple
+    cx = x + w // 2
+    cy = y + h // 2
+    return {
+        "bbox":         [x, y, x + w, y + h],
+        "center":       [cx, cy],
+        "conf":         1.0,
+        "interpolated": interpolated
+    }
+
+
+def process_batch(
+    batch_frames,
+    detector,
+    tracker,
+    ocr,
+    color_detector,
+    ball_tracker,
+    sport,
+    shot_zones,
+    w, h,
+    scale_x, scale_y,
+    analyzed_offset,
+    fps          = 25,
+    events_state = None,
+    b_size       = None,   # ← taille effective du batch
+):
+    if not batch_frames:
+        return [], events_state
+
+    # Utilise b_size effectif pour imgsz (impacte la qualité de détection YOLO)
+    effective_batch = b_size if b_size is not None else YOLO_BATCH_SIZE
+
+    small_frames  = [bf[2] for bf in batch_frames]
+    _t0 = _profile_start()
+    batch_results = detector.model(
+        small_frames,
+        conf    = config.YOLO_CONFIDENCE,
+        verbose = False,
+        imgsz   = int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))
+    )
+    _profile_end(_t0, "yolo_batch")
+
+    batch_data = []
+
+    for i, (frame_id, frame_orig, frame_small) in enumerate(batch_frames):
+        result   = batch_results[i]
+        analyzed = analyzed_offset + i
+
+        players   = []
+        # V5.2 (19/09/2026) FIX CRITIQUE : "yolo_ball = {...}" a chaque
+        # iteration ECRASAIT silencieusement le candidat precedent sans
+        # comparer confiance ni position - si YOLO detecte 2+ objets
+        # classes "ballon" dans une meme frame, seul le DERNIER de la
+        # liste (ordre interne YOLO, arbitraire) survivait. Aucune
+        # etape plus loin (_detect_ball(), select_best_ball() dans
+        # ball_tracker.py) ne voit jamais les autres candidats - un
+        # seul, potentiellement faux, survit avant meme d'y arriver.
+        # Decouvert suite a une investigation complete ce soir : sur 3
+        # fenetres de jeu neutre choisies loin de tout evenement connu,
+        # les JOUEURS montraient une position mediane variee et normale
+        # (0.30/0.55/0.70) alors que le "ballon" restait fige pres de
+        # x_norm~0.08-0.10 dans les 3 cas - signature d'une detection
+        # parasite persistante (probablement un objet fixe pres du bord
+        # gauche du cadre) plutot qu'un vrai ballon en mouvement. Voir
+        # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md pour l'investigation
+        # complete ayant mene a ce correctif.
+        # Corrige : collecte TOUS les candidats ballon de la frame,
+        # selectionne le plus proche de la derniere position connue
+        # (meme principe que select_best_ball() dans ball_tracker.py),
+        # ou le plus confiant si aucune position precedente.
+        _candidats_ball = []
+
+        for box in result.boxes:
+            cls  = int(box.cls[0])
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            center = ((x1 + x2) / 2, (y1 + y2) / 2)
+            bbox   = [x1, y1, x2, y2]
+
+            if cls == detector.player_cls:
+                if not detector._in_play_zone(center, PROCESS_W, PROCESS_H):
+                    continue
+                if not detector._valid_size(bbox, PROCESS_W, PROCESS_H):
+                    continue
+                players.append({
+                    "bbox":   bbox,
+                    "center": [center[0], center[1]],
+                    "conf":   conf
+                })
+            elif cls == detector.ball_cls:
+                _candidats_ball.append({
+                    "bbox":   bbox,
+                    "center": [center[0], center[1]],
+                    "conf":   conf
+                })
+
+        # V5.2 (20/09/2026) FIX CRITIQUE : "lx / scale_x" supposait que
+        # detector._last_ball_pos etait a l'echelle ORIGINALE (1920),
+        # alors qu'il est TOUJOURS stocke a l'echelle frame_small (960,
+        # PROCESS_W) - _detect_ball() est appele ICI MEME avec
+        # frame_small (ligne juste en dessous), et fixe _last_ball_pos
+        # en interne AVANT que rescale_detections() ne s'execute (plus
+        # bas). Cette division erronee divisait un centre DEJA a
+        # l'echelle 960 par scale_x (~2) UNE SECONDE FOIS, poussant
+        # last_pos vers zero/le bord gauche a chaque mise a jour reussie
+        # (HSV ou YOLO pre-rescale) - potentiellement LA cause
+        # mecanique racine de la derive systematique vers x_norm~0,08-
+        # 0,10 observee sur toute la session (voir
+        # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md, decouverte lors
+        # du test du mecanisme de reprise : un candidat gagnant mesure
+        # a x_norm=0.761 lors d'une recherche globale, mais last_pos de
+        # l'appel suivant montrait 0.180 - incoherence direement tracee
+        # a cette ligne). Corrige : _last_ball_pos est deja a la bonne
+        # echelle, aucune division necessaire.
+        last_pos_small = None
+        if detector._last_ball_pos is not None:
+            last_pos_small = tuple(detector._last_ball_pos)
+
+        if not _candidats_ball:
+            yolo_ball = None
+        elif len(_candidats_ball) == 1:
+            yolo_ball = _candidats_ball[0]
+        elif last_pos_small is not None:
+            # Plusieurs candidats + position precedente connue : le plus proche
+            yolo_ball = min(
+                _candidats_ball,
+                key=lambda b: (b["center"][0]-last_pos_small[0])**2
+                            + (b["center"][1]-last_pos_small[1])**2
+            )
+        else:
+            # Plusieurs candidats, pas de position precedente : le plus confiant
+            yolo_ball = max(_candidats_ball, key=lambda b: b["conf"])
+
+        # V5.2 (19/09/2026) — AUDIT PERCEPTION BALLON (proposé par
+        # l'utilisateur, suite à la découverte visuelle sur 9 frames
+        # que ball_pos peut être faux - confusion avec des fragments de
+        # joueurs hors-cadre ou la structure du but gauche). Objectif :
+        # distinguer 3 causes possibles avant toute correction :
+        #   A - YOLO faux : un seul candidat, deja errone a la source
+        #   B - mauvaise selection : plusieurs candidats, le bon existait
+        #       mais n'a pas ete choisi
+        #   C - derapage du tracker : la selection est correcte ici,
+        #       mais la position finale de BallTracker (loggee separement
+        #       dans ball_tracker.py/[BALL]) diverge malgre tout
+        # Log INCONDITIONNEL (pas seulement si 2+ candidats) pour avoir
+        # une couverture complete sur l'echantillon controle, avec TOUTES
+        # les metriques demandees : confiance, x, y, largeur/hauteur bbox,
+        # surface, ratio w/h, distance au bord gauche, nombre de
+        # candidats, candidat retenu.
+        try:
+            from config import DEBUG as _DBG_PERCEPTION
+        except ImportError:
+            _DBG_PERCEPTION = False
+        if _DBG_PERCEPTION:
+            # V5.2 (19/09/2026) FIX : utilisait "analyzed" (compteur de
+            # frames ANALYSEES, post frame_skip) au lieu de "frame_id"
+            # (numero de frame ABSOLU natif) - donnait un timestamp
+            # totalement different de celui utilise par ball_tracker.py
+            # pour le log [BALL] (frame_id/fps, cf. timestamp=frame_id/fps
+            # transmis a ball_tracker.update() plus bas). Consequence :
+            # aucun timestamp en commun entre [PERCEPTION_BALL] et [BALL],
+            # rendant le croisement des deux logs impossible. Corrige.
+            _t_diag = frame_id / fps if fps else 0
+            if not _candidats_ball:
+                print(f"  [PERCEPTION_BALL] t={_t_diag:.1f}s n_candidats=0 (aucune détection)")
+            else:
+                _details = []
+                for b in _candidats_ball:
+                    _bw = b["bbox"][2] - b["bbox"][0]
+                    _bh = b["bbox"][3] - b["bbox"][1]
+                    _surface = _bw * _bh
+                    _ratio = _bw / max(_bh, 0.001)
+                    _dist_bord_gauche = b["center"][0]  # en pixels, échelle PROCESS_W
+                    _x_norm = b["center"][0] / PROCESS_W
+                    _est_choisi = (b is yolo_ball)
+                    _details.append(
+                        f"[conf={b['conf']:.2f} x={b['center'][0]:.0f} y={b['center'][1]:.0f} "
+                        f"x_norm={_x_norm:.3f} w={_bw:.0f} h={_bh:.0f} surface={_surface:.0f} "
+                        f"ratio_wh={_ratio:.2f} dist_bord_gauche={_dist_bord_gauche:.0f} "
+                        f"{'←RETENU' if _est_choisi else ''}]"
+                    )
+                print(f"  [PERCEPTION_BALL] t={_t_diag:.1f}s n_candidats={len(_candidats_ball)} "
+                      f"{' '.join(_details)}")
+
+        _t0 = _profile_start()
+        yolo_ball = detector._detect_ball(
+            frame_small, yolo_ball,
+            last_pos_override=last_pos_small,
+            debug_t=frame_id / fps if fps else None
+        )
+        _profile_end(_t0, "ball_detect")
+
+        _t0 = _profile_start()
+        players, yolo_ball = rescale_detections(
+            players, yolo_ball, scale_x, scale_y
+        )
+        _profile_end(_t0, "rescale")
+
+        _t0 = _profile_start()
+        tracked = tracker.update(players, frame_orig)
+        _profile_end(_t0, "tracker_update")
+
+        _t0 = _profile_start()
+        tracked = assign_teams_by_color(frame_orig, tracked, color_detector)
+        _profile_end(_t0, "team_color")
+        # V5.2 FIX (meme bug que ball["frame"] ci-dessous, §12.15) : frame_id
+        # absolu, pas analyzed (relatif a la session) - le frame_orig fourni
+        # est deja la bonne image, mais l'etiquette frame_id doit rester
+        # coherente avec le reste du pipeline pour eviter toute confusion
+        # en aval (apply_kickoff_offset_frames, correlation temporelle).
+        _t0 = _profile_start()
+        tracked = ocr.read_all(frame_orig, tracked, frame_id=frame_id)
+        _profile_end(_t0, "ocr")
+
+        _t0 = _profile_start()
+        if ball_tracker is not None:
+            yolo_ball_tuple = ball_dict_to_tuple(yolo_ball)
+            balls_list      = [yolo_ball_tuple] if yolo_ball_tuple else []
+            # V5.2 (17/09/2026) FIX : timestamp jamais transmis avant -
+            # BallTracker utilisait alors self.frame_id/self.fps en
+            # interne, une horloge RELATIVE au debut du tracking (0,
+            # 0.17, 0.33...), pas le temps ABSOLU de la video utilise
+            # partout ailleurs (current_time dans events.py). Sans
+            # consequence active tant que seules des DIFFERENCES de
+            # temps sont utilisees en interne (vitesse, stabilite -
+            # immunes a un decalage constant), mais fragilite latente :
+            # toute comparaison future entre ces deux horloges casserait
+            # silencieusement. Corrige en transmettant le vrai temps
+            # absolu, cohérent avec current_time.
+            ball_result, was_interpolated = ball_tracker.update(
+                detected_balls = balls_list,
+                frame_w        = w,
+                frame_h        = h,
+                timestamp      = frame_id / fps,
+            )
+            ball = ball_tuple_to_dict(ball_result, interpolated=was_interpolated)
+        else:
+            ball = yolo_ball
+        _profile_end(_t0, "ball_tracker")
+
+        # PATCH : injecter le frame courant dans ball pour que detect_events
+        # puisse calculer current_time = frame / fps correctement
+        # Sans ça, ball.get("frame", 0) retourne 0 → tous les logs t=0.0s
+        #
+        # V5.2 FIX (bug trouve suite a l'ajout de start_time_s, §12.15) :
+        # DOIT etre frame_id (position ABSOLUE dans la video originale),
+        # PAS analyzed (compteur relatif a la session, toujours reinitialise
+        # a 0 peu importe start_time_s). Avec start_time_s>0, ball["frame"]=
+        # analyzed donnait des "time" proches de 0 au lieu du vrai temps
+        # video (~300s+), faisant supprimer TOUS les events comme "pre-match"
+        # par apply_kickoff_offset (718/718 events perdus, observe en test
+        # reel sur Andrimont). Reste invisible avant ce changement car
+        # start_frame etait toujours 0 (frame_id et analyzed coincidaient
+        # par coincidence).
+        if ball is not None:
+            ball["frame"] = frame_id
+            # V5.2 (14/09/2026) FIX : _tracker_ref n'etait jamais assigne,
+            # rendant is_shot_candidate() (le filtre principal vitesse+
+            # alignement+stabilite+acceleration+direction, cf. commentaire
+            # dans events.py "~33 -> ~8-12 tirs") totalement inatteignable -
+            # is_valid_shot() (repli) retournait True instantanement des
+            # que _bt est None, sans verifier aucun critere. Resultat mesure
+            # sans ce fix : 430 tirs pour 11 buts (6 reels) sur un match
+            # complet, 0 appel a is_shot_candidate(). Ce fix connecte enfin
+            # le vrai filtre.
+            ball["_tracker_ref"] = ball_tracker
+
+        _t0 = _profile_start()
+        frame_events, events_state = detect_events(
+            players    = tracked,
+            ball       = ball,
+            sport      = sport,
+            state      = events_state,
+            shot_zones = shot_zones,
+            frame_w    = w,
+            frame_h    = h,
+            fps        = fps,
+        )
+        _profile_end(_t0, "detect_events")
+        for e in frame_events:
+            e["frame"] = frame_id
+            if e.get("team") is None:
+                pid = e.get("player")
+                if pid:
+                    match = next(
+                        (t for t in tracked if str(t.get("id")) == str(pid)),
+                        None
+                    )
+                    if match and match.get("team") is not None:
+                        e["team"] = match["team"]
+
+        batch_data.append({
+            "players":     tracked,
+            "ball":        ball,
+            "frame":       frame_id,
+            "frame_w":     w,
+            "frame_h":     h,
+            "fps":         fps,
+            "events":      frame_events,
+            "_frame_orig": frame_orig,
+        })
+
+    return batch_data, events_state
+
+
+def process_video(
+    video_path,
+    sport             = "football",
+    progress_callback = None,
+    save_annotated    = False,
+    annotated_path    = None,
+    shot_zones        = None,
+    return_frames     = False,
+    frame_skip_every  = None,
+    batch_size        = None,
+    start_time_s      = 0.0,   # V5.2 : positionne le curseur de lecture a ce
+                                # temps (s) SANS decouper/recreer la video -
+                                # video_path ne change jamais, evite tous les
+                                # problemes de cache/correlation de frame
+                                # identifies lors de l'integration de la
+                                # detection KO Gemini (V5_2_FIABILITE_ROADMAP.md
+                                # §12.15). frame_id demarre a cette position
+                                # (pas 0), reste coherent avec l'offset deja
+                                # applique plus tard par apply_kickoff_offset_frames.
+    end_time_s        = None,  # V5.2 : arrete la LECTURE (pas juste le filtrage
+                                # apres coup) a ce temps (s) - meme principe que
+                                # start_time_s. AVANT ce correctif, video_end_s
+                                # dans pipeline.py ne filtrait qu'APRES tracking
+                                # complet sur toute la video - gaspillage
+                                # symetrique a celui deja corrige pour le KO
+                                # (§12.15). Verifie une fois par iteration,
+                                # cout negligeable (une comparaison, pas un
+                                # appel supplementaire).
+    camera_type       = "low_side",  # V5.2 (20/09/2026) : parametre
+                                # NORMAL, propage a Detector -> BallHSVDetector.
+                                # Memes valeurs que camera_type existant
+                                # ailleurs (pipeline.py, build_camera_profile()) :
+                                # "low_side" (defaut, comportement inchange),
+                                # "low_side_zoom" (idem low_side pour l'instant),
+                                # "high_side" (nouvelles bornes HSV, plan large
+                                # type VEO). PAS encore alimente automatiquement
+                                # par build_camera_profile() ici - dependance
+                                # circulaire non resolue ce soir (camera_type
+                                # calcule APRES un passage complet sur
+                                # frames_data, qui depend lui-meme de ce
+                                # Detector). Utile pour l'instant comme
+                                # parametre explicite de test/production
+                                # quand la valeur est deja connue par ailleurs.
+    proximite_poids   = 0.5,   # V5.2 (20/09/2026) : poids du bonus de
+                                # proximite a last_pos dans BallHSVDetector.
+                                # Defaut 0.5 = valeur D'ORIGINE, INCHANGEE.
+                                # Ajoute pour un test cible (section 3.29 de
+                                # l'analyse) suite a la decouverte que ce
+                                # bonus decide du gagnant dans 46,6% des
+                                # frames a candidats multiples sur L/M/N
+                                # (camera_type=high_side) - candidats
+                                # intrinseques presque toujours proches/a
+                                # egalite. AUCUN changement de la logique de
+                                # score elle-meme, uniquement ce poids rendu
+                                # configurable pour mesurer son effet reel.
+    seuil_gap_protection = None,  # V5.2 (20/09/2026) : si fourni, empeche
+                                # la proximite de renverser un candidat dont
+                                # l'ecart intrinseque avec le 2e depasse ce
+                                # seuil. Defaut None = DESACTIVE, comportement
+                                # inchange. Premiere estimation proposee
+                                # (non active par defaut) : 0.08 - milieu de
+                                # la zone ou un renversement nuisible a ete
+                                # confirme visuellement (section 3.31), PAS
+                                # une valeur validee de facon exhaustive.
+    intervalle_recherche_globale = None,  # V5.2 (20/09/2026) : MECANISME
+                                # DE REPRISE - si fourni (int), toutes les N
+                                # frames la recherche HSV ignore last_pos/
+                                # search_radius et scanne l'image entiere,
+                                # proximite desactivee pour cet appel. Suite
+                                # a la decouverte que search_radius EXCLUT
+                                # structurellement la vraie position du
+                                # ballon des que last_pos a derive (4/4 cas
+                                # verifies visuellement, zone P jamais
+                                # exploree - section 3.34). Defaut None =
+                                # DESACTIVE, comportement inchange. PREMIERE
+                                # IMPLEMENTATION, NON VALIDEE.
+):
+    if progress_callback is None:
+        progress_callback = default_progress
+
+    skip_every = frame_skip_every if frame_skip_every is not None else FRAME_SKIP_EVERY
+    b_size     = batch_size       if batch_size       is not None else YOLO_BATCH_SIZE
+
+
+
+    detector       = Detector(sport=sport, camera_type=camera_type, proximite_poids=proximite_poids,
+                               seuil_gap_protection=seuil_gap_protection,
+                               intervalle_recherche_globale=intervalle_recherche_globale)
+    tracker        = Tracker()
+    # V5.2 (17/09/2026) : ocr_every_n_frames corrige plus bas dans cette
+    # fonction, une fois le VRAI fps natif de la video connu (pas encore
+    # disponible ici - meme contrainte d'ordonnancement que pour
+    # ball_tracker.fps, voir plus bas). Valeur ici juste un placeholder
+    # sûr, écrasée avant toute utilisation réelle.
+    ocr            = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
+    ocr._nom_match = os.path.splitext(os.path.basename(video_path))[0]  # V5.2 : evite l'ecrasement entre matchs (outputs/test codé en dur)
+    color_detector = TeamColorDetector(
+        sample_frames=60,
+        debug_save_crops=os.environ.get("DEBUG_TEAM_COLORS", "false").lower() == "true",
+        # V5.2 : active avec `set DEBUG_TEAM_COLORS=true` (Windows) ou
+        # `export DEBUG_TEAM_COLORS=true` (Linux/Mac) avant de lancer, pour
+        # sauvegarder les crops de calibration a inspecter visuellement.
+        # Diagnostic du jaune trop terne detecte sur Andrimont.
+    )
+
+    ball_tracker = None
+    try:
+        from vision.ball_tracker import BallTracker
+        ball_tracker = BallTracker(max_history=30)
+        print("  BallTracker : OK")
+    except Exception as e:
+        print(f"  BallTracker indisponible : {e} — fallback YOLO")
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Impossible d'ouvrir la video : {video_path}")
+
+    fps          = cap.get(cv2.CAP_PROP_FPS) or config.FPS
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    w            = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h            = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # V5.2 (14/09/2026) FIX : ball_tracker cree plus haut (avant que fps/
+    # skip_every soient connus) avec fps=25 par defaut - jamais corrige,
+    # utilise par is_valid_jump() pour plafonner les sauts de position
+    # acceptables. Avec frame_skip, le rythme reel d'appel est plus bas
+    # que 25fps, rendant ce plafond trop strict pour un ballon qui se
+    # deplace vite (tir, penalty) - voir le commentaire complet dans
+    # is_valid_jump() (vision/ball_tracker.py). Corrige ici en fixant le
+    # vrai rythme effectif une fois connu.
+    if ball_tracker is not None:
+        ball_tracker.fps = fps / max(1, skip_every)
+        print(f"  [BALL TRACKER] fps effectif fixé à {ball_tracker.fps:.1f} "
+              f"(natif={fps:.1f}, skip_every={skip_every})")
+
+    # V5.2 (17/09/2026) FIX : ocr_every_n_frames=30 codé en dur a
+    # l'instanciation (commentaire "1 fois par seconde"), mais
+    # OCRReader.read_all() est appelé une fois par frame ANALYSEE
+    # (rythme reduit par frame_skip), pas une fois par frame native -
+    # meme motif systemique que max_lost/TTL deja corriges ce soir. A
+    # skip_every=4, fps natif=30 (rythme effectif=7.5) : 30 appels
+    # effectifs = 4s reels, pas 1s comme suppose. Corrige ici, une fois
+    # le vrai fps natif connu (meme contrainte d'ordonnancement que
+    # ball_tracker.fps ci-dessus).
+    _fps_effectif_ocr = fps / max(1, skip_every)
+    ocr.ocr_every_n_frames = max(1, round(_fps_effectif_ocr))
+    print(f"  [OCR] ocr_every_n_frames fixé à {ocr.ocr_every_n_frames} "
+          f"(~1x/seconde réelle à {_fps_effectif_ocr:.1f}fps effectif)")
+
+    # V5.2 (17/09/2026) : fps effectif du fallback ballon tertiaire
+    # (vision/ball.py BallDetector, dans detector.ball_backup) - meme
+    # correctif de coherence que ball_tracker.fps/ocr ci-dessus.
+    if hasattr(detector, "ball_backup") and detector.ball_backup is not None:
+        detector.ball_backup.fps = fps / max(1, skip_every)
+
+    start_frame = int(start_time_s * fps) if start_time_s > 0 else 0
+    if start_frame > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        print(f"  [START_TIME_S] Positionnement à t={start_time_s:.1f}s "
+              f"(frame {start_frame}/{total_frames}) — frames précédentes non lues, non traitées")
+
+    end_frame = int(end_time_s * fps) if end_time_s is not None else None
+    if end_frame is not None:
+        print(f"  [END_TIME_S] Lecture arrêtée à t={end_time_s:.1f}s "
+              f"(frame {end_frame}/{total_frames}) — frames suivantes non lues, non traitées")
+
+    scale_x = w / PROCESS_W
+    scale_y = h / PROCESS_H
+
+    # V5.2 (13/09/2026) FIX : cohérent avec la correction de la boucle
+    # ci-dessous — ne garde qu'1 frame sur skip_every, pas (skip_every-1)
+    analyzed_count = total_frames // skip_every
+
+    print(f"Video : {video_path}")
+    print(f"  {total_frames} frames | {fps:.1f} fps | {total_frames / fps:.1f}s")
+    print(f"  Resolution : {w}x{h} → traitement {PROCESS_W}x{PROCESS_H}")
+    print(f"  Sport : {sport}")
+    print(f"  Frame skip  : {skip_every} → ~{analyzed_count} frames analysées "
+          f"({analyzed_count * 100 // total_frames}%)")
+    print(f"  YOLO batch  : {b_size} frames/passe | imgsz={int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))}")
+
+    if shot_zones:
+        hi = shot_zones.get("threshold_hi", 0.85)
+        lo = shot_zones.get("threshold_lo", 0.15)
+        if isinstance(hi, float) and hi <= 1.0:
+            shot_zones = {
+                "axis":         shot_zones.get("axis", "x"),
+                "threshold_hi": hi * w,
+                "threshold_lo": lo * w,
+                "y_min":        shot_zones.get("y_min", 0.25) * h,
+                "y_max":        shot_zones.get("y_max", 0.75) * h,
+            }
+            print(f"  Shot zones (px) : "
+                  f"hi={shot_zones['threshold_hi']:.0f} "
+                  f"lo={shot_zones['threshold_lo']:.0f} "
+                  f"y=[{shot_zones['y_min']:.0f}, {shot_zones['y_max']:.0f}]")
+
+    overlay = Overlay(fps=fps) if save_annotated else None
+    writer  = None
+    if save_annotated and annotated_path:
+        # V5.2 (13/09/2026) FIX : cohérent avec la correction de la
+        # logique de skip ci-dessus (1 frame gardée sur skip_every,
+        # writer.write() appelé une seule fois par frame traitée,
+        # vérifié directement dans process_batch). Pour que la vidéo
+        # annotée respecte le temps réel du match, out_fps doit être
+        # fps/skip_every, pas fps*2/skip_every (l'ancien facteur "2"
+        # n'a pas d'explication trouvée, ne correspond proprement ni à
+        # l'ancienne logique de skip ni à la nouvelle - a surveiller
+        # si la vidéo annotée semble mal synchronisée après ce correctif).
+        out_fps = fps / skip_every
+        writer  = cv2.VideoWriter(
+            annotated_path,
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            out_fps, (w, h)
+        )
+
+    frames_data   = []
+    frame_id      = start_frame  # V5.2 : pas toujours 0 (cf. start_time_s ci-dessus)
+    analyzed      = 0
+    last_pct      = -1
+    current_batch = []
+    events_state  = None
+
+    def flush_batch(batch, analyzed_so_far):
+        nonlocal events_state
+        if not batch:
+            return
+        data, events_state = process_batch(
+            batch, detector, tracker, ocr,
+            color_detector, ball_tracker,
+            sport, shot_zones, w, h, scale_x, scale_y,
+            analyzed_offset = analyzed_so_far - len(batch) + 1,
+            fps             = fps,
+            events_state    = events_state,
+            b_size          = b_size,   # ← propagé jusqu'à imgsz
+        )
+        for fd in data:
+            if writer and overlay:
+                orig = fd.pop("_frame_orig", None)
+                if orig is not None:
+                    ann = overlay.render(
+                        orig, fd["players"], fd["ball"],
+                        fd["events"], fd["frame"]
+                    )
+                    writer.write(ann)
+            else:
+                fd.pop("_frame_orig", None)
+            frames_data.append(fd)
+
+    while True:
+        if end_frame is not None and frame_id >= end_frame:
+            print(f"  [END_TIME_S] Arrêt de la lecture à frame {frame_id} (limite atteinte)")
+            break
+
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # V5.2 (13/09/2026) FIX CRITIQUE : l'ancienne condition
+        # (`frame_id % skip_every == skip_every - 1`) SAUTAIT 1 frame
+        # sur skip_every et en GARDAIT (skip_every-1) sur skip_every —
+        # l'inverse de l'effet recherche. Pour skip_every=5 (vise
+        # 30fps->6fps), l'ancien code analysait ~24fps (4/5 gardees),
+        # pas 6fps (1/5 gardee) - explique une partie du temps de
+        # traitement ~590min mesure plus tot. Corrige : ne garde que
+        # les frames ou frame_id % skip_every == 0 (1 sur skip_every).
+        if frame_id % skip_every != 0:
+            frame_id += 1
+            continue
+
+        frame_small = cv2.resize(
+            frame, (PROCESS_W, PROCESS_H),
+            interpolation=cv2.INTER_LINEAR
+        )
+
+        current_batch.append((frame_id, frame, frame_small))
+
+        if len(current_batch) >= b_size:
+            flush_batch(current_batch, analyzed)
+            current_batch = []
+
+        if total_frames > 0:
+            pct = int((frame_id / total_frames) * 100)
+            if pct % 5 == 0 and pct != last_pct:
+                progress_callback(pct)
+                last_pct = pct
+
+        frame_id += 1
+        analyzed += 1
+
+    flush_batch(current_batch, analyzed)
+
+    cap.release()
+    if writer:
+        writer.release()
+
+    print(f"\n  {frame_id} frames lues | {analyzed} analysées"
+          f" | batches de {b_size}")
+
+    jersey_map_tesseract = ocr.get_jersey_map()
+    ocr.reset()
+
+    # V5.1 : lecture des maillots via Gemini, en PRIORITE sur Tesseract.
+    # Reutilise read_jersey_numbers() deja existant (regroupe jusqu'a 20
+    # joueurs par appel - PAS un appel par joueur par frame, cout modere :
+    # ~10 appels Gemini pour tout un match de ~180-200 track_id). Repli
+    # sur Tesseract pour tout track_id que Gemini n'a pas resolu.
+    jersey_map = dict(jersey_map_tesseract)
+    try:
+        from ai.gemini_validator import read_jersey_numbers
+
+        # Un representant par track_id : la frame ou sa bbox est la plus
+        # grande (meilleure chance de numero lisible)
+        meilleure_frame_par_tid = {}
+        for fd in frames_data:
+            for p in fd.get("players", []):
+                tid = p.get("id")
+                bbox = p.get("bbox")
+                if tid is None or not bbox:
+                    continue
+                aire = max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1])
+                prec = meilleure_frame_par_tid.get(tid)
+                if prec is None or aire > prec["aire"]:
+                    meilleure_frame_par_tid[tid] = {
+                        "id": tid, "frame_id": fd.get("frame"),
+                        "bbox": bbox, "aire": aire,
+                    }
+
+        players_with_frames = list(meilleure_frame_par_tid.values())
+        print(f"  [GEMINI JERSEYS] {len(players_with_frames)} track_id à lire "
+              f"({(len(players_with_frames) + 19) // 20} appels prévus)")
+
+        jersey_map_gemini = {}
+        TAILLE_LOT = 20
+        for i in range(0, len(players_with_frames), TAILLE_LOT):
+            lot = players_with_frames[i:i + TAILLE_LOT]
+            resultat_lot = read_jersey_numbers(video_path, lot, fps=fps, max_players=TAILLE_LOT)
+            jersey_map_gemini.update(resultat_lot)
+
+        print(f"  [GEMINI JERSEYS] {len(jersey_map_gemini)} numéros lus avec succès "
+              f"(sur {len(players_with_frames)} track_id tentés)")
+
+        # Gemini prioritaire, Tesseract en repli pour ce que Gemini n'a pas resolu
+        jersey_map = {**jersey_map_tesseract, **jersey_map_gemini}
+    except Exception as _e_gemini_jersey:
+        print(f"  [GEMINI JERSEYS] échec, repli intégral sur Tesseract : {_e_gemini_jersey}")
+
+    # V5.2 : team_map (identite d'equipe "verrouillee", vote majoritaire par
+    # track_id) - construite ICI pour etre appliquee en post-traitement aux
+    # evenements deja generes (voir FIX CRITIQUE juste en dessous), afin
+    # que les evenements heritent de cette identite stable plutot que de
+    # redemander une classification instantanee par frame (cf. events.py,
+    # qui utilisait jusqu'ici current.get("team") - une seule frame,
+    # potentiellement ambigue, meme pour un track dont l'equipe est connue
+    # a 90% du temps par ailleurs). Meme logique de vote que celle deja
+    # utilisee dans pipeline.py pour la sauvegarde audit_identite.
+    from collections import Counter as _Counter_evt, defaultdict as _dd_evt
+    _team_votes_evt = _dd_evt(list)
+    for _fd in frames_data:
+        for _p in _fd.get("players", []):
+            _tid = str(_p.get("id", _p.get("tracker_id", "")))
+            _team = _p.get("team")
+            if _tid and _team is not None:
+                _team_votes_evt[_tid].append(_team)
+    team_map = {
+        _tid: _Counter_evt(_votes).most_common(1)[0][0]
+        for _tid, _votes in _team_votes_evt.items()
+    }
+
+    # V5.2 (17/09/2026) FIX CRITIQUE : process_match() rappelait
+    # detect_events() une SECONDE fois sur frames_data, mais SANS
+    # rappeler ball_tracker.update() - _bt (ball["_tracker_ref"], le
+    # MEME objet partage pour toutes les frames stockees) restait donc
+    # fige a son etat de FIN de traitement pour toutes les frames
+    # retraitees, decorrele de la frame reellement en cours. Tout ce
+    # qui depend de _bt.ball_buffer (is_shot_candidate, tick_shot_
+    # candidate, vitesse de mon fallback goalzone_speed_fallback)
+    # utilisait donc des donnees perimees pendant cette seconde passe -
+    # alors que c'est SA sortie qui etait retournee au final, pas celle
+    # de la passe live (correcte, deja visible dans les logs [SHOT]/
+    # [GOALZONE]/CONFIRME). Explique le "but qui disparait" observe
+    # (run A, t=300,2s) et le double print "CONFIRME" au meme instant
+    # (runs B/C, t=317,8-317,9s et t=380,5s) - une fois pendant la
+    # passe live, une fois pendant cette passe perimee (voir
+    # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.9-3.10).
+    # Corrige : reutilise les evenements DEJA CORRECTS de la passe live
+    # (stockes par frame dans frames_data[i]["events"], construits ligne
+    # ~280 plus haut), applique juste team_map en post-traitement leger
+    # (sans rappeler detect_events() du tout - conserve le benefice de
+    # team_map sans reintroduire le probleme de _bt perime).
+    events = []
+    for _fd in frames_data:
+        for _e in _fd.get("events", []):
+            _pid = _e.get("player")
+            if _pid and str(_pid) in team_map:
+                _e["team"] = team_map[str(_pid)]
+            events.append(_e)
+
+    print(f"  {len(events)} events detectes")
+    print(f"  {len(jersey_map)} maillots identifies")
+
+    # V5.1 DIAGNOSTIC - SAUVEGARDE EN FICHIER (pas juste console !) la
+    # distribution reelle de abs(d0-d1), pour calibrer le seuil d'ambiguite
+    # team (actuellement 15.0, suspecte trop large). Meme dossier que
+    # frames_data.pkl / jersey_map_brut.json (pipeline.py), pour tout
+    # retrouver au meme endroit sans jamais avoir a relancer un run pour
+    # recuperer une info deja calculee. A retirer une fois le seuil corrige.
+    try:
+        import json as _json_diag
+        _nom_match = os.path.splitext(os.path.basename(video_path))[0]
+        _diag_dir = f"outputs/{_nom_match}/audit_identite"
+        os.makedirs(_diag_dir, exist_ok=True)
+        _diag_stats = tracker.reid.stats()
+        with open(os.path.join(_diag_dir, "reid_diag.json"), "w", encoding="utf-8") as _f_diag:
+            _json_diag.dump(_diag_stats, _f_diag, indent=2)
+        print(f"  [DIAG PlayerReID] sauvegardé dans {_diag_dir}/reid_diag.json : {_diag_stats}")
+    except Exception as _e_diag:
+        print(f"  [DIAG PlayerReID] indisponible : {_e_diag}")
+
+    # V5.2 - stats de deduplication tracker_id, compteur PERMANENT (pas un
+    # echantillon) - garantit une reponse sans ambiguite a la question
+    # "ce code a-t-il tourne, et avec quel effet ?"
+    try:
+        _dedup_dir = f"outputs/{_nom_match}/audit_identite"
+        os.makedirs(_dedup_dir, exist_ok=True)
+        _dedup_stats = tracker.get_dedup_stats()
+        with open(os.path.join(_dedup_dir, "dedup_diag.json"), "w", encoding="utf-8") as _f_dedup:
+            _json_diag.dump(_dedup_stats, _f_dedup, indent=2)
+        print(f"  [DIAG DEDUP] sauvegardé dans {_dedup_dir}/dedup_diag.json : {_dedup_stats}")
+    except Exception as _e_dedup:
+        print(f"  [DIAG DEDUP] indisponible : {_e_dedup}")
+
+    # V5.1 DIAGNOSTIC - zippe le dossier de crops OCR (bruts + traites)
+    # en un seul fichier, plus simple a telecharger depuis Kaggle qu'un
+    # dossier de dizaines d'images individuelles.
+    try:
+        import shutil as _shutil_diag
+        _crops_dir = f"outputs/{_nom_match}/audit_identite/ocr_crops_diag"
+        if os.path.isdir(_crops_dir) and os.listdir(_crops_dir):
+            _zip_path_sans_ext = f"outputs/{_nom_match}/audit_identite/ocr_crops_diag"
+            _shutil_diag.make_archive(_zip_path_sans_ext, "zip", _crops_dir)
+            _taille_ko = os.path.getsize(_zip_path_sans_ext + ".zip") / 1024
+            print(f"  [DIAG PlayerReID] crops zippés : {_zip_path_sans_ext}.zip ({_taille_ko:.0f} Ko)")
+        else:
+            print(f"  [DIAG PlayerReID] aucun crop a zipper ({_crops_dir} vide ou absent)")
+    except Exception as _e_zip:
+        print(f"  [DIAG PlayerReID] zip des crops échoué : {_e_zip}")
+
+    print_profiling_summary()
+    print_diag_team_flow()
+
+    if return_frames:
+        return events, jersey_map, fps, total_frames, frames_data
+    else:
+        return events, jersey_map, fps, total_frames
+
+
+if __name__ == "__main__":
+    import sys
+    video = sys.argv[1] if len(sys.argv) > 1 else config.VIDEO_PATH
+    sport = sys.argv[2] if len(sys.argv) > 2 else "football"
+
+    events, jersey_map, fps, total_frames = process_video(
+        video_path = video,
+        sport      = sport
+    )
+    print(f"\nEvents : {len(events)}")
+    for e in events[:10]:
+        print(f"  {e}")
