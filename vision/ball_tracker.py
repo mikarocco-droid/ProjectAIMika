@@ -440,7 +440,14 @@ class BallTracker:
                 best       = b
         return best
 
-    def update(self, detected_balls, frame_w, frame_h, timestamp=None):
+    def update(self, detected_balls, frame_w, frame_h, timestamp=None, players=None):
+        """
+        players : V5.2 (20/09/2026) - parametre optionnel, defaut None
+        (comportement inchange). Utilise par le secours par possession
+        (voir self.activer_secours_possession plus bas dans cette
+        methode) - liste de dicts joueurs avec "bbox", typiquement
+        "tracked" transmis depuis main.py.
+        """
         self.frame_id += 1
         t = timestamp if timestamp is not None else self.frame_id / self.fps
 
