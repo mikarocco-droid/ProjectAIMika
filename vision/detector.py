@@ -122,7 +122,7 @@ class BallHSVDetector:
     }
 
     def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5,
-                 seuil_gap_protection=None):
+                 seuil_gap_protection=None, intervalle_recherche_globale=None):
         """
         proximite_poids : V5.2 (20/09/2026) - poids du bonus de
         proximite a last_pos dans le score final. Defaut 0.5 = valeur
@@ -146,6 +146,38 @@ class BallHSVDetector:
         nuisible a ete confirme visuellement (gap=0.05-0.09, section
         3.31) - PAS une valeur validee de facon exhaustive, un point
         de depart pour un test cible avant toute generalisation.
+
+        intervalle_recherche_globale : V5.2 (20/09/2026) - MECANISME
+        DE REPRISE, propose par l'utilisateur suite a la decouverte
+        (section 3.33-3.34 de l'analyse) que search_radius (recherche
+        recadree autour de last_pos) EXCLUT STRUCTURELLEMENT la vraie
+        position du ballon des qu'il est ailleurs sur le terrain -
+        confirme avec des donnees precises : sur 4 cas verifies
+        visuellement (zone P, jamais exploree), 4/4 montrent le vrai
+        ballon HORS de la zone de recherche (ex. last_pos_x=72,
+        zone=[-178,324], vrai ballon a x=446). Ce n'est PAS un probleme
+        de couleur/forme/taille - HSV ne regarde simplement jamais la
+        ou se trouve le ballon une fois last_pos deja errone.
+
+        IMPORTANT (raffinement par rapport a la proposition initiale) :
+        la recherche locale trouve presque TOUJOURS un candidat (pas
+        "aucun candidat") - juste souvent le mauvais, puisque quelque
+        chose de rond/clair existe generalement quelque part dans la
+        zone recadree (structure de but, etc.). Un compteur base sur
+        "N frames SANS aucun candidat" ne se declencherait donc quasi
+        jamais dans la pratique. Mecanisme retenu a la place :
+        recherche globale PERIODIQUE (toutes les N frames,
+        INDEPENDAMMENT du succes local) plutot que conditionnee a un
+        echec local explicite - casse le verrouillage meme quand la
+        recherche locale "reussit" a tort.
+
+        Defaut None = DESACTIVE, comportement IDENTIQUE a avant cette
+        modification (recherche toujours recadree si last_pos connu).
+        Si fourni (int, ex. 10), toutes les N frames la recherche
+        ignore last_pos/search_radius et scanne l'image entiere - si
+        un candidat de meilleur score y est trouve, il devient le
+        nouveau point d'ancrage. PREMIERE IMPLEMENTATION, NON VALIDEE -
+        valeur et frequence a calibrer par mesure, pas par supposition.
         """
         self.sport       = sport
         self.camera_type = camera_type
@@ -155,6 +187,8 @@ class BallHSVDetector:
         )
         self.proximite_poids      = proximite_poids
         self.seuil_gap_protection = seuil_gap_protection
+        self.intervalle_recherche_globale = intervalle_recherche_globale
+        self._compteur_frames_recherche   = 0  # etat interne, incremente a chaque appel
 
     def detect(self, frame, last_pos=None, search_radius=200, debug_t=None):
         """
@@ -171,8 +205,22 @@ class BallHSVDetector:
         """
         h, w = frame.shape[:2]
 
+        # V5.2 (20/09/2026) : MECANISME DE REPRISE - recherche globale
+        # periodique, independante du succes/echec local (voir
+        # docstring de __init__ pour la justification complete et les
+        # donnees ayant motive ce mecanisme). Desactive par defaut
+        # (intervalle_recherche_globale=None) - comportement
+        # STRICTEMENT inchange dans ce cas.
+        self._compteur_frames_recherche += 1
+        _force_recherche_globale = False
+        if self.intervalle_recherche_globale is not None:
+            if last_pos is None or self._compteur_frames_recherche >= self.intervalle_recherche_globale:
+                _force_recherche_globale = True
+                self._compteur_frames_recherche = 0
+
         # Zone de recherche réduite si position précédente connue
-        if last_pos is not None:
+        # (SAUF si recherche globale forcee ce tour-ci)
+        if last_pos is not None and not _force_recherche_globale:
             h_f, w_f = frame.shape[:2]
             cx, cy  = last_pos
             x1 = max(0, int(cx - search_radius))
@@ -218,6 +266,11 @@ class BallHSVDetector:
                 _diag_actif = False
         _diag_candidats = []
 
+        if _diag_actif and _force_recherche_globale:
+            print(f"  [RECHERCHE_GLOBALE] t={debug_t:.2f}s — recherche élargie à l'image "
+                  f"entière déclenchée (compteur atteint {self.intervalle_recherche_globale}"
+                  f" ou last_pos absent), proximité désactivée pour cet appel")
+
         # V5.2 (20/09/2026) : RESTRUCTURE pour proximite CONDITIONNELLE.
         # Avant : selection en un seul passage (max du score final au fur
         # et a mesure) - la proximite pouvait renverser un candidat
@@ -262,9 +315,16 @@ class BallHSVDetector:
             score = score_forme
 
             # Bonus si proche de la dernière position
+            # V5.2 (20/09/2026) : SUPPRIME si recherche globale forcee -
+            # last_pos est justement connu comme non fiable dans ce cas
+            # (c'est pourquoi on force une recherche globale). Le laisser
+            # influencer le score reproduirait le meme piege qu'on
+            # cherche a casser : favoriser un candidat pres de last_pos
+            # au lieu du meilleur candidat intrinseque trouve sur toute
+            # l'image.
             score_proximite = 0.0
             dist = None
-            if last_pos is not None:
+            if last_pos is not None and not _force_recherche_globale:
                 cx_b = x + bw // 2 + offset[0]
                 cy_b = y + bh // 2 + offset[1]
                 dist = np.hypot(cx_b - last_pos[0], cy_b - last_pos[1])
@@ -347,7 +407,7 @@ class BallHSVDetector:
 class Detector:
 
     def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5,
-                 seuil_gap_protection=None):
+                 seuil_gap_protection=None, intervalle_recherche_globale=None):
         self.sport        = sport
         # V5.2 (20/09/2026) : camera_type - PARAMETRE NORMAL, pas de
         # flag config.py separe (retire suite a une remarque justifiee
@@ -366,20 +426,22 @@ class Detector:
         self.camera_type      = camera_type
         self.proximite_poids  = proximite_poids  # V5.2 (20/09/2026) : defaut 0.5 = inchange
         self.seuil_gap_protection = seuil_gap_protection  # V5.2 (20/09/2026) : defaut None = inchange
+        self.intervalle_recherche_globale = intervalle_recherche_globale  # V5.2 (20/09/2026) : defaut None = inchange
         self.zone         = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
         self.model, self.model_name = load_player_model(sport)
 
         # Détecteur ballon — HSV en priorité + BallDetector en fallback
         self.hsv_ball    = BallHSVDetector(sport=sport, camera_type=self.camera_type,
                                             proximite_poids=self.proximite_poids,
-                                            seuil_gap_protection=self.seuil_gap_protection)
+                                            seuil_gap_protection=self.seuil_gap_protection,
+                                            intervalle_recherche_globale=self.intervalle_recherche_globale)
         self.ball_backup = BallDetector(method=config.BALL_METHOD)
         self._last_ball_pos = None   # mémorise dernière position ballon
 
         self.player_cls = 0    # COCO : person
         self.ball_cls   = 32   # COCO : sports ball
 
-        print(f"  Detector pret : {self.model_name} | sport={sport} | camera_type={self.camera_type} | proximite_poids={self.proximite_poids} | seuil_gap_protection={self.seuil_gap_protection}")
+        print(f"  Detector pret : {self.model_name} | sport={sport} | camera_type={self.camera_type} | proximite_poids={self.proximite_poids} | seuil_gap_protection={self.seuil_gap_protection} | intervalle_recherche_globale={self.intervalle_recherche_globale}")
 
     def set_sport(self, sport):
         if sport == self.sport:
@@ -388,7 +450,8 @@ class Detector:
         self.zone     = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
         self.hsv_ball = BallHSVDetector(sport=sport, camera_type=self.camera_type,
                                          proximite_poids=self.proximite_poids,
-                                         seuil_gap_protection=self.seuil_gap_protection)
+                                         seuil_gap_protection=self.seuil_gap_protection,
+                                         intervalle_recherche_globale=self.intervalle_recherche_globale)
         new_model, new_name = load_player_model(sport)
         if new_name != self.model_name:
             self.model      = new_model
