@@ -557,6 +557,18 @@ def process_video(
                                 # la zone ou un renversement nuisible a ete
                                 # confirme visuellement (section 3.31), PAS
                                 # une valeur validee de facon exhaustive.
+    intervalle_recherche_globale = None,  # V5.2 (20/09/2026) : MECANISME
+                                # DE REPRISE - si fourni (int), toutes les N
+                                # frames la recherche HSV ignore last_pos/
+                                # search_radius et scanne l'image entiere,
+                                # proximite desactivee pour cet appel. Suite
+                                # a la decouverte que search_radius EXCLUT
+                                # structurellement la vraie position du
+                                # ballon des que last_pos a derive (4/4 cas
+                                # verifies visuellement, zone P jamais
+                                # exploree - section 3.34). Defaut None =
+                                # DESACTIVE, comportement inchange. PREMIERE
+                                # IMPLEMENTATION, NON VALIDEE.
 ):
     if progress_callback is None:
         progress_callback = default_progress
@@ -567,7 +579,8 @@ def process_video(
 
 
     detector       = Detector(sport=sport, camera_type=camera_type, proximite_poids=proximite_poids,
-                               seuil_gap_protection=seuil_gap_protection)
+                               seuil_gap_protection=seuil_gap_protection,
+                               intervalle_recherche_globale=intervalle_recherche_globale)
     tracker        = Tracker()
     # V5.2 (17/09/2026) : ocr_every_n_frames corrige plus bas dans cette
     # fonction, une fois le VRAI fps natif de la video connu (pas encore
