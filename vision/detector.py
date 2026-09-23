@@ -121,7 +121,8 @@ class BallHSVDetector:
         "high_side":     (15, 200),
     }
 
-    def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5):
+    def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5,
+                 seuil_gap_protection=None):
         """
         proximite_poids : V5.2 (20/09/2026) - poids du bonus de
         proximite a last_pos dans le score final. Defaut 0.5 = valeur
@@ -134,6 +135,17 @@ class BallHSVDetector:
         la logique elle-meme, uniquement ce poids rendu configurable
         pour mesurer son effet reel avant de decider s'il faut le
         modifier en profondeur.
+
+        seuil_gap_protection : V5.2 (20/09/2026) - si fourni (float),
+        la proximite ne peut PAS renverser un candidat dont l'ecart
+        intrinseque (score_forme) avec le 2e meilleur depasse ce
+        seuil. Defaut None = DESACTIVE, comportement IDENTIQUE a avant
+        cette modification (proximite toujours appliquee, peut
+        toujours renverser). PREMIERE ESTIMATION PROPOSEE (non un
+        defaut actif) : 0.08, milieu de la zone ou un renversement
+        nuisible a ete confirme visuellement (gap=0.05-0.09, section
+        3.31) - PAS une valeur validee de facon exhaustive, un point
+        de depart pour un test cible avant toute generalisation.
         """
         self.sport       = sport
         self.camera_type = camera_type
@@ -141,7 +153,8 @@ class BallHSVDetector:
         self.aire_min, self.aire_max = self.AIRE_BORNES.get(
             camera_type, self.AIRE_BORNES["low_side"]
         )
-        self.proximite_poids = proximite_poids
+        self.proximite_poids      = proximite_poids
+        self.seuil_gap_protection = seuil_gap_protection
 
     def detect(self, frame, last_pos=None, search_radius=200, debug_t=None):
         """
@@ -205,8 +218,20 @@ class BallHSVDetector:
                 _diag_actif = False
         _diag_candidats = []
 
-        best      = None
-        best_score = -1
+        # V5.2 (20/09/2026) : RESTRUCTURE pour proximite CONDITIONNELLE.
+        # Avant : selection en un seul passage (max du score final au fur
+        # et a mesure) - la proximite pouvait renverser un candidat
+        # intrinsequement bien meilleur des qu'elle etait appliquee.
+        # Preuve mecanique du probleme sur M-2/M-3 (voir
+        # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md section 3.29-3.31) :
+        # audit sur 1281 frames, 28.9% de renversements, concentres sur
+        # les petits intrinsic_gap (mediane 0.030 quand renverse, vs
+        # 0.090 sinon). Verification visuelle confirmant un renversement
+        # nuisible net a gap=0.05-0.09 (frame M-1 5/10, section 3.31).
+        # Nouvelle logique : collecter TOUS les candidats valides, puis
+        # decider APRES coup si le meilleur intrinseque est deja assez
+        # net pour que la proximite ne doive pas intervenir.
+        _candidats_valides = []
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
@@ -255,9 +280,35 @@ class BallHSVDetector:
                     "score_final": score,
                 })
 
-            if score > best_score:
-                best_score = score
-                best       = (x, y, bw, bh, offset)
+            _candidats_valides.append({
+                "bbox": (x, y, bw, bh, offset),
+                "score_forme": score_forme,
+                "score_final": score,
+            })
+
+        best = None
+        best_score = -1
+        if _candidats_valides:
+            if len(_candidats_valides) == 1:
+                best = _candidats_valides[0]["bbox"]
+                best_score = _candidats_valides[0]["score_final"]
+            else:
+                par_intrinseque = sorted(_candidats_valides, key=lambda c: -c["score_forme"])
+                meilleur_intrinseque = par_intrinseque[0]
+                second_intrinseque   = par_intrinseque[1]
+                intrinsic_gap = meilleur_intrinseque["score_forme"] - second_intrinseque["score_forme"]
+
+                if self.seuil_gap_protection is not None and intrinsic_gap > self.seuil_gap_protection:
+                    # Ecart intrinseque deja net - la proximite ne doit
+                    # pas pouvoir renverser ce candidat.
+                    best = meilleur_intrinseque["bbox"]
+                    best_score = meilleur_intrinseque["score_final"]
+                else:
+                    # Ecart faible - proximite autorisee a departager,
+                    # comportement identique a avant cette restructuration.
+                    gagnant = max(_candidats_valides, key=lambda c: c["score_final"])
+                    best = gagnant["bbox"]
+                    best_score = gagnant["score_final"]
 
         if _diag_actif:
             _cands_str = " ".join(
@@ -295,7 +346,8 @@ class BallHSVDetector:
 # ─────────────────────────────────────────
 class Detector:
 
-    def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5):
+    def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5,
+                 seuil_gap_protection=None):
         self.sport        = sport
         # V5.2 (20/09/2026) : camera_type - PARAMETRE NORMAL, pas de
         # flag config.py separe (retire suite a une remarque justifiee
@@ -313,19 +365,21 @@ class Detector:
         # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md.
         self.camera_type      = camera_type
         self.proximite_poids  = proximite_poids  # V5.2 (20/09/2026) : defaut 0.5 = inchange
+        self.seuil_gap_protection = seuil_gap_protection  # V5.2 (20/09/2026) : defaut None = inchange
         self.zone         = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
         self.model, self.model_name = load_player_model(sport)
 
         # Détecteur ballon — HSV en priorité + BallDetector en fallback
         self.hsv_ball    = BallHSVDetector(sport=sport, camera_type=self.camera_type,
-                                            proximite_poids=self.proximite_poids)
+                                            proximite_poids=self.proximite_poids,
+                                            seuil_gap_protection=self.seuil_gap_protection)
         self.ball_backup = BallDetector(method=config.BALL_METHOD)
         self._last_ball_pos = None   # mémorise dernière position ballon
 
         self.player_cls = 0    # COCO : person
         self.ball_cls   = 32   # COCO : sports ball
 
-        print(f"  Detector pret : {self.model_name} | sport={sport} | camera_type={self.camera_type} | proximite_poids={self.proximite_poids}")
+        print(f"  Detector pret : {self.model_name} | sport={sport} | camera_type={self.camera_type} | proximite_poids={self.proximite_poids} | seuil_gap_protection={self.seuil_gap_protection}")
 
     def set_sport(self, sport):
         if sport == self.sport:
@@ -333,7 +387,8 @@ class Detector:
         self.sport    = sport
         self.zone     = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
         self.hsv_ball = BallHSVDetector(sport=sport, camera_type=self.camera_type,
-                                         proximite_poids=self.proximite_poids)
+                                         proximite_poids=self.proximite_poids,
+                                         seuil_gap_protection=self.seuil_gap_protection)
         new_model, new_name = load_player_model(sport)
         if new_name != self.model_name:
             self.model      = new_model
