@@ -301,10 +301,27 @@ def process_batch(
                     "conf":   conf
                 })
 
+        # V5.2 (20/09/2026) FIX CRITIQUE : "lx / scale_x" supposait que
+        # detector._last_ball_pos etait a l'echelle ORIGINALE (1920),
+        # alors qu'il est TOUJOURS stocke a l'echelle frame_small (960,
+        # PROCESS_W) - _detect_ball() est appele ICI MEME avec
+        # frame_small (ligne juste en dessous), et fixe _last_ball_pos
+        # en interne AVANT que rescale_detections() ne s'execute (plus
+        # bas). Cette division erronee divisait un centre DEJA a
+        # l'echelle 960 par scale_x (~2) UNE SECONDE FOIS, poussant
+        # last_pos vers zero/le bord gauche a chaque mise a jour reussie
+        # (HSV ou YOLO pre-rescale) - potentiellement LA cause
+        # mecanique racine de la derive systematique vers x_norm~0,08-
+        # 0,10 observee sur toute la session (voir
+        # ANALYSE_NOUVELLE_ARCHITECTURE_DETECTION.md, decouverte lors
+        # du test du mecanisme de reprise : un candidat gagnant mesure
+        # a x_norm=0.761 lors d'une recherche globale, mais last_pos de
+        # l'appel suivant montrait 0.180 - incoherence direement tracee
+        # a cette ligne). Corrige : _last_ball_pos est deja a la bonne
+        # echelle, aucune division necessaire.
         last_pos_small = None
         if detector._last_ball_pos is not None:
-            lx, ly = detector._last_ball_pos
-            last_pos_small = (lx / scale_x, ly / scale_y)
+            last_pos_small = tuple(detector._last_ball_pos)
 
         if not _candidats_ball:
             yolo_ball = None
