@@ -342,9 +342,50 @@ class BallHSVDetector:
 
             _candidats_valides.append({
                 "bbox": (x, y, bw, bh, offset),
+                "cx": x + bw // 2 + offset[0],
+                "cy": y + bh // 2 + offset[1],
                 "score_forme": score_forme,
                 "score_final": score,
             })
+
+        # V5.2 (20/09/2026) : DIAGNOSTIC GLOBAL vs LOCAL, propose par
+        # l'utilisateur suite a la decouverte que la recherche globale
+        # peut detruire un suivi local deja bon (P-4 : 0.348 -> 0.974,
+        # section 3.37 de l'analyse). Objectif : comparer, uniquement
+        # sur le score INTRINSEQUE (sans proximite des deux cotes, pour
+        # eviter une comparaison biaisee - le score local beneficierait
+        # sinon d'un bonus que le score global n'a jamais), le meilleur
+        # candidat trouve sur l'image entiere versus le meilleur
+        # candidat qui aurait ete trouve dans la seule fenetre locale
+        # (last_pos +/- search_radius) SUR CETTE MEME FRAME - pas besoin
+        # de relancer une detection separee, tous les candidats globaux
+        # sont deja disponibles, il suffit de filtrer ceux tombant dans
+        # la fenetre locale. PUR DIAGNOSTIC, n'affecte aucune decision.
+        if _diag_actif and _force_recherche_globale and last_pos is not None and _candidats_valides:
+            _candidats_dans_fenetre_locale = [
+                c for c in _candidats_valides
+                if abs(c["cx"] - last_pos[0]) <= search_radius
+                and abs(c["cy"] - last_pos[1]) <= search_radius
+            ]
+            _global_meilleur = max(_candidats_valides, key=lambda c: c["score_forme"])
+            if _candidats_dans_fenetre_locale:
+                _local_meilleur = max(_candidats_dans_fenetre_locale, key=lambda c: c["score_forme"])
+                _dist_global_local = np.hypot(
+                    _global_meilleur["cx"] - _local_meilleur["cx"],
+                    _global_meilleur["cy"] - _local_meilleur["cy"]
+                )
+                print(f"  [GLOBAL_VS_LOCAL] t={debug_t:.2f}s "
+                      f"global_intrinsic={_global_meilleur['score_forme']:.3f} "
+                      f"pos=({_global_meilleur['cx']},{_global_meilleur['cy']}) | "
+                      f"local_intrinsic={_local_meilleur['score_forme']:.3f} "
+                      f"pos=({_local_meilleur['cx']},{_local_meilleur['cy']}) | "
+                      f"dist_global_local={_dist_global_local:.0f}px | "
+                      f"{'GLOBAL_MEILLEUR' if _global_meilleur['score_forme'] > _local_meilleur['score_forme'] else 'LOCAL_MEILLEUR_OU_EGAL'}")
+            else:
+                print(f"  [GLOBAL_VS_LOCAL] t={debug_t:.2f}s "
+                      f"global_intrinsic={_global_meilleur['score_forme']:.3f} "
+                      f"pos=({_global_meilleur['cx']},{_global_meilleur['cy']}) | "
+                      f"AUCUN candidat dans la fenêtre locale (last_pos={last_pos}, radius={search_radius})")
 
         best = None
         best_score = -1
