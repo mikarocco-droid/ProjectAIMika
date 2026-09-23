@@ -485,6 +485,60 @@ class BallTracker:
         last_pos = self.ball_buffer.last_pos()
         best     = self.select_best_ball(detected_balls, last_pos)
 
+        # V5.2 (20/09/2026) : ELARGISSEMENT du secours par possession -
+        # suite a une mesure montrant que le declenchement "candidat
+        # rejete/absent" seul est trop rare pour avoir un effet mesurable
+        # (1 seul declenchement sur 60s de test, section 3.44-3.45).
+        # Nouvelle condition : MEME quand un candidat normal est trouve
+        # ET accepte par is_valid_jump plus bas, si un joueur est
+        # nettement PLUS PROCHE de la derniere position fiable que ce
+        # candidat, le substituer AVANT la validation - raisonnement :
+        # un joueur nettement plus proche de la trajectoire recente est
+        # un indice que le ballon est probablement toujours avec lui,
+        # plutot qu'au candidat HSV plus eloigne (potentiellement un
+        # faux positif structurel deja documente, sections 3.20-3.38).
+        # Le candidat substitue passe ensuite par EXACTEMENT la meme
+        # validation is_valid_jump que le candidat normal - pas de
+        # passe-droit.
+        if (self.activer_secours_possession and players
+                and self.last_valid_ball is not None):
+            _dist_candidat_normal = None
+            if best is not None:
+                _bx, _by, _bw, _bh = best
+                _bcx, _bcy = _bx + _bw // 2, _by + _bh // 2
+                _dist_candidat_normal = ((_bcx - self.last_valid_ball[0])**2
+                                          + (_bcy - self.last_valid_ball[1])**2) ** 0.5
+            _meilleur_joueur = None
+            _meilleure_dist  = 9999
+            for p in players:
+                if not p.get("bbox"):
+                    continue
+                x1, y1, x2, y2 = p["bbox"]
+                pcx, pcy = (x1 + x2) // 2, (y1 + y2) // 2
+                d = ((pcx - self.last_valid_ball[0])**2
+                     + (pcy - self.last_valid_ball[1])**2) ** 0.5
+                if d < _meilleure_dist:
+                    _meilleure_dist = d
+                    _meilleur_joueur = (pcx, pcy)
+            _SEUIL_JOUEUR_PROCHE = 60  # px, plus strict que le seuil de secours pur (80)
+            _joueur_nettement_plus_proche = (
+                _meilleur_joueur is not None
+                and _meilleure_dist < _SEUIL_JOUEUR_PROCHE
+                and (_dist_candidat_normal is None or _meilleure_dist < _dist_candidat_normal * 0.5)
+            )
+            if _joueur_nettement_plus_proche:
+                try:
+                    from config import DEBUG as _DBG_POSS2
+                except ImportError:
+                    _DBG_POSS2 = False
+                if _DBG_POSS2:
+                    _dist_str = f"{_dist_candidat_normal:.0f}px" if _dist_candidat_normal is not None else "aucun candidat"
+                    print(f"  [POSSESSION_SUBSTITUTION] t={t:.2f}s candidat normal à "
+                          f"{_dist_str} — joueur nettement plus proche à "
+                          f"{_meilleure_dist:.0f}px, substitué avant validation")
+                pcx, pcy = _meilleur_joueur
+                best = (pcx - 5, pcy - 5, 10, 10)
+
         if best is not None:
             x, y, w, h = best
             cx = x + w // 2
