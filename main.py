@@ -548,6 +548,15 @@ def process_video(
                                 # egalite. AUCUN changement de la logique de
                                 # score elle-meme, uniquement ce poids rendu
                                 # configurable pour mesurer son effet reel.
+    seuil_gap_protection = None,  # V5.2 (20/09/2026) : si fourni, empeche
+                                # la proximite de renverser un candidat dont
+                                # l'ecart intrinseque avec le 2e depasse ce
+                                # seuil. Defaut None = DESACTIVE, comportement
+                                # inchange. Premiere estimation proposee
+                                # (non active par defaut) : 0.08 - milieu de
+                                # la zone ou un renversement nuisible a ete
+                                # confirme visuellement (section 3.31), PAS
+                                # une valeur validee de facon exhaustive.
 ):
     if progress_callback is None:
         progress_callback = default_progress
@@ -557,7 +566,8 @@ def process_video(
 
 
 
-    detector       = Detector(sport=sport, camera_type=camera_type, proximite_poids=proximite_poids)
+    detector       = Detector(sport=sport, camera_type=camera_type, proximite_poids=proximite_poids,
+                               seuil_gap_protection=seuil_gap_protection)
     tracker        = Tracker()
     # V5.2 (17/09/2026) : ocr_every_n_frames corrige plus bas dans cette
     # fonction, une fois le VRAI fps natif de la video connu (pas encore
