@@ -334,8 +334,16 @@ def is_valid_jump(prev, new_pos, max_dist=250, velocity=(0.0, 0.0), fps_scale=1.
 # ─────────────────────────────────────────
 class BallTracker:
 
-    def __init__(self, max_history=30, fps=25):
+    def __init__(self, max_history=30, fps=25, activer_secours_possession=False):
+        """
+        activer_secours_possession : V5.2 (20/09/2026) - defaut False,
+        comportement STRICTEMENT INCHANGE. Piste n°2 des 3 pistes
+        priorisees (section 3.41-3.44 de l'analyse). A fixer par
+        l'appelant selon camera_type (voir main.py, uniquement
+        "high_side") - jamais automatique.
+        """
         self.fps           = fps
+        self.activer_secours_possession = activer_secours_possession
         # V5.2 (14/09/2026) : fps_scale pour is_valid_jump() - voir le
         # commentaire complet dans is_valid_jump() ci-dessus. 25 = fps de
         # reference historique implicite de ce module (avant tout
@@ -502,6 +510,65 @@ class BallTracker:
                 best = None
 
         if best is None:
+            # V5.2 (20/09/2026) : SECOURS PAR POSSESSION - place ICI
+            # (pas avant select_best_ball) pour couvrir les 2 cas
+            # d'echec : select_best_ball n'a rien retenu (detected_balls
+            # vide) OU is_valid_jump a rejete le candidat juste au-dessus
+            # (best remis a None ligne 510). Le repli HSV/YOLO renvoie
+            # presque toujours QUELQUE CHOSE (rarement une liste vide),
+            # donc le vrai cas d'echec a couvrir est le rejet par
+            # is_valid_jump, pas une liste vide - placer le secours
+            # avant select_best_ball (version precedente, perdue lors
+            # d'une compaction de contexte) le manquait entierement.
+            if (self.activer_secours_possession and players
+                    and self.last_valid_ball is not None):
+                try:
+                    from config import DEBUG as _DBG_POSS
+                except ImportError:
+                    _DBG_POSS = False
+                _meilleur_joueur = None
+                _meilleure_dist  = 9999
+                for p in players:
+                    if not p.get("bbox"):
+                        continue
+                    x1, y1, x2, y2 = p["bbox"]
+                    pcx, pcy = (x1 + x2) // 2, (y1 + y2) // 2
+                    d = ((pcx - self.last_valid_ball[0])**2
+                         + (pcy - self.last_valid_ball[1])**2) ** 0.5
+                    if d < _meilleure_dist:
+                        _meilleure_dist = d
+                        _meilleur_joueur = (pcx, pcy)
+                _SEUIL_POSSESSION = 80  # px, coherent avec closest_player()
+                if _meilleur_joueur is not None and _meilleure_dist < _SEUIL_POSSESSION:
+                    pcx, pcy = _meilleur_joueur
+                    _fps_scale = self._FPS_REFERENCE / max(1.0, self.fps)
+                    if is_valid_jump(self.last_valid_ball, (pcx, pcy),
+                                      velocity=self.velocity, fps_scale=_fps_scale):
+                        if _DBG_POSS:
+                            print(f"  [POSSESSION_SECOURS] t={t:.2f}s candidat normal "
+                                  f"rejeté/absent — joueur le plus proche à "
+                                  f"{_meilleure_dist:.0f}px utilisé comme secours "
+                                  f"(pos=({pcx},{pcy}))")
+                        vx = pcx - self.last_valid_ball[0]
+                        vy = pcy - self.last_valid_ball[1]
+                        alpha = 0.6
+                        self.velocity = (
+                            alpha * vx + (1 - alpha) * self.velocity[0],
+                            alpha * vy + (1 - alpha) * self.velocity[1],
+                        )
+                        self.last_valid_ball  = (pcx, pcy)
+                        self.last_valid_frame = self.frame_id
+                        self._filtered_streak = 0
+                        self.ball_buffer.add(pcx, pcy, t, frame_w, frame_h)
+                        self.last_seen   = self.frame_id
+                        self.lost_frames = 0
+                        pos = self.kalman.update((pcx, pcy))
+                        return self.get_ball_bbox(pos), False
+                    elif _DBG_POSS:
+                        print(f"  [POSSESSION_SECOURS] t={t:.2f}s joueur proche "
+                              f"({_meilleure_dist:.0f}px) mais saut rejeté par "
+                              f"is_valid_jump — secours non appliqué")
+
             self._filtered_streak += 1
             self.lost_frames += 1
             if self.lost_frames <= 2:
