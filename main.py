@@ -439,6 +439,12 @@ def process_batch(
                 frame_w        = w,
                 frame_h        = h,
                 timestamp      = frame_id / fps,
+                players        = tracked,  # V5.2 (20/09/2026) : secours par
+                                            # possession - inoffensif ici,
+                                            # le flag activer_secours_possession
+                                            # (fixe a la construction de
+                                            # BallTracker selon camera_type)
+                                            # controle son utilisation reelle.
             )
             ball = ball_tuple_to_dict(ball_result, interpolated=was_interpolated)
         else:
@@ -618,7 +624,14 @@ def process_video(
     ball_tracker = None
     try:
         from vision.ball_tracker import BallTracker
-        ball_tracker = BallTracker(max_history=30)
+        # V5.2 (20/09/2026) : active le secours par possession
+        # UNIQUEMENT pour camera_type="high_side" - "low_side"/
+        # "low_side_zoom" gardent un comportement strictement
+        # identique a avant cette piste (section 3.41-3.44).
+        ball_tracker = BallTracker(
+            max_history=30,
+            activer_secours_possession=(camera_type == "high_side")
+        )
         print("  BallTracker : OK")
     except Exception as e:
         print(f"  BallTracker indisponible : {e} — fallback YOLO")
