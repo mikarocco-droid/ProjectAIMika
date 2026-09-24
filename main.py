@@ -592,6 +592,19 @@ def process_video(
                                 # exploree - section 3.34). Defaut None =
                                 # DESACTIVE, comportement inchange. PREMIERE
                                 # IMPLEMENTATION, NON VALIDEE.
+    activer_multi_hypotheses = False,  # V5.2 (20/09/2026) : PISTE 3b,
+                                # suivi multi-hypotheses. Maintient plusieurs
+                                # pistes candidates en parallele (pas une
+                                # seule chaine gloutonne), selectionne le
+                                # ballon comme le point courant de la
+                                # meilleure piste (longueur x score moyen)
+                                # plutot que le gagnant ponctuel d'une seule
+                                # frame. Defaut False = DESACTIVE,
+                                # comportement inchange. Suite a la
+                                # resolution du cas P-2 (section 3.51) -
+                                # piste courte due a un seuil de rattachement
+                                # legerement trop strict, pas a un probleme
+                                # de vitesse/acceleration du ballon.
 ):
     if progress_callback is None:
         progress_callback = default_progress
@@ -603,7 +616,8 @@ def process_video(
 
     detector       = Detector(sport=sport, camera_type=camera_type, proximite_poids=proximite_poids,
                                seuil_gap_protection=seuil_gap_protection,
-                               intervalle_recherche_globale=intervalle_recherche_globale)
+                               intervalle_recherche_globale=intervalle_recherche_globale,
+                               activer_multi_hypotheses=activer_multi_hypotheses)
     tracker        = Tracker()
     # V5.2 (17/09/2026) : ocr_every_n_frames corrige plus bas dans cette
     # fonction, une fois le VRAI fps natif de la video connu (pas encore
