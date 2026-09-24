@@ -122,7 +122,8 @@ class BallHSVDetector:
     }
 
     def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5,
-                 seuil_gap_protection=None, intervalle_recherche_globale=None):
+                 seuil_gap_protection=None, intervalle_recherche_globale=None,
+                 activer_multi_hypotheses=False):
         """
         proximite_poids : V5.2 (20/09/2026) - poids du bonus de
         proximite a last_pos dans le score final. Defaut 0.5 = valeur
@@ -178,6 +179,26 @@ class BallHSVDetector:
         un candidat de meilleur score y est trouve, il devient le
         nouveau point d'ancrage. PREMIERE IMPLEMENTATION, NON VALIDEE -
         valeur et frequence a calibrer par mesure, pas par supposition.
+
+        activer_multi_hypotheses : V5.2 (20/09/2026) - PISTE 3b,
+        suivi multi-hypotheses. Defaut False = DESACTIVE, comportement
+        IDENTIQUE a avant (selection au score du meilleur candidat de
+        CHAQUE frame individuellement). Si True : maintient plusieurs
+        pistes candidates en parallele (pas une seule chaine gloutonne)
+        et selectionne le ballon actuel comme le POINT COURANT DE LA
+        MEILLEURE PISTE (longueur x score moyen cumule), pas le
+        gagnant ponctuel d'une seule frame.
+
+        Justification (sections 3.48-3.51) : investigation retrospective
+        montrant qu'un cas "piste courte" (P-2, ecart avec la verite
+        de seulement 0.009) provenait d'un seuil de rattachement
+        legerement trop strict (53px vs 40px, un seul maillon manque)
+        - PAS d'un probleme de vitesse/acceleration/regularite du
+        ballon (toutes ces hypotheses ont ete testees et refutees).
+        Un ajustement simple du seuil sur l'algorithme glouton existant
+        s'est avere non-robuste (ameliore un cas, degrade un autre par
+        competition entre pistes concurrentes, section 3.51) - d'ou le
+        passage a un vrai suivi multi-pistes plutot qu'un seuil unique.
         """
         self.sport       = sport
         self.camera_type = camera_type
@@ -189,6 +210,8 @@ class BallHSVDetector:
         self.seuil_gap_protection = seuil_gap_protection
         self.intervalle_recherche_globale = intervalle_recherche_globale
         self._compteur_frames_recherche   = 0  # etat interne, incremente a chaque appel
+        self.activer_multi_hypotheses = activer_multi_hypotheses
+        self._pistes_actives = []  # etat interne : liste de {"points": [(t,cx,cy,score_forme,bbox)]}
 
     def detect(self, frame, last_pos=None, search_radius=200, debug_t=None):
         """
@@ -387,29 +410,105 @@ class BallHSVDetector:
                       f"pos=({_global_meilleur['cx']},{_global_meilleur['cy']}) | "
                       f"AUCUN candidat dans la fenêtre locale (last_pos={last_pos}, radius={search_radius})")
 
-        best = None
-        best_score = -1
-        if _candidats_valides:
-            if len(_candidats_valides) == 1:
-                best = _candidats_valides[0]["bbox"]
-                best_score = _candidats_valides[0]["score_final"]
-            else:
-                par_intrinseque = sorted(_candidats_valides, key=lambda c: -c["score_forme"])
-                meilleur_intrinseque = par_intrinseque[0]
-                second_intrinseque   = par_intrinseque[1]
-                intrinsic_gap = meilleur_intrinseque["score_forme"] - second_intrinseque["score_forme"]
+        # V5.2 (20/09/2026) : SUIVI MULTI-HYPOTHESES (piste 3b, section
+        # 3.51-3.52). Maintient plusieurs pistes candidates en
+        # parallele (pas une seule chaine gloutonne) sur les dernieres
+        # frames, et selectionne le ballon comme le point courant de la
+        # MEILLEURE piste (longueur x score moyen cumule), pas le
+        # gagnant ponctuel d'une seule frame. SEUIL_RATTACHEMENT=60px
+        # valide section 3.51 (juste assez pour combler un maillon
+        # manque de 53px, sans etre aussi large que 70-100px qui
+        # provoquaient une sur-fusion de pistes concurrentes).
+        _multi_hyp_reussi = False
+        if self.activer_multi_hypotheses and debug_t is not None and _candidats_valides:
+            SEUIL_RATTACHEMENT_MH = 60
+            EXPIRATION_PISTE_MH   = 0.5  # secondes
 
-                if self.seuil_gap_protection is not None and intrinsic_gap > self.seuil_gap_protection:
-                    # Ecart intrinseque deja net - la proximite ne doit
-                    # pas pouvoir renverser ce candidat.
-                    best = meilleur_intrinseque["bbox"]
-                    best_score = meilleur_intrinseque["score_final"]
+            candidats_restants = list(_candidats_valides)
+            nouvelles_pistes = []
+            for piste in self._pistes_actives:
+                dernier_t, dernier_cx, dernier_cy, _, _ = piste["points"][-1]
+                if debug_t - dernier_t > EXPIRATION_PISTE_MH:
+                    continue  # piste expiree, abandonnee silencieusement
+                meilleur_idx = None
+                meilleure_dist = SEUIL_RATTACHEMENT_MH
+                for i, c in enumerate(candidats_restants):
+                    d = ((c["cx"]-dernier_cx)**2 + (c["cy"]-dernier_cy)**2) ** 0.5
+                    if d < meilleure_dist:
+                        meilleure_dist = d
+                        meilleur_idx = i
+                if meilleur_idx is not None:
+                    c = candidats_restants.pop(meilleur_idx)
+                    piste["points"].append((debug_t, c["cx"], c["cy"], c["score_forme"], c["bbox"]))
+                    nouvelles_pistes.append(piste)
                 else:
-                    # Ecart faible - proximite autorisee a departager,
-                    # comportement identique a avant cette restructuration.
-                    gagnant = max(_candidats_valides, key=lambda c: c["score_final"])
-                    best = gagnant["bbox"]
-                    best_score = gagnant["score_final"]
+                    # Tolere une frame sans rattachement avant expiration
+                    # (evite qu'un candidat manquant une seule frame tue
+                    # la piste immediatement)
+                    nouvelles_pistes.append(piste)
+
+            # Nouvelles pistes pour candidats non apparies (seuil minimal
+            # pour eviter de semer une piste sur du pur bruit)
+            for c in candidats_restants:
+                if c["score_forme"] > 0.05:
+                    nouvelles_pistes.append({
+                        "points": [(debug_t, c["cx"], c["cy"], c["score_forme"], c["bbox"])]
+                    })
+
+            self._pistes_actives = nouvelles_pistes
+
+            if self._pistes_actives:
+                def _valeur_piste(p):
+                    pts = p["points"]
+                    longueur   = len(pts)
+                    score_moy  = sum(pt[3] for pt in pts) / longueur
+                    return longueur * score_moy
+                _meilleure_piste = max(self._pistes_actives, key=_valeur_piste)
+                _, _mcx, _mcy, _mscore, _mbbox = _meilleure_piste["points"][-1]
+                # N'utiliser le resultat multi-hypotheses que si la
+                # meilleure piste a une longueur >1 (sinon aucun
+                # avantage sur la simple selection au score - laisser
+                # la logique normale s'appliquer pour rester coherent
+                # avec seuil_gap_protection/proximite plus bas)
+                if len(_meilleure_piste["points"]) > 1:
+                    best = _mbbox
+                    best_score = _mscore
+                    _multi_hyp_reussi = True
+                    try:
+                        from config import DEBUG as _DBG_MH
+                    except ImportError:
+                        _DBG_MH = False
+                    if _DBG_MH:
+                        print(f"  [MULTI_HYPOTHESES] t={debug_t:.2f}s "
+                              f"meilleure piste : longueur={len(_meilleure_piste['points'])} "
+                              f"pos=({_mcx},{_mcy}) score_forme={_mscore:.3f}")
+
+        if _multi_hyp_reussi:
+            pass  # best/best_score deja fixes par le suivi multi-hypotheses ci-dessus
+        else:
+            best = None
+            best_score = -1
+            if _candidats_valides:
+                if len(_candidats_valides) == 1:
+                    best = _candidats_valides[0]["bbox"]
+                    best_score = _candidats_valides[0]["score_final"]
+                else:
+                    par_intrinseque = sorted(_candidats_valides, key=lambda c: -c["score_forme"])
+                    meilleur_intrinseque = par_intrinseque[0]
+                    second_intrinseque   = par_intrinseque[1]
+                    intrinsic_gap = meilleur_intrinseque["score_forme"] - second_intrinseque["score_forme"]
+
+                    if self.seuil_gap_protection is not None and intrinsic_gap > self.seuil_gap_protection:
+                        # Ecart intrinseque deja net - la proximite ne doit
+                        # pas pouvoir renverser ce candidat.
+                        best = meilleur_intrinseque["bbox"]
+                        best_score = meilleur_intrinseque["score_final"]
+                    else:
+                        # Ecart faible - proximite autorisee a departager,
+                        # comportement identique a avant cette restructuration.
+                        gagnant = max(_candidats_valides, key=lambda c: c["score_final"])
+                        best = gagnant["bbox"]
+                        best_score = gagnant["score_final"]
 
         if _diag_actif:
             _cands_str = " ".join(
@@ -448,7 +547,8 @@ class BallHSVDetector:
 class Detector:
 
     def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5,
-                 seuil_gap_protection=None, intervalle_recherche_globale=None):
+                 seuil_gap_protection=None, intervalle_recherche_globale=None,
+                 activer_multi_hypotheses=False):
         self.sport        = sport
         # V5.2 (20/09/2026) : camera_type - PARAMETRE NORMAL, pas de
         # flag config.py separe (retire suite a une remarque justifiee
@@ -468,6 +568,7 @@ class Detector:
         self.proximite_poids  = proximite_poids  # V5.2 (20/09/2026) : defaut 0.5 = inchange
         self.seuil_gap_protection = seuil_gap_protection  # V5.2 (20/09/2026) : defaut None = inchange
         self.intervalle_recherche_globale = intervalle_recherche_globale  # V5.2 (20/09/2026) : defaut None = inchange
+        self.activer_multi_hypotheses = activer_multi_hypotheses  # V5.2 (20/09/2026) : defaut False = inchange
         self.zone         = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
         self.model, self.model_name = load_player_model(sport)
 
@@ -475,14 +576,15 @@ class Detector:
         self.hsv_ball    = BallHSVDetector(sport=sport, camera_type=self.camera_type,
                                             proximite_poids=self.proximite_poids,
                                             seuil_gap_protection=self.seuil_gap_protection,
-                                            intervalle_recherche_globale=self.intervalle_recherche_globale)
+                                            intervalle_recherche_globale=self.intervalle_recherche_globale,
+                                            activer_multi_hypotheses=self.activer_multi_hypotheses)
         self.ball_backup = BallDetector(method=config.BALL_METHOD)
         self._last_ball_pos = None   # mémorise dernière position ballon
 
         self.player_cls = 0    # COCO : person
         self.ball_cls   = 32   # COCO : sports ball
 
-        print(f"  Detector pret : {self.model_name} | sport={sport} | camera_type={self.camera_type} | proximite_poids={self.proximite_poids} | seuil_gap_protection={self.seuil_gap_protection} | intervalle_recherche_globale={self.intervalle_recherche_globale}")
+        print(f"  Detector pret : {self.model_name} | sport={sport} | camera_type={self.camera_type} | proximite_poids={self.proximite_poids} | seuil_gap_protection={self.seuil_gap_protection} | intervalle_recherche_globale={self.intervalle_recherche_globale} | activer_multi_hypotheses={self.activer_multi_hypotheses}")
 
     def set_sport(self, sport):
         if sport == self.sport:
@@ -492,7 +594,8 @@ class Detector:
         self.hsv_ball = BallHSVDetector(sport=sport, camera_type=self.camera_type,
                                          proximite_poids=self.proximite_poids,
                                          seuil_gap_protection=self.seuil_gap_protection,
-                                         intervalle_recherche_globale=self.intervalle_recherche_globale)
+                                         intervalle_recherche_globale=self.intervalle_recherche_globale,
+                                         activer_multi_hypotheses=self.activer_multi_hypotheses)
         new_model, new_name = load_player_model(sport)
         if new_name != self.model_name:
             self.model      = new_model
