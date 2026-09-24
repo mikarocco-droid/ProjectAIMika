@@ -515,6 +515,15 @@ class BallTracker:
                     continue
                 x1, y1, x2, y2 = p["bbox"]
                 pcx, pcy = (x1 + x2) // 2, (y1 + y2) // 2
+                # V5.2 (20/09/2026) FIX CRITIQUE : verification de bornes
+                # manquante - un joueur mal tracke (id fantome, artefact)
+                # peut avoir des coordonnees hors cadre (ex. x=2301 sur
+                # une image de 1920px), utilisees ensuite sans controle
+                # comme "vraie" position ballon - contamine last_valid_ball
+                # et la vitesse pour toutes les frames suivantes. Decouvert
+                # suite a une anomalie mesuree (x_norm=1,335, section 3.45).
+                if not (0 <= pcx < frame_w and 0 <= pcy < frame_h):
+                    continue
                 d = ((pcx - self.last_valid_ball[0])**2
                      + (pcy - self.last_valid_ball[1])**2) ** 0.5
                 if d < _meilleure_dist:
@@ -594,6 +603,11 @@ class BallTracker:
                         continue
                     x1, y1, x2, y2 = p["bbox"]
                     pcx, pcy = (x1 + x2) // 2, (y1 + y2) // 2
+                    # V5.2 (20/09/2026) FIX CRITIQUE : meme verification
+                    # de bornes que la substitution proactive ci-dessus -
+                    # voir commentaire equivalent plus haut dans le fichier.
+                    if not (0 <= pcx < frame_w and 0 <= pcy < frame_h):
+                        continue
                     d = ((pcx - self.last_valid_ball[0])**2
                          + (pcy - self.last_valid_ball[1])**2) ** 0.5
                     if d < _meilleure_dist:
