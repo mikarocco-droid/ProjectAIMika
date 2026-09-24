@@ -457,13 +457,32 @@ class BallHSVDetector:
 
             self._pistes_actives = nouvelles_pistes
 
-            if self._pistes_actives:
+            # V5.2 (20/09/2026) FIX CRITIQUE : ne considerer que les
+            # pistes REAPPARIEES A CETTE FRAME EXACTE (dernier point ==
+            # debug_t), pas simplement "encore en vie" via la tolerance
+            # d'expiration. Sans ce filtre, une piste fausse mais
+            # ancienne peut dominer indefiniment une piste vraie mais
+            # recente, y compris pendant les frames ou elle-meme n'a
+            # pas ete retrouvee - regression mesuree sur P-4 (0.348 ->
+            # 0.980, section 3.53) : la piste gagnante restait a
+            # longueur=12 sans etre reappariee 2 frames de suite,
+            # simplement maintenue vivante par la tolerance, empechant
+            # le vrai ballon (longueur=3, fraichement repere) de
+            # rivaliser. Les pistes non reappariees restent actives en
+            # interne (pour une eventuelle reprise future) mais ne sont
+            # plus ELIGIBLES pour decider le resultat de CETTE frame.
+            _pistes_fraiches = [
+                p for p in self._pistes_actives
+                if p["points"][-1][0] == debug_t
+            ]
+
+            if _pistes_fraiches:
                 def _valeur_piste(p):
                     pts = p["points"]
                     longueur   = len(pts)
                     score_moy  = sum(pt[3] for pt in pts) / longueur
                     return longueur * score_moy
-                _meilleure_piste = max(self._pistes_actives, key=_valeur_piste)
+                _meilleure_piste = max(_pistes_fraiches, key=_valeur_piste)
                 _, _mcx, _mcy, _mscore, _mbbox = _meilleure_piste["points"][-1]
                 # N'utiliser le resultat multi-hypotheses que si la
                 # meilleure piste a une longueur >1 (sinon aucun
@@ -480,7 +499,7 @@ class BallHSVDetector:
                         _DBG_MH = False
                     if _DBG_MH:
                         print(f"  [MULTI_HYPOTHESES] t={debug_t:.2f}s "
-                              f"meilleure piste : longueur={len(_meilleure_piste['points'])} "
+                              f"meilleure piste (fraîche) : longueur={len(_meilleure_piste['points'])} "
                               f"pos=({_mcx},{_mcy}) score_forme={_mscore:.3f}")
 
         if _multi_hyp_reussi:
