@@ -1317,6 +1317,7 @@ def run_pipeline(
                     frame_h        = _frame_h,
                     goal_box       = _goal_box,
                     camera_profile = _camera_profile,  # Sprint 2 — géométrie adaptative
+                    camera_type    = camera_type,      # high_side : assouplit tir obligatoire
                 )
             if fast_goals:
                 events.extend(fast_goals)
