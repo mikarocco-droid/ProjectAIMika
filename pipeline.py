@@ -320,6 +320,15 @@ def run_pipeline(
                                   # 15-20min - JAMAIS MESUREE EN PRATIQUE.
                                   # Defaut False : comportement inchange,
                                   # match traite en un seul passage continu.
+    camera_type       = "low_side",  # Type de caméra : "high_side", "low_side",
+                                  # "low_side_zoom". Transmis à Detector() et
+                                  # BallHSVDetector. Défaut "low_side" =
+                                  # comportement historique inchangé.
+    ball_model_name   = None,    # Modèle YOLO dédié ballon (branche test).
+                                  # Ex. "yolo26m.pt" pour high_side.
+                                  # None = même modèle que joueurs (inchangé).
+    ball_conf         = None,    # Seuil conf YOLO ballon uniquement.
+                                  # None = config.YOLO_CONFIDENCE (inchangé).
     _match_data       = None,    # Replay Engine : dict depuis replay.load_cache() — skip YOLO/tracking si fourni
 ):
     os.makedirs(output_dir, exist_ok=True)
@@ -743,6 +752,9 @@ def run_pipeline(
             end_time_s        = video_end_s,  # V5.2 FIX : arrete la LECTURE, pas
                                                 # juste le filtrage apres coup plus
                                                 # bas (qui reste en securite/inchange)
+            camera_type       = camera_type,
+            ball_model_name   = ball_model_name,
+            ball_conf         = ball_conf,
         )
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
