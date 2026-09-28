@@ -123,7 +123,7 @@ class BallHSVDetector:
 
     def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5,
                  seuil_gap_protection=None, intervalle_recherche_globale=None,
-                 activer_multi_hypotheses=False):
+                 activer_multi_hypotheses=False, seuil_streak_gele=None):
         """
         proximite_poids : V5.2 (20/09/2026) - poids du bonus de
         proximite a last_pos dans le score final. Defaut 0.5 = valeur
@@ -211,6 +211,7 @@ class BallHSVDetector:
         self.intervalle_recherche_globale = intervalle_recherche_globale
         self._compteur_frames_recherche   = 0  # etat interne, incremente a chaque appel
         self.activer_multi_hypotheses = activer_multi_hypotheses
+        self.seuil_streak_gele = seuil_streak_gele  # V5.2 (20/09/2026) : defaut None = inchange
         self._pistes_actives = []  # etat interne : liste de {"points": [(t,cx,cy,score_forme,bbox)]}
 
     def detect(self, frame, last_pos=None, search_radius=200, debug_t=None):
@@ -477,10 +478,43 @@ class BallHSVDetector:
             ]
 
             if _pistes_fraiches:
+                def _streak_max_gele(p):
+                    """
+                    V5.2 (20/09/2026) : calcule la sequence maximale de
+                    positions EXACTEMENT identiques consecutives dans
+                    une piste - signal valide sections 3.58-3.59 (vrai
+                    ballon : max 3 sur l'echantillon mesure ; piste
+                    fausse identifiee : 8).
+                    """
+                    pts = p["points"]
+                    streak, streak_max = 0, 0
+                    for i in range(1, len(pts)):
+                        if (pts[i][1], pts[i][2]) == (pts[i-1][1], pts[i-1][2]):
+                            streak += 1
+                            streak_max = max(streak_max, streak)
+                        else:
+                            streak = 0
+                    return streak_max
+
                 def _valeur_piste(p):
                     pts = p["points"]
                     longueur   = len(pts)
                     score_moy  = sum(pt[3] for pt in pts) / longueur
+                    # V5.2 (20/09/2026) : PLAFONNEMENT si sequence gelee
+                    # trop longue - defaut self.seuil_streak_gele=None
+                    # preserve le comportement EXACT d'avant (aucun
+                    # plafonnement). Si fourni (ex. 5), la longueur
+                    # effective utilisee dans le calcul est plafonnee a
+                    # ce seuil des que la piste a montre une sequence
+                    # gelee de cette taille ou plus - empeche une piste
+                    # figee au pixel exact d'accumuler une valeur
+                    # illimitee, sans penaliser un ballon reellement
+                    # stable (qui garde une micro-variation, sequence
+                    # gelee courte meme immobile - section 3.59).
+                    if self.seuil_streak_gele is not None:
+                        streak_max = _streak_max_gele(p)
+                        if streak_max >= self.seuil_streak_gele:
+                            longueur = min(longueur, self.seuil_streak_gele)
                     return longueur * score_moy
                 _meilleure_piste = max(_pistes_fraiches, key=_valeur_piste)
                 _, _mcx, _mcy, _mscore, _mbbox = _meilleure_piste["points"][-1]
@@ -567,7 +601,7 @@ class Detector:
 
     def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5,
                  seuil_gap_protection=None, intervalle_recherche_globale=None,
-                 activer_multi_hypotheses=False):
+                 activer_multi_hypotheses=False, seuil_streak_gele=None):
         self.sport        = sport
         # V5.2 (20/09/2026) : camera_type - PARAMETRE NORMAL, pas de
         # flag config.py separe (retire suite a une remarque justifiee
@@ -588,6 +622,7 @@ class Detector:
         self.seuil_gap_protection = seuil_gap_protection  # V5.2 (20/09/2026) : defaut None = inchange
         self.intervalle_recherche_globale = intervalle_recherche_globale  # V5.2 (20/09/2026) : defaut None = inchange
         self.activer_multi_hypotheses = activer_multi_hypotheses  # V5.2 (20/09/2026) : defaut False = inchange
+        self.seuil_streak_gele = seuil_streak_gele  # V5.2 (20/09/2026) : defaut None = inchange
         self.zone         = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
         self.model, self.model_name = load_player_model(sport)
 
@@ -596,14 +631,15 @@ class Detector:
                                             proximite_poids=self.proximite_poids,
                                             seuil_gap_protection=self.seuil_gap_protection,
                                             intervalle_recherche_globale=self.intervalle_recherche_globale,
-                                            activer_multi_hypotheses=self.activer_multi_hypotheses)
+                                            activer_multi_hypotheses=self.activer_multi_hypotheses,
+                                            seuil_streak_gele=self.seuil_streak_gele)
         self.ball_backup = BallDetector(method=config.BALL_METHOD)
         self._last_ball_pos = None   # mémorise dernière position ballon
 
         self.player_cls = 0    # COCO : person
         self.ball_cls   = 32   # COCO : sports ball
 
-        print(f"  Detector pret : {self.model_name} | sport={sport} | camera_type={self.camera_type} | proximite_poids={self.proximite_poids} | seuil_gap_protection={self.seuil_gap_protection} | intervalle_recherche_globale={self.intervalle_recherche_globale} | activer_multi_hypotheses={self.activer_multi_hypotheses}")
+        print(f"  Detector pret : {self.model_name} | sport={sport} | camera_type={self.camera_type} | proximite_poids={self.proximite_poids} | seuil_gap_protection={self.seuil_gap_protection} | intervalle_recherche_globale={self.intervalle_recherche_globale} | activer_multi_hypotheses={self.activer_multi_hypotheses} | seuil_streak_gele={self.seuil_streak_gele}")
 
     def set_sport(self, sport):
         if sport == self.sport:
@@ -614,7 +650,8 @@ class Detector:
                                          proximite_poids=self.proximite_poids,
                                          seuil_gap_protection=self.seuil_gap_protection,
                                          intervalle_recherche_globale=self.intervalle_recherche_globale,
-                                         activer_multi_hypotheses=self.activer_multi_hypotheses)
+                                         activer_multi_hypotheses=self.activer_multi_hypotheses,
+                                         seuil_streak_gele=self.seuil_streak_gele)
         new_model, new_name = load_player_model(sport)
         if new_name != self.model_name:
             self.model      = new_model
