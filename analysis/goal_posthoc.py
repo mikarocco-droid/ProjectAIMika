@@ -145,6 +145,8 @@ def detect_fast_goals_from_ball(
     shot_window=5.0,
     goal_box=None,       # résultat de detect_goal_box() — zones dynamiques
     camera_profile=None, # Sprint 2 — profil caméra pour géométrie adaptative
+    camera_type=None,    # "high_side" : assouplit la règle tir obligatoire
+                         # car les tirs sont rarement détectés en vue large
 ):
 
     goals = []
@@ -361,7 +363,17 @@ def detect_fast_goals_from_ball(
                 and rebound          # rebond filet obligatoire
                 and recent_motion_ok # vitesse cohérente obligatoire
             )
-            if not valid_loose:
+            # ── high_side : pas de tir détectable en vue large ────────
+            # La détection de tir échoue systématiquement (joueurs trop
+            # petits). On accepte le but si stuck≥3 + trajectoire vers
+            # le but + recent_motion cohérent. Score minimum relevé
+            # pour compenser l'absence du filtre tir.
+            valid_high_side = (
+                camera_type == "high_side"
+                and stuck >= 3         # ballon immobile dans zone but
+                and recent_motion_ok   # mouvement cohérent avant
+            )
+            if not valid_loose and not valid_high_side:
                 i += 1
                 continue  # ❌ signal insuffisant
 
