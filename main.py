@@ -605,6 +605,26 @@ def process_video(
                                 # piste courte due a un seuil de rattachement
                                 # legerement trop strict, pas a un probleme
                                 # de vitesse/acceleration du ballon.
+    seuil_streak_gele = None,  # V5.2 (20/09/2026) : RAFFINEMENT du suivi
+                                # multi-hypotheses (n'a d'effet que si
+                                # activer_multi_hypotheses=True). Plafonne
+                                # la longueur effective d'une piste des
+                                # qu'elle a montre une sequence de positions
+                                # EXACTEMENT identiques consecutives d'au
+                                # moins cette taille - empeche une piste
+                                # figee au pixel exact (structure fixe,
+                                # section 3.58) d'accumuler une valeur
+                                # illimitee, sans penaliser un ballon
+                                # reellement stable (qui garde une
+                                # micro-variation continue, sequence gelee
+                                # courte meme immobile - mesure : vrai
+                                # ballon max 3, piste fausse identifiee 8,
+                                # section 3.59). Defaut None = DESACTIVE,
+                                # comportement du suivi multi-hypotheses
+                                # inchange. PREMIERE IMPLEMENTATION,
+                                # echantillon de validation limite (3
+                                # pistes, 2 points) - pas encore une valeur
+                                # definitive.
 ):
     if progress_callback is None:
         progress_callback = default_progress
@@ -617,7 +637,8 @@ def process_video(
     detector       = Detector(sport=sport, camera_type=camera_type, proximite_poids=proximite_poids,
                                seuil_gap_protection=seuil_gap_protection,
                                intervalle_recherche_globale=intervalle_recherche_globale,
-                               activer_multi_hypotheses=activer_multi_hypotheses)
+                               activer_multi_hypotheses=activer_multi_hypotheses,
+                               seuil_streak_gele=seuil_streak_gele)
     tracker        = Tracker()
     # V5.2 (17/09/2026) : ocr_every_n_frames corrige plus bas dans cette
     # fonction, une fois le VRAI fps natif de la video connu (pas encore
