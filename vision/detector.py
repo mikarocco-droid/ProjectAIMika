@@ -601,7 +601,26 @@ class Detector:
 
     def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5,
                  seuil_gap_protection=None, intervalle_recherche_globale=None,
-                 activer_multi_hypotheses=False, seuil_streak_gele=None):
+                 activer_multi_hypotheses=False, seuil_streak_gele=None,
+                 ball_model_name=None, ball_conf=None):
+        """
+        ball_model_name : nom du fichier .pt utilisé pour la détection YOLO
+                          du ballon (classe 32). Si None, utilise le même
+                          modèle que les joueurs (comportement historique
+                          inchangé). Exemple : "yolo26m.pt" pour tester
+                          YOLO26m uniquement sur le ballon sans toucher aux
+                          joueurs.
+
+        ball_conf       : seuil de confiance YOLO pour la détection du
+                          ballon. Si None, utilise config.YOLO_CONFIDENCE
+                          (comportement historique inchangé). Recommandé :
+                          0.15 pour camera_type="high_side" avec yolo26m.
+
+        Ces deux paramètres forment la "branche de test ballon" — ils
+        n'affectent PAS la détection des joueurs, le tracker, HSV ni aucune
+        autre partie du pipeline. Valeurs None = comportement strictement
+        identique à avant cette modification.
+        """
         self.sport        = sport
         # V5.2 (20/09/2026) : camera_type - PARAMETRE NORMAL, pas de
         # flag config.py separe (retire suite a une remarque justifiee
@@ -625,6 +644,29 @@ class Detector:
         self.seuil_streak_gele = seuil_streak_gele  # V5.2 (20/09/2026) : defaut None = inchange
         self.zone         = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
         self.model, self.model_name = load_player_model(sport)
+
+        # ── Modèle ballon séparé (branche de test YOLO26m) ───────────
+        # Si ball_model_name fourni ET différent du modèle joueurs,
+        # charge un second modèle dédié au ballon. Sinon, réutilise
+        # self.model (comportement historique inchangé, 0 overhead).
+        self._ball_conf = ball_conf  # None = utilise config.YOLO_CONFIDENCE
+        if ball_model_name and ball_model_name != self.model_name:
+            try:
+                from ultralytics import YOLO as _YOLO
+                self._ball_model      = _YOLO(ball_model_name)
+                self._ball_model_name = ball_model_name
+                _conf_str = f"conf={ball_conf}" if ball_conf else "conf=config"
+                print(f"  Detector ballon : {ball_model_name} ({_conf_str}) "
+                      f"| joueurs : {self.model_name}")
+            except Exception as _e_bm:
+                print(f"  ⚠️  Modèle ballon '{ball_model_name}' indisponible ({_e_bm}) "
+                      f"→ fallback sur {self.model_name}")
+                self._ball_model      = self.model
+                self._ball_model_name = self.model_name
+        else:
+            # Comportement identique à avant — aucun objet supplémentaire
+            self._ball_model      = self.model
+            self._ball_model_name = self.model_name
 
         # Détecteur ballon — HSV en priorité + BallDetector en fallback
         self.hsv_ball    = BallHSVDetector(sport=sport, camera_type=self.camera_type,
