@@ -296,6 +296,15 @@ class ScoutPDF(FPDF):
         self.set_auto_page_break(auto=True, margin=15)
         self.set_margins(12, 18, 12)
 
+    def cell(self, w=0, h=0, txt="", border=0, ln=0, align="", fill=False, link=""):
+        """Surcharge : clean() automatique sur tout texte avant rendu."""
+        super().cell(w, h, clean(txt), border=border, ln=ln, align=align,
+                     fill=fill, link=link)
+
+    def multi_cell(self, w, h, txt="", border=0, align="J", fill=False):
+        """Surcharge : clean() automatique sur tout texte avant rendu."""
+        super().multi_cell(w, h, clean(txt), border=border, align=align, fill=fill)
+
     def _fill_bg(self):
         self.set_fill_color(*BG_DARK)
         self.rect(0, 0, 210, 297, "F")
