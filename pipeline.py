@@ -944,7 +944,22 @@ def run_pipeline(
         _fin1mt_absolu = None
         _finmatch_audio_absolu = None
 
-        if _kickoff_offset > 0:
+        # _video_duration_s : toujours calculée ici pour find_match_end plus bas,
+        # quelle que soit la méthode de détection KO utilisée.
+        _video_duration_s = total_frames / max(fps, 1)
+
+        # Court-circuit KO2 si video_end_s est défini et inférieur au KO2 attendu.
+        # KO2 se situe typiquement à KO1 + half_duration_min minutes — inutile
+        # de chercher si la vidéo est tronquée avant cette zone.
+        _ko2_min_absolu = _kickoff_offset + half_duration_min * 60
+        _skip_ko2 = (
+            video_end_s is not None
+            and video_end_s < _ko2_min_absolu
+        )
+        if _skip_ko2:
+            print(f"  [KO2] Skippé — video_end_s={video_end_s:.0f}s < KO2 attendu ≥ {_ko2_min_absolu:.0f}s")
+
+        if _kickoff_offset > 0 and not _skip_ko2:
             print(f"  [KO2] Recherche dans [KO1+{half_duration_min+4}min, KO1+{half_duration_min+23}min]...")
             _ko2_result = find_ko2_gemini(
                 video_path, ko1_s=_kickoff_offset, half_duration_min=half_duration_min,
