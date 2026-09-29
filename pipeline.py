@@ -902,6 +902,10 @@ def run_pipeline(
                   f"(conf={_kickoff_conf:.2f}) — suppression pré-match")
 
             # 1. Corriger timestamps + supprimer events avant le coup d'envoi
+            # DEBUG timestamps avant apply_kickoff_offset
+            if events:
+                _t_sample = sorted([e.get("time",0) for e in events])
+                print(f"  [DEBUG KO] {len(events)} events — times: min={_t_sample[0]:.1f}s max={_t_sample[-1]:.1f}s median={_t_sample[len(_t_sample)//2]:.1f}s | offset={_kickoff_offset:.1f}s")
             events, _n_removed = apply_kickoff_offset(events, _kickoff_offset, fps=fps)
             print(f"  [KICKOFF] {len(events)} events après correction "
                   f"({_n_removed} events pré-match supprimés)")
