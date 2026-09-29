@@ -512,18 +512,10 @@ def process_batch(
             # le vrai filtre.
             ball["_tracker_ref"] = ball_tracker
 
-        # V5.2 FIX : si ball est None, injecter un ball factice avec frame_id
-        # pour que detect_events() ait un current_time correct. Sans ça,
-        # current_time = 0 pour toutes les frames sans ballon, et
-        # apply_kickoff_offset() supprime tous ces events comme pré-match.
-        _ball_for_events = ball if ball is not None else {"frame": frame_id}
-        if ball is not None and ball.get("frame") in (None, 0):
-            ball["frame"] = frame_id
-
         _t0 = _profile_start()
         frame_events, events_state = detect_events(
             players    = tracked,
-            ball       = _ball_for_events,
+            ball       = ball,
             sport      = sport,
             state      = events_state,
             shot_zones = shot_zones,
