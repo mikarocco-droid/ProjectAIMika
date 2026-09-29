@@ -296,14 +296,24 @@ class ScoutPDF(FPDF):
         self.set_auto_page_break(auto=True, margin=15)
         self.set_margins(12, 18, 12)
 
-    def cell(self, w=0, h=0, txt="", border=0, ln=0, align="", fill=False, link=""):
-        """Surcharge : clean() automatique sur tout texte avant rendu."""
-        super().cell(w, h, clean(txt), border=border, ln=ln, align=align,
-                     fill=fill, link=link)
+    def cell(self, w=None, h=None, text="", border=0, ln="DEPRECATED",
+             align="LEFT", fill=False, link="", center=False, markdown=False,
+             new_x="RIGHT", new_y="TOP"):
+        """Surcharge fpdf2 v2.8.x : clean() sur text avant rendu."""
+        super().cell(w=w, h=h, text=clean(text), border=border, ln=ln,
+                     align=align, fill=fill, link=link, center=center,
+                     markdown=markdown, new_x=new_x, new_y=new_y)
 
-    def multi_cell(self, w, h, txt="", border=0, align="J", fill=False):
-        """Surcharge : clean() automatique sur tout texte avant rendu."""
-        super().multi_cell(w, h, clean(txt), border=border, align=align, fill=fill)
+    def multi_cell(self, w, h=None, text="", border=0, align="JUSTIFY",
+                   fill=False, split_only=False, link=None, ln="DEPRECATED",
+                   max_line_height=None, markdown=False, print_sh=False,
+                   new_x="RIGHT", new_y="NEXT"):
+        """Surcharge fpdf2 v2.8.x : clean() sur text avant rendu."""
+        super().multi_cell(w=w, h=h, text=clean(text), border=border,
+                           align=align, fill=fill, split_only=split_only,
+                           link=link, ln=ln, max_line_height=max_line_height,
+                           markdown=markdown, print_sh=print_sh,
+                           new_x=new_x, new_y=new_y)
 
     def _fill_bg(self):
         self.set_fill_color(*BG_DARK)
