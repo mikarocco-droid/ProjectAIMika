@@ -1454,15 +1454,26 @@ def detect_events(
                                 "goal_time": current_time,
                                 "check_at":  current_time + 1.5,
                             })
-                        elif camera_type == "high_side":
-                            # Sur high_side, les tirs ne sont jamais détectés
-                            # (joueurs trop petits). On accepte le but si le
-                            # signal physique est cohérent même sans tir.
+                        elif (camera_type == "high_side"
+                              and (_vitesse_recente_elevee or _trajectoire_compatible)
+                              and _pas_evenement_contradictoire
+                              and state.get("goal_cd", 0) == 0):
+                            # Sur high_side, on accepte le but si vitesse OU
+                            # trajectoire + pas d'événement contradictoire
+                            # + pas dans la fenêtre cooldown d'un but récent.
                             _joueur_hs = str(current["id"]) if current else None
+                            _hs_x_norm = x / frame_w if frame_w else 0
+                            _hs_y_norm = y / frame_h if frame_h else 0
+                            _hs_lost   = _bt.lost_frames if (_bt is not None and hasattr(_bt, 'lost_frames')) else '?'
                             print(f"  ✅ goal CONFIRMÉ (HIGH_SIDE_NO_SHOT) "
-                                  f"à t={current_time:.1f}s — camera high_side, "
-                                  f"tir non requis. vitesse={_vitesse_recente_elevee} "
-                                  f"trajectoire={_trajectoire_compatible}")
+                                  f"à t={current_time:.1f}s — "
+                                  f"vitesse={_vitesse_recente_elevee} "
+                                  f"trajectoire={_trajectoire_compatible} "
+                                  f"goal_cd={state.get('goal_cd', 0)} "
+                                  f"x={x:.0f}({_hs_x_norm*100:.1f}%) "
+                                  f"y={y:.0f}({_hs_y_norm*100:.1f}%) "
+                                  f"lost_frames={_hs_lost} "
+                                  f"pas_contradictoire={_pas_evenement_contradictoire}")
                             events.append({
                                 "type":        "goal",
                                 "player":      _joueur_hs,
