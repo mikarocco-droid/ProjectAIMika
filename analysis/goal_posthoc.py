@@ -368,10 +368,24 @@ def detect_fast_goals_from_ball(
             # petits). On accepte le but si stuck≥3 + trajectoire vers
             # le but + recent_motion cohérent. Score minimum relevé
             # pour compenser l'absence du filtre tir.
+            # Filtre F3 : sur high_side, peak élevé en position extrême
+            # = sortie de cadre déguisée en but (validé sur 5 FP, 1 vrai but)
+            _hs_x_norm = x / frame_w if frame_w else 0.5
+            _hs_is_border_exit = (
+                rebound and (_hs_x_norm < 0.08 or _hs_x_norm > 0.92)
+            )
+            _hs_out_of_frame  = _hs_x_norm < 0.03 or _hs_x_norm > 0.97
+            _hs_fast_exit     = (
+                peak_before > 300
+                and (_hs_x_norm < 0.12 or _hs_x_norm > 0.88)
+            )
             valid_high_side = (
                 camera_type == "high_side"
-                and stuck >= 3         # ballon immobile dans zone but
-                and recent_motion_ok   # mouvement cohérent avant
+                and stuck >= 3
+                and recent_motion_ok
+                and not _hs_is_border_exit   # F1 : sortie de cadre avec rebound
+                and not _hs_out_of_frame     # F2 : hors cadre absolu
+                and not _hs_fast_exit        # F3 : sortie rapide (branche test validée)
             )
             if not valid_loose and not valid_high_side:
                 i += 1

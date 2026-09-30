@@ -637,14 +637,16 @@ def _diag_kickoff_geometrique(players, frame_w, frame_h, current_time, state):
 def detect_events(
     players,
     ball,
-    sport      = "football",
-    state      = None,
-    shot_zones = None,
-    frame_w    = 1280,
-    frame_h    = 720,
-    learner    = None,
-    fps        = 25,
-    team_map   = None,
+    sport       = "football",
+    state       = None,
+    shot_zones  = None,
+    frame_w     = 1280,
+    frame_h     = 720,
+    learner     = None,
+    fps         = 25,
+    team_map    = None,
+    camera_type = None,   # "high_side" : exempte du filtre tir obligatoire
+                          # car les tirs ne sont jamais détectés sur caméra large
 ):
     if state is None:
         # V5.2 (14/09/2026) FIX CRITIQUE : init_state() utilisait fps=25
@@ -1371,7 +1373,8 @@ def detect_events(
                                 if 0 < current_time - s["time"] <= 3.0
                             ]
                             _vitesse_max_recente = max(_vitesses_recentes) if _vitesses_recentes else 0
-                            print(f"  ⚠️ FALLBACK SUPPRIMÉ (désactivé) à t={current_time:.1f}s "
+                            import logging as _log_fb
+                            _log_fb.debug(f"  ⚠️ FALLBACK SUPPRIMÉ (désactivé) à t={current_time:.1f}s "
                                   f"x={x:.0f} y={y:.0f} "
                                   f"(x_norm={x/frame_w:.3f} y_norm={y/frame_h:.3f}) "
                                   f"vitesse_max_3s={_vitesse_max_recente:.0f} "
@@ -1451,6 +1454,30 @@ def detect_events(
                                 "goal_time": current_time,
                                 "check_at":  current_time + 1.5,
                             })
+                        elif camera_type == "high_side":
+                            # Sur high_side, les tirs ne sont jamais détectés
+                            # (joueurs trop petits). On accepte le but si le
+                            # signal physique est cohérent même sans tir.
+                            _joueur_hs = str(current["id"]) if current else None
+                            print(f"  ✅ goal CONFIRMÉ (HIGH_SIDE_NO_SHOT) "
+                                  f"à t={current_time:.1f}s — camera high_side, "
+                                  f"tir non requis. vitesse={_vitesse_recente_elevee} "
+                                  f"trajectoire={_trajectoire_compatible}")
+                            events.append({
+                                "type":        "goal",
+                                "player":      _joueur_hs,
+                                "team":        _locked_team(current, team_map),
+                                "x":           x,
+                                "y":           y,
+                                "xg":          0.3,
+                                "time":        current_time,
+                                "danger":      compute_danger({"type": "goal"}),
+                                "shot_linked": False,
+                                "on_target":   True,
+                                "source":      "high_side_no_shot",
+                                "confidence":  0.6,
+                            })
+                            state["goal_cd"] = goal_cd_max
                         else:
                             # Pas de tir récent avec xG > 0, ET fallback
                             # non satisfait → faux positif
