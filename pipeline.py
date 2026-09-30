@@ -941,6 +941,11 @@ def run_pipeline(
         _finmatch_audio_absolu = None
 
         # Court-circuit KO2 si video_end_s < KO2 attendu — inutile de chercher
+        # _video_duration_s toujours calculée ici — find_match_end en a besoin
+        # quelle que soit la méthode de détection KO (précalculé ou Gemini).
+        if "_video_duration_s" not in dir():
+            _video_duration_s = total_frames / max(fps, 1)
+
         _ko2_min_absolu = _kickoff_offset + half_duration_min * 60
         _skip_ko2 = video_end_s is not None and video_end_s < _ko2_min_absolu
         if _skip_ko2:
