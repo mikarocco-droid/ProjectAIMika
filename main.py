@@ -316,12 +316,15 @@ def process_batch(
                     "conf":   conf
                 })
             elif cls == detector.ball_cls and _ball_batch_results is None:
-                # Modele joueurs seul : candidats ballon depuis batch_results
-                _candidats_ball.append({
-                    "bbox":   bbox,
-                    "center": [center[0], center[1]],
-                    "conf":   conf
-                })
+                # Single YOLO26m ou modèle joueurs seul :
+                # candidats ballon depuis batch_results, filtrés par conf ballon
+                _conf_seuil_ball = _single_yolo26_conf_ball if _single_yolo26_conf_ball else config.YOLO_CONFIDENCE
+                if conf >= _conf_seuil_ball:
+                    _candidats_ball.append({
+                        "bbox":   bbox,
+                        "center": [center[0], center[1]],
+                        "conf":   conf
+                    })
 
         # Si un modele ballon separe est actif, ses candidats remplacent
         # ceux du modele joueurs pour la classe 32 uniquement.
@@ -641,10 +644,11 @@ def process_video(
                                 # piste courte due a un seuil de rattachement
                                 # legerement trop strict, pas a un probleme
                                 # de vitesse/acceleration du ballon.
-    ball_model_name = None,    # Branche test ballon : nom du .pt (ex. "yolo26m.pt").
-                                # None = meme modele que joueurs (inchange).
-    ball_conf       = None,    # Seuil conf YOLO pour le ballon uniquement.
-                                # None = config.YOLO_CONFIDENCE (inchange).
+    ball_model_name   = None,    # Branche test ballon : nom du .pt (ex. "yolo26m.pt").
+                                  # None = meme modele que joueurs (inchange).
+    ball_conf         = None,    # Seuil conf YOLO pour le ballon uniquement.
+                                  # None = config.YOLO_CONFIDENCE (inchange).
+    use_single_yolo26 = False,   # True = une seule inférence YOLO26m joueurs+ballon.
     seuil_streak_gele = None,  # V5.2 (20/09/2026) : RAFFINEMENT du suivi
                                 # multi-hypotheses (n'a d'effet que si
                                 # activer_multi_hypotheses=True). Plafonne
@@ -680,7 +684,8 @@ def process_video(
                                activer_multi_hypotheses=activer_multi_hypotheses,
                                seuil_streak_gele=seuil_streak_gele,
                                ball_model_name=ball_model_name,
-                               ball_conf=ball_conf)
+                               ball_conf=ball_conf,
+                               use_single_yolo26=use_single_yolo26)
     tracker        = Tracker()
     # V5.2 (17/09/2026) : ocr_every_n_frames corrige plus bas dans cette
     # fonction, une fois le VRAI fps natif de la video connu (pas encore

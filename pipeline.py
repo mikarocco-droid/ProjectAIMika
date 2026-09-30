@@ -680,15 +680,8 @@ def run_pipeline(
             # logique avant livraison.
             print(f"  [KICKOFF] Valeur pré-calculée fournie : {kickoff_s_precalcule}s "
                   f"(détection Gemini sautée)")
-            _kickoff_offset   = float(kickoff_s_precalcule)
-            _kickoff_conf     = 1.0 if _kickoff_offset > 0 else 0.0
-            # _video_duration_s requise par find_match_end plus bas.
-            # Dans ce chemin (kickoff précalculé), elle n'est pas encore
-            # définie — on la calcule depuis total_frames/fps du pipeline.
-            # total_frames est disponible après process_video() donc on
-            # la définit avec une valeur temporaire ici et on la recalcule
-            # après process_video().
-            _video_duration_s = None  # sera recalculée après process_video()
+            _kickoff_offset = float(kickoff_s_precalcule)
+            _kickoff_conf   = 1.0 if _kickoff_offset > 0 else 0.0
         else:
             # Lecture LEGERE des metadonnees (fps, duree) - PAS un traitement de
             # frames, juste l'en-tete du fichier. video_path ne change jamais.
@@ -762,10 +755,8 @@ def run_pipeline(
             camera_type       = camera_type,
             ball_model_name   = ball_model_name,
             ball_conf         = ball_conf,
+            use_single_yolo26 = use_single_yolo26,
         )
-        # Calcul _video_duration_s maintenant que total_frames et fps sont connus
-        if not _video_duration_s:
-            _video_duration_s = total_frames / max(fps, 1)
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
     # V5.2 DIAGNOSTIC - mesure le taux de doublons tracker_id ICI, juste
@@ -951,6 +942,11 @@ def run_pipeline(
         _finmatch_audio_absolu = None
 
         # Court-circuit KO2 si video_end_s < KO2 attendu — inutile de chercher
+        # _video_duration_s toujours calculée ici — find_match_end en a besoin
+        # quelle que soit la méthode de détection KO (précalculé ou Gemini).
+        if "_video_duration_s" not in dir():
+            _video_duration_s = total_frames / max(fps, 1)
+
         _ko2_min_absolu = _kickoff_offset + half_duration_min * 60
         _skip_ko2 = video_end_s is not None and video_end_s < _ko2_min_absolu
         if _skip_ko2:
