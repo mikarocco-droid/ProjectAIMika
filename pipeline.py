@@ -463,7 +463,7 @@ def run_pipeline(
         try:
             import cv2 as _cv2_seg
             from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
-            from analysis.match_boundaries_v2 import find_ko2_gemini, find_fin1mt_audio
+            # find_ko2_gemini et find_fin1mt_audio importés globalement ligne 57
             from analysis.finmatch_gemini_cascade import find_finmatch_gemini
             from segment_extractor import extract_segments, analyze_segments, cleanup_segments
 
