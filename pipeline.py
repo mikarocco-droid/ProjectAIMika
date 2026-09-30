@@ -1815,6 +1815,34 @@ def run_pipeline(
             print(f"  [CENTRAL_BX_PRE] {len(goals_pre) - len(_goals_central_filtered)} candidat(s) filtrés (zone centrale)")
         goals_pre = _goals_central_filtered
 
+        # ── Filtre high_side_no_shot — pré-Gemini ──────────────────────────────
+        # Élimine les candidats HIGH_SIDE_NO_SHOT manifestement invalides avant
+        # d'envoyer à Gemini. Basé sur les données observées (6 événements) :
+        # - x=0px (0.0%) : ballon hors cadre gauche — jamais un vrai but
+        # - lost_frames >= 2 : ballon non vu 2+ frames — signal non fiable
+        # Le vrai but (384.3s) avait x=88.1% et lost_frames=0 → non affecté.
+        _hs_no_shot_filtered = []
+        for _e in goals_pre:
+            if _e.get("source") == "high_side_no_shot":
+                _e_x      = _e.get("x", -1)
+                _e_lost   = _e.get("lost_frames", 0)
+                _e_x_norm = _e_x / _frame_w if _frame_w and _e_x >= 0 else 0.5
+                _e_t      = _e.get("time", 0)
+                # Filtre 1 : x < 1% ou x > 99% = hors cadre absolu
+                if _e_x_norm < 0.01 or _e_x_norm > 0.99:
+                    print(f"  [HS_NO_SHOT_PRE] Rejeté t={int(_e_t//60):02d}:{int(_e_t%60):02d}"
+                          f" — x={_e_x_norm*100:.1f}% hors cadre")
+                    continue
+                # Filtre 2 : lost_frames >= 2 = signal non fiable
+                if _e_lost >= 2:
+                    print(f"  [HS_NO_SHOT_PRE] Rejeté t={int(_e_t//60):02d}:{int(_e_t%60):02d}"
+                          f" — lost_frames={_e_lost}")
+                    continue
+            _hs_no_shot_filtered.append(_e)
+        if len(_hs_no_shot_filtered) < len(goals_pre):
+            print(f"  [HS_NO_SHOT_PRE] {len(goals_pre) - len(_hs_no_shot_filtered)} candidat(s) filtrés")
+        goals_pre = _hs_no_shot_filtered
+
         print(f"  [PRE-GEMINI PIPELINE] {len(goals_pre)} but(s) candidats")
         if DEBUG:
             for e in goals_pre:
