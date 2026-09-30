@@ -355,6 +355,9 @@ def detect_fast_goals_from_ball(
 
         recent_motion_ok = recent_motion >= MIN_RECENT_MOTION * 2.0
 
+        # peak_before calculé ici pour être disponible dans valid_high_side (F3)
+        peak_before = max(speeds[max(0, i - 20):i + 1]) if i > 0 else 0
+
         if not recent_shot_strict:
             # Fallback strict (AND) : tir ancien + rebond + vitesse requis simultanément
             # OR était trop permissif → faux positifs sur centres/dégagements rapides
@@ -392,7 +395,7 @@ def detect_fast_goals_from_ball(
                 continue  # ❌ signal insuffisant
 
         # ── Garde-fou 2 : pic de vitesse avant impact ─────────────────
-        peak_before = max(speeds[max(0, i - 20):i + 1]) if i > 0 else 0
+        # peak_before déjà calculé plus haut
         if peak_before < MIN_PEAK_SPEED:
             i += 1
             continue
