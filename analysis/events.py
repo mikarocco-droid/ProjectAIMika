@@ -1474,6 +1474,7 @@ def detect_events(
                                   f"y={y:.0f}({_hs_y_norm*100:.1f}%) "
                                   f"lost_frames={_hs_lost} "
                                   f"pas_contradictoire={_pas_evenement_contradictoire}")
+                            _hs_lost_val = _bt.lost_frames if (_bt is not None and hasattr(_bt, "lost_frames")) else 0
                             events.append({
                                 "type":        "goal",
                                 "player":      _joueur_hs,
@@ -1487,6 +1488,7 @@ def detect_events(
                                 "on_target":   True,
                                 "source":      "high_side_no_shot",
                                 "confidence":  0.6,
+                                "lost_frames": _hs_lost_val,
                             })
                             state["goal_cd"] = goal_cd_max
                         else:
