@@ -463,7 +463,7 @@ def run_pipeline(
         try:
             import cv2 as _cv2_seg
             from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
-            # find_ko2_gemini et find_fin1mt_audio importés globalement ligne 57
+            from analysis.match_boundaries_v2 import find_ko2_gemini, find_fin1mt_audio
             from analysis.finmatch_gemini_cascade import find_finmatch_gemini
             from segment_extractor import extract_segments, analyze_segments, cleanup_segments
 
@@ -902,10 +902,6 @@ def run_pipeline(
                   f"(conf={_kickoff_conf:.2f}) — suppression pré-match")
 
             # 1. Corriger timestamps + supprimer events avant le coup d'envoi
-            # DEBUG timestamps avant apply_kickoff_offset
-            if events:
-                _t_sample = sorted([e.get("time",0) for e in events])
-                print(f"  [DEBUG KO] {len(events)} events — times: min={_t_sample[0]:.1f}s max={_t_sample[-1]:.1f}s median={_t_sample[len(_t_sample)//2]:.1f}s | offset={_kickoff_offset:.1f}s")
             events, _n_removed = apply_kickoff_offset(events, _kickoff_offset, fps=fps)
             print(f"  [KICKOFF] {len(events)} events après correction "
                   f"({_n_removed} events pré-match supprimés)")
@@ -944,22 +940,7 @@ def run_pipeline(
         _fin1mt_absolu = None
         _finmatch_audio_absolu = None
 
-        # _video_duration_s : toujours calculée ici pour find_match_end plus bas,
-        # quelle que soit la méthode de détection KO utilisée.
-        _video_duration_s = total_frames / max(fps, 1)
-
-        # Court-circuit KO2 si video_end_s est défini et inférieur au KO2 attendu.
-        # KO2 se situe typiquement à KO1 + half_duration_min minutes — inutile
-        # de chercher si la vidéo est tronquée avant cette zone.
-        _ko2_min_absolu = _kickoff_offset + half_duration_min * 60
-        _skip_ko2 = (
-            video_end_s is not None
-            and video_end_s < _ko2_min_absolu
-        )
-        if _skip_ko2:
-            print(f"  [KO2] Skippé — video_end_s={video_end_s:.0f}s < KO2 attendu ≥ {_ko2_min_absolu:.0f}s")
-
-        if _kickoff_offset > 0 and not _skip_ko2:
+        if _kickoff_offset > 0:
             print(f"  [KO2] Recherche dans [KO1+{half_duration_min+4}min, KO1+{half_duration_min+23}min]...")
             _ko2_result = find_ko2_gemini(
                 video_path, ko1_s=_kickoff_offset, half_duration_min=half_duration_min,
@@ -2189,7 +2170,7 @@ def run_pipeline(
                 if isinstance(e, dict)
                 and e.get("type") == "shot"
                 and e.get("on_target", False)
-                and float(e.get("xg", 0) or 0) > 0.35
+                and float(e.get("xg", 0) or 0) > (0.45 if _posthoc_camera_type == "high_side" else 0.35)
                 and not any(
                     0 <= gt - e.get("time", 0) <= 30
                     for gt in _confirmed_goal_times
@@ -2197,7 +2178,8 @@ def run_pipeline(
             ]
 
             if not _stg_candidates:
-                print("  [SHOT→GOAL] Aucun tir éligible (xG>0.35 sans but dans 30s) → ignoré")
+                _xg_seuil = 0.45 if _posthoc_camera_type == "high_side" else 0.35
+                print(f"  [SHOT→GOAL] Aucun tir éligible (xG>{_xg_seuil} sans but dans 30s) → ignoré")
             else:
                 print(f"  [SHOT→GOAL] {len(_stg_candidates)} tir(s) éligible(s) → analyse Gemini stricte")
 

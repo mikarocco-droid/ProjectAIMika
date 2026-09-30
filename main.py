@@ -514,25 +514,19 @@ def process_batch(
 
         _t0 = _profile_start()
         frame_events, events_state = detect_events(
-            players    = tracked,
-            ball       = ball,
-            sport      = sport,
-            state      = events_state,
-            shot_zones = shot_zones,
-            frame_w    = w,
-            frame_h    = h,
-            fps        = fps,
+            players     = tracked,
+            ball        = ball,
+            sport       = sport,
+            state       = events_state,
+            shot_zones  = shot_zones,
+            frame_w     = w,
+            frame_h     = h,
+            fps         = fps,
+            camera_type = camera_type,
         )
         _profile_end(_t0, "detect_events")
         for e in frame_events:
             e["frame"] = frame_id
-            # V5.2 FIX : corriger time=0 quand ball=None ou ball["frame"]=0.
-            # detect_events calcule current_time = ball["frame"]/fps, mais
-            # ball peut être None (frame sans ballon) ou avoir frame=0.
-            # On corrige en post : si time manque ou vaut 0, on le calcule
-            # directement depuis frame_id/fps qui est toujours absolu.
-            if not e.get("time"):
-                e["time"] = round(frame_id / fps, 3)
             if e.get("team") is None:
                 pid = e.get("player")
                 if pid:
