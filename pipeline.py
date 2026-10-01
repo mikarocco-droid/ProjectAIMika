@@ -330,7 +330,6 @@ def run_pipeline(
     ball_conf         = None,    # Seuil conf YOLO ballon uniquement.
                                   # None = config.YOLO_CONFIDENCE (inchangé).
     use_single_yolo26 = False,   # True = une seule inférence YOLO26m joueurs+ballon.
-                                  # False = double inférence inchangée (défaut).
     _match_data       = None,    # Replay Engine : dict depuis replay.load_cache() — skip YOLO/tracking si fourni
 ):
     os.makedirs(output_dir, exist_ok=True)
@@ -947,6 +946,9 @@ def run_pipeline(
         # _video_duration_s toujours calculée ici — find_match_end en a besoin
         # quelle que soit la méthode de détection KO (précalculé ou Gemini).
         if "_video_duration_s" not in dir():
+            _video_duration_s = total_frames / max(fps, 1)
+
+        if '_video_duration_s' not in dir() or _video_duration_s is None:
             _video_duration_s = total_frames / max(fps, 1)
 
         _ko2_min_absolu = _kickoff_offset + half_duration_min * 60
@@ -1769,6 +1771,13 @@ def run_pipeline(
         from ai.gemini_validator import validate_events_with_gemini, read_jersey_numbers, read_goal_scorers
 
         # Filtrer les events éco AVANT Gemini — réduit ~30% des appels
+        # Debug : tracer les high_side_no_shot avant Gemini
+        _hs_pre = [e for e in events if e.get("source") == "high_side_no_shot"]
+        if _hs_pre:
+            print(f"  [DEBUG HS] {len(_hs_pre)} high_side_no_shot dans events avant Gemini :")
+            for _e in _hs_pre:
+                _t = _e.get("time", 0)
+                print(f"    t={int(_t//60):02d}:{int(_t%60):02d} x={_e.get('x',0):.0f} lost={_e.get('lost_frames',0)}")
         events_for_gemini = [e for e in events if not e.get("_eco")]
         events_eco        = [e for e in events if e.get("_eco")]
 
@@ -1813,7 +1822,13 @@ def run_pipeline(
         for _e in goals_pre:
             _t  = _e.get("time", 0)
             _bx = _e.get("bx") or (_e.get("ball_x", 9999) / _frame_w if _e.get("ball_x") else None)
+            _ex = _e.get("x", None)
+            _ex_norm = _ex / _frame_w if (_ex is not None and _frame_w) else None
             _src = _e.get("source", _e.get("detected_from", ""))
+            # high_side_no_shot : x vient directement du ballon (pas de bx)
+            # On utilise x_norm comme position pour ce type d'event
+            if _src == "high_side_no_shot" and _ex_norm is not None:
+                _bx = _ex_norm
             if _bx is not None and 0.35 <= _bx <= 0.65:
                 print(f"  [CENTRAL_BX_PRE] Candidat rejeté avant Gemini t={int(_t//60):02d}:{int(_t%60):02d}"
                       f" bx={_bx:.3f} src={_src} — tir depuis zone centrale (coup franc / remise)")
@@ -1850,6 +1865,24 @@ def run_pipeline(
         if len(_hs_no_shot_filtered) < len(goals_pre):
             print(f"  [HS_NO_SHOT_PRE] {len(goals_pre) - len(_hs_no_shot_filtered)} candidat(s) filtrés")
         goals_pre = _hs_no_shot_filtered
+
+        # Réduire terminal_clearance : 79/82 rejetés par Gemini au run précédent.
+        # On les garde seulement si un high_side_no_shot est dans les 120s.
+        _hs_times = [e.get("time",0) for e in goals_pre if e.get("source") == "high_side_no_shot"]
+        _tc_filtered = []
+        _tc_removed = 0
+        for _e in goals_pre:
+            _src = _e.get("source", "")
+            if "terminal_clearance" in _src or "terminal_goalkeeper" in _src:
+                _t = _e.get("time", 0)
+                _near_hs = any(abs(_t - _hs) <= 120 for _hs in _hs_times)
+                if not _near_hs:
+                    _tc_removed += 1
+                    continue
+            _tc_filtered.append(_e)
+        if _tc_removed:
+            print(f"  [TC_PRE] {_tc_removed} terminal_clearance/goalkeeper éloignés de tout but → ignorés")
+        goals_pre = _tc_filtered
 
         print(f"  [PRE-GEMINI PIPELINE] {len(goals_pre)} but(s) candidats")
         if DEBUG:
