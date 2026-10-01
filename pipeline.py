@@ -329,7 +329,7 @@ def run_pipeline(
                                   # None = même modèle que joueurs (inchangé).
     ball_conf         = None,    # Seuil conf YOLO ballon uniquement.
                                   # None = config.YOLO_CONFIDENCE (inchangé).
-    use_single_yolo26 = False,   # True = une seule inférence YOLO26m joueurs+ballon.
+    use_single_yolo26 = True,    # YOLO26m unique pour joueurs+ballon (validé 2026-09-30)
     _match_data       = None,    # Replay Engine : dict depuis replay.load_cache() — skip YOLO/tracking si fourni
 ):
     os.makedirs(output_dir, exist_ok=True)

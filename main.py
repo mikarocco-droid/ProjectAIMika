@@ -269,18 +269,8 @@ def process_batch(
         _profile_end(_t0, "yolo_single_yolo26")
         _ball_batch_results      = None
         _single_yolo26_conf_ball = _ball_conf_eff
-    elif detector._ball_model is not detector.model:
-        _t0 = _profile_start()
-        _ball_batch_results = detector._ball_model(
-            small_frames,
-            classes = [detector.ball_cls],
-            conf    = _ball_conf_eff,
-            verbose = False,
-            imgsz   = int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))
-        )
-        _profile_end(_t0, "yolo_ball_batch")
-        _single_yolo26_conf_ball = None
     else:
+        # Fallback : pas de modèle ballon séparé
         _ball_batch_results      = None
         _single_yolo26_conf_ball = None
 
@@ -662,7 +652,7 @@ def process_video(
                                 # de vitesse/acceleration du ballon.
     ball_model_name   = None,
     ball_conf         = None,
-    use_single_yolo26 = False,
+    use_single_yolo26 = True,    # YOLO26m unique validé 2026-09-30
     seuil_streak_gele = None,  # V5.2 (20/09/2026) : RAFFINEMENT du suivi
                                 # multi-hypotheses (n'a d'effet que si
                                 # activer_multi_hypotheses=True). Plafonne
