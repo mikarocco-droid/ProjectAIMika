@@ -608,8 +608,7 @@ class Detector:
 
     def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5,
                  seuil_gap_protection=None, intervalle_recherche_globale=None,
-                 activer_multi_hypotheses=False, seuil_streak_gele=None,
-                 ball_model_name=None, ball_conf=None, use_single_yolo26=False):
+                 activer_multi_hypotheses=False, seuil_streak_gele=None):
         self.sport        = sport
         # V5.2 (20/09/2026) : camera_type - PARAMETRE NORMAL, pas de
         # flag config.py separe (retire suite a une remarque justifiee
@@ -632,7 +631,14 @@ class Detector:
         self.activer_multi_hypotheses = activer_multi_hypotheses  # V5.2 (20/09/2026) : defaut False = inchange
         self.seuil_streak_gele = seuil_streak_gele  # V5.2 (20/09/2026) : defaut None = inchange
         self.zone         = PLAY_ZONES.get(sport, PLAY_ZONES["football"])
-        self.model, self.model_name = load_player_model(sport)
+
+        # Si use_single_yolo26, YOLO26m remplacera self.model — on évite
+        # de charger YOLO11m pour rien (gaspillage temps + RAM).
+        if use_single_yolo26 and ball_model_name and "yolo26" in str(ball_model_name).lower():
+            self.model      = None   # sera remplacé par YOLO26m ci-dessous
+            self.model_name = ball_model_name
+        else:
+            self.model, self.model_name = load_player_model(sport)
 
         # ── Branche YOLO26m unique ─────────────────────────────────────────────
         # Test validé expérimentalement sur Andrimont high_side (2026-09-30) :
@@ -697,11 +703,12 @@ class Detector:
                                          intervalle_recherche_globale=self.intervalle_recherche_globale,
                                          activer_multi_hypotheses=self.activer_multi_hypotheses,
                                          seuil_streak_gele=self.seuil_streak_gele)
-        new_model, new_name = load_player_model(sport)
-        if new_name != self.model_name:
-            self.model      = new_model
-            self.model_name = new_name
-            print(f"  Modele mis a jour : {new_name}")
+        if not self._use_single_yolo26:
+            new_model, new_name = load_player_model(sport)
+            if new_name != self.model_name:
+                self.model      = new_model
+                self.model_name = new_name
+                print(f"  Modele mis a jour : {new_name}")
 
     def _in_play_zone(self, center, frame_w, frame_h):
         cx, cy = center
