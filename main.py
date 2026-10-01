@@ -255,7 +255,21 @@ def process_batch(
     # Les resultats remplacent UNIQUEMENT les candidats ballon — joueurs,
     # tracker, HSV, events : inchanges.
     _ball_conf_eff = detector._ball_conf if detector._ball_conf is not None                      else config.YOLO_CONFIDENCE
-    if detector._ball_model is not detector.model:
+
+    if getattr(detector, '_use_single_yolo26', False):
+        # Single YOLO26m : une seule inférence classes=[0,32]
+        _t0 = _profile_start()
+        batch_results = detector.model(
+            small_frames,
+            classes = [detector.player_cls, detector.ball_cls],
+            conf    = min(config.YOLO_CONFIDENCE, _ball_conf_eff),
+            verbose = False,
+            imgsz   = int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))
+        )
+        _profile_end(_t0, "yolo_single_yolo26")
+        _ball_batch_results      = None
+        _single_yolo26_conf_ball = _ball_conf_eff
+    elif detector._ball_model is not detector.model:
         _t0 = _profile_start()
         _ball_batch_results = detector._ball_model(
             small_frames,
@@ -265,8 +279,10 @@ def process_batch(
             imgsz   = int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))
         )
         _profile_end(_t0, "yolo_ball_batch")
+        _single_yolo26_conf_ball = None
     else:
-        _ball_batch_results = None  # utilise batch_results normal
+        _ball_batch_results      = None
+        _single_yolo26_conf_ball = None
 
     batch_data = []
 
@@ -316,8 +332,6 @@ def process_batch(
                     "conf":   conf
                 })
             elif cls == detector.ball_cls and _ball_batch_results is None:
-                # Single YOLO26m ou modèle joueurs seul :
-                # candidats ballon depuis batch_results, filtrés par conf ballon
                 _conf_seuil_ball = _single_yolo26_conf_ball if _single_yolo26_conf_ball else config.YOLO_CONFIDENCE
                 if conf >= _conf_seuil_ball:
                     _candidats_ball.append({
@@ -531,6 +545,8 @@ def process_batch(
         _profile_end(_t0, "detect_events")
         for e in frame_events:
             e["frame"] = frame_id
+            if not e.get("time"):
+                e["time"] = round(frame_id / fps, 3)
             if e.get("team") is None:
                 pid = e.get("player")
                 if pid:
@@ -644,11 +660,9 @@ def process_video(
                                 # piste courte due a un seuil de rattachement
                                 # legerement trop strict, pas a un probleme
                                 # de vitesse/acceleration du ballon.
-    ball_model_name   = None,    # Branche test ballon : nom du .pt (ex. "yolo26m.pt").
-                                  # None = meme modele que joueurs (inchange).
-    ball_conf         = None,    # Seuil conf YOLO pour le ballon uniquement.
-                                  # None = config.YOLO_CONFIDENCE (inchange).
-    use_single_yolo26 = False,   # True = une seule inférence YOLO26m joueurs+ballon.
+    ball_model_name   = None,
+    ball_conf         = None,
+    use_single_yolo26 = False,
     seuil_streak_gele = None,  # V5.2 (20/09/2026) : RAFFINEMENT du suivi
                                 # multi-hypotheses (n'a d'effet que si
                                 # activer_multi_hypotheses=True). Plafonne
@@ -839,7 +853,7 @@ def process_video(
             analyzed_offset = analyzed_so_far - len(batch) + 1,
             fps             = fps,
             events_state    = events_state,
-            b_size          = b_size,   # ← propagé jusqu'à imgsz
+            b_size          = b_size,
             camera_type     = camera_type,
         )
         for fd in data:
