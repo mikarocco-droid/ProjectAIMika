@@ -608,7 +608,8 @@ class Detector:
 
     def __init__(self, sport="football", camera_type="low_side", proximite_poids=0.5,
                  seuil_gap_protection=None, intervalle_recherche_globale=None,
-                 activer_multi_hypotheses=False, seuil_streak_gele=None):
+                 activer_multi_hypotheses=False, seuil_streak_gele=None,
+                 ball_model_name=None, ball_conf=None, use_single_yolo26=False):
         self.sport        = sport
         # V5.2 (20/09/2026) : camera_type - PARAMETRE NORMAL, pas de
         # flag config.py separe (retire suite a une remarque justifiee
