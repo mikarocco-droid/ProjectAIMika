@@ -370,7 +370,8 @@ _AV_LOCK        = _threading.Lock()
 def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
                          frame_w=1920, frame_h=1080,
                          confirmed_goal_times=None,
-                         kickoff_offset=0):
+                         kickoff_offset=0,
+                         source=None):
     """
     Analyse la fenêtre [shot_time, shot_time+window] après un tir détecté.
     Envoie des frames espacées à Gemini avec la question :
