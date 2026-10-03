@@ -1449,7 +1449,9 @@ def validate_event(video_path, event, fps=25, sport="football", frame_w=None):
     # Profil : shot_loose + stuck>=5 + rebound → ballon perdu après but, récupéré ~10s plus tard
     if "terminal_goal" in str(source):
         offsets_s = [-3, 0, 5, 20]
-    elif "posthoc" in str(source):
+    elif "posthoc" in str(source) or "high_side_no_shot" in str(source):
+        # high_side_no_shot : caméra large, ballon petit, preuve visuelle
+        # décalée → mêmes offsets larges que posthoc pour couvrir ±5s
         if event.get("posthoc_late"):
             offsets_s = [-12, -10, -5, -2, 0, 5]
             print(f"  [POSTHOC LATE] offsets étendus {offsets_s} "
