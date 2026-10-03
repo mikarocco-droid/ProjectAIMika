@@ -589,6 +589,13 @@ If the ball position is unclear, partially hidden, or you are not 100% certain i
 → NEVER guess a goal from partial visibility
 → When in doubt = no goal
 
+EXCEPTION FOR WIDE-ANGLE (HIGH_SIDE) CAMERAS:
+If the camera is filming from far above/behind (players appear very small, full pitch visible),
+the ball may not be physically visible in the net due to camera distance and resolution.
+In this case, a CENTER KICKOFF clearly visible (+5) COMBINED with players walking back (+3),
+giving a total score ≥ 8, IS SUFFICIENT to confirm a goal — even without direct ball-in-net evidence.
+This exception applies ONLY when: (1) the kickoff is unambiguous, (2) score ≥ 8, (3) no negative signals.
+
 EVIDENCE B — CENTER KICKOFF (very specific restart):
 A center kickoff is valid ONLY if ALL of these conditions are met simultaneously:
 1. Ball is exactly at the CENTER SPOT (geometric middle of the pitch)
@@ -797,6 +804,21 @@ DEFAULT TO is_goal=false if total_score <= 2 or goalkeeper holding ball detected
             goal_votes = 2 if goal_score >= 10 else (1 if goal_score >= 7 else 0)
         else:
             goal_votes = 2 if goal_score >= 6 else (1 if goal_score >= 4 else 0)
+
+        # Override high_side_no_shot : score >= 8 + KO visible + pas de signal négatif
+        # = but confirmé même sans preuve physique directe (caméra trop loin)
+        _src = str(source) if source else ""
+        if ("high_side_no_shot" in _src
+                and goal_score >= 8
+                and not _has_ball_outside
+                and not is_goal):
+            is_goal    = True
+            confidence = min(0.85, 0.65 + (goal_score - 8) * 0.05)
+            goal_votes = 2
+            if timestamp is None:
+                timestamp = shot_time + 2
+            print(f"  [HIGH_SIDE OVERRIDE] score={goal_score} >= 8 + KO visible "
+                  f"→ is_goal=True conf={confidence:.2f}")
 
         # Valider le timestamp dans la fenêtre
         if is_goal and timestamp is not None:
