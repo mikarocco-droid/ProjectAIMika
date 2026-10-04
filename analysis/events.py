@@ -1168,27 +1168,7 @@ def detect_events(
             player_near_goal = dist < frame_w * player_near_pct
             gk_blocking_goal = state["_gk_holding_ball"] or state["_gk_release_cd"] > 0
 
-            # FIX : ne pas bloquer tous les buts suivants si un but existe déjà.
-            # L'ancienne logique bloquait TOUS les buts après le premier.
-            # On vérifie uniquement si un but a été ajouté dans les 45 dernières
-            # secondes (goal_cd_max) — pas dans tout le match.
-            # FIX : vérifier uniquement dans la fenêtre cooldown (45s)
-            # goal_cd_max est en frames → convertir en secondes
-            _goal_cd_max_s = goal_cd_max / max(fps, 1)
-            _goal_already_added = any(
-                e.get("type") == "goal"
-                and 0 <= current_time - e.get("time", 0) <= _goal_cd_max_s
-                for e in events
-            )
-
-            # [CROSS_DEBUG] Logguer l état réel autour des traversées de ligne
-            if camera_type == "high_side" and is_goal_zone and 3550 <= current_time <= 3600:
-                print(f"  [CROSS_DEBUG] t={current_time:.2f}s "
-                      f"is_goal_zone={is_goal_zone} "
-                      f"goal_already_added={_goal_already_added} "
-                      f"gk_blocking={gk_blocking_goal} "
-                      f"goal_cd={state.get('goal_cd', 0):.1f}s "
-                      f"ball_in_goal_zone={state.get('ball_in_goal_zone', 0)}")
+            _goal_already_added = any(e.get("type") == "goal" for e in events)
 
             if is_goal_zone and not gk_blocking_goal and not _goal_already_added:
                 if ball_is_real and (player_near_goal or state["ball_in_goal_zone"] >= 3):
@@ -1339,21 +1319,6 @@ def detect_events(
                             not gk_blocking_goal
                             and state.get("_shot_blocked_cd", 0) == 0
                         )
-                        # [CROSS_DEBUG] log pour les 3 buts manqués
-                        if camera_type == "high_side" and (
-                            1820 <= current_time <= 1835
-                            or 2920 <= current_time <= 2930
-                            or 3580 <= current_time <= 3590
-                        ):
-                            _speeds_dbg = [s["speed"] for s in state["_recent_ball_speeds"]
-                                          if 0 < current_time - s["time"] <= 3.0]
-                            print(f"  [CROSS_DEBUG] t={current_time:.2f}s "
-                                  f"vitesse={_vitesse_recente_elevee} "
-                                  f"(speeds_3s={[round(s,1) for s in _speeds_dbg[-5:]]}) "
-                                  f"trajectoire={_trajectoire_compatible} "
-                                  f"(real={ball_is_real} lost_ok={_lost_frames_ok}) "
-                                  f"contradictoire={not _pas_evenement_contradictoire} "
-                                  f"goal_cd={state.get('goal_cd', 0):.1f}s")
                         _fallback_ok = (_vitesse_recente_elevee
                                         and _trajectoire_compatible
                                         and _pas_evenement_contradictoire)
@@ -1493,7 +1458,6 @@ def detect_events(
                               and (_vitesse_recente_elevee or _trajectoire_compatible)
                               and _pas_evenement_contradictoire
                               and state.get("goal_cd", 0) == 0):
-                            # [HS_DEBUG] CREATED
                             # Sur high_side, on accepte le but si vitesse OU
                             # trajectoire + pas d'événement contradictoire
                             # + pas dans la fenêtre cooldown d'un but récent.
@@ -1511,6 +1475,8 @@ def detect_events(
                                   f"lost_frames={_hs_lost} "
                                   f"pas_contradictoire={_pas_evenement_contradictoire}")
                             _hs_lost_val = _bt.lost_frames if (_bt is not None and hasattr(_bt, "lost_frames")) else 0
+                            # cross_side : côté du but franchi
+                            _hs_cross_side = "left" if x <= frame_w * 0.15 else "right"
                             events.append({
                                 "type":        "goal",
                                 "player":      _joueur_hs,
@@ -1525,6 +1491,11 @@ def detect_events(
                                 "source":      "high_side_no_shot",
                                 "confidence":  0.6,
                                 "lost_frames": _hs_lost_val,
+                                "cross_frame": ball.get("frame", 0) if ball else 0,
+                                "cross_time":  current_time,
+                                "cross_side":  _hs_cross_side,
+                                "bx_prev":     c_prev[0] / frame_w if c_prev and frame_w else None,
+                                "bx_cross":    x / frame_w if frame_w else None,
                             })
                             state["goal_cd"] = goal_cd_max
                         else:
