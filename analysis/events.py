@@ -1494,7 +1494,7 @@ def detect_events(
                                 "cross_frame": ball.get("frame", 0) if ball else 0,
                                 "cross_time":  current_time,
                                 "cross_side":  _hs_cross_side,
-                                "bx_prev":     c_prev[0] / frame_w if c_prev and frame_w else None,
+                                "bx_prev":     state["last_ball_pos"][0] / frame_w if state.get("last_ball_pos") and frame_w else None,
                                 "bx_cross":    x / frame_w if frame_w else None,
                             })
                             state["goal_cd"] = goal_cd_max
