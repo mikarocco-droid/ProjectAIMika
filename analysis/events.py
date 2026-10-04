@@ -1172,9 +1172,12 @@ def detect_events(
             # L'ancienne logique bloquait TOUS les buts après le premier.
             # On vérifie uniquement si un but a été ajouté dans les 45 dernières
             # secondes (goal_cd_max) — pas dans tout le match.
+            # FIX : vérifier uniquement dans la fenêtre cooldown (45s)
+            # goal_cd_max est en frames → convertir en secondes
+            _goal_cd_max_s = goal_cd_max / max(fps, 1)
             _goal_already_added = any(
                 e.get("type") == "goal"
-                and 0 <= current_time - e.get("time", 0) <= goal_cd_max
+                and 0 <= current_time - e.get("time", 0) <= _goal_cd_max_s
                 for e in events
             )
 
