@@ -1838,6 +1838,54 @@ def run_pipeline(
             print(f"  [CENTRAL_BX_PRE] {len(goals_pre) - len(_goals_central_filtered)} candidat(s) filtrés (zone centrale)")
         goals_pre = _goals_central_filtered
 
+        # ── Validation crossing Gemini pour high_side_no_shot ──────────────────
+        # Utilise validate_crossing_gemini() centré sur le frame exact du crossing
+        # au lieu des offsets approximatifs de find_goal_after_shot.
+        try:
+            from ai.gemini_validator import validate_crossing_gemini as _vcg
+            _hs_goals = [e for e in goals_pre if e.get("source") == "high_side_no_shot"
+                         and e.get("cross_frame")]
+            _non_hs   = [e for e in goals_pre if e.get("source") != "high_side_no_shot"
+                         or not e.get("cross_frame")]
+            _hs_confirmed = []
+            for _e in _hs_goals:
+                _cf   = _e.get("cross_frame", 0)
+                _ct   = _e.get("cross_time", _e.get("time", 0)) + _kickoff_offset
+                _side = _e.get("cross_side", "left")
+                _bxp  = _e.get("bx_prev")
+                _bxc  = _e.get("bx_cross")
+                print(f"  [CROSSING_VAL] t={int(_ct//60):02d}:{int(_ct%60):02d} "
+                      f"frame={_cf} side={_side} bx={_bxp}→{_bxc}")
+                _r = _vcg(
+                    video_path     = video_path,
+                    cross_time_abs = _ct,
+                    cross_frame    = _cf,
+                    fps            = fps,
+                    frame_w        = _frame_w,
+                    frame_h        = _frame_h,
+                    cross_side     = _side,
+                    bx_prev        = _bxp,
+                    bx_cross       = _bxc,
+                    kickoff_offset = _kickoff_offset,
+                    source         = "high_side_no_shot",
+                )
+                if _r and _r.get("is_goal"):
+                    _e["confidence"] = _r.get("confidence", 0.7)
+                    _e["gemini_desc"] = _r.get("description", "")
+                    _hs_confirmed.append(_e)
+                    print(f"  [CROSSING_VAL] ✅ CONFIRMÉ conf={_r.get('confidence'):.2f}")
+                elif _r and _r.get("decision") == "UNCERTAIN":
+                    # Envoyer au pipeline Gemini normal pour confirmation approfondie
+                    _non_hs.append(_e)
+                    print(f"  [CROSSING_VAL] ⚠️ UNCERTAIN → posthoc approfondi")
+                else:
+                    print(f"  [CROSSING_VAL] ❌ NO_GOAL")
+            # Réintégrer les confirmés directement + les incertains dans le pipeline normal
+            goals_pre = _non_hs + [{**e, "type": "goal", "_crossing_confirmed": True}
+                                    for e in _hs_confirmed]
+        except ImportError:
+            pass  # validate_crossing_gemini non disponible → pipeline normal
+
         # ── Filtre high_side_no_shot — pré-Gemini ──────────────────────────────
         # Élimine les candidats HIGH_SIDE_NO_SHOT manifestement invalides avant
         # d'envoyer à Gemini. Basé sur les données observées (6 événements) :
