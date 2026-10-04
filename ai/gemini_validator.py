@@ -367,6 +367,107 @@ _AV_LOCK        = _threading.Lock()
 # Remplace goal_posthoc_disappear pour les buts difficiles (caméra face, tracking perdu)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+def validate_crossing_gemini(video_path, cross_time_abs, cross_frame, fps=30,
+                              frame_w=1920, frame_h=1080,
+                              cross_side="left", bx_prev=None, bx_cross=None,
+                              kickoff_offset=0, source=None):
+    """
+    Valide un crossing de ligne de but avec 9 frames centrées sur le frame exact.
+    Plus précis que find_goal_after_shot : centré sur t_cross réel.
+    Returns : dict {is_goal, confidence, decision, description} ou None
+    """
+    global _quota_exhausted, _gemini_unavailable
+    if _quota_exhausted or _gemini_unavailable:
+        return None
+    client = get_client()
+    if client is None:
+        return None
+
+    # 9 offsets centrés sur le crossing (secondes relatives à cross_time_abs)
+    OFFSETS_CROSSING = [-2.0, -1.0, -0.5, -1/max(fps,1), 0, 1/max(fps,1), 0.5, 1.0, 2.0]
+
+    parts = []
+    valid_times = []
+    cap = cv2.VideoCapture(video_path)
+    try:
+        for off in OFFSETS_CROSSING:
+            target_fid = max(0, int(cross_frame + off * fps))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_fid)
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                continue
+            t_abs = cross_time_abs + off
+            mm, ss = int(t_abs // 60), int(t_abs % 60)
+            label = "CROSS" if abs(off) < 1/fps else f"{off:+.1f}s"
+            _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            parts.append({"inline_data": {"mime_type": "image/jpeg",
+                                           "data": base64.b64encode(buf.tobytes()).decode()}})
+            parts.append({"text": f"[{label} | {mm:02d}:{ss:02d}]"})
+            valid_times.append(t_abs)
+    finally:
+        cap.release()
+
+    if len(parts) < 4:
+        return None
+
+    # Contexte tracking
+    ctx_lines = ["Ball tracking detected a goal line crossing."]
+    if bx_prev is not None:
+        ctx_lines.append(f"Ball position before: {bx_prev*100:.1f}% from left edge")
+    if bx_cross is not None:
+        ctx_lines.append(f"Ball position at crossing: {bx_cross*100:.1f}% from left edge")
+    ctx_lines.append(f"Goal side: {cross_side}")
+    ctx_lines.append("Camera: wide-angle (high_side) — players appear small.")
+    tracking_ctx = "\n".join(ctx_lines)
+
+    prompt = (
+        "You are analyzing a football match from a wide-angle camera.\n"
+        + tracking_ctx + "\n\n"
+        "The CROSS frame shows the moment the ball crossed the goal line.\n"
+        "Analyze the sequence and determine: did the ball actually enter the goal?\n\n"
+        "Look for: ball in net, net deformation, goalkeeper reaction, "
+        "players celebrating, center kickoff in later frames.\n\n"
+        "Respond exactly with:\n"
+        "GOAL_DECISION: [GOAL / NO_GOAL / UNCERTAIN]\n"
+        "CONFIDENCE: [0.0-1.0]\n"
+        "EVIDENCE: [brief description]"
+    )
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[{"role": "user", "parts": [{"text": prompt}] + parts}]
+        )
+        text = response.text.strip() if response.text else ""
+        decision = "NO_GOAL"
+        confidence = 0.0
+        evidence = ""
+        for line in text.splitlines():
+            if "GOAL_DECISION:" in line:
+                val = line.split(":", 1)[1].strip().upper()
+                if "NO_GOAL" not in val and "GOAL" in val:
+                    decision = "GOAL"
+                elif "UNCERTAIN" in val:
+                    decision = "UNCERTAIN"
+            elif "CONFIDENCE:" in line:
+                try:
+                    confidence = float(line.split(":", 1)[1].strip())
+                except Exception:
+                    pass
+            elif "EVIDENCE:" in line:
+                evidence = line.split(":", 1)[1].strip()[:200]
+
+        is_goal = decision == "GOAL" or (decision == "UNCERTAIN" and confidence >= 0.6)
+        print(f"  [CROSSING_VALIDATOR] {decision} conf={confidence:.2f} is_goal={is_goal}")
+        if evidence:
+            print(f"  [CROSSING_VALIDATOR] Evidence: {evidence[:100]}")
+        return {"is_goal": is_goal, "confidence": confidence,
+                "decision": decision, "description": evidence}
+    except Exception as _e:
+        print(f"  [CROSSING_VALIDATOR] Erreur : {_e}")
+        return None
+
 def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
                          frame_w=1920, frame_h=1080,
                          confirmed_goal_times=None,
