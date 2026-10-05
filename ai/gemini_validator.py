@@ -160,7 +160,7 @@ def _call_gemini(client, parts, max_retries=2):
             t0 = time.time()
             try :
                 response = client.models.generate_content(
-                    model    = "gemini-2.5-flash",
+                    model    = "gemini-3.8-flash",
                     contents = parts
                 )
             finally :
@@ -436,7 +436,7 @@ def validate_crossing_gemini(video_path, cross_time_abs, cross_frame, fps=30,
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.8-flash",
             contents=[{"role": "user", "parts": [{"text": prompt}] + parts}]
         )
         text = response.text.strip() if response.text else ""
@@ -466,6 +466,126 @@ def validate_crossing_gemini(video_path, cross_time_abs, cross_frame, fps=30,
                 "decision": decision, "description": evidence}
     except Exception as _e:
         print(f"  [CROSSING_VALIDATOR] Erreur : {_e}")
+        return None
+
+
+def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
+                                     frame_w=1920, frame_h=1080,
+                                     kickoff_offset=0, source=None):
+    """
+    Valide si un but vient d'être marqué avant un candidat KO.
+    Extrait une séquence couvrant [KO-25s, KO+5s] — le but est avant le KO.
+
+    Returns : dict {is_goal, confidence, goal_time_abs, description} ou None
+    """
+    global _quota_exhausted, _gemini_unavailable
+    if _quota_exhausted or _gemini_unavailable:
+        return None
+    client = get_client()
+    if client is None:
+        return None
+
+    # Offsets relatifs au KO — on cherche surtout AVANT le KO
+    OFFSETS_KO = [-25, -20, -15, -10, -7, -5, -3, -1, 0, 3, 5]
+
+    parts = []
+    valid_times = []
+    cap = cv2.VideoCapture(video_path)
+    try:
+        for off in OFFSETS_KO:
+            t_target = kickoff_time_abs + off
+            if t_target < 0:
+                continue
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(t_target * fps))
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                continue
+            small = cv2.resize(frame, (frame.shape[1]//2, frame.shape[0]//2))
+            _, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            mm, ss = int(t_target//60), int(t_target%60)
+            label = "KO" if off == 0 else f"{off:+d}s"
+            parts.append({"inline_data": {"mime_type": "image/jpeg",
+                                           "data": base64.b64encode(buf.tobytes()).decode()}})
+            parts.append({"text": f"[{label} | {mm:02d}:{ss:02d}]"})
+            valid_times.append(t_target)
+    finally:
+        cap.release()
+
+    if len(parts) < 6:
+        return None
+
+    ko_mm, ko_ss = int(kickoff_time_abs//60), int(kickoff_time_abs%60)
+    prompt = (
+        f"A center kickoff was detected at {ko_mm:02d}:{ko_ss:02d} (KO frame).\n"
+        "This means a goal may have been scored in the seconds just before the KO.\n\n"
+        "Analyze the sequence from -25s to +5s around the KO and answer:\n"
+        "1. Was a goal scored before this kickoff? (look for: ball in net, "
+        "net deformation, goalkeeper retrieving ball, players celebrating)\n"
+        "2. If yes, at what approximate timestamp?\n\n"
+        "Camera: wide-angle (high_side). Players may appear small.\n"
+        "Focus on contextual evidence if the ball is not clearly visible.\n\n"
+        "Respond with:\n"
+        "GOAL_DECISION: [GOAL / NO_GOAL / UNCERTAIN]\n"
+        "CONFIDENCE: [0.0-1.0]\n"
+        "GOAL_TIME: [MM:SS or UNKNOWN]\n"
+        "EVIDENCE: [brief description]"
+    )
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=[{"role": "user", "parts": [{"text": prompt}] + parts}]
+        )
+        text = response.text.strip() if response.text else ""
+        decision   = "NO_GOAL"
+        confidence = 0.0
+        goal_time  = None
+        evidence   = ""
+
+        for line in text.splitlines():
+            if "GOAL_DECISION:" in line:
+                val = line.split(":", 1)[1].strip().upper()
+                if "NO_GOAL" not in val and "GOAL" in val:
+                    decision = "GOAL"
+                elif "UNCERTAIN" in val:
+                    decision = "UNCERTAIN"
+            elif "CONFIDENCE:" in line:
+                try:
+                    confidence = float(line.split(":", 1)[1].strip())
+                except Exception:
+                    pass
+            elif "GOAL_TIME:" in line:
+                gt = line.split(":", 1)[1].strip()
+                if gt and gt != "UNKNOWN":
+                    # Convertir MM:SS en secondes absolues
+                    try:
+                        parts_t = gt.replace(".", ":").split(":")
+                        gt_s = int(parts_t[0])*60 + int(parts_t[1])
+                        goal_time = float(gt_s)
+                    except Exception:
+                        pass
+            elif "EVIDENCE:" in line:
+                evidence = line.split(":", 1)[1].strip()[:200]
+
+        is_goal = decision == "GOAL" or (decision == "UNCERTAIN" and confidence >= 0.65)
+
+        print(f"  [KO_VALIDATOR] t={ko_mm:02d}:{ko_ss:02d} → {decision} "
+              f"conf={confidence:.2f} is_goal={is_goal}")
+        if evidence:
+            print(f"  [KO_VALIDATOR] Evidence: {evidence[:100]}")
+
+        return {
+            "is_goal":        is_goal,
+            "confidence":     confidence,
+            "decision":       decision,
+            "goal_time_abs":  goal_time,
+            "candidate_time": kickoff_time_abs,
+            "description":    evidence,
+            "source":         "ko_detection",
+        }
+
+    except Exception as e:
+        print(f"  [KO_VALIDATOR] Erreur : {e}")
         return None
 
 def find_goal_after_shot(video_path, shot_time, window=30, fps=25,
@@ -610,7 +730,7 @@ confidence=0.95 only if ball is unmistakably inside the net with visible net def
 Default to is_goal=false if any doubt."""
         try:
             _resp = client.models.generate_content(
-                model    = "gemini-2.5-flash",
+                model    = "gemini-3.8-flash",
                 contents = [_early_prompt] + list(early_parts),
             )
             global _GEMINI_CALLS_REEL
