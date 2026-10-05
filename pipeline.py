@@ -1348,6 +1348,75 @@ def run_pipeline(
         except Exception as eg:
             print(f"  goal_posthoc ignoré : {eg}")
 
+        # ── Étape 2c : KO_DETECTION — détection buts via coup d'envoi ────────────
+        # Pour caméra high_side : le ballon peut être masqué (mêlée, résolution).
+        # On détecte les réorganisations collectives → KO candidat → Gemini
+        # cherche un but dans les 25s précédant le KO.
+        if camera_type == "high_side" and frames_data:
+            try:
+                from analysis.detect_kickoff_candidates import detect_kickoff_candidates
+                from ai.gemini_validator import validate_kickoff_context_gemini
+
+                _ko_candidates = detect_kickoff_candidates(
+                    frames_data = frames_data,
+                    fps         = fps,
+                    frame_w     = _frame_w,
+                    frame_h     = _frame_h,
+                    start_s     = _start_lecture_s,
+                )
+                print(f"  [KO_DETECTION] {len(_ko_candidates)} candidat(s) KO détectés")
+
+                _already_confirmed = [e.get("time",0)+_kickoff_offset
+                                      for e in events if e.get("type") == "goal"]
+
+                for _koc in _ko_candidates:
+                    _ko_t_abs = _koc["time"]
+                    _ko_t_rel = _ko_t_abs - _kickoff_offset
+
+                    # Skip si un but confirmé est déjà dans les 60s autour
+                    if any(abs(_ko_t_abs - ct) < 60 for ct in _already_confirmed):
+                        print(f"  [KO_DETECTION] t={int(_ko_t_abs//60):02d}:{int(_ko_t_abs%60):02d} "
+                              f"— but déjà confirmé à proximité, skip")
+                        continue
+
+                    print(f"  [KO_DETECTION] t={int(_ko_t_abs//60):02d}:{int(_ko_t_abs%60):02d} "
+                          f"score={_koc['score']:.3f} bal_delta={_koc['balance_delta']:.3f}")
+
+                    _r = validate_kickoff_context_gemini(
+                        video_path       = video_path,
+                        kickoff_time_abs = _ko_t_abs,
+                        fps              = fps,
+                        frame_w          = _frame_w,
+                        frame_h          = _frame_h,
+                        kickoff_offset   = _kickoff_offset,
+                        source           = "ko_detection",
+                    )
+
+                    if _r and _r.get("is_goal"):
+                        _gt_abs = _r.get("goal_time_abs") or (_ko_t_abs - 10)
+                        _gt_rel = _gt_abs - _kickoff_offset
+                        _ev = {
+                            "type":           "goal",
+                            "source":         "ko_detection",
+                            "time":           _gt_rel,
+                            "xg":             0.5,
+                            "confidence":     _r.get("confidence", 0.7),
+                            "on_target":      True,
+                            "shot_linked":    False,
+                            "candidate_time": _ko_t_rel,
+                            "description":    _r.get("description", ""),
+                            "_crossing_confirmed": True,
+                        }
+                        events.append(_ev)
+                        events.sort(key=lambda e: e.get("time", 0))
+                        _already_confirmed.append(_gt_abs)
+                        print(f"  [KO_DETECTION] ✅ GOAL confirmé à "
+                              f"t={int(_gt_abs//60):02d}:{int(_gt_abs%60):02d} "
+                              f"conf={_r.get('confidence'):.2f}")
+
+            except Exception as _eko:
+                print(f"  [KO_DETECTION] ignoré : {_eko}")
+
         # ── Étape 2b : terminal_events — fenêtres candidates football-native ─────
         _terminal_goals = []
         try:
