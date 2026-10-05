@@ -1168,7 +1168,14 @@ def detect_events(
             player_near_goal = dist < frame_w * player_near_pct
             gk_blocking_goal = state["_gk_holding_ball"] or state["_gk_release_cd"] > 0
 
-            _goal_already_added = any(e.get("type") == "goal" for e in events)
+            # FIX : vérifier uniquement dans la fenêtre cooldown (goal_cd_max secondes)
+            # L'ancienne logique bloquait TOUS les buts après le premier du match.
+            _goal_cd_max_s = goal_cd_max / max(fps, 1)
+            _goal_already_added = any(
+                e.get("type") == "goal"
+                and 0 <= current_time - e.get("time", 0) <= _goal_cd_max_s
+                for e in events
+            )
 
             if is_goal_zone and not gk_blocking_goal and not _goal_already_added:
                 if ball_is_real and (player_near_goal or state["ball_in_goal_zone"] >= 3):
