@@ -3,6 +3,7 @@
 
 import os
 import cv2
+import base64
 import json
 import re
 import time
