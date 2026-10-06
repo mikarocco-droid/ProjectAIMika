@@ -69,11 +69,11 @@ def detect_kickoff_candidates(
     frame_w,
     frame_h,
     start_s             = 0.0,
-    balance_delta_min   = 0.20,   # hausse minimale de balance pour déclencher
-    balance_after_min   = 0.30,   # niveau minimal de balance après
+    balance_delta_min   = 0.10,   # permissif — rappel prioritaire (5/5 buts couverts)
+    balance_after_min   = 0.20,   # niveau minimal de balance après
     window_before_s     = 15.0,   # fenêtre avant pour baseline
     window_after_s      = 10.0,   # fenêtre après pour mesure
-    min_gap_s           = 60.0,   # distance minimale entre deux candidats
+    min_gap_s           = 30.0,   # réduit pour ne pas fusionner des KO proches
     scan_step_s         = 2.0,    # pas de scan en secondes
 ):
     """
