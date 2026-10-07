@@ -517,19 +517,36 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
 
     ko_mm, ko_ss = int(kickoff_time_abs//60), int(kickoff_time_abs%60)
     prompt = (
-        f"A center kickoff was detected at {ko_mm:02d}:{ko_ss:02d} (KO frame).\n"
-        "This means a goal may have been scored in the seconds just before the KO.\n\n"
-        "Analyze the sequence from -25s to +5s around the KO and answer:\n"
-        "1. Was a goal scored before this kickoff? (look for: ball in net, "
-        "net deformation, goalkeeper retrieving ball, players celebrating)\n"
-        "2. If yes, at what approximate timestamp?\n\n"
-        "Camera: wide-angle (high_side). Players may appear small.\n"
-        "Focus on contextual evidence if the ball is not clearly visible.\n\n"
+        "You are an expert football video analyst. "
+        f"Analyze this sequence around {ko_mm:02d}:{ko_ss:02d} "
+        "(wide-angle high_side camera, players appear small) "
+        "and determine if a GOAL was scored just before.\n\n"
+        "Return GOAL only if you see strong visual evidence:\n"
+        "  - Ball clearly inside the net or behind the goal line\n"
+        "  - Net visibly deforming as the ball enters\n"
+        "  - Goalkeeper retrieving ball from inside their own net\n"
+        "  - Collective celebration clearly consistent with a goal\n"
+        "  - Both teams repositioning for a center kickoff in a way "
+        "    clearly consistent with a goal having been scored\n"
+        "Player repositioning or a formation resembling a kickoff "
+        "alone are NOT sufficient to confirm a goal.\n\n"
+        "Return NO_GOAL if you clearly identify:\n"
+        "  - Goalkeeper punch, save or catch\n"
+        "  - Header or shot over/wide of the goal\n"
+        "  - Defensive clearance, blocked shot, corner or goal kick\n"
+        "  - Throw-in or any stoppage without goal evidence\n"
+        "  - Players repositioning after a defensive action\n"
+        "  - Ball near goal but no clear crossing of the line\n"
+        "Never confuse a dangerous chance, a saved shot or a tactical "
+        "reset with a scored goal.\n\n"
+        "Return UNCERTAIN only if the images are genuinely ambiguous "
+        "and no reliable visual cue allows you to confirm or exclude a goal. "
+        "Do not invent events. Do not infer a goal from player positions alone.\n\n"
         "Respond with:\n"
         "GOAL_DECISION: [GOAL / NO_GOAL / UNCERTAIN]\n"
         "CONFIDENCE: [0.0-1.0]\n"
         "GOAL_TIME: [MM:SS or UNKNOWN]\n"
-        "EVIDENCE: [brief description]"
+        "EVIDENCE: [brief justification based solely on what you observe]"
     )
 
     try:
@@ -568,7 +585,8 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
             elif "EVIDENCE:" in line:
                 evidence = line.split(":", 1)[1].strip()[:200]
 
-        is_goal = decision == "GOAL" or (decision == "UNCERTAIN" and confidence >= 0.65)
+        # KO_DETECTION : GOAL uniquement — UNCERTAIN ne confirme jamais
+        is_goal = (decision == "GOAL" and confidence >= 0.75)
 
         print(f"  [KO_VALIDATOR] t={ko_mm:02d}:{ko_ss:02d} → {decision} "
               f"conf={confidence:.2f} is_goal={is_goal}")
