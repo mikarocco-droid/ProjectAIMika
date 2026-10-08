@@ -1969,7 +1969,7 @@ def run_pipeline(
                 _e_x_norm = _e_x / _frame_w if _frame_w and _e_x >= 0 else 0.5
                 _e_t      = _e.get("time", 0)
                 # Filtre 1 : x < 1% ou x > 99% = hors cadre absolu
-                if _e_x_norm < 0.01 or _e_x_norm > 0.99:
+                if _e_x_norm < 0.03 or _e_x_norm > 0.97:
                     print(f"  [HS_NO_SHOT_PRE] Rejeté t={int(_e_t//60):02d}:{int(_e_t%60):02d}"
                           f" — x={_e_x_norm*100:.1f}% hors cadre")
                     continue
