@@ -2342,7 +2342,20 @@ def run_pipeline(
                     except Exception as _bc4_std_e:
                         print(f"  [STANDARD BC4] erreur (ignorée) : {_bc4_std_e}")
             _goals_deduped.append(_e)
-        events_validated = _goals_deduped
+        # Réintégrer les buts ko_detection et crossing_confirmed
+        # qui ont été ajoutés à events mais ne passent pas par _goals_deduped
+        _ko_goals = [
+            e for e in events
+            if e.get("type") == "goal"
+            and e.get("source") in ("ko_detection",)
+            and not any(
+                abs(e.get("time", 0) - g.get("time", 0)) < 30
+                for g in _goals_deduped
+            )
+        ]
+        if _ko_goals:
+            print(f"  [KO_DETECTION] {len(_ko_goals)} but(s) ko_detection réintégrés dans events_validated")
+        events_validated = _goals_deduped + _ko_goals
 
         # ── SHOT→GOAL conditionnel ────────────────────────────────────────────────
         # Activé uniquement si un tir xG > 0.35 n'a pas de but dans les 30s suivantes.
