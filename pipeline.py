@@ -3089,12 +3089,23 @@ def run_pipeline(
     # ─────────────────────────────────────────
     try:
         from analysis.event_validator import filter_events
+        # Les buts KO_DETECTION sont confirmés par Gemini mais n'ont pas de
+        # position (ballon masqué par nature) : ils portent x=0,y=0, que le
+        # validateur rejette comme "valeur par défaut". On les met de côté
+        # pour ce contrôle de coordonnées, puis on les réintègre.
+        _ko_goals_val = [e for e in events
+                         if e.get("type") == "goal" and e.get("source") == "ko_detection"]
+        _events_to_val = [e for e in events
+                          if not (e.get("type") == "goal" and e.get("source") == "ko_detection")]
         events, val_stats = filter_events(
-            events  = events,
+            events  = _events_to_val,
             sport   = sport,
             frame_w = _frame_w,
             frame_h = _frame_h,
         )
+        if _ko_goals_val:
+            events = sorted(events + _ko_goals_val, key=lambda e: e.get("time", 0))
+            print(f"  [KO_DETECTION] {len(_ko_goals_val)} but(s) exemptés du contrôle de coordonnées")
         print(f"  Validation structurelle : {val_stats}")
     except Exception as e:
         print(f"  filter_events ignoré : {e}")
