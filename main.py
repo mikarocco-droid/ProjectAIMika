@@ -772,9 +772,12 @@ def process_video(
     # le vrai fps natif connu (meme contrainte d'ordonnancement que
     # ball_tracker.fps ci-dessus).
     _fps_effectif_ocr = fps / max(1, skip_every)
-    ocr.ocr_every_n_frames = max(1, round(_fps_effectif_ocr))
-    print(f"  [OCR] ocr_every_n_frames fixé à {ocr.ocr_every_n_frames} "
-          f"(~1x/seconde réelle à {_fps_effectif_ocr:.1f}fps effectif)")
+    if ocr is not None:
+        ocr.ocr_every_n_frames = max(1, round(_fps_effectif_ocr))
+        print(f"  [OCR] ocr_every_n_frames fixé à {ocr.ocr_every_n_frames} "
+              f"(~1x/seconde réelle à {_fps_effectif_ocr:.1f}fps effectif)")
+    else:
+        print(f"  [OCR] désactivé (DISABLE_OCR=1)")
 
     # V5.2 (17/09/2026) : fps effectif du fallback ballon tertiaire
     # (vision/ball.py BallDetector, dans detector.ball_backup) - meme
