@@ -1357,17 +1357,28 @@ def run_pipeline(
                 from analysis.detect_kickoff_candidates import detect_kickoff_candidates
                 from ai.gemini_validator import validate_kickoff_context_gemini
 
+                # frames_data est relatif au KO (apply_kickoff_offset_frames).
+                # Décalage -10s CONSERVÉ volontairement : tous les résultats
+                # validés (Andrimont, Raeren) ont été obtenus avec start_s = KO-10.
+                # Le corriger sans élargir la fenêtre Gemini (-25s) ferait perdre
+                # les buts 383s et 3582s. Défini ici car _start_lecture_s
+                # n'existe pas dans le chemin replay (NameError silencieuse).
+                _ko_start_s = max(0.0, _kickoff_offset - 10.0)
                 _ko_candidates = detect_kickoff_candidates(
                     frames_data = frames_data,
                     fps         = fps,
                     frame_w     = _frame_w,
                     frame_h     = _frame_h,
-                    start_s     = _start_lecture_s,
+                    start_s     = _ko_start_s,
                 )
                 print(f"  [KO_DETECTION] {len(_ko_candidates)} candidat(s) KO détectés")
 
+                # Uniquement les buts KO_DETECTION déjà confirmés
+                # Les HIGH_SIDE_NO_SHOT ne sont pas encore validés Gemini
                 _already_confirmed = [e.get("time",0)+_kickoff_offset
-                                      for e in events if e.get("type") == "goal"]
+                                      for e in events
+                                      if e.get("type") == "goal"
+                                      and e.get("source") == "ko_detection"]
 
                 for _koc in _ko_candidates:
                     _ko_t_abs = _koc["time"]
@@ -1410,6 +1421,9 @@ def run_pipeline(
                             "description":    _r.get("description", ""),
                             "_crossing_confirmed": True,
                             "_skip_position_filter": True,
+                            "gemini_validated": True,
+                            "gemini_type":      "goal",
+                            "gemini_conf":      _r.get("confidence", 0.7),
                         }
                         events.append(_ev)
                         events.sort(key=lambda e: e.get("time", 0))
@@ -2356,6 +2370,7 @@ def run_pipeline(
             and not any(
                 abs(e.get("time", 0) - g.get("time", 0)) < 30
                 for g in _goals_deduped
+                if g.get("type") in ("goal", "score")
             )
         ]
         if _ko_goals:
