@@ -185,13 +185,9 @@ class AsyncOCRReader:
                 continue
 
             crop = frame[y1:y2, x1:x2].copy()  # copie — le worker est indépendant
-            preprocessed = preprocess_patch(crop)
-            if preprocessed is None:
-                continue
-
-            # Envoyer au worker (non-bloquant — drop si file pleine)
+            # Envoyer le crop BGR brut — le worker appellera preprocess_patch lui-même
             try:
-                self._task_queue.put_nowait((frame_id, tid, preprocessed))
+                self._task_queue.put_nowait((frame_id, tid, crop))
                 self._n_enqueued += 1
             except queue.Full:
                 self._n_dropped += 1
