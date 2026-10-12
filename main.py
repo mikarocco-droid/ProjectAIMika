@@ -7,6 +7,11 @@ import numpy as np
 from vision.detector import Detector
 from vision.tracker import Tracker
 from vision.ocr import OCRReader
+try:
+    from vision.ocr_async import AsyncOCRReader
+    _HAS_ASYNC_OCR = True
+except ImportError:
+    _HAS_ASYNC_OCR = False
 from analysis.events import process_match, detect_events
 from rendering.overlay import Overlay, TeamColorDetector
 import config
@@ -458,7 +463,10 @@ def process_batch(
         # coherente avec le reste du pipeline pour eviter toute confusion
         # en aval (apply_kickoff_offset_frames, correlation temporelle).
         _t0 = _profile_start()
-        tracked = ocr.read_all(frame_orig, tracked, frame_id=frame_id)
+        if hasattr(ocr, "enqueue_and_update"):
+            tracked = ocr.enqueue_and_update(frame_orig, tracked, frame_id=frame_id)
+        else:
+            tracked = ocr.read_all(frame_orig, tracked, frame_id=frame_id)
         _profile_end(_t0, "ocr")
 
         _t0 = _profile_start()
@@ -696,7 +704,11 @@ def process_video(
     # disponible ici - meme contrainte d'ordonnancement que pour
     # ball_tracker.fps, voir plus bas). Valeur ici juste un placeholder
     # sûr, écrasée avant toute utilisation réelle.
-    ocr            = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
+    if _HAS_ASYNC_OCR:
+        ocr = AsyncOCRReader(min_confidence=0.6, ocr_every_n_frames=30)
+        ocr.start()
+    else:
+        ocr = OCRReader(min_confidence=0.6, ocr_every_n_frames=30)
     ocr._nom_match = os.path.splitext(os.path.basename(video_path))[0]  # V5.2 : evite l'ecrasement entre matchs (outputs/test codé en dur)
     color_detector = TeamColorDetector(
         sample_frames=60,
@@ -909,7 +921,12 @@ def process_video(
     print(f"\n  {frame_id} frames lues | {analyzed} analysées"
           f" | batches de {b_size}")
 
+    if hasattr(ocr, "flush"):
+        ocr.flush()
+        ocr.print_stats()
     jersey_map_tesseract = ocr.get_jersey_map()
+    if hasattr(ocr, "stop"):
+        ocr.stop()
     ocr.reset()
 
     # V5.1 : lecture des maillots via Gemini, en PRIORITE sur Tesseract.
