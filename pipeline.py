@@ -1399,6 +1399,7 @@ def run_pipeline(
                             "type":           "goal",
                             "source":         "ko_detection",
                             "time":           _gt_rel,
+                            "frame":          int(_gt_abs * fps),
                             "xg":             0.5,
                             "confidence":     _r.get("confidence", 0.7),
                             "on_target":      True,
