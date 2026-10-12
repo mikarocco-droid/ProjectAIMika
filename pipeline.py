@@ -1401,12 +1401,15 @@ def run_pipeline(
                             "time":           _gt_rel,
                             "frame":          int(_gt_abs * fps),
                             "xg":             0.5,
+                            "x":              0,
+                            "y":              0,
                             "confidence":     _r.get("confidence", 0.7),
                             "on_target":      True,
                             "shot_linked":    False,
                             "candidate_time": _ko_t_rel,
                             "description":    _r.get("description", ""),
                             "_crossing_confirmed": True,
+                            "_skip_position_filter": True,
                         }
                         events.append(_ev)
                         events.sort(key=lambda e: e.get("time", 0))
@@ -1848,7 +1851,8 @@ def run_pipeline(
             for _e in _hs_pre:
                 _t = _e.get("time", 0)
                 print(f"    t={int(_t//60):02d}:{int(_t%60):02d} x={_e.get('x',0):.0f} lost={_e.get('lost_frames',0)}")
-        events_for_gemini = [e for e in events if not e.get("_eco")]
+        events_for_gemini = [e for e in events if not e.get("_eco")
+                                   and e.get("source") != "ko_detection"]
         events_eco        = [e for e in events if e.get("_eco")]
 
         # Log PRE-GEMINI — état de tous les buts avant validation
