@@ -2325,7 +2325,8 @@ def read_highlight_visuals(video_path, highlight_events, fps=25, highlight_clips
     return visual_pool
 
 
-def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, visual_pool=None):
+def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, visual_pool=None,
+                      visual_fallback=True):
     """
     Pour chaque but confirmé, demande à Gemini le numéro du buteur et du passeur.
     
@@ -2559,7 +2560,11 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
             for _v in visuals:
                 _ref_pool.append((jersey_num, _v))
 
-    if _ref_pool:
+    if not visual_fallback:
+        # Désactivé le 13/10/2026 : 0 buteur juste sur 5 (Raeren), numéros
+        # inventés propagés dans jersey_map et la mémoire des joueurs.
+        print("  [VISUAL MATCH] désactivé — buteur laissé inconnu si le numéro n'est pas lu directement")
+    elif _ref_pool:
         print(f"  [VISUAL MATCH] Pool disponible : {len(_ref_pool)} références "
               f"({len(set(j for j,_ in _ref_pool))} joueurs distincts)")
         for ev in goal_events:
