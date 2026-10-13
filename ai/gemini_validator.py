@@ -150,52 +150,86 @@ _quota_exhausted    = False
 _gemini_unavailable = False
 rebound_sig         = 0.15   # bonus signal pour candidats avec rebond filet
 
-def _call_gemini(client, parts, max_retries=2):
-    global _quota_exhausted, _gemini_unavailable, _GEMINI_CALLS_REEL
+# ── Parallélisme et relances (13/10/2026) ───────────────────────────────────
+import threading as _thr_gem, random as _rnd_gem
+_STATE_LOCK = _thr_gem.Lock()
+_ABANDONS_CONSECUTIFS = 0
+_RATE_LIMIT_RETRIES   = 6     # tentatives max sur une limite PAR MINUTE
+_ABANDONS_MAX         = 3     # disjoncteur : 3 appels abandonnés d'affilée -> quota considéré épuisé
 
+def gemini_max_parallel():
+    """Nombre d'appels Gemini simultanés (variable GEMINI_MAX_PARALLEL, défaut 4)."""
+    try:
+        return max(1, min(16, int(os.environ.get("GEMINI_MAX_PARALLEL", "4"))))
+    except Exception:
+        return 4
+
+def _is_daily_quota(err_str):
+    return bool(re.search(r"per ?day|perday|daily", err_str, re.IGNORECASE))
+
+def _generate_with_retry(client, max_retries=2, **kwargs):
+    """
+    client.models.generate_content(**kwargs) avec gestion d'erreurs :
+      - quota JOURNALIER (RESOURCE_EXHAUSTED + PerDay)  -> Gemini coupé pour le run
+      - limite PAR MINUTE (429 / RESOURCE_EXHAUSTED)    -> attente puis nouvel essai
+      - 503 / UNAVAILABLE                                -> max_retries essais (comme avant)
+      - autre erreur                                     -> remontée (comme avant)
+    Avant ce correctif, toute erreur RESOURCE_EXHAUSTED (y compris une simple
+    limite par minute) coupait Gemini pour tout le run.
+    """
+    global _quota_exhausted, _gemini_unavailable, _GEMINI_CALLS_REEL, _ABANDONS_CONSECUTIFS
     if _quota_exhausted:
         return None
-
-    for attempt in range(max_retries):
+    attempt, rl_attempts = 0, 0
+    while True:
         try:
             t0 = time.time()
-            try :
-                response = client.models.generate_content(
-                    model    = "gemini-3.8-flash",
-                    contents = parts
-                )
-            finally :
-                _METRICS["gemini_time"] += time.time() - t0
-
-            _GEMINI_CALLS_REEL += 1
-            _gemini_unavailable = False
+            try:
+                response = client.models.generate_content(**kwargs)
+            finally:
+                with _STATE_LOCK:
+                    _METRICS["gemini_time"] += time.time() - t0
+            with _STATE_LOCK:
+                _GEMINI_CALLS_REEL += 1
+                _gemini_unavailable = False
+                _ABANDONS_CONSECUTIFS = 0
             return response
-
         except Exception as e:
             err_str = str(e)
-
-            if "RESOURCE_EXHAUSTED" in err_str:
-                print("  Quota Gemini journalier épuisé — validation désactivée")
-                _quota_exhausted = True
-                return None
-
+            if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+                if _is_daily_quota(err_str):
+                    print("  Quota Gemini journalier épuisé — validation désactivée")
+                    _quota_exhausted = True
+                    return None
+                rl_attempts += 1
+                if rl_attempts > _RATE_LIMIT_RETRIES:
+                    with _STATE_LOCK:
+                        _ABANDONS_CONSECUTIFS += 1
+                        _n_ab = _ABANDONS_CONSECUTIFS
+                    print(f"  Limite de débit Gemini persistante — appel abandonné ({_n_ab} d'affilée)")
+                    if _n_ab >= _ABANDONS_MAX:
+                        print("  Disjoncteur : Gemini considéré comme épuisé pour ce run")
+                        _quota_exhausted = True
+                    return None
+                m = re.search(r"retryDelay.*?(\d+)s", err_str)
+                wait = (int(m.group(1)) + 1) if m else min(60, 5 * 2 ** (rl_attempts - 1))
+                wait = min(wait, 60) + _rnd_gem.uniform(0, 2)
+                print(f"  Limite de débit Gemini (par minute) — attente {wait:.0f}s (essai {rl_attempts})")
+                time.sleep(wait)
+                continue
             elif "503" in err_str or "UNAVAILABLE" in err_str:
                 _gemini_unavailable = True
-                if attempt < max_retries - 1:
+                attempt += 1
+                if attempt < max_retries:
                     time.sleep(1)
                     continue
                 return None
-
-            elif "429" in err_str and attempt < max_retries - 1:
-                m    = re.search(r"retryDelay.*?(\d+)s", err_str)
-                wait = int(m.group(1)) + 2 if m else 30
-                wait = min(wait, 30)
-                print(f"  Rate limit Gemini — attente {wait}s...")
-                time.sleep(wait)
             else:
                 raise
 
-    return None
+def _call_gemini(client, parts, max_retries=2):
+    return _generate_with_retry(client, max_retries=max_retries,
+                                model="gemini-3.8-flash", contents=parts)
 
 
 # ─────────────────────────────────────────
@@ -482,7 +516,10 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
     Returns : dict {is_goal, confidence, goal_time_abs, description} ou None
     """
     global _quota_exhausted, _gemini_unavailable
-    if _quota_exhausted or _gemini_unavailable:
+    # Seul un quota réellement épuisé bloque. Avant : une seule erreur 503 passée
+    # faisait renvoyer None ("pas de but") à toutes les validations KO suivantes,
+    # car _gemini_unavailable n'était jamais remis à zéro sur ce chemin.
+    if _quota_exhausted:
         return None
     client = get_client()
     if client is None:
@@ -582,10 +619,14 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
 
     restart_type = None
     try:
-        response = client.models.generate_content(
+        response = _generate_with_retry(
+            client,
             model="gemini-3.8-flash",
             contents=[{"role": "user", "parts": [{"text": prompt}] + parts}]
         )
+        if response is None:            # quota épuisé ou limite persistante
+            print(f"  [KO_VALIDATOR] t={ko_mm:02d}:{ko_ss:02d} → Gemini indisponible")
+            return None
         text = response.text.strip() if response.text else ""
         decision   = "NO_GOAL"
         confidence = 0.0
@@ -1464,21 +1505,23 @@ def _cache_key(video_path, center_time, window_sec, bucket=0.25):
     end_b   = round((center_time + window_sec) / bucket) * bucket
     return (video_path, start_b, end_b)
 
-def _cache_get(key):
-    if key in _FRAME_CACHE:
-        _METRICS["cache_hits"] += 1
-        _FRAME_CACHE.move_to_end(key)
-        return _FRAME_CACHE[key]
+_CACHE_LOCK = _threading.Lock()   # cache partagé entre appels parallèles
 
-    _METRICS["cache_misses"] += 1
-    return None
+def _cache_get(key):
+    with _CACHE_LOCK:
+        if key in _FRAME_CACHE:
+            _METRICS["cache_hits"] += 1
+            _FRAME_CACHE.move_to_end(key)
+            return _FRAME_CACHE[key]
+        _METRICS["cache_misses"] += 1
+        return None
 
 def _cache_put(key, value):
-    _FRAME_CACHE[key] = value
-    _FRAME_CACHE.move_to_end(key)
-
-    while len(_FRAME_CACHE) > _FRAME_CACHE_MAX:
-        _FRAME_CACHE.popitem(last=False)
+    with _CACHE_LOCK:
+        _FRAME_CACHE[key] = value
+        _FRAME_CACHE.move_to_end(key)
+        while len(_FRAME_CACHE) > _FRAME_CACHE_MAX:
+            _FRAME_CACHE.popitem(last=False)
 
 
 # ─────────────────────────────────────────
@@ -2684,6 +2727,22 @@ def validate_events_with_gemini(
     print(f"  Validation Gemini : {len(candidates)} candidats...")
     validated = corrected = removed = 0
 
+    # Appels Gemini en parallèle (GEMINI_MAX_PARALLEL), puis traitement des
+    # résultats dans l'ORDRE d'origine : décisions identiques au mode séquentiel.
+    _pre_results = {}
+    _n_par = gemini_max_parallel()
+    if _n_par > 1 and len(candidates) > 1 and not _quota_exhausted:
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        def _job(_ev):
+            try:
+                return ("ok", validate_event(video_path, _ev, fps, sport, frame_w=video_w))
+            except Exception as _ex:
+                return ("exc", _ex)
+        print(f"  Validation Gemini en parallèle : {len(candidates)} candidats, {_n_par} simultanés")
+        with _TPE(max_workers=_n_par) as _pool:
+            _futs = [(id(_ev), _pool.submit(_job, _ev)) for _ev in candidates]
+            _pre_results = {k: fu.result() for k, fu in _futs}
+
     for event in candidates:
         t_pre = event.get("time", 0)
         src   = event.get("detected_from", event.get("source", "?"))
@@ -2702,7 +2761,12 @@ def validate_events_with_gemini(
                     removed += 1
             break
 
-        result = validate_event(video_path, event, fps, sport,frame_w=video_w)
+        if id(event) in _pre_results:
+            _kind, result = _pre_results[id(event)]
+            if _kind == "exc":
+                raise result
+        else:
+            result = validate_event(video_path, event, fps, sport,frame_w=video_w)
 
         if result is None:
             if event.get("confidence", 0) > 0.95:
