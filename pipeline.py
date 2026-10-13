@@ -1356,6 +1356,18 @@ def run_pipeline(
             try:
                 from analysis.detect_kickoff_candidates import detect_kickoff_candidates
                 from ai.gemini_validator import validate_kickoff_context_gemini
+                # Réglage B validé le 13/10/2026 (expérience 2, 32 candidats Raeren) :
+                # fenêtre prolongée jusqu'à +15 s + prompt "stoppages"
+                # -> 7/7 buts et 3 faux positifs (référence : 5/7 buts, 5 faux positifs).
+                # Repli EXPLICITE (message dans le log) si gemini_validator est ancien,
+                # au lieu d'une TypeError avalée par le except du bloc.
+                import inspect as _inspect_ko
+                _ko_params = _inspect_ko.signature(validate_kickoff_context_gemini).parameters
+                _ko_reglage_b = "offsets" in _ko_params and "prompt_variant" in _ko_params
+                _ko_kwargs = (dict(offsets=[-25, -20, -15, -10, -7, -5, -3, -1, 0, 3, 5, 8, 11, 15],
+                                   prompt_variant="stoppages") if _ko_reglage_b else {})
+                print("  [KO_DETECTION] réglage B : fenêtre -25s→+15s, prompt 'stoppages'" if _ko_reglage_b
+                      else "  [KO_DETECTION] ⚠️ gemini_validator ancien : réglage B indisponible, réglage d'origine utilisé")
 
                 # frames_data est relatif au KO (apply_kickoff_offset_frames).
                 # Décalage -10s CONSERVÉ volontairement : tous les résultats
@@ -1401,6 +1413,7 @@ def run_pipeline(
                         frame_h          = _frame_h,
                         kickoff_offset   = _kickoff_offset,
                         source           = "ko_detection",
+                        **_ko_kwargs,
                     )
 
                     if _r and _r.get("is_goal"):
@@ -2922,16 +2935,23 @@ def run_pipeline(
                     or e.get("type") in ("shot",)
                 ]
                 _visual_pool = {}
-                try:
-                    _visual_pool = read_highlight_visuals(
-                        video_path       = video_path,
-                        highlight_events = _highlight_events,
-                        fps              = fps,
-                        highlight_clips  = _hl_clips or None,
-                    )
-                    print(f"  Highlight visuals : {len(_visual_pool)} joueurs dans le pool")
-                except Exception as _ev:
-                    print(f"  Highlight visuals ignoré : {_ev}")
+                # HIGHLIGHT VIS désactivé le 13/10/2026 (mesures Raeren) : 108 appels,
+                # ~47 min, 13 numéros lus, 0 buteur juste sur 5 via le rapprochement
+                # visuel. Remettre à True pour le réactiver.
+                _HIGHLIGHT_VISUALS_ON = False
+                if not _HIGHLIGHT_VISUALS_ON:
+                    print(f"  [HIGHLIGHT VIS] désactivé ({len(_highlight_events)} appels Gemini évités)")
+                else:
+                    try:
+                        _visual_pool = read_highlight_visuals(
+                            video_path       = video_path,
+                            highlight_events = _highlight_events,
+                            fps              = fps,
+                            highlight_clips  = _hl_clips or None,
+                        )
+                        print(f"  Highlight visuals : {len(_visual_pool)} joueurs dans le pool")
+                    except Exception as _ev:
+                        print(f"  Highlight visuals ignoré : {_ev}")
 
                 # ── Scorers des buts avec fallback visuel enrichi ──
                 # Récupérer les couleurs équipes dès maintenant pour validation croisée
@@ -2965,12 +2985,18 @@ def run_pipeline(
                     if _colors_for_scorer:
                         _eg["_team_colors"] = _colors_for_scorer
 
+                import inspect as _inspect_gs
+                _gs_kwargs = ({"visual_fallback": False}
+                              if "visual_fallback" in _inspect_gs.signature(read_goal_scorers).parameters else {})
+                if not _gs_kwargs:
+                    print("  [VISUAL MATCH] ⚠️ gemini_validator ancien : rapprochement visuel non désactivable")
                 goal_jerseys = read_goal_scorers(
                     video_path      = video_path,
                     goal_events     = confirmed_goals,
                     fps             = fps,
                     highlight_clips = _hl_clips or None,
                     visual_pool     = _visual_pool,
+                    **_gs_kwargs,
                 )
                 jersey_map.update(goal_jerseys)
                 print(f"  Gemini goal scorers : {len(goal_jerseys)} buteur(s)/passeur(s) identifié(s)")
