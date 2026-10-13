@@ -472,7 +472,9 @@ def validate_crossing_gemini(video_path, cross_time_abs, cross_frame, fps=30,
 
 def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
                                      frame_w=1920, frame_h=1080,
-                                     kickoff_offset=0, source=None):
+                                     kickoff_offset=0, source=None,
+                                     offsets=None, scale=0.5, jpeg_quality=70,
+                                     return_raw=False):
     """
     Valide si un but vient d'être marqué avant un candidat KO.
     Extrait une séquence couvrant [KO-25s, KO+5s] — le but est avant le KO.
@@ -487,7 +489,10 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
         return None
 
     # Offsets relatifs au KO — on cherche surtout AVANT le KO
-    OFFSETS_KO = [-25, -20, -15, -10, -7, -5, -3, -1, 0, 3, 5]
+    # Paramètres expérimentaux (13/10/2026) : défauts = comportement validé
+    #   offsets : None -> [-25..+5] ; scale : 0.5 = demi-résolution ; jpeg_quality : 70
+    OFFSETS_KO = (list(offsets) if offsets is not None
+                  else [-25, -20, -15, -10, -7, -5, -3, -1, 0, 3, 5])
 
     parts = []
     valid_times = []
@@ -501,8 +506,11 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
             ret, frame = cap.read()
             if not ret or frame is None:
                 continue
-            small = cv2.resize(frame, (frame.shape[1]//2, frame.shape[0]//2))
-            _, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if scale != 1.0:
+                small = cv2.resize(frame, (int(frame.shape[1] * scale), int(frame.shape[0] * scale)))
+            else:
+                small = frame
+            _, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)])
             mm, ss = int(t_target//60), int(t_target%60)
             label = "KO" if off == 0 else f"{off:+d}s"
             parts.append({"inline_data": {"mime_type": "image/jpeg",
@@ -559,6 +567,9 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
         evidence   = ""
 
         for line in text.splitlines():
+            # Gemini répond parfois en markdown ("**CONFIDENCE:** 0.95") : sans ce
+            # nettoyage la confiance était lue 0.0 -> un GOAL était rejeté à tort.
+            line = line.replace("*", "").replace("`", "").strip()
             if "GOAL_DECISION:" in line:
                 val = line.split(":", 1)[1].strip().upper()
                 if "NO_GOAL" not in val and "GOAL" in val:
@@ -566,10 +577,14 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
                 elif "UNCERTAIN" in val:
                     decision = "UNCERTAIN"
             elif "CONFIDENCE:" in line:
-                try:
-                    confidence = float(line.split(":", 1)[1].strip())
-                except Exception:
-                    pass
+                _m_conf = re.search(r"\d+(?:[.,]\d+)?", line.split(":", 1)[1])
+                if _m_conf:
+                    try:
+                        confidence = float(_m_conf.group().replace(",", "."))
+                        if confidence > 1.0:      # "95" ou "95%"
+                            confidence = confidence / 100.0
+                    except Exception:
+                        pass
             elif "GOAL_TIME:" in line:
                 gt = line.split(":", 1)[1].strip()
                 if gt and gt != "UNKNOWN":
@@ -599,6 +614,7 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
             "candidate_time": kickoff_time_abs,
             "description":    evidence,
             "source":         "ko_detection",
+            **({"raw": text} if return_raw else {}),
         }
 
     except Exception as e:
