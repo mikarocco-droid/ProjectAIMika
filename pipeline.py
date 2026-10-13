@@ -1392,7 +1392,39 @@ def run_pipeline(
                                       if e.get("type") == "goal"
                                       and e.get("source") == "ko_detection"]
 
-                for _koc in _ko_candidates:
+                # Appels Gemini en parallèle pour tous les candidats, puis décisions
+                # (sauts à 60 s d'un but confirmé) appliquées dans l'ORDRE d'origine :
+                # résultat identique au mode séquentiel, quelques appels en plus
+                # pour les candidats finalement sautés.
+                def _ko_call(_t):
+                    return validate_kickoff_context_gemini(
+                        video_path       = video_path,
+                        kickoff_time_abs = _t,
+                        fps              = fps,
+                        frame_w          = _frame_w,
+                        frame_h          = _frame_h,
+                        kickoff_offset   = _kickoff_offset,
+                        source           = "ko_detection",
+                        **_ko_kwargs,
+                    )
+                _ko_results = {}
+                try:
+                    from ai.gemini_validator import gemini_max_parallel as _gmp
+                    _ko_npar = _gmp()
+                except Exception:
+                    _ko_npar = 1
+                if _ko_npar > 1 and len(_ko_candidates) > 1:
+                    from concurrent.futures import ThreadPoolExecutor as _TPE_ko
+                    print(f"  [KO_DETECTION] validation en parallèle : {len(_ko_candidates)} candidats, {_ko_npar} simultanés")
+                    with _TPE_ko(max_workers=_ko_npar) as _pool_ko:
+                        _futs_ko = [(_ki, _pool_ko.submit(_ko_call, _kc["time"])) for _ki, _kc in enumerate(_ko_candidates)]
+                        for _ki, _fu in _futs_ko:
+                            try:
+                                _ko_results[_ki] = ("ok", _fu.result())
+                            except Exception as _eko_c:
+                                _ko_results[_ki] = ("exc", _eko_c)
+
+                for _ki, _koc in enumerate(_ko_candidates):
                     _ko_t_abs = _koc["time"]
                     _ko_t_rel = _ko_t_abs - _kickoff_offset
 
@@ -1405,16 +1437,12 @@ def run_pipeline(
                     print(f"  [KO_DETECTION] t={int(_ko_t_abs//60):02d}:{int(_ko_t_abs%60):02d} "
                           f"score={_koc['score']:.3f} bal_delta={_koc['balance_delta']:.3f}")
 
-                    _r = validate_kickoff_context_gemini(
-                        video_path       = video_path,
-                        kickoff_time_abs = _ko_t_abs,
-                        fps              = fps,
-                        frame_w          = _frame_w,
-                        frame_h          = _frame_h,
-                        kickoff_offset   = _kickoff_offset,
-                        source           = "ko_detection",
-                        **_ko_kwargs,
-                    )
+                    if _ki in _ko_results:
+                        _kind, _r = _ko_results[_ki]
+                        if _kind == "exc":
+                            raise _r
+                    else:
+                        _r = _ko_call(_ko_t_abs)
 
                     if _r and _r.get("is_goal"):
                         _gt_abs = _r.get("goal_time_abs") or (_ko_t_abs - 10)
@@ -1521,7 +1549,11 @@ def run_pipeline(
         # ── Étape 2c : zone_analyzer — analyse dense sur zones terminal_events ──
         try:
             from analysis.zone_analyzer import analyze_dense_zones
-            if _terminal_evts:
+            # Coupé en high_side le 13/10/2026 : 13,5 min sur Raeren, aucun vrai but
+            # trouvé sur 3 runs (Andrimont, Raeren x2), un seul candidat, faux.
+            if _terminal_evts and camera_type == "high_side":
+                print(f"  zone_analyzer : désactivé en high_side ({len(_terminal_evts)} zone(s) non relue(s))")
+            elif _terminal_evts:
                 _dense_candidates = analyze_dense_zones(
                     video_path      = video_path,
                     terminal_events = _terminal_evts,

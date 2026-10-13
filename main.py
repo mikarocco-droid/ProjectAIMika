@@ -885,11 +885,19 @@ def process_video(
             print(f"  [END_TIME_S] Arrêt de la lecture à frame {frame_id} (limite atteinte)")
             break
 
+        # Image sautée : grab() avance dans la vidéo sans convertir ni copier
+        # l'image (contrairement à read()) — mêmes images analysées, moins de calcul.
+        if frame_id % skip_every != 0:
+            if not cap.grab():
+                break
+            frame_id += 1
+            continue
+
         ret, frame = cap.read()
         if not ret:
             break
 
-        # V5.2 (13/09/2026) FIX CRITIQUE : l'ancienne condition
+        # (Historique) V5.2 (13/09/2026) FIX CRITIQUE : l'ancienne condition
         # (`frame_id % skip_every == skip_every - 1`) SAUTAIT 1 frame
         # sur skip_every et en GARDAIT (skip_every-1) sur skip_every —
         # l'inverse de l'effet recherche. Pour skip_every=5 (vise
@@ -897,9 +905,6 @@ def process_video(
         # pas 6fps (1/5 gardee) - explique une partie du temps de
         # traitement ~590min mesure plus tot. Corrige : ne garde que
         # les frames ou frame_id % skip_every == 0 (1 sur skip_every).
-        if frame_id % skip_every != 0:
-            frame_id += 1
-            continue
 
         frame_small = cv2.resize(
             frame, (PROCESS_W, PROCESS_H),
@@ -974,9 +979,24 @@ def process_video(
 
         jersey_map_gemini = {}
         TAILLE_LOT = 20
-        for i in range(0, len(players_with_frames), TAILLE_LOT):
-            lot = players_with_frames[i:i + TAILLE_LOT]
-            resultat_lot = read_jersey_numbers(video_path, lot, fps=fps, max_players=TAILLE_LOT)
+        _lots = [players_with_frames[i:i + TAILLE_LOT]
+                 for i in range(0, len(players_with_frames), TAILLE_LOT)]
+        try:
+            from ai.gemini_validator import gemini_max_parallel as _gmp
+            _npar = _gmp()
+        except Exception:
+            _npar = 1
+        _lire_lot = lambda lot: read_jersey_numbers(video_path, lot, fps=fps, max_players=TAILLE_LOT)
+        if _npar > 1 and len(_lots) > 1:
+            # Lots indépendants (chacun ouvre sa propre vidéo) ; map() garde l'ordre,
+            # donc la fusion est identique au mode séquentiel.
+            from concurrent.futures import ThreadPoolExecutor as _TPE_j
+            print(f"  [GEMINI JERSEYS] lecture en parallèle : {len(_lots)} lots, {_npar} simultanés")
+            with _TPE_j(max_workers=_npar) as _pool_j:
+                _resultats = list(_pool_j.map(_lire_lot, _lots))
+        else:
+            _resultats = [_lire_lot(lot) for lot in _lots]
+        for resultat_lot in _resultats:
             jersey_map_gemini.update(resultat_lot)
 
         print(f"  [GEMINI JERSEYS] {len(jersey_map_gemini)} numéros lus avec succès "
