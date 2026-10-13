@@ -474,7 +474,7 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
                                      frame_w=1920, frame_h=1080,
                                      kickoff_offset=0, source=None,
                                      offsets=None, scale=0.5, jpeg_quality=70,
-                                     return_raw=False):
+                                     return_raw=False, prompt_variant="default"):
     """
     Valide si un but vient d'être marqué avant un candidat KO.
     Extrait une séquence couvrant [KO-25s, KO+5s] — le but est avant le KO.
@@ -555,6 +555,32 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
         "EVIDENCE: [short justification based on observed images]"
     )
 
+    if prompt_variant == "stoppages":
+        # Variante expérimentale (13/10/2026) : faux positifs observés sur Raeren =
+        # arrêts de jeu (blessure, changement, corner, coup franc) pris pour un KO.
+        _anchor_ng = "Do not classify these as goals merely because players reposition afterward.\n\n"
+        _anchor_ev = "EVIDENCE: [short justification based on observed images]"
+        if prompt.count(_anchor_ng) != 1 or prompt.count(_anchor_ev) != 1:
+            raise ValueError("prompt_variant=stoppages : ancres du prompt introuvables")
+        prompt = prompt.replace(_anchor_ng,
+            "  - Stoppage for an injured player (players gathered around a player on the ground, "
+            "medical staff on the pitch)\n"
+            "  - Substitution (play stopped, players waiting while a player leaves or enters at the sideline)\n"
+            "  - Corner kick or free kick being prepared or taken\n"
+            "  - Players standing still or walking during any other stoppage of play\n"
+            + _anchor_ng +
+            "KICKOFF RULE: a center kickoff counts as goal evidence ONLY if the ball is placed ON THE "
+            "CENTER SPOT and play restarts from there. Players standing in their own halves during "
+            "a stoppage is NOT a kickoff.\n"
+            "CELEBRATION RULE: a celebration means attacking players running together or embracing "
+            "right after a shot on goal. Players grouped around an injured player is NOT a celebration.\n\n")
+        prompt = prompt.replace(_anchor_ev,
+            "RESTART_TYPE: [KICKOFF_CENTER_SPOT / THROW_IN / CORNER / FREE_KICK / GOAL_KICK / "
+            "DROP_BALL / NONE_VISIBLE]\n" + _anchor_ev)
+    elif prompt_variant != "default":
+        raise ValueError(f"prompt_variant inconnu : {prompt_variant}")
+
+    restart_type = None
     try:
         response = client.models.generate_content(
             model="gemini-3.8-flash",
@@ -595,6 +621,8 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
                         goal_time = float(gt_s)
                     except Exception:
                         pass
+            elif "RESTART_TYPE:" in line:
+                restart_type = line.split(":", 1)[1].strip().upper() or None
             elif "EVIDENCE:" in line:
                 evidence = line.split(":", 1)[1].strip()[:200]
 
@@ -615,6 +643,7 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
             "description":    evidence,
             "source":         "ko_detection",
             **({"raw": text} if return_raw else {}),
+            **({"restart_type": restart_type} if restart_type is not None else {}),
         }
 
     except Exception as e:
