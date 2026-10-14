@@ -1352,6 +1352,7 @@ def run_pipeline(
         # Pour caméra high_side : le ballon peut être masqué (mêlée, résolution).
         # On détecte les réorganisations collectives → KO candidat → Gemini
         # cherche un but dans les 25s précédant le KO.
+        _temps_forts = []      # temps forts (classification) — données séparées des events
         if camera_type == "high_side" and frames_data:
             try:
                 from analysis.detect_kickoff_candidates import detect_kickoff_candidates
@@ -1424,6 +1425,48 @@ def run_pipeline(
                             except Exception as _eko_c:
                                 _ko_results[_ki] = ("exc", _eko_c)
 
+                # ── Classification des temps forts (14/10/2026) ───────────────────
+                # Qualifie les buts (statut) et produit les temps forts. Ne supprime
+                # JAMAIS un but retenu par la validation KO (priorité : ne pas manquer
+                # un vrai but). Repli explicite si gemini_validator est ancien.
+                _fmt_ko = lambda _t: f"{int(_t//60):02d}:{int(_t%60):02d}"
+                try:
+                    from ai.gemini_validator import classify_highlight_window as _cls_fn
+                except Exception:
+                    _cls_fn = None
+                    print("  [TEMPS FORTS] ⚠️ classification indisponible (gemini_validator ancien) — buts non qualifiés")
+                _cls_results = {}
+                if _cls_fn is not None and _ko_candidates:
+                    def _cls_call(_t):
+                        try:
+                            return _cls_fn(video_path, _t, fps=fps)
+                        except Exception as _ecls:
+                            print(f"  [TEMPS FORTS] erreur classification {_fmt_ko(_t)} : {_ecls}")
+                            return None
+                    if _ko_npar > 1 and len(_ko_candidates) > 1:
+                        from concurrent.futures import ThreadPoolExecutor as _TPE_cls
+                        with _TPE_cls(max_workers=_ko_npar) as _pool_cls:
+                            _cls_list = list(_pool_cls.map(_cls_call, [_kc["time"] for _kc in _ko_candidates]))
+                    else:
+                        _cls_list = [_cls_call(_kc["time"]) for _kc in _ko_candidates]
+                    _cls_results = dict(enumerate(_cls_list))
+                    print(f"  [TEMPS FORTS] classification : {sum(1 for _c in _cls_list if _c)} / "
+                          f"{len(_cls_list)} candidats analysés")
+
+                # ── Coup d'envoi de la 2e mi-temps (KO2) ───────────────────────────
+                # Seul le candidat le PLUS PROCHE de KO2 dans [KO2-15s, KO2+60s] est
+                # concerné ; les autres candidats de la fenêtre sont traités normalement.
+                _ko2_ref = _ko2_absolu if "_ko2_absolu" in dir() else None
+                _ko2_cand_idx = None
+                if _ko2_ref is not None:
+                    _ko2_win = [(_ki2, abs(_kc2["time"] - _ko2_ref)) for _ki2, _kc2 in enumerate(_ko_candidates)
+                                if _ko2_ref - 15 <= _kc2["time"] <= _ko2_ref + 60]
+                    if _ko2_win:
+                        _ko2_cand_idx = min(_ko2_win, key=lambda x: x[1])[0]
+                        print(f"  [KO2] candidat {_fmt_ko(_ko_candidates[_ko2_cand_idx]['time'])} = probable "
+                              f"coup d'envoi de la 2e mi-temps (KO2 à {_fmt_ko(_ko2_ref)})")
+                _ko_goal_times_abs = []     # pour écarter les doublons dans les temps forts
+
                 for _ki, _koc in enumerate(_ko_candidates):
                     _ko_t_abs = _koc["time"]
                     _ko_t_rel = _ko_t_abs - _kickoff_offset
@@ -1445,6 +1488,23 @@ def run_pipeline(
                         _r = _ko_call(_ko_t_abs)
 
                     if _r and _r.get("is_goal"):
+                        _cls = _cls_results.get(_ki)
+                        _cls_out = (_cls or {}).get("outcome")
+                        if _cls_fn is None:
+                            _g_status, _g_reason = "non_qualifié", "classification indisponible"
+                        elif _cls_out == "GOAL":
+                            _g_status, _g_reason = "confirmé", "validation KO et classification"
+                        elif _cls is None or _cls_out == "UNKNOWN":
+                            _g_status, _g_reason = "à_vérifier", "classification incertaine ou en échec"
+                        else:
+                            _g_status, _g_reason = "à_vérifier", f"classification : {_cls_out}"
+                        if _ki == _ko2_cand_idx:
+                            if _cls_fn is not None and _cls is not None and _cls_out not in ("GOAL", "UNKNOWN"):
+                                print(f"  [KO2] t={_fmt_ko(_ko_t_abs)} écarté : coup d'envoi de la 2e mi-temps, "
+                                      f"aucun but vu avant (classification : {_cls_out})")
+                                continue
+                            _g_status = "à_vérifier"
+                            _g_reason = "coïncide avec le coup d'envoi de la 2e mi-temps — " + _g_reason
                         _gt_abs = _r.get("goal_time_abs") or (_ko_t_abs - 10)
                         _gt_rel = _gt_abs - _kickoff_offset
                         _ev = {
@@ -1465,13 +1525,53 @@ def run_pipeline(
                             "gemini_validated": True,
                             "gemini_type":      "goal",
                             "gemini_conf":      _r.get("confidence", 0.7),
+                            "goal_status":        _g_status,
+                            "goal_status_reason": _g_reason,
+                            "classification":     ({k: _cls.get(k) for k in ("outcome", "phase", "action_time_abs", "team_color")}
+                                                   if _cls else None),
                         }
                         events.append(_ev)
+                        _ko_goal_times_abs.append(_gt_abs)
                         events.sort(key=lambda e: e.get("time", 0))
-                        _already_confirmed.append(_gt_abs)
+                        # Un candidat KO2 gardé par prudence ne doit pas faire sauter
+                        # (règle des 60 s) un vrai but marqué juste après la reprise.
+                        if _ki != _ko2_cand_idx:
+                            _already_confirmed.append(_gt_abs)
                         print(f"  [KO_DETECTION] ✅ GOAL confirmé à "
                               f"t={int(_gt_abs//60):02d}:{int(_gt_abs%60):02d} "
-                              f"conf={_r.get('confidence'):.2f}")
+                              f"conf={_r.get('confidence'):.2f} | statut : {_g_status} ({_g_reason})")
+
+                # ── Temps forts : actions dangereuses vues par la classification ──
+                _HL_KEEP = {"SAVE", "WIDE", "WOODWORK", "LINE_CLEARANCE", "BLOCKED", "GOAL"}
+                for _ki, _cls in sorted(_cls_results.items()):
+                    if not _cls or _cls.get("outcome") not in _HL_KEEP:
+                        continue
+                    _t_act = _cls.get("action_time_abs") or _ko_candidates[_ki]["time"]
+                    _st = "temps_fort"
+                    if _cls["outcome"] == "GOAL":
+                        if any(abs(_t_act - _gt) <= 60 for _gt in _ko_goal_times_abs):
+                            continue          # même but que celui retenu par la validation KO
+                        _st = "but_possible_à_examiner"   # jamais compté comme but automatiquement
+                    if any(_tf["outcome"] == _cls["outcome"] and abs(_tf["time_abs"] - _t_act) <= 12
+                           for _tf in _temps_forts):
+                        continue              # doublon (deux candidats voient la même action)
+                    _temps_forts.append({
+                        "time_abs":           _t_act,
+                        "time":               _t_act - _kickoff_offset,
+                        "outcome":            _cls["outcome"],
+                        "phase":              _cls.get("phase"),
+                        "team_color":         _cls.get("team_color"),
+                        "evidence":           _cls.get("evidence", ""),
+                        "candidate_time_abs": _ko_candidates[_ki]["time"],
+                        "status":             _st,
+                        "source":             "ko_classification",
+                    })
+                _temps_forts.sort(key=lambda _tf: _tf["time_abs"])
+                if _cls_results:
+                    print(f"  [TEMPS FORTS] {len(_temps_forts)} temps fort(s) :")
+                    for _tf in _temps_forts:
+                        print(f"    {_fmt_ko(_tf['time_abs'])} {_tf['outcome']:15s} {str(_tf['phase']):10s} "
+                              f"{str(_tf['team_color'])[:10]:10s} {_tf['status']:24s} {_tf['evidence'][:70]}")
 
             except Exception as _eko:
                 print(f"  [KO_DETECTION] ignoré : {_eko}")
@@ -3867,7 +3967,25 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # 14. SAVE JSON
     # ─────────────────────────────────────────
+    # ── Temps forts : contrôle final des doublons avec les événements DÉFINITIFS ──
+    # (les buts trouvés par la voie "ballon" ne sont validés qu'après l'étape KO)
+    _temps_forts_final = []
+    _ko_off_tf = _kickoff_offset if "_kickoff_offset" in dir() and _kickoff_offset else 0.0
+    _final_goals_abs = [e.get("time", 0) + _ko_off_tf for e in (events_clean or events)
+                        if e.get("type") in ("goal", "score")]
+    _final_shots = [e for e in (events_clean or events) if e.get("type") == "shot"]
+    for _tf in locals().get("_temps_forts", []):
+        if _tf.get("outcome") == "GOAL" and any(abs(_tf["time_abs"] - _g) <= 60 for _g in _final_goals_abs):
+            print(f"  [TEMPS FORTS] but possible {int(_tf['time_abs']//60):02d}:{int(_tf['time_abs']%60):02d} "
+                  f"retiré : même but qu'un but final")
+            continue
+        _near = [e for e in _final_shots if abs(e.get("time", 0) + _ko_off_tf - _tf["time_abs"]) <= 12]
+        if _near:
+            _tf = dict(_tf, linked_event={"type": "shot", "time": _near[0].get("time")})
+        _temps_forts_final.append(_tf)
+
     result = {
+        "temps_forts":   _temps_forts_final,
         "summary":       summary,
         "coarse_stats":  coarse_stats,
         "events":        events_clean,
@@ -3957,6 +4075,7 @@ def run_pipeline(
         label = get_player_label(str(pid), jersey_map) if pid else "?"
         print(f"     Buteur    : {label} (ID={pid})")
         print(f"     Source    : {g.get('source', g.get('detected_from', '?'))}")
+        print(f"     Statut    : {g.get('goal_status', '—')} ({g.get('goal_status_reason', '')})")
         print(f"     gemini    : {g.get('gemini_validated', False)}")
         print(f"     conf      : {g.get('confidence', '?')}")
         print(f"     xG        : {g.get('xg', 0):.3f}")
