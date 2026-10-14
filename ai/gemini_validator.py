@@ -2985,3 +2985,84 @@ def gemini_verify_kickoff(video_path, cand_t, offsets=None, fps=25):
           f"→ is_kickoff={is_kickoff} conf={confidence:.2f} — {reason}")
 
     return is_kickoff, confidence
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLASSIFICATION DES TEMPS FORTS (validée par les expériences 3 et 4, 13-14/10/2026)
+# Regarde de -55 s à +10 s autour d'un candidat KO et décrit l'action la plus
+# dangereuse. Sert à QUALIFIER (statut des buts, temps forts), jamais à supprimer
+# un but retenu par la validation KO.
+# ─────────────────────────────────────────────────────────────────────────────
+_PROMPT_HIGHLIGHT = ("Frames from an amateur football match filmed by a wide-angle camera (players appear small), from "
+  "{t0} to {t1}. Identify the MOST DANGEROUS attacking action in this period, if any.\n"
+  "PHASE: [OPEN_PLAY / CORNER / FREE_KICK / PENALTY / NONE]\n"
+  "OUTCOME: [GOAL / SAVE (goalkeeper stops a shot on target) / WIDE (shot just wide or over the bar) / "
+  "WOODWORK (shot hits post or crossbar) / LINE_CLEARANCE (ball cleared on the goal line) / "
+  "BLOCKED (dangerous chance cleared or blocked, no shot on target) / NONE]\n"
+  "ACTION_TIME: [MM:SS of the shot or decisive moment, or UNKNOWN]\n"
+  "TEAM_COLOR: [shirt color of the attacking team, or UNKNOWN]\n"
+  "EVIDENCE: [short justification based on the frames]\n"
+  "If there is no dangerous attacking action, answer PHASE: NONE and OUTCOME: NONE.")
+_HIGHLIGHT_OFFSETS = [-55, -45, -35, -28, -22, -16, -10, -5, 0, 5, 10]
+_HL_OUTCOMES = {"GOAL", "SAVE", "WIDE", "WOODWORK", "LINE_CLEARANCE", "BLOCKED", "NONE"}
+_HL_PHASES   = {"OPEN_PLAY", "CORNER", "FREE_KICK", "PENALTY", "NONE"}
+
+def classify_highlight_window(video_path, t_ref_abs, fps=30, scale=0.5, offsets=None):
+    """
+    Retourne un dict {outcome, phase, action_time_abs, team_color, evidence}
+    (outcome parmi _HL_OUTCOMES, ou "UNKNOWN" si illisible), ou None si l'appel
+    Gemini a échoué. Thread-safe : ouvre sa propre capture vidéo.
+    """
+    if _quota_exhausted:
+        return None
+    client = get_client()
+    if client is None:
+        return None
+    fmt = lambda t: f"{int(t)//60:02d}:{int(t)%60:02d}"
+    parts = []
+    cap = cv2.VideoCapture(video_path)
+    try:
+        for off in (offsets or _HIGHLIGHT_OFFSETS):
+            t = t_ref_abs + off
+            if t < 0:
+                continue
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
+            ok, fr = cap.read()
+            if not ok or fr is None:
+                continue
+            if scale != 1.0:
+                fr = cv2.resize(fr, (int(fr.shape[1] * scale), int(fr.shape[0] * scale)))
+            _, buf = cv2.imencode(".jpg", fr, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            parts.append({"inline_data": {"mime_type": "image/jpeg",
+                                          "data": base64.b64encode(buf.tobytes()).decode()}})
+            parts.append({"text": f"[{off:+d}s | {fmt(t)}]"})
+    finally:
+        cap.release()
+    if not parts:
+        return None
+    prompt = _PROMPT_HIGHLIGHT.format(t0=fmt(t_ref_abs - 55), t1=fmt(t_ref_abs + 10))
+    try:
+        response = _generate_with_retry(
+            client, model="gemini-3.8-flash",
+            contents=[{"role": "user", "parts": [{"text": prompt}] + parts}])
+    except Exception as e:
+        print(f"  [HIGHLIGHT_CLS] erreur {fmt(t_ref_abs)} : {e}")
+        return None
+    if response is None:
+        return None
+    vals = {}
+    for line in (response.text or "").splitlines():
+        line = line.replace("*", "").replace("`", "").strip()
+        for k in ("PHASE", "OUTCOME", "ACTION_TIME", "TEAM_COLOR", "EVIDENCE"):
+            if line.upper().startswith(k + ":"):
+                vals[k] = line.split(":", 1)[1].strip()
+    first = lambda v: (v or "").split()[0].upper().strip("[](),.") if (v or "").split() else ""
+    outcome = first(vals.get("OUTCOME")); phase = first(vals.get("PHASE"))
+    m = re.search(r"(\d{1,3}):(\d{2})", vals.get("ACTION_TIME") or "")
+    return {
+        "outcome":         outcome if outcome in _HL_OUTCOMES else "UNKNOWN",
+        "phase":           phase if phase in _HL_PHASES else "UNKNOWN",
+        "action_time_abs": (int(m.group(1)) * 60 + int(m.group(2))) if m else None,
+        "team_color":      vals.get("TEAM_COLOR"),
+        "evidence":        (vals.get("EVIDENCE") or "")[:300],
+    }
