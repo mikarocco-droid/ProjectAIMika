@@ -3007,7 +3007,8 @@ _HIGHLIGHT_OFFSETS = [-55, -45, -35, -28, -22, -16, -10, -5, 0, 5, 10]
 _HL_OUTCOMES = {"GOAL", "SAVE", "WIDE", "WOODWORK", "LINE_CLEARANCE", "BLOCKED", "NONE"}
 _HL_PHASES   = {"OPEN_PLAY", "CORNER", "FREE_KICK", "PENALTY", "NONE"}
 
-def classify_highlight_window(video_path, t_ref_abs, fps=30, scale=0.5, offsets=None):
+def classify_highlight_window(video_path, t_ref_abs, fps=30, scale=0.5, offsets=None, temperature=None,
+                              return_raw=False):
     """
     Retourne un dict {outcome, phase, action_time_abs, team_color, evidence}
     (outcome parmi _HL_OUTCOMES, ou "UNKNOWN" si illisible), ou None si l'appel
@@ -3042,9 +3043,12 @@ def classify_highlight_window(video_path, t_ref_abs, fps=30, scale=0.5, offsets=
         return None
     prompt = _PROMPT_HIGHLIGHT.format(t0=fmt(t_ref_abs - 55), t1=fmt(t_ref_abs + 10))
     try:
+        # temperature=None : réglage par défaut du modèle (requête inchangée) ;
+        # temperature=0 : réponses beaucoup plus constantes d'un appel à l'autre.
+        _cfg = {"config": {"temperature": float(temperature)}} if temperature is not None else {}
         response = _generate_with_retry(
             client, model="gemini-3.8-flash",
-            contents=[{"role": "user", "parts": [{"text": prompt}] + parts}])
+            contents=[{"role": "user", "parts": [{"text": prompt}] + parts}], **_cfg)
     except Exception as e:
         print(f"  [HIGHLIGHT_CLS] erreur {fmt(t_ref_abs)} : {e}")
         return None
@@ -3065,4 +3069,6 @@ def classify_highlight_window(video_path, t_ref_abs, fps=30, scale=0.5, offsets=
         "action_time_abs": (int(m.group(1)) * 60 + int(m.group(2))) if m else None,
         "team_color":      vals.get("TEAM_COLOR"),
         "evidence":        (vals.get("EVIDENCE") or "")[:300],
+        **({"raw": response.text or "", "model_version": getattr(response, "model_version", None),
+            "temperature_demandee": temperature} if return_raw else {}),
     }
