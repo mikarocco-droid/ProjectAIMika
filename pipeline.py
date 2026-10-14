@@ -1452,6 +1452,14 @@ def run_pipeline(
                     _cls_results = dict(enumerate(_cls_list))
                     print(f"  [TEMPS FORTS] classification : {sum(1 for _c in _cls_list if _c)} / "
                           f"{len(_cls_list)} candidats analysés")
+                    for _kic, _cc in enumerate(_cls_list):   # détail : diagnostic toujours possible
+                        if _cc is None:
+                            print(f"    cand. {_fmt_ko(_ko_candidates[_kic]['time'])} → ÉCHEC de l'appel")
+                        else:
+                            _ta = _cc.get("action_time_abs")
+                            print(f"    cand. {_fmt_ko(_ko_candidates[_kic]['time'])} → {_cc.get('outcome'):14s} "
+                                  f"{_fmt_ko(_ta) if _ta else '  ?  '} {str(_cc.get('phase')):9s} "
+                                  f"{str(_cc.get('team_color'))[:8]:8s} | {(_cc.get('evidence') or '')[:60]}")
 
                 # ── Coup d'envoi de la 2e mi-temps (KO2) ───────────────────────────
                 # Seul le candidat le PLUS PROCHE de KO2 dans [KO2-15s, KO2+60s] est
