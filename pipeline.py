@@ -1524,6 +1524,7 @@ def run_pipeline(
                         _r = _ko_call(_ko_t_abs)
 
                     if _r and _r.get("is_goal"):
+                        _gt_from_cls = None          # heure fournie par la classification si la KO n'en donne pas
                         _cls = _cls_results.get(_ki)
                         _cls_out = (_cls or {}).get("outcome")
                         if _cls_fn is None:
@@ -1532,8 +1533,23 @@ def run_pipeline(
                             # 16/10/2026 : les vrais buts ont des heures KO / classification
                             # concordantes (0-1 s) ; les faux buts « confirmés » divergeaient de 35 s.
                             _t_ko_g = _r.get("goal_time_abs"); _t_cls_g = _cls.get("action_time_abs")
-                            if _t_ko_g is None or _t_cls_g is None:
-                                _g_status, _g_reason = "à_vérifier", "heure du but manquante (KO ou classification)"
+                            # Fenêtre d'images réellement examinée par la validation KO
+                            _ko_offs = (_ko_kwargs.get("offsets") or [-25, 5])
+                            _w0, _w1 = _ko_t_abs + min(_ko_offs), _ko_t_abs + max(_ko_offs)
+                            if _t_cls_g is None:
+                                _g_status, _g_reason = "à_vérifier", "heure de la classification manquante"
+                            elif _t_ko_g is None:
+                                # 17/10/2026 : sans heure KO, l'heure par défaut (candidat - 10 s) n'est pas
+                                # une mesure. Référence = fenêtre examinée par la validation KO.
+                                if _w0 <= _t_cls_g <= _w1:
+                                    _g_status = "confirmé"
+                                    _g_reason = (f"validation KO et classification (but à {_fmt_ko(_t_cls_g)}, "
+                                                 f"dans la fenêtre KO {_fmt_ko(_w0)}→{_fmt_ko(_w1)})")
+                                    _gt_from_cls = _t_cls_g
+                                else:
+                                    _g_status = "à_vérifier"
+                                    _g_reason = (f"classification hors de la fenêtre KO : {_fmt_ko(_t_cls_g)} "
+                                                 f"hors {_fmt_ko(_w0)}→{_fmt_ko(_w1)}")
                             elif abs(_t_ko_g - _t_cls_g) <= 15:
                                 _g_status, _g_reason = "confirmé", "validation KO et classification (heures concordantes)"
                             else:
@@ -1550,7 +1566,7 @@ def run_pipeline(
                                 continue
                             _g_status = "à_vérifier"
                             _g_reason = "coïncide avec le coup d'envoi de la 2e mi-temps — " + _g_reason
-                        _gt_abs = _r.get("goal_time_abs") or (_ko_t_abs - 10)
+                        _gt_abs = _r.get("goal_time_abs") or _gt_from_cls or (_ko_t_abs - 10)
                         _gt_rel = _gt_abs - _kickoff_offset
                         _ev = {
                             "type":           "goal",
@@ -4023,6 +4039,10 @@ def run_pipeline(
         if _tf.get("outcome") == "GOAL" and any(abs(_tf["time_abs"] - _g) <= 60 for _g in _final_goals_abs):
             print(f"  [TEMPS FORTS] but possible {int(_tf['time_abs']//60):02d}:{int(_tf['time_abs']%60):02d} "
                   f"retiré : même but qu'un but final")
+            continue
+        if any(abs(_tf["time_abs"] - _g) <= 15 for _g in _final_goals_abs):
+            print(f"  [TEMPS FORTS] {_tf['outcome']} {int(_tf['time_abs']//60):02d}:{int(_tf['time_abs']%60):02d} "
+                  f"retiré : coïncide avec un but retenu (le but prime)")
             continue
         _near = [e for e in _final_shots if abs(e.get("time", 0) + _ko_off_tf - _tf["time_abs"]) <= 12]
         if _near:
