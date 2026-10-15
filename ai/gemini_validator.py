@@ -3036,7 +3036,7 @@ def classify_highlight_window(video_path, t_ref_abs, fps=30, scale=0.5, offsets=
             _, buf = cv2.imencode(".jpg", fr, [cv2.IMWRITE_JPEG_QUALITY, 70])
             parts.append({"inline_data": {"mime_type": "image/jpeg",
                                           "data": base64.b64encode(buf.tobytes()).decode()}})
-            parts.append({"text": f"[{off:+d}s | {fmt(t)}]"})
+            parts.append({"text": f"[{off:+g}s | {fmt(t)}]"})   # +g : identique à +d pour les entiers
     finally:
         cap.release()
     if not parts:
@@ -3070,5 +3070,8 @@ def classify_highlight_window(video_path, t_ref_abs, fps=30, scale=0.5, offsets=
         "team_color":      vals.get("TEAM_COLOR"),
         "evidence":        (vals.get("EVIDENCE") or "")[:300],
         **({"raw": response.text or "", "model_version": getattr(response, "model_version", None),
-            "temperature_demandee": temperature} if return_raw else {}),
+            "temperature_demandee": temperature, "n_images": len(parts) // 2,
+            "usage": {k: getattr(getattr(response, "usage_metadata", None), k, None)
+                      for k in ("prompt_token_count", "candidates_token_count", "total_token_count")}}
+           if return_raw else {}),
     }
