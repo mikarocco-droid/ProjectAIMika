@@ -1437,9 +1437,16 @@ def run_pipeline(
                     print("  [TEMPS FORTS] ⚠️ classification indisponible (gemini_validator ancien) — buts non qualifiés")
                 _cls_results = {}
                 if _cls_fn is not None and _ko_candidates:
+                    # Température 0 retenue après l'expérience 5 (plus stable, au moins aussi
+                    # performante). La validation KO n'est PAS concernée.
+                    import inspect as _inspect_cls
+                    _cls_kw = ({"temperature": 0.0}
+                               if "temperature" in _inspect_cls.signature(_cls_fn).parameters else {})
+                    print("  [TEMPS FORTS] classification à température 0" if _cls_kw
+                          else "  [TEMPS FORTS] ⚠️ gemini_validator ancien : température par défaut")
                     def _cls_call(_t):
                         try:
-                            return _cls_fn(video_path, _t, fps=fps)
+                            return _cls_fn(video_path, _t, fps=fps, **_cls_kw)
                         except Exception as _ecls:
                             print(f"  [TEMPS FORTS] erreur classification {_fmt_ko(_t)} : {_ecls}")
                             return None
