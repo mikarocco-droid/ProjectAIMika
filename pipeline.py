@@ -1370,6 +1370,23 @@ def run_pipeline(
                 print("  [KO_DETECTION] réglage B : fenêtre -25s→+15s, prompt 'stoppages'" if _ko_reglage_b
                       else "  [KO_DETECTION] ⚠️ gemini_validator ancien : réglage B indisponible, réglage d'origine utilisé")
 
+                # 17/10/2026 (exp. 11) : validation KO à température 0 (heures plus fiables,
+                # probablement moins de vrais buts refusés). Seul l'appel KO est concerné.
+                # RETOUR IMMÉDIAT au comportement historique, sans modifier le code :
+                #   SCOUTIA_KO_TEMPERATURE=defaut  -> requête sans aucun réglage (comme avant)
+                import os as _os_ko
+                _ko_temp_env = _os_ko.environ.get("SCOUTIA_KO_TEMPERATURE", "0").strip().lower()
+                if _ko_temp_env in ("defaut", "défaut", "default", "none", ""):
+                    print("  [KO_DETECTION] température : défaut du modèle (retour demandé par SCOUTIA_KO_TEMPERATURE)")
+                elif "temperature" not in _ko_params:
+                    print("  [KO_DETECTION] ⚠️ gemini_validator ancien : température non réglable, défaut du modèle utilisé")
+                else:
+                    try:
+                        _ko_kwargs["temperature"] = float(_ko_temp_env)
+                        print(f"  [KO_DETECTION] température : {_ko_kwargs['temperature']:g}")
+                    except ValueError:
+                        print(f"  [KO_DETECTION] ⚠️ SCOUTIA_KO_TEMPERATURE='{_ko_temp_env}' illisible : défaut du modèle utilisé")
+
                 # frames_data est relatif au KO (apply_kickoff_offset_frames).
                 # Décalage -10s CONSERVÉ volontairement : tous les résultats
                 # validés (Andrimont, Raeren) ont été obtenus avec start_s = KO-10.
