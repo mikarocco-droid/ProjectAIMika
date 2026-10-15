@@ -3021,9 +3021,10 @@ def classify_highlight_window(video_path, t_ref_abs, fps=30, scale=0.5, offsets=
         return None
     fmt = lambda t: f"{int(t)//60:02d}:{int(t)%60:02d}"
     parts = []
+    _offs = list(offsets or _HIGHLIGHT_OFFSETS)
     cap = cv2.VideoCapture(video_path)
     try:
-        for off in (offsets or _HIGHLIGHT_OFFSETS):
+        for off in _offs:
             t = t_ref_abs + off
             if t < 0:
                 continue
@@ -3041,7 +3042,9 @@ def classify_highlight_window(video_path, t_ref_abs, fps=30, scale=0.5, offsets=
         cap.release()
     if not parts:
         return None
-    prompt = _PROMPT_HIGHLIGHT.format(t0=fmt(t_ref_abs - 55), t1=fmt(t_ref_abs + 10))
+    # Période annoncée = images réellement envoyées (identique à -55 s → +10 s par défaut)
+    _t0_txt, _t1_txt = fmt(max(0, t_ref_abs + min(_offs))), fmt(t_ref_abs + max(_offs))
+    prompt = _PROMPT_HIGHLIGHT.format(t0=_t0_txt, t1=_t1_txt)
     try:
         # temperature=None : réglage par défaut du modèle (requête inchangée) ;
         # temperature=0 : réponses beaucoup plus constantes d'un appel à l'autre.
@@ -3071,6 +3074,7 @@ def classify_highlight_window(video_path, t_ref_abs, fps=30, scale=0.5, offsets=
         "evidence":        (vals.get("EVIDENCE") or "")[:300],
         **({"raw": response.text or "", "model_version": getattr(response, "model_version", None),
             "temperature_demandee": temperature, "n_images": len(parts) // 2,
+            "periode_annoncee": f"{_t0_txt}→{_t1_txt}",
             "usage": {k: getattr(getattr(response, "usage_metadata", None), k, None)
                       for k in ("prompt_token_count", "candidates_token_count", "total_token_count")}}
            if return_raw else {}),
