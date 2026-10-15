@@ -3282,8 +3282,13 @@ def run_pipeline(
                     # lui-meme - un simple bug de verite Python dans CE
                     # fichier.
                     _team_votes[_tid].append(_team)
+        # 17/10/2026 : valeurs en TEXTE ("0", "1", "gk"). Les équipes mélangeaient
+        # entiers (0, 1) et texte ("gk") : player_identity.py trie ces valeurs
+        # (sorted(equipes_connues)) -> TypeError sur Andrimont, résolution
+        # d'identité entièrement ignorée. Les identifiants produits ("P0_4")
+        # sont identiques avec "0" ou 0.
         team_map = {
-            _tid: _Counter_team(_votes).most_common(1)[0][0]
+            _tid: str(_Counter_team(_votes).most_common(1)[0][0])
             for _tid, _votes in _team_votes.items()
         }
         print(f"  [IDENTITE] team_map construit : {len(team_map)} track_id avec équipe connue")
