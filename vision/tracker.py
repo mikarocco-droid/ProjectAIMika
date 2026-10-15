@@ -3,6 +3,7 @@
 # DeepSort mobilenet FP16 GPU — meilleur compromis vitesse/qualité sur T4
 # ByteTrack natif testé et abandonné : Kalman+Hungarian Python pur > GPU batch
 
+import os
 import numpy as np
 import time as _time_profiling_tracker
 import config
@@ -58,6 +59,16 @@ class Tracker:
         )
         self.mode = "deepsort"
         print(f"  Tracker : DeepSort (mobilenet {'FP16 GPU' if _has_gpu else 'FP32 CPU'})")
+
+        # Option (15/10/2026, expérience 9) : ne TRANSMETTRE aux étapes suivantes que les
+        # pistes détectées depuis au plus N mises à jour. DeepSort n'est pas modifié : il
+        # garde ses pistes en mémoire (max_age) pour les réassocier. Non définie = comportement
+        # historique (toutes les pistes confirmées transmises, y compris prédites jusqu'à ~12 s).
+        _mpa = os.environ.get("TRACKER_MAX_PREDICTION_AGE", "").strip()
+        self.max_prediction_age = int(_mpa) if _mpa.isdigit() else None
+        self._predictions_filtrees = 0
+        if self.max_prediction_age is not None:
+            print(f"  Tracker : pistes transmises si détectées depuis ≤ {self.max_prediction_age} mise(s) à jour")
 
         # V5.2 (17/09/2026) FIX CRITIQUE : la formule precedente utilisait
         # l'ANCIENNE logique buguee du frame_skip ("garde skip_every-1 sur
@@ -202,6 +213,11 @@ class Tracker:
         results = list(par_id.values())
         self._dedup_doublons_totaux += n_doublons
 
+        if self.max_prediction_age is not None:
+            _n_avant = len(results)
+            results = [r for r in results if r["time_since_update"] <= self.max_prediction_age]
+            self._predictions_filtrees += _n_avant - len(results)
+
         return results
 
     def get_dedup_stats(self):
@@ -219,6 +235,8 @@ class Tracker:
                 100 * getattr(self, "_dedup_frames_avec_doublon", 0) / n, 1
             ) if n else 0.0,
             "doublons_totaux_corriges": getattr(self, "_dedup_doublons_totaux", 0),
+            "max_prediction_age": getattr(self, "max_prediction_age", None),
+            "predictions_filtrees": getattr(self, "_predictions_filtrees", 0),
         }
 
     def reset(self):
