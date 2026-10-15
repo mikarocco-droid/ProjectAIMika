@@ -1486,8 +1486,29 @@ def run_pipeline(
                     _ko_t_abs = _koc["time"]
                     _ko_t_rel = _ko_t_abs - _kickoff_offset
 
-                    # Skip si un but confirmé est déjà dans les 60s autour
-                    if any(abs(_ko_t_abs - ct) < 60 for ct in _already_confirmed):
+                    # Saut d'un candidat (16/10/2026, replay Raeren : le vrai but de 45:25 était
+                    # sauté à cause d'un faux but daté 44:38). Si le résultat KO du candidat est
+                    # déjà connu (calcul parallèle) et annonce un but avec une heure, on ne saute
+                    # que si CE but est le même qu'un but retenu (< 40 s). Sinon, règle historique :
+                    # candidat à moins de 60 s d'un but retenu.
+                    _pre = _ko_results.get(_ki)
+                    if _pre is None and any(abs(_ko_t_abs - ct) < 60 for ct in _already_confirmed):
+                        # Mode séquentiel : interroger d'abord ce candidat pour connaître SON but
+                        try:
+                            _ko_results[_ki] = ("ok", _ko_call(_ko_t_abs))
+                        except Exception as _eko_pre:
+                            _ko_results[_ki] = ("exc", _eko_pre)
+                        _pre = _ko_results[_ki]
+                    _pre_r = _pre[1] if (_pre and _pre[0] == "ok") else None
+                    _pre_gt = (_pre_r or {}).get("goal_time_abs") if (_pre_r or {}).get("is_goal") else None
+                    if _pre_gt is not None:
+                        _meme_but = any(abs(_pre_gt - ct) < 40 for ct in _already_confirmed)
+                        if not _meme_but and any(abs(_ko_t_abs - ct) < 60 for ct in _already_confirmed):
+                            print(f"  [KO_DETECTION] t={_fmt_ko(_ko_t_abs)} — proche d'un but retenu mais annonce "
+                                  f"un AUTRE but ({_fmt_ko(_pre_gt)}) : candidat conservé")
+                    else:
+                        _meme_but = any(abs(_ko_t_abs - ct) < 60 for ct in _already_confirmed)
+                    if _meme_but:
                         print(f"  [KO_DETECTION] t={int(_ko_t_abs//60):02d}:{int(_ko_t_abs%60):02d} "
                               f"— but déjà confirmé à proximité, skip")
                         continue
@@ -1508,7 +1529,16 @@ def run_pipeline(
                         if _cls_fn is None:
                             _g_status, _g_reason = "non_qualifié", "classification indisponible"
                         elif _cls_out == "GOAL":
-                            _g_status, _g_reason = "confirmé", "validation KO et classification"
+                            # 16/10/2026 : les vrais buts ont des heures KO / classification
+                            # concordantes (0-1 s) ; les faux buts « confirmés » divergeaient de 35 s.
+                            _t_ko_g = _r.get("goal_time_abs"); _t_cls_g = _cls.get("action_time_abs")
+                            if _t_ko_g is None or _t_cls_g is None:
+                                _g_status, _g_reason = "à_vérifier", "heure du but manquante (KO ou classification)"
+                            elif abs(_t_ko_g - _t_cls_g) <= 15:
+                                _g_status, _g_reason = "confirmé", "validation KO et classification (heures concordantes)"
+                            else:
+                                _g_status, _g_reason = ("à_vérifier", f"heures incohérentes : KO {_fmt_ko(_t_ko_g)} / "
+                                                                       f"classification {_fmt_ko(_t_cls_g)}")
                         elif _cls is None or _cls_out == "UNKNOWN":
                             _g_status, _g_reason = "à_vérifier", "classification incertaine ou en échec"
                         else:
