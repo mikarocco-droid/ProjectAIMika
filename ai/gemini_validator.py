@@ -508,7 +508,8 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
                                      frame_w=1920, frame_h=1080,
                                      kickoff_offset=0, source=None,
                                      offsets=None, scale=0.5, jpeg_quality=70,
-                                     return_raw=False, prompt_variant="default"):
+                                     return_raw=False, prompt_variant="default",
+                                     temperature=None):
     """
     Valide si un but vient d'être marqué avant un candidat KO.
     Extrait une séquence couvrant [KO-25s, KO+5s] — le but est avant le KO.
@@ -619,10 +620,14 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
 
     restart_type = None
     try:
+        # 17/10/2026 : temperature=None (défaut) -> requête strictement inchangée ;
+        # temperature=0 -> décisions plus constantes (même mécanisme que la classification).
+        _cfg = {"config": {"temperature": float(temperature)}} if temperature is not None else {}
         response = _generate_with_retry(
             client,
             model="gemini-3.8-flash",
-            contents=[{"role": "user", "parts": [{"text": prompt}] + parts}]
+            contents=[{"role": "user", "parts": [{"text": prompt}] + parts}],
+            **_cfg
         )
         if response is None:            # quota épuisé ou limite persistante
             print(f"  [KO_VALIDATOR] t={ko_mm:02d}:{ko_ss:02d} → Gemini indisponible")
