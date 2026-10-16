@@ -3515,20 +3515,30 @@ def run_pipeline(
     print("Step 3 : Stats...")
     # 18/10/2026 : diagnostic « 0 joueur » (Raeren). Lecture seule, sans effet sur les résultats.
     # Reproduit le comptage de touches de analytics/stats.py (version connue : seuil adaptatif).
+    # 18/10/2026 : durée COUVERTE PAR LES ÉVÉNEMENTS (contrat de compute_stats), et non durée
+    # de toute la vidéo : Raeren 6731 s au lieu de 2651 s -> seuil 19 touches au lieu de 7 -> 0 joueur.
+    try:
+        _t_ev = [float(e["time"]) for e in events if isinstance(e.get("time"), (int, float))]
+        _dur_stats = (max(_t_ev) - min(_t_ev)) if len(_t_ev) >= 2 and max(_t_ev) > min(_t_ev) else None
+    except Exception:
+        _dur_stats = None
+    if _dur_stats is None:
+        _dur_stats = total_frames / fps if fps > 0 else None      # repli : comportement précédent
     try:
         from collections import Counter as _Cdiag
-        _dur_diag = total_frames / fps if fps > 0 else None
+        _dur_diag = _dur_stats
         _min_diag = max(3, round(15 * _dur_diag / 5400)) if _dur_diag else 15
         _pid_diag = lambda e: str(e.get("player", e.get("from", "")))
         _poss_diag = _Cdiag(_pid_diag(e) for e in events if e.get("type") == "possession" and _pid_diag(e))
         print(f"  [STATS DIAG] événements : {len(events)} | avec joueur : {sum(1 for e in events if _pid_diag(e))} "
               f"| types : {_Cdiag(e.get('type') for e in events).most_common(6)}")
-        print(f"  [STATS DIAG] durée : {_dur_diag if _dur_diag is None else round(_dur_diag)} s (total_frames={total_frames}, fps={fps}) "
+        print(f"  [STATS DIAG] durée couverte par les événements : {_dur_diag if _dur_diag is None else round(_dur_diag)} s "
+              f"(vidéo entière : {round(total_frames / fps) if fps > 0 else '?'} s) "
               f"→ seuil {_min_diag} touches | joueurs ≥ seuil : {sum(1 for v in _poss_diag.values() if v >= _min_diag)} "
               f"| top touches : {_poss_diag.most_common(5)}")
     except Exception as _e_diag:
         print(f"  [STATS DIAG] impossible : {_e_diag}")
-    stats = compute_stats(events, jersey_map=jersey_map, duration_s=total_frames / fps if fps > 0 else None)
+    stats = compute_stats(events, jersey_map=jersey_map, duration_s=_dur_stats)
     print(f"  OK {len(stats)} joueurs")
 
     possession = {}
