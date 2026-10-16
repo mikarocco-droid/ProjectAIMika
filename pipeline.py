@@ -1371,10 +1371,12 @@ def run_pipeline(
                 # sont ~10 s en avance (start_s = KO-10) et le détecteur repère la remise en place :
                 # l'engagement réel peut tomber après +15 s (Andrimont : but 30:31, engagement 31:01,
                 # candidat 30:35 -> 2/2 récupéré, faux positifs inchangés au total).
-                # Défaut = fenêtre historique (+15 s) tant que les replays complets n'ont pas validé
-                # la fenêtre prolongée. Activation : SCOUTIA_KO_FENETRE=30
+                # Activée par défaut le 18/10/2026 après replays complets : Andrimont 5/5 (30:31
+                # récupéré, faux positifs inchangés) ; Raeren 7/7 mais 1 faux positif « à vérifier »
+                # de plus (31:13). Choix produit : un vrai but manqué est plus grave qu'un faux à vérifier.
+                # RETOUR IMMÉDIAT à la fenêtre historique, sans modifier le code : SCOUTIA_KO_FENETRE=15
                 import os as _os_kof
-                _ko_fen_env = _os_kof.environ.get("SCOUTIA_KO_FENETRE", "15").strip()
+                _ko_fen_env = _os_kof.environ.get("SCOUTIA_KO_FENETRE", "30").strip()
                 if _ko_reglage_b and _ko_fen_env == "30":
                     _ko_kwargs["offsets"] = _ko_kwargs["offsets"] + [20, 25, 30]
                 if _ko_reglage_b:
