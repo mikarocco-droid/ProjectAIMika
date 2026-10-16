@@ -504,10 +504,12 @@ def validate_crossing_gemini(video_path, cross_time_abs, cross_frame, fps=30,
         return None
 
 
-def _ko_parse_goal_time(text, t_ref, offsets, margin=10.0):
+def _ko_parse_goal_time(text, t_ref, offsets, margin=2.0):
     """Heure de but renvoyée par la validation KO -> secondes absolues, ou None.
     Formats acceptés : « MM:SS », « H:MM:SS », plage « MM:SS-MM:SS » (premier terme).
-    Une heure hors de la fenêtre d'images examinée (± marge) est une erreur de lecture : None."""
+    Une heure hors de la fenêtre d'images examinée (± marge) est une erreur de lecture : None.
+    19/10/2026 : marge 10 s -> 2 s. Raeren : but réel 50:17, Gemini voit les joueurs revenir sur la
+    1re image (50:01) et DÉDUIT un but à 49:55 -> heure non observée, rejetée (la classification prend le relais)."""
     m = re.search(r"(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?", str(text))
     if not m:
         return None
