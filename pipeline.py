@@ -239,6 +239,18 @@ except ImportError:
 # ─────────────────────────────────────────
 # PIPELINE PRINCIPAL
 # ─────────────────────────────────────────
+
+def _trace_ev(label, evs):
+    """18/10/2026 : traçage en lecture seule des événements à chaque étape (perte des touches)."""
+    try:
+        _pid = lambda e: e.get("player", e.get("from", ""))
+        _n_poss = sum(1 for e in evs if e.get("type") == "possession")
+        _n_pid = sum(1 for e in evs if _pid(e) not in (None, ""))
+        print(f"  [EV TRACE] {label:46s} | événements {len(evs):6d} | touches {_n_poss:6d} | avec joueur {_n_pid:6d}")
+    except Exception as _e_tr:
+        print(f"  [EV TRACE] {label} : traçage impossible ({_e_tr})")
+
+
 def run_pipeline(
     video_path,
     sport             = "football",
@@ -624,6 +636,7 @@ def run_pipeline(
                 batch_size    = _deep_batch,
                 imgsz         = _deep_imgsz,
             )
+            _trace_ev("L619 analyze_segments(", events)
 
             # jersey_map depuis le coarse (déjà disponible)
             jersey_map = _jersey if _jersey else {}
@@ -642,6 +655,7 @@ def run_pipeline(
         # ── REPLAY : données chargées par build_match_data() ─────────────
         print("Step 1 : [REPLAY] YOLO/tracking skippé — données depuis cache")
         events                = _match_data["events"]
+        _trace_ev("L644 _match_data['events']", events)
         frames_data           = _match_data["frames_data"]
         jersey_map            = _match_data["jersey_map"]
         fps                   = _match_data["fps"]
@@ -758,6 +772,7 @@ def run_pipeline(
             ball_conf         = ball_conf,
             use_single_yolo26 = use_single_yolo26,
         )
+        _trace_ev("L742 process_video(", events)
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
     # V5.2 DIAGNOSTIC - mesure le taux de doublons tracker_id ICI, juste
@@ -905,6 +920,7 @@ def run_pipeline(
 
             # 1. Corriger timestamps + supprimer events avant le coup d'envoi
             events, _n_removed = apply_kickoff_offset(events, _kickoff_offset, fps=fps)
+            _trace_ev("L907 apply_kickoff_offset(events, _kickoff_off", events)
             print(f"  [KICKOFF] {len(events)} events après correction "
                   f"({_n_removed} events pré-match supprimés)")
 
@@ -925,6 +941,7 @@ def run_pipeline(
             _n_events_before  = len(events)
             _n_frames_before  = len(frames_data)
             events      = [e for e in events     if e.get("time", 0) <= video_end_s]
+            _trace_ev("L927 [e for e in events     if e.get('time', 0", events)
             frames_data = [f for f in frames_data if f.get("frame", 0) <= _end_frame]
             print(f"  [VIDEO_END_S] Coupure forcée à {video_end_s:.0f}s "
                   f"({int(video_end_s//60):02d}:{int(video_end_s%60):02d}) | "
@@ -989,6 +1006,7 @@ def run_pipeline(
             events, frames_data, _n_ev_pause, _n_fr_pause = apply_pause_filter(
                 events, frames_data, fin1mt_s=_fin1mt_relatif, ko2_s=_ko2_relatif, fps=fps,
             )
+            _trace_ev("L989 apply_pause_filter(", events)
 
         # ── DÉTECTION FIN DE MATCH ───────────────────────────────────────────────
         # Cherche la fin du match dans les frames_data pour couper l'après-match.
@@ -1026,6 +1044,7 @@ def run_pipeline(
 
         if _match_end_s is not None:
             events, frames_data = apply_match_end(events, frames_data, _match_end_s, fps=fps)
+            _trace_ev("L1028 apply_match_end(events, frames_data, _ma", events)
 
         # ── Alimenter le bootstrapper depuis frames_data ────────────────────────
         if _team_bootstrapper is not None and frames_data:
@@ -1307,6 +1326,7 @@ def run_pipeline(
                                             "goal_posthoc_v9", "goal_posthoc_v9.5")
             )
         ]
+        _trace_ev("L1299 [", events)
         n_goals_filtered = sum(1 for e in events if e.get("type") in ("goal", "score"))
         if n_goals_raw != n_goals_filtered:
             print(f"  Filtre xG=0 : {n_goals_raw - n_goals_filtered} faux but(s) supprimés")
@@ -1337,6 +1357,7 @@ def run_pipeline(
                 )
             if fast_goals:
                 events.extend(fast_goals)
+                _trace_ev("L1339 events.extend(fast_goals)", events)
                 events.sort(key=lambda e: e.get("time", 0))
                 print(f"  goal_posthoc : {len(fast_goals)} but(s) détecté(s)")
             # Sauvegarder les temps posthoc bruts AVANT tout filtrage
@@ -1735,6 +1756,7 @@ def run_pipeline(
                         if not _too_close:
                             _filtered_terminal.append(_tg)
                     events.extend(_filtered_terminal)
+                    _trace_ev("L1737 events.extend(_filtered_terminal)", events)
                     events.sort(key=lambda e: e.get("time", 0))
                     print(f"  terminal_events : {len(_filtered_terminal)} nouveau(x) candidat(s) ({len(_terminal_goals)-len(_filtered_terminal)} dédupliqués vs posthoc)")
         except Exception as et:
@@ -1775,6 +1797,7 @@ def run_pipeline(
         # ── Étape 3 : dedup fenêtre courte 3s (doublons immédiats posthoc/events)
         n_before = sum(1 for e in events if e.get("type") in ("goal", "score"))
         events   = deduplicate_goals(events, window=3.0)
+        _trace_ev("L1777 deduplicate_goals(events, window=3.0)", events)
         n_after  = sum(1 for e in events if e.get("type") in ("goal", "score"))
         if n_before != n_after:
             print(f"  Dedup 3s : {n_before} → {n_after} buts")
@@ -1790,9 +1813,11 @@ def run_pipeline(
             frames_data        = frames_data,
             fps                = fps,
         )
+        _trace_ev("L1784 post_process_events(", events)
 
         # ── Étape 5 : dedup fenêtre 2s (sécurité après post-traitement) ───────
         events = deduplicate_goals(events, window=2.0)
+        _trace_ev("L1795 deduplicate_goals(events, window=2.0)", events)
 
         n_goals = sum(1 for e in events if e.get("type") in ["goal", "score"])
         print(f"  CLEAN {len(events)} events | {n_goals} but(s) | "
@@ -3042,6 +3067,7 @@ def run_pipeline(
             events_validated + events_eco,
             key=lambda x: x.get("time", 0)
         )
+        _trace_ev("L3041 sorted(", events)
         # Nettoyer le flag interne
         for e in events:
             e.pop("_eco", None)
@@ -3054,6 +3080,7 @@ def run_pipeline(
                 if not (e.get("type") == "shot"
                         and learner.is_fp_zone(e.get("x", 0), e.get("y", 0)))
             ]
+            _trace_ev("L3052 [", events)
             if len(events) < n_before:
                 print(f"  FP zones : {n_before - len(events)} shots filtrés")
 
@@ -3327,6 +3354,7 @@ def run_pipeline(
         print(f"  [IDENTITE] team_map construit : {len(team_map)} track_id avec équipe connue")
 
         events, jersey_map = resolve_player_identities(events, jersey_map, team_map=team_map, frames_data=frames_data)
+        _trace_ev("L3329 resolve_player_identities(events, jersey", events)
         print(f"  Jersey map : {len(jersey_map)} joueurs identifiés")
 
         # ── PlayerIdentityMemory : mise à jour finale + sauvegarde ────────────
@@ -3360,8 +3388,10 @@ def run_pipeline(
             frame_w = _frame_w,
             frame_h = _frame_h,
         )
+        _trace_ev("L3357 filter_events(", events)
         if _ko_goals_val:
             events = sorted(events + _ko_goals_val, key=lambda e: e.get("time", 0))
+            _trace_ev("L3364 sorted(events + _ko_goals_val, key=lambd", events)
             print(f"  [KO_DETECTION] {len(_ko_goals_val)} but(s) exemptés du contrôle de coordonnées")
         print(f"  Validation structurelle : {val_stats}")
     except Exception as e:
@@ -3384,10 +3414,14 @@ def run_pipeline(
         from analysis.tactical_v2 import detect_pressing_intensity, detect_play_style
 
         events         = reidentify_players(events)
+        _trace_ev("L3386 reidentify_players(events)", events)
         events         = assign_teams_by_color(events)
+        _trace_ev("L3387 assign_teams_by_color(events)", events)
         real_pass      = detect_passes(events)
         events.extend(real_pass)
+        _trace_ev("L3389 events.extend(real_pass)", events)
         events         = compute_xa(events)
+        _trace_ev("L3390 compute_xa(events)", events)
 
         pressing_level = detect_pressing_intensity(events)
         play_style     = detect_play_style(events)
@@ -3434,6 +3468,7 @@ def run_pipeline(
     try:
         ctx    = ContextEngine(fps=fps, frame_w=_frame_w, frame_h=_frame_h)
         events = ctx.process_events(events, frames_data)
+        _trace_ev("L3436 ctx.process_events(events, frames_data)", events)
         ctx_stats = ctx.get_match_stats(events)
         # V5.2 FIX : renomme pour clarifier - ce calcul porte sur TOUS les
         # tirs bruts detectes (avant filtrage highlight), alors que
