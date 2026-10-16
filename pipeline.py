@@ -3513,6 +3513,21 @@ def run_pipeline(
     print(f"  [TEAM DIST] {dict(team_dist)}")
     
     print("Step 3 : Stats...")
+    # 18/10/2026 : diagnostic « 0 joueur » (Raeren). Lecture seule, sans effet sur les résultats.
+    # Reproduit le comptage de touches de analytics/stats.py (version connue : seuil adaptatif).
+    try:
+        from collections import Counter as _Cdiag
+        _dur_diag = total_frames / fps if fps > 0 else None
+        _min_diag = max(3, round(15 * _dur_diag / 5400)) if _dur_diag else 15
+        _pid_diag = lambda e: str(e.get("player", e.get("from", "")))
+        _poss_diag = _Cdiag(_pid_diag(e) for e in events if e.get("type") == "possession" and _pid_diag(e))
+        print(f"  [STATS DIAG] événements : {len(events)} | avec joueur : {sum(1 for e in events if _pid_diag(e))} "
+              f"| types : {_Cdiag(e.get('type') for e in events).most_common(6)}")
+        print(f"  [STATS DIAG] durée : {_dur_diag if _dur_diag is None else round(_dur_diag)} s (total_frames={total_frames}, fps={fps}) "
+              f"→ seuil {_min_diag} touches | joueurs ≥ seuil : {sum(1 for v in _poss_diag.values() if v >= _min_diag)} "
+              f"| top touches : {_poss_diag.most_common(5)}")
+    except Exception as _e_diag:
+        print(f"  [STATS DIAG] impossible : {_e_diag}")
     stats = compute_stats(events, jersey_map=jersey_map, duration_s=total_frames / fps if fps > 0 else None)
     print(f"  OK {len(stats)} joueurs")
 
