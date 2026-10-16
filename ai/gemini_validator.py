@@ -504,6 +504,23 @@ def validate_crossing_gemini(video_path, cross_time_abs, cross_frame, fps=30,
         return None
 
 
+def _ko_parse_goal_time(text, t_ref, offsets, margin=10.0):
+    """Heure de but renvoyée par la validation KO -> secondes absolues, ou None.
+    Formats acceptés : « MM:SS », « H:MM:SS », plage « MM:SS-MM:SS » (premier terme).
+    Une heure hors de la fenêtre d'images examinée (± marge) est une erreur de lecture : None."""
+    m = re.search(r"(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?", str(text))
+    if not m:
+        return None
+    a, b, c = int(m.group(1)), int(m.group(2)), m.group(3)
+    candidates = [a * 3600 + b * 60 + int(c), b * 60 + int(c)] if c is not None else [a * 60 + b]
+    lo = t_ref + min(offsets) - margin
+    hi = t_ref + max(offsets) + margin
+    for t in candidates:
+        if lo <= t <= hi:
+            return float(t)
+    return None
+
+
 def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
                                      frame_w=1920, frame_h=1080,
                                      kickoff_offset=0, source=None,
@@ -659,14 +676,10 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
                         pass
             elif "GOAL_TIME:" in line:
                 gt = line.split(":", 1)[1].strip()
-                if gt and gt != "UNKNOWN":
-                    # Convertir MM:SS en secondes absolues
-                    try:
-                        parts_t = gt.replace(".", ":").split(":")
-                        gt_s = int(parts_t[0])*60 + int(parts_t[1])
-                        goal_time = float(gt_s)
-                    except Exception:
-                        pass
+                if gt and gt.upper() != "UNKNOWN":
+                    # 18/10/2026 : lecture robuste. Gemini répond parfois « 00:33:25 » (H:MM:SS) ;
+                    # l'ancienne lecture prenait « 00:33 » -> 33 s (but de Raeren 33:24 annoncé à 00:33).
+                    goal_time = _ko_parse_goal_time(gt, kickoff_time_abs, OFFSETS_KO)
             elif "RESTART_TYPE:" in line:
                 restart_type = line.split(":", 1)[1].strip().upper() or None
             elif "EVIDENCE:" in line:
