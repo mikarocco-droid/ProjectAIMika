@@ -1367,8 +1367,22 @@ def run_pipeline(
                 _ko_reglage_b = "offsets" in _ko_params and "prompt_variant" in _ko_params
                 _ko_kwargs = (dict(offsets=[-25, -20, -15, -10, -7, -5, -3, -1, 0, 3, 5, 8, 11, 15],
                                    prompt_variant="stoppages") if _ko_reglage_b else {})
-                print("  [KO_DETECTION] réglage B : fenêtre -25s→+15s, prompt 'stoppages'" if _ko_reglage_b
-                      else "  [KO_DETECTION] ⚠️ gemini_validator ancien : réglage B indisponible, réglage d'origine utilisé")
+                # 17/10/2026 (exp. 12) : fenêtre prolongée jusqu'à +30 s. Les heures des candidats
+                # sont ~10 s en avance (start_s = KO-10) et le détecteur repère la remise en place :
+                # l'engagement réel peut tomber après +15 s (Andrimont : but 30:31, engagement 31:01,
+                # candidat 30:35 -> 2/2 récupéré, faux positifs inchangés au total).
+                # Défaut = fenêtre historique (+15 s) tant que les replays complets n'ont pas validé
+                # la fenêtre prolongée. Activation : SCOUTIA_KO_FENETRE=30
+                import os as _os_kof
+                _ko_fen_env = _os_kof.environ.get("SCOUTIA_KO_FENETRE", "15").strip()
+                if _ko_reglage_b and _ko_fen_env == "30":
+                    _ko_kwargs["offsets"] = _ko_kwargs["offsets"] + [20, 25, 30]
+                if _ko_reglage_b:
+                    print(f"  [KO_DETECTION] réglage B : fenêtre {min(_ko_kwargs['offsets'])}s→+{max(_ko_kwargs['offsets'])}s "
+                          f"({len(_ko_kwargs['offsets'])} images), prompt 'stoppages'"
+                          + ("" if _ko_fen_env in ("15", "30") else f" — SCOUTIA_KO_FENETRE='{_ko_fen_env}' non reconnu, fenêtre historique utilisée"))
+                else:
+                    print("  [KO_DETECTION] ⚠️ gemini_validator ancien : réglage B indisponible, réglage d'origine utilisé")
 
                 # 17/10/2026 (exp. 11) : validation KO à température 0 (heures plus fiables,
                 # probablement moins de vrais buts refusés). Seul l'appel KO est concerné.
