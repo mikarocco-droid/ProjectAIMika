@@ -2169,11 +2169,12 @@ def _visual_match_score(v1, v2):
     if not v1 or not v2:
         return 0.0
 
+    # 18/10/2026 (RGPD) : la teinte de peau n'est plus demandée, stockée ni comparée.
+    # Donnée susceptible de révéler l'origine ethnique (catégorie particulière, art. 9 RGPD).
     WEIGHTS = {
         "boots":       0.30,   # très discriminant (couleur unique par joueur)
         "socks":       0.25,   # très discriminant (position + couleur)
         "hair":        0.20,   # discriminant si coupe distinctive
-        "skin":        0.10,   # utile mais moins unique
         "body":        0.08,   # morphologie — variable selon angle caméra
         "role":        0.07,   # utile si rôle stable dans le match
     }
@@ -2307,7 +2308,6 @@ def read_highlight_visuals(video_path, highlight_events, fps=25, highlight_clips
                 f'    "socks": "<position et couleur, ex: chaussettes blanches basses>",\n'
                 f'    "body": "<morphologie, ex: grand svelte, petit trapu>",\n'
                 f'    "sleeves": "<manches longues ou courtes>",\n'
-                f'    "skin": "<teinte peau, ex: peau claire, peau foncée>",\n'
                 f'    "role": "<rôle apparent, ex: ailier gauche, attaquant axial>",\n'
                 f'    "accessories": "<bandeaux, gants, genouillères ou null>",\n'
                 f'    "confidence": "<high | medium | low>"\n'
@@ -2344,7 +2344,6 @@ def read_highlight_visuals(video_path, highlight_events, fps=25, highlight_clips
                     "socks":       visual.get("socks"),
                     "body":        visual.get("body"),
                     "sleeves":     visual.get("sleeves"),
-                    "skin":        visual.get("skin"),
                     "role":        visual.get("role"),
                     "accessories": visual.get("accessories"),
                     "confidence":  visual.get("confidence", "low"),
@@ -2480,7 +2479,6 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
                 f'    "socks": "<position et couleur, ex: chaussettes blanches basses>",\n'
                 f'    "body": "<morphologie, ex: grand svelte, petit trapu>",\n'
                 f'    "sleeves": "<manches longues ou courtes>",\n'
-                f'    "skin": "<teinte peau, ex: peau claire, peau foncée>",\n'
                 f'    "role": "<rôle apparent, ex: ailier gauche, attaquant axial>",\n'
                 f'    "accessories": "<bandeaux, gants, genouillères ou null>",\n'
                 f'    "confidence": "<high | medium | low>"\n'
@@ -2526,7 +2524,6 @@ def read_goal_scorers(video_path, goal_events, fps=25, highlight_clips=None, vis
                     "socks":       visual.get("socks"),
                     "body":        visual.get("body"),
                     "sleeves":     visual.get("sleeves"),
-                    "skin":        visual.get("skin"),
                     "role":        visual.get("role"),
                     "accessories": visual.get("accessories"),
                     "confidence":  visual.get("confidence", "low"),
