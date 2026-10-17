@@ -612,7 +612,7 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
         "EVIDENCE: [short justification based on observed images]"
     )
 
-    if prompt_variant == "stoppages":
+    if prompt_variant in ("stoppages", "fenetre", "fenetre_chrono"):
         # Variante expérimentale (13/10/2026) : faux positifs observés sur Raeren =
         # arrêts de jeu (blessure, changement, corner, coup franc) pris pour un KO.
         _anchor_ng = "Do not classify these as goals merely because players reposition afterward.\n\n"
@@ -636,6 +636,28 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
             "DROP_BALL / NONE_VISIBLE]\n" + _anchor_ev)
     elif prompt_variant != "default":
         raise ValueError(f"prompt_variant inconnu : {prompt_variant}")
+
+    if prompt_variant in ("fenetre", "fenetre_chrono"):
+        # 19/10/2026 (exp. 14) : le but peut se situer APRÈS l'heure du candidat (Raeren, suivi
+        # filtré : candidat 33:18, but 33:24). La consigne de production demande « just before ».
+        _a_bef = "and determine if a GOAL was scored just before.\n\n"
+        if prompt.count(_a_bef) != 1:
+            raise ValueError("prompt_variant=fenetre : ancre « just before » introuvable")
+        _w0 = kickoff_time_abs + min(OFFSETS_KO); _w1 = kickoff_time_abs + max(OFFSETS_KO)
+        _f = lambda t: f"{int(t)//60:02d}:{int(t)%60:02d}"
+        prompt = prompt.replace(_a_bef,
+            f"and determine if a GOAL was scored at ANY moment of this sequence. The images span "
+            f"{_f(_w0)} to {_f(_w1)}; the goal may occur before OR after {ko_mm:02d}:{ko_ss:02d}.\n\n")
+        if prompt_variant == "fenetre_chrono":
+            _a_unc = "UNCERTAIN — use only when images genuinely do not allow a reliable decision.\n\n"
+            if prompt.count(_a_unc) != 1:
+                raise ValueError("prompt_variant=fenetre_chrono : ancre UNCERTAIN introuvable")
+            prompt = prompt.replace(_a_unc, _a_unc +
+                "CHRONOLOGY RULE: return GOAL only if the goal action itself is visible within these images "
+                "(the shot or ball entering the net, or the celebration immediately following it), with the "
+                "restart or players walking back coming AFTER it. GOAL_TIME must be the time of an image you "
+                "actually observed. If the only evidence is players already walking back or repositioning at "
+                "the very start of the sequence, with no visible goal action, return UNCERTAIN.\n\n")
 
     restart_type = None
     try:
