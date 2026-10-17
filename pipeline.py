@@ -1400,9 +1400,24 @@ def run_pipeline(
                 _ko_fen_env = _os_kof.environ.get("SCOUTIA_KO_FENETRE", "30").strip()
                 if _ko_reglage_b and _ko_fen_env == "30":
                     _ko_kwargs["offsets"] = _ko_kwargs["offsets"] + [20, 25, 30]
+                # 19/10/2026 (exp. 14 et 14b) : consigne « fenêtre complète » (le but peut suivre le candidat).
+                # Raeren 7/7 sur les 2 suivis (33:24 récupéré), Andrimont 5/5, moins de faux buts acceptés.
+                # RETOUR IMMÉDIAT à la consigne précédente, sans modifier le code : SCOUTIA_KO_CONSIGNE=stoppages
+                _ko_cons_env = _os_kof.environ.get("SCOUTIA_KO_CONSIGNE", "fenetre").strip().lower()
+                if _ko_reglage_b and _ko_cons_env == "fenetre":
+                    try:
+                        _gv_src_koc = _inspect_ko.getsource(validate_kickoff_context_gemini)
+                    except Exception:
+                        _gv_src_koc = ""
+                    if '"fenetre"' in _gv_src_koc:
+                        _ko_kwargs["prompt_variant"] = "fenetre"
+                    else:
+                        print("  [KO_DETECTION] ⚠️ gemini_validator ancien : consigne 'fenetre' indisponible, 'stoppages' utilisée")
+                elif _ko_reglage_b and _ko_cons_env != "stoppages":
+                    print(f"  [KO_DETECTION] ⚠️ SCOUTIA_KO_CONSIGNE='{_ko_cons_env}' non reconnue : 'stoppages' utilisée")
                 if _ko_reglage_b:
                     print(f"  [KO_DETECTION] réglage B : fenêtre {min(_ko_kwargs['offsets'])}s→+{max(_ko_kwargs['offsets'])}s "
-                          f"({len(_ko_kwargs['offsets'])} images), prompt 'stoppages'"
+                          f"({len(_ko_kwargs['offsets'])} images), prompt '{_ko_kwargs['prompt_variant']}'"
                           + ("" if _ko_fen_env in ("15", "30") else f" — SCOUTIA_KO_FENETRE='{_ko_fen_env}' non reconnu, fenêtre historique utilisée"))
                 else:
                     print("  [KO_DETECTION] ⚠️ gemini_validator ancien : réglage B indisponible, réglage d'origine utilisé")
