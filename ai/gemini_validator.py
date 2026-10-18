@@ -177,6 +177,9 @@ def _is_daily_quota(err_str):
 #             + nouvelles réponses -> remplacer le fichier du dataset par celui-ci après chaque run.
 #   Chaque entrée garde son contexte (fonction, vidéo, heure, consigne, fenêtre) pour rejouer les
 #   règles hors ligne.
+#   SCOUTIA_GEMINI_CACHE_VIDEO (optionnel, 20/10/2026) : nom du fichier vidéo du match. Le fichier de
+#   sortie ne contient alors QUE les réponses de cette vidéo (un fichier de cache par match :
+#   gemini_cache_<match>.jsonl). L'entrée lit toujours tous les fichiers, donc tous les matchs.
 # ═════════════════════════════════════════════════════════════════════════
 import hashlib as _hl_gc, json as _json_gc, glob as _glob_gc, threading as _th_gc, inspect as _insp_gc
 from types import SimpleNamespace as _NS_gc
@@ -247,17 +250,22 @@ def _gc_load():
         except Exception as e:
             print(f"  [GEMINI CACHE] lecture impossible : {p} ({e})")
     _GC["out"] = out
+    _video_filtre = os.path.basename(os.environ.get("SCOUTIA_GEMINI_CACHE_VIDEO", "").strip())
+    _GC["video_filtre"] = _video_filtre or None
     if out:
         try:
             os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-            with open(out, "w", encoding="utf-8") as f:       # fichier de sortie = cache COMPLET
+            with open(out, "w", encoding="utf-8") as f:       # fichier de sortie = cache COMPLET (ou de ce match)
                 for e in _GC["entries"].values():
+                    if _video_filtre and os.path.basename(str((e.get("contexte") or {}).get("video_path", ""))) != _video_filtre:
+                        continue
                     f.write(_json_gc.dumps(e, ensure_ascii=False) + "\n")
         except Exception as e:
             print(f"  [GEMINI CACHE] écriture impossible : {out} ({e})")
             _GC["out"] = None
     print(f"  [GEMINI CACHE] mode={_gc_mode()} | {len(_GC['entries'])} réponse(s) en cache "
-          f"({len(paths)} fichier(s) lu(s)) | sortie : {_GC['out'] or 'aucune'}")
+          f"({len(paths)} fichier(s) lu(s)) | sortie : {_GC['out'] or 'aucune'}"
+          + (f" (réponses de {_GC['video_filtre']} uniquement)" if _GC.get("video_filtre") else ""))
 
 
 def _gc_context():
