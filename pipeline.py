@@ -4163,6 +4163,9 @@ def run_pipeline(
         _temps_forts_final.append(_tf)
 
     result = {
+        # 20/10/2026 : repères temporels détectés (lecture seule), pour comparer à la vérité terrain
+        "kickoff_offset": _ko_off_tf,
+        "ko2_abs":        (_ko2_absolu if "_ko2_absolu" in dir() else None),
         "temps_forts":   _temps_forts_final,
         "summary":       summary,
         "coarse_stats":  coarse_stats,
