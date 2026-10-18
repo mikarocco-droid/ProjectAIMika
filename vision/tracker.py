@@ -67,8 +67,31 @@ class Tracker:
         _mpa = os.environ.get("TRACKER_MAX_PREDICTION_AGE", "").strip()
         self.max_prediction_age = int(_mpa) if _mpa.isdigit() else None
         self._predictions_filtrees = 0
-        if self.max_prediction_age is not None:
-            print(f"  Tracker : pistes transmises si détectées depuis ≤ {self.max_prediction_age} mise(s) à jour")
+        self._predictions_marquees = 0
+        # 20/10/2026 : trois modes, sélectionnables sans modifier le code (SCOUTIA_TRACKER_MODE) :
+        #   historique : toutes les pistes confirmées transmises, sortie STRICTEMENT inchangée ;
+        #   filtre     : pistes prédites depuis > N mises à jour SUPPRIMÉES (run GPU du 17/10) ;
+        #   decouple   : toutes les pistes transmises (flux A = historique, Re-ID comprise), chacune
+        #                marquée "fiable" (time_since_update <= N) pour les consommateurs du flux B.
+        # Compatibilité : variable non définie -> "filtre" si TRACKER_MAX_PREDICTION_AGE est défini,
+        # sinon "historique" (comportements antérieurs inchangés).
+        _mode = os.environ.get("SCOUTIA_TRACKER_MODE", "").strip().lower()
+        if _mode not in ("historique", "filtre", "decouple"):
+            if _mode:
+                print(f"  Tracker : ⚠️ SCOUTIA_TRACKER_MODE='{_mode}' non reconnu, mode par défaut utilisé")
+            _mode = "filtre" if self.max_prediction_age is not None else "historique"
+        if _mode == "historique":
+            self.max_prediction_age = None
+        elif self.max_prediction_age is None:
+            self.max_prediction_age = 3
+        self.tracker_mode = _mode
+        if _mode == "filtre":
+            print(f"  Tracker : mode FILTRE — pistes transmises si détectées depuis ≤ {self.max_prediction_age} mise(s) à jour")
+        elif _mode == "decouple":
+            print(f"  Tracker : mode DÉCOUPLÉ — toutes les pistes transmises, 'fiable' si détectées depuis ≤ "
+                  f"{self.max_prediction_age} mise(s) à jour")
+        else:
+            print("  Tracker : mode HISTORIQUE — toutes les pistes confirmées transmises")
 
         # V5.2 (17/09/2026) FIX CRITIQUE : la formule precedente utilisait
         # l'ANCIENNE logique buguee du frame_skip ("garde skip_every-1 sur
@@ -213,10 +236,16 @@ class Tracker:
         results = list(par_id.values())
         self._dedup_doublons_totaux += n_doublons
 
-        if self.max_prediction_age is not None:
+        _mode = getattr(self, "tracker_mode", "filtre" if self.max_prediction_age is not None else "historique")
+        if _mode == "filtre":
             _n_avant = len(results)
             results = [r for r in results if r["time_since_update"] <= self.max_prediction_age]
             self._predictions_filtrees += _n_avant - len(results)
+        elif _mode == "decouple":
+            for r in results:
+                r["fiable"] = r["time_since_update"] <= self.max_prediction_age
+                if not r["fiable"]:
+                    self._predictions_marquees += 1
 
         return results
 
@@ -237,6 +266,8 @@ class Tracker:
             "doublons_totaux_corriges": getattr(self, "_dedup_doublons_totaux", 0),
             "max_prediction_age": getattr(self, "max_prediction_age", None),
             "predictions_filtrees": getattr(self, "_predictions_filtrees", 0),
+            "tracker_mode": getattr(self, "tracker_mode", None),
+            "predictions_marquees_non_fiables": getattr(self, "_predictions_marquees", 0),
         }
 
     def reset(self):
