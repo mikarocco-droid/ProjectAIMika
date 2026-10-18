@@ -167,6 +167,198 @@ def gemini_max_parallel():
 def _is_daily_quota(err_str):
     return bool(re.search(r"per ?day|perday|daily", err_str, re.IGNORECASE))
 
+# ═════════════════════════════════════════════════════════════════════════
+# 20/10/2026 — CACHE PERMANENT DES RÉPONSES GEMINI (ne jamais payer deux fois la même question)
+#   Clé = empreinte SHA-256 de TOUT ce qui est envoyé : modèle, réglages, consigne, octets des images.
+#   SCOUTIA_GEMINI_CACHE = on (défaut) | off | strict (aucun appel payant : absent du cache -> échec)
+#   Entrée  : tous les fichiers gemini_cache*.jsonl sous /kaggle/input (ou SCOUTIA_GEMINI_CACHE_IN,
+#             chemins séparés par « : »).
+#   Sortie  : /kaggle/working/gemini_cache.jsonl (ou SCOUTIA_GEMINI_CACHE_OUT) = ancien cache COMPLET
+#             + nouvelles réponses -> remplacer le fichier du dataset par celui-ci après chaque run.
+#   Chaque entrée garde son contexte (fonction, vidéo, heure, consigne, fenêtre) pour rejouer les
+#   règles hors ligne.
+# ═════════════════════════════════════════════════════════════════════════
+import hashlib as _hl_gc, json as _json_gc, glob as _glob_gc, threading as _th_gc, inspect as _insp_gc
+from types import SimpleNamespace as _NS_gc
+
+_GC_LOCK = _th_gc.Lock()
+_GC = {"loaded": False, "entries": {}, "out": None, "hits": 0, "misses": 0, "strict_misses": 0, "writes": 0}
+_GC_CTX_KEYS = ("video_path", "kickoff_time_abs", "t_ref_abs", "t_abs", "prompt_variant", "offsets",
+                "temperature", "source", "scale")
+
+
+def _gc_mode():
+    m = os.environ.get("SCOUTIA_GEMINI_CACHE", "on").strip().lower()
+    return m if m in ("on", "off", "strict") else "on"
+
+
+def _gc_canon(o):
+    """Forme canonique et sérialisable de la requête (octets remplacés par leur empreinte)."""
+    if isinstance(o, (bytes, bytearray)):
+        return "sha256:" + _hl_gc.sha256(bytes(o)).hexdigest()
+    if isinstance(o, dict):
+        return {str(k): _gc_canon(v) for k, v in sorted(o.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(o, (list, tuple)):
+        return [_gc_canon(v) for v in o]
+    if isinstance(o, (str, int, float, bool)) or o is None:
+        return o
+    if hasattr(o, "model_dump"):
+        try:
+            return _gc_canon(o.model_dump(exclude_none=True))
+        except Exception:
+            pass
+    if hasattr(o, "__dict__"):
+        return _gc_canon({k: v for k, v in vars(o).items() if not k.startswith("_")})
+    return repr(o)
+
+
+def _gc_key(kwargs):
+    blob = _json_gc.dumps(_gc_canon(kwargs), sort_keys=True, ensure_ascii=False, default=str)
+    return _hl_gc.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _gc_load():
+    if _GC["loaded"]:
+        return
+    _GC["loaded"] = True
+    if _gc_mode() == "off":
+        return
+    ins = os.environ.get("SCOUTIA_GEMINI_CACHE_IN")
+    paths = ([p for p in ins.split(":") if p] if ins
+             else sorted(_glob_gc.glob("/kaggle/input/**/gemini_cache*.jsonl", recursive=True)))
+    out = os.environ.get("SCOUTIA_GEMINI_CACHE_OUT") or (
+        "/kaggle/working/gemini_cache.jsonl" if os.path.isdir("/kaggle/working") else None)
+    if out and os.path.exists(out):
+        paths.append(out)                                   # reprise d'un run interrompu
+    n_lu = 0
+    for p in paths:
+        try:
+            with open(p, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = _json_gc.loads(line)
+                        _GC["entries"][e["key"]] = e
+                        n_lu += 1
+                    except Exception:
+                        continue
+        except Exception as e:
+            print(f"  [GEMINI CACHE] lecture impossible : {p} ({e})")
+    _GC["out"] = out
+    if out:
+        try:
+            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            with open(out, "w", encoding="utf-8") as f:       # fichier de sortie = cache COMPLET
+                for e in _GC["entries"].values():
+                    f.write(_json_gc.dumps(e, ensure_ascii=False) + "\n")
+        except Exception as e:
+            print(f"  [GEMINI CACHE] écriture impossible : {out} ({e})")
+            _GC["out"] = None
+    print(f"  [GEMINI CACHE] mode={_gc_mode()} | {len(_GC['entries'])} réponse(s) en cache "
+          f"({len(paths)} fichier(s) lu(s)) | sortie : {_GC['out'] or 'aucune'}")
+
+
+def _gc_context():
+    """Contexte de l'appel (fonction appelante et ses paramètres utiles) pour le rejeu hors ligne."""
+    ctx = {}
+    try:
+        for fr in _insp_gc.stack()[2:7]:
+            if fr.function in ("_generate_with_retry", "_call_gemini", "_gc_generate"):
+                continue
+            ctx["fonction"] = fr.function
+            loc = fr.frame.f_locals
+            for k in _GC_CTX_KEYS:
+                if k in loc:
+                    v = loc[k]
+                    ctx[k] = v if isinstance(v, (str, int, float, bool, list, type(None))) else repr(v)
+            break
+    except Exception:
+        pass
+    return ctx
+
+
+class _GCResponse:
+    """Réponse relue du cache : mêmes attributs que ceux utilisés par ce module."""
+    def __init__(self, e):
+        self.text = e.get("text")
+        self.model_version = e.get("model_version")
+        u = e.get("usage") or {}
+        self.usage_metadata = _NS_gc(**u) if u else None
+        self.candidates = []
+        self.from_cache = True
+
+
+def _gc_lookup(kwargs):
+    """-> (clé, réponse en cache ou None, appel_autorisé)."""
+    if _gc_mode() == "off":
+        return None, None, True
+    with _GC_LOCK:
+        _gc_load()
+        k = _gc_key(kwargs)
+        e = _GC["entries"].get(k)
+        if e is not None:
+            _GC["hits"] += 1
+            return k, _GCResponse(e), True
+        if _gc_mode() == "strict":
+            _GC["strict_misses"] += 1
+            print(f"  [GEMINI CACHE] mode strict : question absente du cache, AUCUN appel ({_gc_context().get('fonction', '?')})")
+            return k, None, False
+        _GC["misses"] += 1
+        return k, None, True
+
+
+def _gc_store(key, kwargs, response):
+    if key is None or response is None or getattr(response, "from_cache", False):
+        return
+    try:
+        txt = response.text if getattr(response, "text", None) else extract_response_text(response)
+    except Exception:
+        txt = None
+    if not txt:
+        return                                              # on ne fige pas une réponse vide
+    um = getattr(response, "usage_metadata", None)
+    usage = {k: getattr(um, k, None) for k in ("prompt_token_count", "candidates_token_count",
+                                               "total_token_count", "thoughts_token_count")} if um else {}
+    e = {"key": key, "text": txt, "model_version": getattr(response, "model_version", None),
+         "usage": usage, "model": kwargs.get("model"), "contexte": _gc_context(),
+         "enregistre_le": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    with _GC_LOCK:
+        _GC["entries"][key] = e
+        if _GC["out"]:
+            try:
+                with open(_GC["out"], "a", encoding="utf-8") as f:
+                    f.write(_json_gc.dumps(e, ensure_ascii=False, default=str) + "\n")
+                _GC["writes"] += 1
+            except Exception as ex:
+                print(f"  [GEMINI CACHE] écriture impossible ({ex})")
+
+
+def _gc_generate(client, **kwargs):
+    """Appel direct (sans relances) passant par le cache."""
+    key, cached, allowed = _gc_lookup(kwargs)
+    if cached is not None:
+        return cached
+    if not allowed:
+        raise RuntimeError("SCOUTIA_GEMINI_CACHE=strict : question absente du cache")
+    response = client.models.generate_content(**kwargs)
+    _gc_store(key, kwargs, response)
+    return response
+
+
+def gemini_cache_summary():
+    """Bilan du cache (à afficher en fin de run)."""
+    with _GC_LOCK:
+        _gc_load()
+        n = _GC["hits"] + _GC["misses"] + _GC["strict_misses"]
+        print(f"  [GEMINI CACHE] {n} question(s) : {_GC['hits']} relue(s) du cache (gratuites), "
+              f"{_GC['misses']} payée(s), {_GC['strict_misses']} refusée(s) en mode strict | "
+              f"{len(_GC['entries'])} réponse(s) dans le cache | sortie : {_GC['out'] or 'aucune'}")
+        return dict(questions=n, relues=_GC["hits"], payees=_GC["misses"], refusees=_GC["strict_misses"],
+                    taille=len(_GC["entries"]), sortie=_GC["out"])
+
+
 def _generate_with_retry(client, max_retries=2, **kwargs):
     """
     client.models.generate_content(**kwargs) avec gestion d'erreurs :
@@ -178,6 +370,11 @@ def _generate_with_retry(client, max_retries=2, **kwargs):
     limite par minute) coupait Gemini pour tout le run.
     """
     global _quota_exhausted, _gemini_unavailable, _GEMINI_CALLS_REEL, _ABANDONS_CONSECUTIFS
+    _gc_k, _gc_r, _gc_ok = _gc_lookup(kwargs)
+    if _gc_r is not None:
+        return _gc_r                                   # réponse en cache : aucun appel, aucun coût
+    if not _gc_ok:
+        return None                                    # mode strict : comme une indisponibilité
     if _quota_exhausted:
         return None
     attempt, rl_attempts = 0, 0
@@ -193,6 +390,7 @@ def _generate_with_retry(client, max_retries=2, **kwargs):
                 _GEMINI_CALLS_REEL += 1
                 _gemini_unavailable = False
                 _ABANDONS_CONSECUTIFS = 0
+            _gc_store(_gc_k, kwargs, response)
             return response
         except Exception as e:
             err_str = str(e)
@@ -470,7 +668,8 @@ def validate_crossing_gemini(video_path, cross_time_abs, cross_frame, fps=30,
     )
 
     try:
-        response = client.models.generate_content(
+        response = _gc_generate(
+            client,
             model="gemini-3.8-flash",
             contents=[{"role": "user", "parts": [{"text": prompt}] + parts}]
         )
@@ -874,12 +1073,14 @@ Return ONLY valid JSON:
 confidence=0.95 only if ball is unmistakably inside the net with visible net deformation.
 Default to is_goal=false if any doubt."""
         try:
-            _resp = client.models.generate_content(
+            _resp = _gc_generate(
+                client,
                 model    = "gemini-3.8-flash",
                 contents = [_early_prompt] + list(early_parts),
             )
             global _GEMINI_CALLS_REEL
-            _GEMINI_CALLS_REEL += 1
+            if not getattr(_resp, "from_cache", False):
+                _GEMINI_CALLS_REEL += 1
             _data = _safe_json_load(_resp.text.strip())
             if (_data and _data.get("is_goal")
                     and _data.get("confidence", 0) >= EARLY_STOP_MIN_CONF):
