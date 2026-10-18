@@ -1,4 +1,5 @@
 import os
+import copy
 # main.py
 # -*- coding: utf-8 -*-
 
@@ -218,6 +219,39 @@ def ball_tuple_to_dict(ball_tuple, interpolated=False):
         "conf":         1.0,
         "interpolated": interpolated
     }
+
+
+# ── 20/10/2026 : DÉCOUPLAGE des flux (tracker en mode SCOUTIA_TRACKER_MODE=decouple) ──
+# Flux A = toutes les boîtes (comportement historique) : équipes, détecteur de coups d'envoi,
+#          tirs / tirs contrés / buts de detect_events.
+# Flux B = boîtes « fiables » (détectées depuis <= N mises à jour) : maillots, événements joueurs.
+# detect_events : DEUX appels, deux états. La partie tirs/buts dépend de l'état écrit par la partie
+# joueurs (gardien, délais) et modifie le suivi du ballon (register/tick/clear_shot_candidate) :
+#   - appel A strictement inchangé (mêmes arguments, même état, même ballon) -> tirs, buts ;
+#   - appel B : boîtes fiables, état propre, ballon COPIÉ SANS _tracker_ref (aucun effet sur le suivi
+#     du ballon), valeurs ballon/délais recopiées depuis l'état A tel qu'il était AVANT l'appel A
+#     -> événements joueurs (chronologie identique à l'historique).
+_TYPES_FLUX_A = {"shot", "shot_blocked", "goal"}
+_CLES_SYNC_A_VERS_B = ("goal_cd", "shot_cd", "_shot_blocked_cd", "ball_in_goal_zone",
+                       "_goal_zone_speeds", "_goal_zone_speeds_gap", "last_ball_pos")
+_ETAT_FLUX_B = {"state": None}
+
+
+def _lire_maillots_flux_b(ocr, frame_orig, tracked, frame_id):
+    """Lecture des maillots sur les seules boîtes fiables, réintégrées à leur place."""
+    fiables_idx = [i for i, t in enumerate(tracked) if t.get("fiable", True)]
+    sous = [tracked[i] for i in fiables_idx]
+    if hasattr(ocr, "enqueue_and_update"):
+        lues = ocr.enqueue_and_update(frame_orig, sous, frame_id=frame_id)
+    else:
+        lues = ocr.read_all(frame_orig, sous, frame_id=frame_id)
+    if lues is None or len(lues) != len(sous):
+        print("  [DECOUPLE] ⚠️ lecture des maillots : taille de sortie inattendue, lecture sur toutes les boîtes")
+        return None
+    out = list(tracked)
+    for i, t in zip(fiables_idx, lues):
+        out[i] = t
+    return out
 
 
 def process_batch(
@@ -463,8 +497,12 @@ def process_batch(
         # coherente avec le reste du pipeline pour eviter toute confusion
         # en aval (apply_kickoff_offset_frames, correlation temporelle).
         _t0 = _profile_start()
+        _decouple = getattr(tracker, "tracker_mode", "historique") == "decouple"
         if ocr is not None:
-            if hasattr(ocr, "enqueue_and_update"):
+            _lus = _lire_maillots_flux_b(ocr, frame_orig, tracked, frame_id) if _decouple else None
+            if _lus is not None:
+                tracked = _lus
+            elif hasattr(ocr, "enqueue_and_update"):
                 tracked = ocr.enqueue_and_update(frame_orig, tracked, frame_id=frame_id)
             else:
                 tracked = ocr.read_all(frame_orig, tracked, frame_id=frame_id)
@@ -530,6 +568,11 @@ def process_batch(
             ball["_tracker_ref"] = ball_tracker
 
         _t0 = _profile_start()
+        if _decouple:
+            if events_state is None:
+                _ETAT_FLUX_B["state"] = None                   # nouveau match : état B réinitialisé
+            _sync = ({k: copy.deepcopy(events_state[k]) for k in _CLES_SYNC_A_VERS_B if k in events_state}
+                     if events_state is not None else None)
         frame_events, events_state = detect_events(
             players     = tracked,
             ball        = ball,
@@ -541,6 +584,30 @@ def process_batch(
             fps         = fps,
             camera_type = camera_type,
         )
+        if _decouple:
+            _etat_b = _ETAT_FLUX_B["state"]
+            if _etat_b is not None and _sync:
+                _etat_b.update(_sync)
+            _ball_b = None
+            if ball is not None:
+                _ball_b = {k: v for k, v in ball.items() if k != "_tracker_ref"}
+                try:
+                    _ball_b = copy.deepcopy(_ball_b)            # aucune donnée partagée avec l'appel A
+                except Exception:
+                    pass
+            _ev_b, _ETAT_FLUX_B["state"] = detect_events(
+                players     = [t for t in tracked if t.get("fiable", True)],
+                ball        = _ball_b,
+                sport       = sport,
+                state       = _etat_b,
+                shot_zones  = shot_zones,
+                frame_w     = w,
+                frame_h     = h,
+                fps         = fps,
+                camera_type = camera_type,
+            )
+            frame_events = ([e for e in _ev_b if e.get("type") not in _TYPES_FLUX_A]
+                            + [e for e in frame_events if e.get("type") in _TYPES_FLUX_A])
         _profile_end(_t0, "detect_events")
         for e in frame_events:
             e["frame"] = frame_id
