@@ -251,6 +251,167 @@ def _trace_ev(label, evs):
         print(f"  [EV TRACE] {label} : traçage impossible ({_e_tr})")
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# 20/10/2026 — ANALYSE DES DEUX MI-TEMPS EN PARALLÈLE (réimplémente les corrections du 11/09/2026,
+# AVANT_PRODUCTION.md, perdues dans cette lignée de pipeline.py)
+#   - bornes AVANT le suivi : KO1 (fourni), KO2 Gemini, puis Fin1MT et FinMatch EN PARALLÈLE
+#     (Gemini en priorité, son en repli pour les deux) ;
+#   - dossier temporaire UNIQUE par analyse, transmis aux détecteurs qui l'acceptent ;
+#   - process_video() sur la VIDÉO D'ORIGINE (start_time_s / end_time_s : heures exactes, aucun
+#     découpage ffmpeg), MÊMES réglages que la lecture complète, 2 processus « spawn » en parallèle ;
+#   - identifiants de la 2e mi-temps décalés (+100000) ; toute anomalie -> exception -> lecture complète.
+# Renvoie exactement ce que renverrait process_video() : (events, jersey_map, fps, total_frames, frames_data).
+# ═════════════════════════════════════════════════════════════════════════
+_DECALAGE_IDS_MT2 = 100000
+_MARGE_FIN1MT_APRES_S = 30
+_MARGE_KO2_AVANT_S = 30
+_MARGE_FINMATCH_APRES_S = 30
+
+
+def _appel_avec_tmp(fn, *args, tmp_dir=None, **kwargs):
+    """Transmet tmp_dir seulement si la fonction l'accepte."""
+    import inspect as _insp
+    try:
+        if tmp_dir and "tmp_dir" in _insp.signature(fn).parameters:
+            kwargs["tmp_dir"] = tmp_dir
+    except (TypeError, ValueError):
+        pass
+    return fn(*args, **kwargs)
+
+
+def _worker_mi_temps(args):
+    """Processus fils : process_video() sur une fenêtre de la vidéo d'origine."""
+    from main import process_video
+    video_path, debut_s, fin_s, kw = args
+    return process_video(video_path=video_path, start_time_s=debut_s, end_time_s=fin_s,
+                         return_frames=True, save_annotated=False, annotated_path=None, **kw)
+
+
+def _decaler_id(v):
+    import re as _re
+    if isinstance(v, bool) or v is None:
+        return v
+    if isinstance(v, int):
+        return v + _DECALAGE_IDS_MT2
+    if isinstance(v, str):
+        m = _re.search(r"(\d+)$", v)
+        return v[:m.start()] + str(int(m.group(1)) + _DECALAGE_IDS_MT2) if m else v
+    return v
+
+
+def _decaler_mi_temps_2(events, frames_data, jersey_map):
+    ids = set()
+    for fd in frames_data:
+        for p in fd.get("players", []) or []:
+            for k in ("id", "tracker_id", "player_id"):
+                if p.get(k) is not None:
+                    ids.add(str(p[k]))
+    for fd in frames_data:
+        for p in fd.get("players", []) or []:
+            for k in ("id", "tracker_id", "player_id"):
+                if p.get(k) is not None:
+                    p[k] = _decaler_id(p[k])
+    for e in events:
+        for k in ("player", "from", "to"):
+            if e.get(k) is not None and str(e[k]) in ids:
+                e[k] = _decaler_id(e[k])
+        if isinstance(e.get("players"), list):
+            for p in e["players"]:
+                if isinstance(p, dict):
+                    for k in ("id", "tracker_id", "player_id"):
+                        if p.get(k) is not None and str(p[k]) in ids:
+                            p[k] = _decaler_id(p[k])
+    jm2 = {}
+    for k, v in (jersey_map or {}).items():
+        jm2[_decaler_id(k) if str(k) in ids or isinstance(k, int) else k] = v
+    return events, frames_data, jm2
+
+
+def _analyser_mi_temps(video_path, ko1_s, half_duration_min, output_dir, marge_avant_ko1_s, process_kwargs):
+    import time as _t, cv2 as _cv2
+    from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+    import multiprocessing as _mp
+    tmp_dir = os.path.join(output_dir, "gemini_tmp_" + _t.strftime("%Y%m%d_%H%M%S"))
+    os.makedirs(tmp_dir, exist_ok=True)
+    cap = _cv2.VideoCapture(video_path)
+    duree = (cap.get(_cv2.CAP_PROP_FRAME_COUNT) or 0) / max(cap.get(_cv2.CAP_PROP_FPS) or 25.0, 1)
+    cap.release()
+    print(f"  [MI-TEMPS] Bornes avant le suivi | KO1 = {ko1_s:.0f} s | vidéo {duree:.0f} s | dossier {tmp_dir}")
+    r_ko2 = _appel_avec_tmp(find_ko2_gemini, video_path, ko1_s=ko1_s, half_duration_min=half_duration_min, tmp_dir=tmp_dir)
+    if r_ko2.get("status") != "AUTO_CONFIRMED" or r_ko2.get("ko2_s") is None:
+        raise RuntimeError(f"KO2 non confirmé ({r_ko2.get('status')})")
+    ko2 = float(r_ko2["ko2_s"])
+
+    def _fin1mt():
+        try:
+            from analysis.fin1mt_gemini_cascade import find_fin1mt_gemini
+            r = _appel_avec_tmp(find_fin1mt_gemini, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
+            v = r.get("fin1mt_s") if isinstance(r, dict) else r
+            if v is not None:
+                return float(v), "gemini"
+        except Exception as e:
+            print(f"  [MI-TEMPS] Fin1MT Gemini en échec ({e}) — repli sur le son")
+        v = _appel_avec_tmp(find_fin1mt_audio, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
+        return (float(v), "son (repli)") if v is not None else (None, None)
+
+    def _finmatch():
+        try:
+            from analysis.finmatch_gemini_cascade import find_finmatch_gemini
+            r = _appel_avec_tmp(find_finmatch_gemini, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
+            v = r.get("finmatch_s") if isinstance(r, dict) else r
+            if v is not None:
+                return float(v), "gemini"
+        except Exception as e:
+            print(f"  [MI-TEMPS] FinMatch Gemini en échec ({e}) — repli sur le son")
+        v = _appel_avec_tmp(find_finmatch_audio, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
+        v = v.get("finmatch_s") if isinstance(v, dict) else v
+        return (float(v), "son (repli)") if v is not None else (None, None)
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f1, fm = ex.submit(_fin1mt), ex.submit(_finmatch)
+        (fin1mt, src1), (finmatch, src2) = f1.result(), fm.result()
+    if fin1mt is None or finmatch is None:
+        raise RuntimeError(f"bornes manquantes (Fin1MT={fin1mt}, FinMatch={finmatch})")
+    if not (ko1_s < fin1mt < ko2 < finmatch):
+        raise RuntimeError(f"bornes incohérentes (KO1={ko1_s:.0f} Fin1MT={fin1mt:.0f} KO2={ko2:.0f} FinMatch={finmatch:.0f})")
+    seg1 = (max(0.0, ko1_s - marge_avant_ko1_s), min(duree or 1e9, fin1mt + _MARGE_FIN1MT_APRES_S))
+    seg2 = (max(seg1[1], ko2 - _MARGE_KO2_AVANT_S), min(duree or 1e9, finmatch + _MARGE_FINMATCH_APRES_S))
+    analyse = (seg1[1] - seg1[0]) + (seg2[1] - seg2[0])
+    print(f"  [MI-TEMPS] KO2 = {ko2:.0f} s | Fin1MT = {fin1mt:.0f} s ({src1}) | FinMatch = {finmatch:.0f} s ({src2})")
+    print(f"  [MI-TEMPS] Suivi : 1re MT {seg1[0]:.0f}→{seg1[1]:.0f} s | 2e MT {seg2[0]:.0f}→{seg2[1]:.0f} s | "
+          f"{analyse:.0f} s analysées sur {duree:.0f} s ({100 * (1 - analyse / max(duree, 1)):.0f} % de vidéo épargnée)")
+
+    jobs = [(video_path, seg1[0], seg1[1], dict(process_kwargs)), (video_path, seg2[0], seg2[1], dict(process_kwargs))]
+    _repo = os.path.dirname(os.path.abspath(__file__))
+    os.environ["PYTHONPATH"] = _repo + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
+    t0 = _t.time()
+    try:
+        with ProcessPoolExecutor(max_workers=2, mp_context=_mp.get_context("spawn")) as ex:
+            res = list(ex.map(_worker_mi_temps, jobs))
+        mode = "parallèle (2 processus)"
+    except Exception as e:
+        print(f"  [MI-TEMPS] Parallélisme indisponible ({type(e).__name__}: {e}) — mi-temps l'une après l'autre")
+        res = [_worker_mi_temps(j) for j in jobs]
+        mode = "séquentiel"
+    (ev1, jm1, fps1, tot1, fr1), (ev2, jm2, fps2, tot2, fr2) = res
+    for i, (ev, fr) in enumerate(((ev1, fr1), (ev2, fr2)), 1):
+        if not fr:
+            raise RuntimeError(f"mi-temps {i} sans aucune image analysée")
+    ev2, fr2, jm2 = _decaler_mi_temps_2(ev2, fr2, jm2)
+    events = sorted(list(ev1) + list(ev2), key=lambda e: e.get("time", 0))
+    frames = sorted(list(fr1) + list(fr2), key=lambda f: f.get("frame", 0))
+    jersey = dict(jm1 or {}); jersey.update(jm2 or {})
+    fps = fps1 or fps2 or 25.0
+    hors = [f for f in frames if not (seg1[0] - 1 <= f.get("frame", 0) / fps <= seg1[1] + 1
+                                      or seg2[0] - 1 <= f.get("frame", 0) / fps <= seg2[1] + 1)]
+    print(f"  [MI-TEMPS] ✅ {mode} en {(_t.time() - t0) / 60:.1f} min | 1re MT : {len(fr1)} images, {len(ev1)} événements | "
+          f"2e MT : {len(fr2)} images, {len(ev2)} événements | images hors fenêtres : {len(hors)}")
+    if hors:
+        raise RuntimeError(f"{len(hors)} image(s) hors des fenêtres analysées")
+    return events, jersey, fps, max(tot1 or 0, tot2 or 0), frames
+
+
+
 def run_pipeline(
     video_path,
     sport             = "football",
@@ -472,7 +633,12 @@ def run_pipeline(
     # None et le pipeline continue normalement avec le chemin complet
     # existant, inchange - AUCUNE regression possible sur le
     # comportement par defaut (use_match_boundary_segments=False).
-    if use_match_boundary_segments and _match_data is None:
+    # 20/10/2026 : ANCIENNE voie STEP 0a NEUTRALISÉE (code mort, à supprimer) — 6 défauts : découpage ffmpeg
+    # « -c copy » décalé au point de repère précédent, mi-temps en échec renvoyée vide sans erreur,
+    # identifiants réutilisés entre mi-temps, réglages différents de la production (1 image sur 2),
+    # données ABSOLUES envoyées au chemin replay qui attend des données RELATIVES au coup d'envoi,
+    # pas de fin de match appliquée. Remplacée par _analyser_mi_temps() au point d'appel de process_video().
+    if False and use_match_boundary_segments and _match_data is None:
         try:
             import cv2 as _cv2_seg
             from analysis.kickoff_gemini_cascade import detect_kickoff_gemini_avec_retry
@@ -504,8 +670,23 @@ def run_pipeline(
                 raise RuntimeError(f"KO2 non confirmé ({_r_ko2['status']}) — segmentation par bornes impossible")
             _ko2_abs = _r_ko2["ko2_s"]
 
-            _fin1mt_abs = find_fin1mt_audio(video_path, ko2_s=_ko2_abs)
-            print(f"  [BOUNDARY_SEG] Fin1MT : {_fin1mt_abs}")
+            # 20/10/2026 : correction du 11/09/2026 (AVANT_PRODUCTION.md) rétablie — Gemini en priorité,
+            # son en repli (le son seul : Franchimont -318 s, Stembert -229 s).
+            _fin1mt_abs, _fin1mt_src = None, None
+            try:
+                from analysis.fin1mt_gemini_cascade import find_fin1mt_gemini
+                _r_f1 = find_fin1mt_gemini(video_path, ko2_s=_ko2_abs)
+                if isinstance(_r_f1, dict):
+                    _fin1mt_abs = _r_f1.get("fin1mt_s")
+                elif isinstance(_r_f1, (int, float)):
+                    _fin1mt_abs = float(_r_f1)
+                _fin1mt_src = "gemini" if _fin1mt_abs is not None else None
+            except Exception as _e_f1:
+                print(f"  [BOUNDARY_SEG] Fin1MT Gemini indisponible ({_e_f1}) — repli sur le son")
+            if _fin1mt_abs is None:
+                _fin1mt_abs = find_fin1mt_audio(video_path, ko2_s=_ko2_abs)
+                _fin1mt_src = "son (repli)" if _fin1mt_abs is not None else None
+            print(f"  [BOUNDARY_SEG] Fin1MT : {_fin1mt_abs} (source : {_fin1mt_src})")
             if _fin1mt_abs is None:
                 raise RuntimeError("Fin1MT non détecté — segmentation par bornes impossible")
 
@@ -520,9 +701,14 @@ def run_pipeline(
             # cf. _MARGE_AVANT_KO_S=10 plus bas pour KO1).
             _MARGE_KO1_AVANT_S    = 10
             _MARGE_FINMATCH_APRES_S = 30
+            # 20/10/2026 : marges aux bornes intérieures (aucune auparavant). KO2 détecté jusqu'à
+            # +16/+18 s en retard (Stembert, Wanze) ; Fin1MT à -1 s (Juprelle).
+            _MARGE_FIN1MT_APRES_S = 30
+            _MARGE_KO2_AVANT_S    = 30
 
-            _seg_1ere_mt = (max(0, _ko1_abs - _MARGE_KO1_AVANT_S), _fin1mt_abs)
-            _seg_2e_mt   = (_ko2_abs, min(_duration_seg, _finmatch_abs + _MARGE_FINMATCH_APRES_S))
+            _seg_1ere_mt = (max(0, _ko1_abs - _MARGE_KO1_AVANT_S), min(_duration_seg, _fin1mt_abs + _MARGE_FIN1MT_APRES_S))
+            _seg_2e_mt   = (max(_seg_1ere_mt[1], _ko2_abs - _MARGE_KO2_AVANT_S),
+                            min(_duration_seg, _finmatch_abs + _MARGE_FINMATCH_APRES_S))
             _segments_match = [_seg_1ere_mt, _seg_2e_mt]
 
             print(f"  [BOUNDARY_SEG] Segments : 1ère MT={_seg_1ere_mt[0]:.0f}s→{_seg_1ere_mt[1]:.0f}s "
@@ -531,6 +717,18 @@ def run_pipeline(
             print(f"  [BOUNDARY_SEG] Durée analysée : {_duree_analysee:.0f}s / "
                   f"{_duration_seg:.0f}s vidéo totale ({100*_duree_analysee/_duration_seg:.0f}%)")
 
+            # 20/10/2026 : mêmes réglages de suivi que la lecture complète. Si analyze_segments ne
+            # sait pas les recevoir, on ABANDONNE la segmentation (repli sur la lecture complète)
+            # plutôt que d'analyser un match Veo comme une caméra basse avec le modèle ballon par défaut.
+            import inspect as _insp_seg
+            _req_seg = {"camera_type": camera_type, "ball_model_name": ball_model_name,
+                        "ball_conf": ball_conf, "use_single_yolo26": use_single_yolo26}
+            _params_seg = _insp_seg.signature(analyze_segments).parameters
+            _accepte_tout = any(p.kind == p.VAR_KEYWORD for p in _params_seg.values())
+            _manquants = [k for k in _req_seg if k not in _params_seg and not _accepte_tout]
+            if _manquants:
+                raise RuntimeError(f"analyze_segments ne transmet pas {', '.join(_manquants)} au suivi — "
+                                   f"segmentation abandonnée, lecture complète")
             _seg_dir_boundary = os.path.join(output_dir, "boundary_segments_tmp")
             _clips_boundary = extract_segments(
                 video_path = video_path,
@@ -542,6 +740,7 @@ def run_pipeline(
                 segment_clips = _clips_boundary,
                 sport         = sport,
                 shot_zones    = shot_zones,
+                **_req_seg,
             )
             cleanup_segments(_clips_boundary)
 
@@ -753,26 +952,44 @@ def run_pipeline(
 
         # ── FALLBACK : process_video() complet ───────────────────────────
         print("Step 1 : Tracking + Events (full pass)...")
-        events, jersey_map, fps, total_frames, frames_data = process_video(
-            video_path        = video_path,
-            sport             = sport,
-            progress_callback = progress,
-            save_annotated    = save_annotated,
-            annotated_path    = annotated_path,
-            shot_zones        = shot_zones,
-            return_frames     = True,
-            start_time_s      = _start_lecture_s,  # V5.2 : KO - 10s (marge pour la
-                                                     # calibration couleurs), pas
-                                                     # _kickoff_offset exact (§12.15)
-            end_time_s        = video_end_s,  # V5.2 FIX : arrete la LECTURE, pas
-                                                # juste le filtrage apres coup plus
-                                                # bas (qui reste en securite/inchange)
-            camera_type       = camera_type,
-            ball_model_name   = ball_model_name,
-            ball_conf         = ball_conf,
-            use_single_yolo26 = use_single_yolo26,
-        )
-        _trace_ev("L742 process_video(", events)
+        _mi_temps_ok = False
+        if use_match_boundary_segments:
+            if _kickoff_offset <= 0:
+                print("  [MI-TEMPS] Coup d'envoi inconnu (0.0 / non détecté) — lecture complète")
+            elif video_end_s is not None or save_annotated:
+                print("  [MI-TEMPS] video_end_s ou vidéo annotée demandés — lecture complète")
+            else:
+                try:
+                    events, jersey_map, fps, total_frames, frames_data = _analyser_mi_temps(
+                        video_path, ko1_s=_kickoff_offset, half_duration_min=half_duration_min,
+                        output_dir=output_dir, marge_avant_ko1_s=_MARGE_AVANT_KO_S,
+                        process_kwargs=dict(sport=sport, shot_zones=shot_zones, camera_type=camera_type,
+                                            ball_model_name=ball_model_name, ball_conf=ball_conf,
+                                            use_single_yolo26=use_single_yolo26))
+                    _mi_temps_ok = True
+                except Exception as _e_mt:
+                    print(f"  [MI-TEMPS] ⚠️ Abandon ({_e_mt}) — lecture complète (comportement inchangé)")
+        if not _mi_temps_ok:
+            events, jersey_map, fps, total_frames, frames_data = process_video(
+                video_path        = video_path,
+                sport             = sport,
+                progress_callback = progress,
+                save_annotated    = save_annotated,
+                annotated_path    = annotated_path,
+                shot_zones        = shot_zones,
+                return_frames     = True,
+                start_time_s      = _start_lecture_s,  # V5.2 : KO - 10s (marge pour la
+                                                         # calibration couleurs), pas
+                                                         # _kickoff_offset exact (§12.15)
+                end_time_s        = video_end_s,  # V5.2 FIX : arrete la LECTURE, pas
+                                                    # juste le filtrage apres coup plus
+                                                    # bas (qui reste en securite/inchange)
+                camera_type       = camera_type,
+                ball_model_name   = ball_model_name,
+                ball_conf         = ball_conf,
+                use_single_yolo26 = use_single_yolo26,
+            )
+            _trace_ev("L742 process_video(", events)
     print(f"  RAW {len(events)} events | {len(jersey_map)} maillots")
 
     # V5.2 DIAGNOSTIC - mesure le taux de doublons tracker_id ICI, juste
