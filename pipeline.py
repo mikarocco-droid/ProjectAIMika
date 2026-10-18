@@ -1446,6 +1446,13 @@ def run_pipeline(
         except Exception as _ecache:
             print(f"  [REPLAY] Cache non sauvegardé : {_ecache}")
 
+    # 20/10/2026 : arrêt juste après le suivi (SCOUTIA_STOP_APRES_SUIVI=1) — produit le cache de suivi
+    # pour diagnostic, SANS détection des buts ni appel Gemini sur les buts.
+    if os.environ.get("SCOUTIA_STOP_APRES_SUIVI", "").strip().lower() in ("1", "true", "oui"):
+        print("  [SUIVI SEULEMENT] Arrêt après l'enregistrement du suivi — aucune détection de buts, aucun appel Gemini sur les buts")
+        return {"suivi_seulement": True, "kickoff_offset": float(locals().get("_kickoff_offset") or 0.0),
+                "ko2_abs": locals().get("_ko2_absolu"), "events": [], "summary": {}}
+
     for e in events:
         if not e.get("time"):
             frame     = e.get("frame", 0) or 0
