@@ -1966,6 +1966,7 @@ def run_pipeline(
 
                     if _r and _r.get("is_goal"):
                         _gt_from_cls = None          # heure fournie par la classification si la KO n'en donne pas
+                        _gt_prefere = None           # 20/10/2026 : heure de la classification si KO et classification divergent
                         _cls = _cls_results.get(_ki)
                         _cls_out = (_cls or {}).get("outcome")
                         if _cls_fn is None:
@@ -1976,7 +1977,9 @@ def run_pipeline(
                             _t_ko_g = _r.get("goal_time_abs"); _t_cls_g = _cls.get("action_time_abs")
                             # Fenêtre d'images réellement examinée par la validation KO
                             _ko_offs = (_ko_kwargs.get("offsets") or [-25, 5])
-                            _w0, _w1 = _ko_t_abs + min(_ko_offs), _ko_t_abs + max(_ko_offs)
+                            # 20/10/2026 : 10 s avant la 1re image acceptés (but déduit de ce qui suit, cf. lecture de l'heure ;
+                            # 60 s rejetés : faux but « confirmé » sur Raeren)
+                            _w0, _w1 = _ko_t_abs + min(_ko_offs) - 10, _ko_t_abs + max(_ko_offs)
                             if _t_cls_g is None:
                                 _g_status, _g_reason = "à_vérifier", "heure de la classification manquante"
                             elif _t_ko_g is None:
@@ -1994,8 +1997,11 @@ def run_pipeline(
                             elif abs(_t_ko_g - _t_cls_g) <= 15:
                                 _g_status, _g_reason = "confirmé", "validation KO et classification (heures concordantes)"
                             else:
+                                # 20/10/2026 : heures divergentes -> heure de la CLASSIFICATION retenue (Raeren : KO 49:55
+                                # déduit à tort, classification 50:19, vrai but 50:17).
+                                _gt_prefere = _t_cls_g
                                 _g_status, _g_reason = ("à_vérifier", f"heures incohérentes : KO {_fmt_ko(_t_ko_g)} / "
-                                                                       f"classification {_fmt_ko(_t_cls_g)}")
+                                                                       f"classification {_fmt_ko(_t_cls_g)} (heure de la classification retenue)")
                         elif _cls is None or _cls_out == "UNKNOWN":
                             _g_status, _g_reason = "à_vérifier", "classification incertaine ou en échec"
                         else:
@@ -2007,7 +2013,7 @@ def run_pipeline(
                                 continue
                             _g_status = "à_vérifier"
                             _g_reason = "coïncide avec le coup d'envoi de la 2e mi-temps — " + _g_reason
-                        _gt_abs = _r.get("goal_time_abs") or _gt_from_cls or (_ko_t_abs - 10)
+                        _gt_abs = _gt_prefere or _r.get("goal_time_abs") or _gt_from_cls or (_ko_t_abs - 10)
                         _gt_rel = _gt_abs - _kickoff_offset
                         _ev = {
                             "type":           "goal",
