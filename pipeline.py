@@ -2013,7 +2013,9 @@ def run_pipeline(
                                 continue
                             _g_status = "à_vérifier"
                             _g_reason = "coïncide avec le coup d'envoi de la 2e mi-temps — " + _g_reason
-                        _gt_abs = _gt_prefere or _r.get("goal_time_abs") or _gt_from_cls or (_ko_t_abs - 10)
+                        # 20/10/2026 : heure par défaut (aucune heure KO ni classification) candidat - 15 s au lieu de
+                        # - 10 s, évalué sur les caches de 4 matchs : Spa 89:05 retrouvé, aucun autre changement.
+                        _gt_abs = _gt_prefere or _r.get("goal_time_abs") or _gt_from_cls or (_ko_t_abs - 15)
                         _gt_rel = _gt_abs - _kickoff_offset
                         _ev = {
                             "type":           "goal",
