@@ -774,18 +774,21 @@ def validate_crossing_gemini(video_path, cross_time_abs, cross_frame, fps=30,
         return None
 
 
-def _ko_parse_goal_time(text, t_ref, offsets, margin=2.0):
+def _ko_parse_goal_time(text, t_ref, offsets, margin=2.0, marge_avant=10.0):
     """Heure de but renvoyée par la validation KO -> secondes absolues, ou None.
-    Formats acceptés : « MM:SS », « H:MM:SS », plage « MM:SS-MM:SS » (premier terme).
-    Une heure hors de la fenêtre d'images examinée (± marge) est une erreur de lecture : None.
-    19/10/2026 : marge 10 s -> 2 s. Raeren : but réel 50:17, Gemini voit les joueurs revenir sur la
-    1re image (50:01) et DÉDUIT un but à 49:55 -> heure non observée, rejetée (la classification prend le relais)."""
-    m = re.search(r"(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?", str(text))
+    Formats acceptés : « MM:SS » (minutes sur 1 à 3 chiffres), « H:MM:SS », plage « MM:SS-MM:SS » (1er terme).
+    Fenêtre acceptée : de (1re image - marge_avant) à (dernière image + margin).
+    19/10/2026 : marge 10 s -> 2 s (Raeren : 49:55 déduit à tort pour un but à 50:17).
+    20/10/2026 : minutes à 3 chiffres (« 112:48 » était lu « 12:48 » -> but de Spa 112:45 perdu) ; heure
+    acceptée jusqu'à 10 s AVANT la 1re image (Gemini déduit le but de ce qui suit : Spa 49:20 juste, 3 s avant).
+    60 s testés puis REJETÉS sur les caches : le corner de Raeren (44:03, 20 s avant) devenait un faux but
+    « confirmé ». L'arbitrage avec la classification se fait dans le pipeline."""
+    m = re.search(r"(\d{1,3})[:.](\d{2})(?:[:.](\d{2}))?", str(text))
     if not m:
         return None
     a, b, c = int(m.group(1)), int(m.group(2)), m.group(3)
     candidates = [a * 3600 + b * 60 + int(c), b * 60 + int(c)] if c is not None else [a * 60 + b]
-    lo = t_ref + min(offsets) - margin
+    lo = t_ref + min(offsets) - marge_avant
     hi = t_ref + max(offsets) + margin
     for t in candidates:
         if lo <= t <= hi:
