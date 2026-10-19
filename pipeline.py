@@ -387,6 +387,7 @@ def _analyser_mi_temps(video_path, ko1_s, half_duration_min, output_dir, marge_a
                             finmatch=finmatch, finmatch_src=src2)
     seg1 = (max(0.0, ko1_s - marge_avant_ko1_s), min(duree or 1e9, fin1mt + _MARGE_FIN1MT_APRES_S))
     seg2 = (max(seg1[1], ko2 - _MARGE_KO2_AVANT_S), min(duree or 1e9, finmatch + _MARGE_FINMATCH_APRES_S))
+    _BORNES_MI_TEMPS.update(segments=[list(seg1), list(seg2)])
     analyse = (seg1[1] - seg1[0]) + (seg2[1] - seg2[0])
     print(f"  [MI-TEMPS] KO2 = {ko2:.0f} s | Fin1MT = {fin1mt:.0f} s ({src1}) | FinMatch = {finmatch:.0f} s ({src2})")
     print(f"  [MI-TEMPS] Suivi : 1re MT {seg1[0]:.0f}→{seg1[1]:.0f} s | 2e MT {seg2[0]:.0f}→{seg2[1]:.0f} s | "
@@ -4427,6 +4428,8 @@ def run_pipeline(
         # 20/10/2026 : repères temporels détectés (lecture seule), pour comparer à la vérité terrain
         "kickoff_offset": _ko_off_tf,
         "ko2_abs":        (_ko2_absolu if "_ko2_absolu" in dir() else None),
+        "bornes_mi_temps": ({k: v for k, v in _BORNES_MI_TEMPS.items() if k != "video"}
+                            if _BORNES_MI_TEMPS.get("video") == video_path else None),
         "temps_forts":   _temps_forts_final,
         "summary":       summary,
         "coarse_stats":  coarse_stats,
