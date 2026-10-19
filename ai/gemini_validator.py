@@ -252,7 +252,14 @@ def _gc_load():
     _GC["out"] = out
     _video_filtre = os.path.basename(os.environ.get("SCOUTIA_GEMINI_CACHE_VIDEO", "").strip())
     _GC["video_filtre"] = _video_filtre or None
-    if out:
+    try:
+        import multiprocessing as _mp_gc
+        _est_fils = _mp_gc.parent_process() is not None
+    except Exception:
+        _est_fils = False
+    if out and _est_fils:
+        pass                                                # processus fils : AJOUT seulement, jamais de réécriture
+    elif out:
         try:
             os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
             with open(out, "w", encoding="utf-8") as f:       # fichier de sortie = cache COMPLET (ou de ce match)
@@ -350,9 +357,59 @@ def _gc_generate(client, **kwargs):
         return cached
     if not allowed:
         raise RuntimeError("SCOUTIA_GEMINI_CACHE=strict : question absente du cache")
-    response = client.models.generate_content(**kwargs)
+    _GC_INTERNE.actif = True
+    try:
+        response = client.models.generate_content(**kwargs)
+    finally:
+        _GC_INTERNE.actif = False
     _gc_store(key, kwargs, response)
     return response
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 20/10/2026 — VERROU CENTRAL : UN SEUL MODÈLE, ET LE CACHE POUR TOUS LES APPELS DU PROJET
+#   Intercepte google.genai Models.generate_content : TOUT appel (y compris ceux des détecteurs de
+#   bornes, qui créent leur propre client et utilisaient gemini-3.1-pro-preview / gemini-3.5-flash)
+#   -> modèle imposé (SCOUTIA_GEMINI_MODELE, défaut gemini-3.8-flash) + cache des réponses.
+#   SCOUTIA_GEMINI_VERROU=off : désactive le verrou (comportement d'origine de chaque module).
+# ═════════════════════════════════════════════════════════════════════════
+_GC_INTERNE = _th_gc.local()
+_MODELE_UNIQUE = os.environ.get("SCOUTIA_GEMINI_MODELE", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
+_VERROU = {"installe": False, "modeles_remplaces": {}}
+
+
+def _installer_verrou_gemini():
+    if _VERROU["installe"] or os.environ.get("SCOUTIA_GEMINI_VERROU", "on").strip().lower() == "off":
+        return
+    try:
+        from google.genai import models as _gm
+    except Exception:
+        return
+    _orig = _gm.Models.generate_content
+
+    def _generate_verrouille(self, *args, **kwargs):
+        demande = kwargs.get("model")
+        if demande and demande != _MODELE_UNIQUE:
+            with _GC_LOCK:
+                _VERROU["modeles_remplaces"][demande] = _VERROU["modeles_remplaces"].get(demande, 0) + 1
+        kwargs["model"] = _MODELE_UNIQUE
+        if getattr(_GC_INTERNE, "actif", False) or args:
+            return _orig(self, *args, **kwargs)        # appel interne déjà géré par le cache
+        key, cached, allowed = _gc_lookup(kwargs)
+        if cached is not None:
+            return cached
+        if not allowed:
+            raise RuntimeError("SCOUTIA_GEMINI_CACHE=strict : question absente du cache")
+        response = _orig(self, *args, **kwargs)
+        _gc_store(key, kwargs, response)
+        return response
+
+    _gm.Models.generate_content = _generate_verrouille
+    _VERROU["installe"] = True
+    print(f"  [GEMINI] Verrou installé : modèle unique {_MODELE_UNIQUE} + cache pour tous les appels du projet")
+
+
+_installer_verrou_gemini()
 
 
 def gemini_cache_summary():
@@ -363,6 +420,8 @@ def gemini_cache_summary():
         print(f"  [GEMINI CACHE] {n} question(s) : {_GC['hits']} relue(s) du cache (gratuites), "
               f"{_GC['misses']} payée(s), {_GC['strict_misses']} refusée(s) en mode strict | "
               f"{len(_GC['entries'])} réponse(s) dans le cache | sortie : {_GC['out'] or 'aucune'}")
+        if _VERROU["modeles_remplaces"]:
+            print(f"  [GEMINI] Modèles demandés par les modules et remplacés par {_MODELE_UNIQUE} : {_VERROU['modeles_remplaces']}")
         return dict(questions=n, relues=_GC["hits"], payees=_GC["misses"], refusees=_GC["strict_misses"],
                     taille=len(_GC["entries"]), sortie=_GC["out"])
 
@@ -390,7 +449,11 @@ def _generate_with_retry(client, max_retries=2, **kwargs):
         try:
             t0 = time.time()
             try:
-                response = client.models.generate_content(**kwargs)
+                _GC_INTERNE.actif = True
+                try:
+                    response = client.models.generate_content(**kwargs)
+                finally:
+                    _GC_INTERNE.actif = False
             finally:
                 with _STATE_LOCK:
                     _METRICS["gemini_time"] += time.time() - t0
