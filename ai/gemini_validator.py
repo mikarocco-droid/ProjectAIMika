@@ -279,8 +279,9 @@ def _gc_context():
     """Contexte de l'appel (fonction appelante et ses paramètres utiles) pour le rejeu hors ligne."""
     ctx = {}
     try:
-        for fr in _insp_gc.stack()[2:7]:
-            if fr.function in ("_generate_with_retry", "_call_gemini", "_gc_generate"):
+        for fr in _insp_gc.stack()[2:10]:
+            if fr.function in ("_generate_with_retry", "_call_gemini", "_gc_generate", "_generate_verrouille",
+                               "generate_content") or "google/genai" in fr.filename.replace("\\", "/"):
                 continue
             ctx["fonction"] = fr.function
             loc = fr.frame.f_locals
