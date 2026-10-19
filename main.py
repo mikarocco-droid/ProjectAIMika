@@ -656,6 +656,9 @@ def process_video(
                                 # §12.15). frame_id demarre a cette position
                                 # (pas 0), reste coherent avec l'offset deja
                                 # applique plus tard par apply_kickoff_offset_frames.
+    fichier_arret     = None,  # 20/10/2026 : fichier relu toutes les 5 s de vidéo ; s'il contient une
+                                # heure (s), la lecture s'arrête dès qu'elle la dépasse (fin de mi-temps
+                                # détectée PENDANT le suivi). Sans effet si absent ou None.
     end_time_s        = None,  # V5.2 : arrete la LECTURE (pas juste le filtrage
                                 # apres coup) a ce temps (s) - meme principe que
                                 # start_time_s. AVANT ce correctif, video_end_s
@@ -947,7 +950,19 @@ def process_video(
                 fd.pop("_frame_orig", None)
             frames_data.append(fd)
 
+    _prochain_controle = 0
     while True:
+        if fichier_arret and frame_id >= _prochain_controle:
+            _prochain_controle = frame_id + int(max(fps, 1) * 5)
+            try:
+                with open(fichier_arret, encoding="utf-8") as _fa:
+                    _t_arret = float(_fa.read().strip())
+                _f_arret = int(_t_arret * fps)
+                if end_frame is None or _f_arret < end_frame:
+                    end_frame = _f_arret
+                    print(f"  [ARRÊT DYNAMIQUE] Fin de lecture ramenée à t={_t_arret:.1f}s (borne détectée pendant le suivi)")
+            except (OSError, ValueError):
+                pass
         if end_frame is not None and frame_id >= end_frame:
             print(f"  [END_TIME_S] Arrêt de la lecture à frame {frame_id} (limite atteinte)")
             break

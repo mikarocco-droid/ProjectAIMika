@@ -287,9 +287,21 @@ def _appel_avec_tmp(fn, *args, tmp_dir=None, **kwargs):
 def _worker_mi_temps(args):
     """Processus fils : process_video() sur une fenêtre de la vidéo d'origine."""
     from main import process_video
-    video_path, debut_s, fin_s, kw = args
+    import inspect as _insp
+    video_path, debut_s, fin_s, kw = args[:4]
+    fichier_arret = args[4] if len(args) > 4 else None
+    if fichier_arret and "fichier_arret" in _insp.signature(process_video).parameters:
+        kw = dict(kw, fichier_arret=fichier_arret)
     return process_video(video_path=video_path, start_time_s=debut_s, end_time_s=fin_s,
                          return_frames=True, save_annotated=False, annotated_path=None, **kw)
+
+
+def _ecrire_arret(chemin, t_s):
+    """Écriture atomique de l'heure d'arrêt lue par le processus de suivi."""
+    tmp = chemin + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(f"{t_s:.2f}")
+    os.replace(tmp, chemin)
 
 
 def _decaler_id(v):
@@ -332,7 +344,29 @@ def _decaler_mi_temps_2(events, frames_data, jersey_map):
     return events, frames_data, jm2
 
 
+_MARGE_PROVISOIRE_S = 10 * 60      # fin provisoire d'une mi-temps = début + durée de mi-temps + 10 min
+
+
+def _soustraire(fenetre, autres):
+    """Parties de « fenetre » non couvertes par les fenêtres « autres »."""
+    morceaux = [tuple(fenetre)]
+    for a, b in autres:
+        nouv = []
+        for x, y in morceaux:
+            if b <= x or a >= y:
+                nouv.append((x, y))
+            else:
+                if x < a: nouv.append((x, a))
+                if b < y: nouv.append((b, y))
+        morceaux = nouv
+    return [(x, y) for x, y in morceaux if y - x > 0.5]
+
+
 def _analyser_mi_temps(video_path, ko1_s, half_duration_min, output_dir, marge_avant_ko1_s, process_kwargs):
+    """20/10/2026 (v27) : suivi lancé SANS attendre toutes les bornes.
+    1re MT lancée dès KO1 (fin provisoire), 2e MT dès KO2 (fin provisoire), Fin1MT/FinMatch détectées
+    PENDANT le suivi ; à la fin : rognage aux vraies bornes + compléments si une borne dépasse une fin
+    provisoire. Bornes en échec : le reste de la vidéo est lu (équivalent lecture complète), rien n'est perdu."""
     import time as _t, cv2 as _cv2
     from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
     import multiprocessing as _mp
@@ -341,87 +375,166 @@ def _analyser_mi_temps(video_path, ko1_s, half_duration_min, output_dir, marge_a
     cap = _cv2.VideoCapture(video_path)
     duree = (cap.get(_cv2.CAP_PROP_FRAME_COUNT) or 0) / max(cap.get(_cv2.CAP_PROP_FPS) or 25.0, 1)
     cap.release()
-    print(f"  [MI-TEMPS] Bornes avant le suivi | KO1 = {ko1_s:.0f} s | vidéo {duree:.0f} s | dossier {tmp_dir}")
-    r_ko2 = _appel_avec_tmp(find_ko2_gemini, video_path, ko1_s=ko1_s, half_duration_min=half_duration_min, tmp_dir=tmp_dir)
-    if r_ko2.get("status") != "AUTO_CONFIRMED" or r_ko2.get("ko2_s") is None:
-        raise RuntimeError(f"KO2 non confirmé ({r_ko2.get('status')})")
-    ko2 = float(r_ko2["ko2_s"])
-
-    def _fin1mt():
-        try:
-            from analysis.fin1mt_gemini_cascade import find_fin1mt_gemini
-            r = _appel_avec_tmp(find_fin1mt_gemini, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
-            v = r.get("fin1mt_s") if isinstance(r, dict) else r
-            if v is not None:
-                return float(v), "gemini"
-        except Exception as e:
-            print(f"  [MI-TEMPS] Fin1MT Gemini en échec ({e}) — repli sur le son")
-        v = _appel_avec_tmp(find_fin1mt_audio, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
-        return (float(v), "son (repli)") if v is not None else (None, None)
-
-    def _finmatch():
-        try:
-            from analysis.finmatch_gemini_cascade import find_finmatch_gemini
-            r = _appel_avec_tmp(find_finmatch_gemini, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
-            v = r.get("finmatch_s") if isinstance(r, dict) else r
-            if v is not None:
-                return float(v), "gemini"
-        except Exception as e:
-            print(f"  [MI-TEMPS] FinMatch Gemini en échec ({e}) — repli sur le son")
-        v = _appel_avec_tmp(find_finmatch_audio, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
-        v = v.get("finmatch_s") if isinstance(v, dict) else v
-        return (float(v), "son (repli)") if v is not None else (None, None)
-
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        f1, fm = ex.submit(_fin1mt), ex.submit(_finmatch)
-        (fin1mt, src1), (finmatch, src2) = f1.result(), fm.result()
-    if fin1mt is None or finmatch is None:
-        raise RuntimeError(f"bornes manquantes (Fin1MT={fin1mt}, FinMatch={finmatch})")
-    if not (ko1_s < fin1mt < ko2 < finmatch):
-        raise RuntimeError(f"bornes incohérentes (KO1={ko1_s:.0f} Fin1MT={fin1mt:.0f} KO2={ko2:.0f} FinMatch={finmatch:.0f})")
-    if fin1mt < ko1_s + (half_duration_min - _FIN1MT_TOLERANCE_MIN) * 60:
-        raise RuntimeError(f"Fin1MT ({src1}) à {(fin1mt - ko1_s) / 60:.1f} min de jeu seulement — impossible "
-                           f"(mi-temps de {half_duration_min} min), découpage refusé")
-    _BORNES_MI_TEMPS.clear()
-    _BORNES_MI_TEMPS.update(video=video_path, ko1=ko1_s, ko2=ko2, fin1mt=fin1mt, fin1mt_src=src1,
-                            finmatch=finmatch, finmatch_src=src2)
-    seg1 = (max(0.0, ko1_s - marge_avant_ko1_s), min(duree or 1e9, fin1mt + _MARGE_FIN1MT_APRES_S))
-    seg2 = (max(seg1[1], ko2 - _MARGE_KO2_AVANT_S), min(duree or 1e9, finmatch + _MARGE_FINMATCH_APRES_S))
-    _BORNES_MI_TEMPS.update(segments=[list(seg1), list(seg2)])
-    analyse = (seg1[1] - seg1[0]) + (seg2[1] - seg2[0])
-    print(f"  [MI-TEMPS] KO2 = {ko2:.0f} s | Fin1MT = {fin1mt:.0f} s ({src1}) | FinMatch = {finmatch:.0f} s ({src2})")
-    print(f"  [MI-TEMPS] Suivi : 1re MT {seg1[0]:.0f}→{seg1[1]:.0f} s | 2e MT {seg2[0]:.0f}→{seg2[1]:.0f} s | "
-          f"{analyse:.0f} s analysées sur {duree:.0f} s ({100 * (1 - analyse / max(duree, 1)):.0f} % de vidéo épargnée)")
-
-    jobs = [(video_path, seg1[0], seg1[1], dict(process_kwargs)), (video_path, seg2[0], seg2[1], dict(process_kwargs))]
+    H = half_duration_min * 60
+    t0 = _t.time()
     _repo = os.path.dirname(os.path.abspath(__file__))
     os.environ["PYTHONPATH"] = _repo + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
-    t0 = _t.time()
     try:
-        with ProcessPoolExecutor(max_workers=2, mp_context=_mp.get_context("spawn")) as ex:
-            res = list(ex.map(_worker_mi_temps, jobs))
-        mode = "parallèle (2 processus)"
+        pool = ProcessPoolExecutor(max_workers=2, mp_context=_mp.get_context("spawn"))
     except Exception as e:
-        print(f"  [MI-TEMPS] Parallélisme indisponible ({type(e).__name__}: {e}) — mi-temps l'une après l'autre")
-        res = [_worker_mi_temps(j) for j in jobs]
-        mode = "séquentiel"
-    (ev1, jm1, fps1, tot1, fr1), (ev2, jm2, fps2, tot2, fr2) = res
-    for i, (ev, fr) in enumerate(((ev1, fr1), (ev2, fr2)), 1):
-        if not fr:
-            raise RuntimeError(f"mi-temps {i} sans aucune image analysée")
-    ev2, fr2, jm2 = _decaler_mi_temps_2(ev2, fr2, jm2)
-    events = sorted(list(ev1) + list(ev2), key=lambda e: e.get("time", 0))
-    frames = sorted(list(fr1) + list(fr2), key=lambda f: f.get("frame", 0))
-    jersey = dict(jm1 or {}); jersey.update(jm2 or {})
-    fps = fps1 or fps2 or 25.0
-    hors = [f for f in frames if not (seg1[0] - 1 <= f.get("frame", 0) / fps <= seg1[1] + 1
-                                      or seg2[0] - 1 <= f.get("frame", 0) / fps <= seg2[1] + 1)]
-    print(f"  [MI-TEMPS] ✅ {mode} en {(_t.time() - t0) / 60:.1f} min | 1re MT : {len(fr1)} images, {len(ev1)} événements | "
-          f"2e MT : {len(fr2)} images, {len(ev2)} événements | images hors fenêtres : {len(hors)}")
-    if hors:
-        raise RuntimeError(f"{len(hors)} image(s) hors des fenêtres analysées")
-    return events, jersey, fps, max(tot1 or 0, tot2 or 0), frames
+        print(f"  [MI-TEMPS] Parallélisme indisponible ({e}) — morceaux lus l'un après l'autre")
+        pool = None
+    jobs = []                                           # [(nom, (début, fin), future ou None)]
+    import threading as _th_mt
+    _verrou_jobs = _th_mt.Lock()
 
+    def raccourcir(nom_prefixe, fin_reelle):
+        """Une lecture arrêtée tôt ne couvre plus que jusqu'à fin_reelle (pour le calcul du « reste »)."""
+        with _verrou_jobs:
+            for k, (nom, w, fut) in enumerate(jobs):
+                if nom.startswith(nom_prefixe) and fin_reelle < w[1]:
+                    jobs[k] = (nom, (w[0], max(w[0], fin_reelle)), fut)
+
+    def lancer(nom, debut, fin, arret=None):
+        debut, fin = max(0.0, debut), min(duree or 1e9, fin)
+        if fin - debut <= 0.5:
+            return
+        fut = pool.submit(_worker_mi_temps, (video_path, debut, fin, dict(process_kwargs), arret)) if pool else None
+        with _verrou_jobs:
+            jobs.append((nom, (debut, fin), fut))
+        print(f"  [MI-TEMPS] +{(_t.time() - t0) / 60:4.1f} min : suivi « {nom} » lancé ({debut:.0f}→{fin:.0f} s)")
+
+    deb1 = ko1_s - marge_avant_ko1_s
+    fin1_prov = ko1_s + H + _MARGE_PROVISOIRE_S
+    print(f"  [MI-TEMPS] KO1 = {ko1_s:.0f} s | vidéo {duree:.0f} s | dossier {tmp_dir}")
+    arret1, arret2 = os.path.join(tmp_dir, "arret_mt1.txt"), os.path.join(tmp_dir, "arret_mt2.txt")
+    lancer("1re MT (fin provisoire)", deb1, fin1_prov, arret1)
+    bornes, erreur = None, None
+    try:
+        r_ko2 = _appel_avec_tmp(find_ko2_gemini, video_path, ko1_s=ko1_s, half_duration_min=half_duration_min, tmp_dir=tmp_dir)
+        if r_ko2.get("status") != "AUTO_CONFIRMED" or r_ko2.get("ko2_s") is None:
+            raise RuntimeError(f"KO2 non confirmé ({r_ko2.get('status')})")
+        ko2 = float(r_ko2["ko2_s"])
+        print(f"  [MI-TEMPS] +{(_t.time() - t0) / 60:4.1f} min : KO2 = {ko2:.0f} s")
+        lancer("2e MT (fin provisoire)", ko2 - _MARGE_KO2_AVANT_S, ko2 + H + _MARGE_PROVISOIRE_S, arret2)
+
+        def _fin1mt():
+            try:
+                from analysis.fin1mt_gemini_cascade import find_fin1mt_gemini
+                r = _appel_avec_tmp(find_fin1mt_gemini, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
+                v = r.get("fin1mt_s") if isinstance(r, dict) else r
+                if v is not None:
+                    return float(v), "gemini"
+            except Exception as e:
+                print(f"  [MI-TEMPS] Fin1MT Gemini en échec ({e}) — repli sur le son")
+            v = _appel_avec_tmp(find_fin1mt_audio, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
+            return (float(v), "son (repli)") if v is not None else (None, None)
+
+        def _finmatch():
+            try:
+                from analysis.finmatch_gemini_cascade import find_finmatch_gemini
+                r = _appel_avec_tmp(find_finmatch_gemini, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
+                v = r.get("finmatch_s") if isinstance(r, dict) else r
+                if v is not None:
+                    return float(v), "gemini"
+            except Exception as e:
+                print(f"  [MI-TEMPS] FinMatch Gemini en échec ({e}) — repli sur le son")
+            v = _appel_avec_tmp(find_finmatch_audio, video_path, ko2_s=ko2, tmp_dir=tmp_dir)
+            v = v.get("finmatch_s") if isinstance(v, dict) else v
+            return (float(v), "son (repli)") if v is not None else (None, None)
+
+        def _fin1mt_et_arret():
+            v, src = _fin1mt()
+            # arrêt dynamique de la 1re MT seulement si la borne est plausible (garde-fou des 42 min)
+            if v is not None and ko1_s + (half_duration_min - _FIN1MT_TOLERANCE_MIN) * 60 <= v < ko2:
+                _ecrire_arret(arret1, v + _MARGE_FIN1MT_APRES_S)
+                raccourcir("1re MT", v + _MARGE_FIN1MT_APRES_S)
+                print(f"  [MI-TEMPS] +{(_t.time() - t0) / 60:4.1f} min : arrêt de la 1re MT demandé à {v + _MARGE_FIN1MT_APRES_S:.0f} s")
+            return v, src
+
+        def _finmatch_et_arret():
+            v, src = _finmatch()
+            if v is not None and v > ko2 + 30 * 60:
+                _ecrire_arret(arret2, v + _MARGE_FINMATCH_APRES_S)
+                raccourcir("2e MT", v + _MARGE_FINMATCH_APRES_S)
+                print(f"  [MI-TEMPS] +{(_t.time() - t0) / 60:4.1f} min : arrêt de la 2e MT demandé à {v + _MARGE_FINMATCH_APRES_S:.0f} s")
+            return v, src
+
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f1, fm = ex.submit(_fin1mt_et_arret), ex.submit(_finmatch_et_arret)
+            (fin1mt, src1), (finmatch, src2) = f1.result(), fm.result()
+        if fin1mt is None or finmatch is None:
+            raise RuntimeError(f"bornes manquantes (Fin1MT={fin1mt}, FinMatch={finmatch})")
+        if not (ko1_s < fin1mt < ko2 < finmatch):
+            raise RuntimeError(f"bornes incohérentes (KO1={ko1_s:.0f} Fin1MT={fin1mt:.0f} KO2={ko2:.0f} FinMatch={finmatch:.0f})")
+        if fin1mt < ko1_s + (half_duration_min - _FIN1MT_TOLERANCE_MIN) * 60:
+            raise RuntimeError(f"Fin1MT ({src1}) à {(fin1mt - ko1_s) / 60:.1f} min de jeu seulement — impossible "
+                               f"(mi-temps de {half_duration_min} min)")
+        seg1 = (max(0.0, deb1), min(duree or 1e9, fin1mt + _MARGE_FIN1MT_APRES_S))
+        seg2 = (max(seg1[1], ko2 - _MARGE_KO2_AVANT_S), min(duree or 1e9, finmatch + _MARGE_FINMATCH_APRES_S))
+        bornes = dict(ko1=ko1_s, ko2=ko2, fin1mt=fin1mt, fin1mt_src=src1, finmatch=finmatch, finmatch_src=src2,
+                      segments=[list(seg1), list(seg2)])
+        print(f"  [MI-TEMPS] +{(_t.time() - t0) / 60:4.1f} min : Fin1MT = {fin1mt:.0f} s ({src1}) | FinMatch = {finmatch:.0f} s ({src2})")
+        for seg in (seg1, seg2):                         # compléments si une vraie borne dépasse une fin provisoire
+            for x, y in _soustraire(seg, [w for _, w, _ in jobs]):
+                lancer("complément", x, y)
+    except Exception as e:
+        erreur = str(e)
+        print(f"  [MI-TEMPS] ⚠️ Bornes en échec ({erreur}) — lecture du reste de la vidéo (rien n'est perdu)")
+        for x, y in _soustraire((max(0.0, deb1), duree), [w for _, w, _ in jobs]):
+            lancer("reste de la vidéo", x, y)
+
+    resultats = []
+    try:
+        for nom, w, fut in jobs:
+            res = fut.result() if fut is not None else _worker_mi_temps((video_path, w[0], w[1], dict(process_kwargs)))
+            resultats.append((nom, w, res))
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)
+    fps = next((r[2] for _, _, r in resultats if r[2]), 25.0)
+    garder = [list(bornes["segments"][0]), list(bornes["segments"][1])] if bornes else [[max(0.0, deb1), duree]]
+    events, frames, jersey, total = [], [], {}, 0
+    # Attribution des zones : pour chaque période gardée, priorité à la lecture lancée POUR elle (début le
+    # plus proche), puis aux autres ; une zone n'est jamais prise deux fois (pas de doublon), et une même
+    # mi-temps reste suivie par le même processus autant que possible (identités continues).
+    zones_par_job = {i: [] for i in range(len(resultats))}
+    for g in garder:
+        ordre = sorted(range(len(resultats)), key=lambda i: (abs(resultats[i][1][0] - g[0]), i))
+        pris = []
+        for i in ordre:
+            w = resultats[i][1]
+            inter = (max(w[0], g[0]), min(w[1], g[1]))
+            if inter[1] <= inter[0]:
+                continue
+            zs = _soustraire(inter, pris)
+            zones_par_job[i] += zs
+            pris += zs
+    for idx, (nom, w, (ev, jm, _fps, tot, fr)) in enumerate(resultats):
+        zones = zones_par_job[idx]
+        dedans = lambda t, _z=zones: any(a <= t <= b for a, b in _z)
+        fr = [f for f in fr if dedans(f.get("frame", 0) / fps)]
+        ev = [e for e in ev if dedans(e.get("time", e.get("frame", 0) / fps))]
+        if idx > 0:
+            global _DECALAGE_IDS_MT2
+            _sauve, _DECALAGE_IDS_MT2 = _DECALAGE_IDS_MT2, 100000 * idx
+            try:
+                ev, fr, jm = _decaler_mi_temps_2(ev, fr, jm)
+            finally:
+                _DECALAGE_IDS_MT2 = _sauve
+        events += list(ev); frames += list(fr); jersey.update(jm or {}); total = max(total, tot or 0)
+        print(f"  [MI-TEMPS] « {nom} » : {len(fr)} images, {len(ev)} événements conservés")
+    for i, (a, b) in enumerate(garder, 1):
+        if not any(a <= f.get("frame", 0) / fps <= b for f in frames):
+            raise RuntimeError(f"période {i} ({a:.0f}→{b:.0f} s) sans aucune image analysée")
+    events.sort(key=lambda e: e.get("time", 0)); frames.sort(key=lambda f: f.get("frame", 0))
+    lu = sum(w[1] - w[0] for _, w, _ in jobs); garde = sum(b - a for a, b in garder)
+    print(f"  [MI-TEMPS] ✅ {len(jobs)} morceau(x) en {(_t.time() - t0) / 60:.1f} min (bornes comprises) | lu {lu:.0f} s, "
+          f"gardé {garde:.0f} s sur {duree:.0f} s de vidéo" + (f" | bornes en échec : {erreur}" if erreur else ""))
+    _BORNES_MI_TEMPS.clear()
+    if bornes:
+        _BORNES_MI_TEMPS.update(video=video_path, **bornes)
+    return events, jersey, fps, total, frames
 
 
 def run_pipeline(
