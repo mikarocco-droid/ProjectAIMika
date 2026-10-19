@@ -263,6 +263,11 @@ def _trace_ev(label, evs):
 # Renvoie exactement ce que renverrait process_video() : (events, jersey_map, fps, total_frames, frames_data).
 # ═════════════════════════════════════════════════════════════════════════
 _DECALAGE_IDS_MT2 = 100000
+_BORNES_MI_TEMPS = {}          # bornes trouvées AVANT le suivi, réutilisées par le flux normal (même vidéo)
+# Garde-fou : une 1re mi-temps ne peut pas finir avant (durée de mi-temps - 3 min) de jeu, soit 42 min pour
+# des mi-temps de 45 min (un arbitre peut arrêter à 43:30 quand le score est acquis). En dessous : détection
+# rejetée (son : Franchimont 46:17 = 40,9 min de jeu au lieu de 51:48).
+_FIN1MT_TOLERANCE_MIN = 3
 _MARGE_FIN1MT_APRES_S = 30
 _MARGE_KO2_AVANT_S = 30
 _MARGE_FINMATCH_APRES_S = 30
@@ -374,6 +379,12 @@ def _analyser_mi_temps(video_path, ko1_s, half_duration_min, output_dir, marge_a
         raise RuntimeError(f"bornes manquantes (Fin1MT={fin1mt}, FinMatch={finmatch})")
     if not (ko1_s < fin1mt < ko2 < finmatch):
         raise RuntimeError(f"bornes incohérentes (KO1={ko1_s:.0f} Fin1MT={fin1mt:.0f} KO2={ko2:.0f} FinMatch={finmatch:.0f})")
+    if fin1mt < ko1_s + (half_duration_min - _FIN1MT_TOLERANCE_MIN) * 60:
+        raise RuntimeError(f"Fin1MT ({src1}) à {(fin1mt - ko1_s) / 60:.1f} min de jeu seulement — impossible "
+                           f"(mi-temps de {half_duration_min} min), découpage refusé")
+    _BORNES_MI_TEMPS.clear()
+    _BORNES_MI_TEMPS.update(video=video_path, ko1=ko1_s, ko2=ko2, fin1mt=fin1mt, fin1mt_src=src1,
+                            finmatch=finmatch, finmatch_src=src2)
     seg1 = (max(0.0, ko1_s - marge_avant_ko1_s), min(duree or 1e9, fin1mt + _MARGE_FIN1MT_APRES_S))
     seg2 = (max(seg1[1], ko2 - _MARGE_KO2_AVANT_S), min(duree or 1e9, finmatch + _MARGE_FINMATCH_APRES_S))
     analyse = (seg1[1] - seg1[0]) + (seg2[1] - seg2[0])
@@ -1190,7 +1201,12 @@ def run_pipeline(
         if _skip_ko2:
             print(f"  [KO2] Skippé — video_end_s={video_end_s:.0f}s < KO2 attendu ≥ {_ko2_min_absolu:.0f}s")
 
-        if _kickoff_offset > 0 and not _skip_ko2:
+        _bornes_mt = _BORNES_MI_TEMPS if _BORNES_MI_TEMPS.get("video") == video_path else {}
+        if _bornes_mt and not _skip_ko2:
+            _ko2_absolu, _fin1mt_absolu = _bornes_mt["ko2"], _bornes_mt["fin1mt"]
+            print(f"  [KO2] Repris de l'analyse par mi-temps : t={_ko2_absolu:.0f}s (absolu)")
+            print(f"  [FIN1MT] Repris de l'analyse par mi-temps : t={_fin1mt_absolu:.0f}s (source : {_bornes_mt.get('fin1mt_src')})")
+        elif _kickoff_offset > 0 and not _skip_ko2:
             print(f"  [KO2] Recherche dans [KO1+{half_duration_min+4}min, KO1+{half_duration_min+23}min]...")
             _ko2_result = find_ko2_gemini(
                 video_path, ko1_s=_kickoff_offset, half_duration_min=half_duration_min,
@@ -1199,10 +1215,23 @@ def run_pipeline(
                 _ko2_absolu = _ko2_result["ko2_s"]
                 print(f"  [KO2] Détecté à t={_ko2_absolu:.0f}s (absolu)")
 
-                print(f"  [FIN1MT] Recherche audio dans [KO2-16min, KO2-8min]...")
-                _fin1mt_absolu = find_fin1mt_audio(video_path, ko2_s=_ko2_absolu)
+                # 20/10/2026 : correction du 11/09/2026 rétablie (AVANT_PRODUCTION.md) — Gemini en priorité,
+                # son en repli. Franchimont : son 46:17 au lieu de 51:48 -> le filtre de pause a supprimé
+                # le but de 49:51.
+                _fin1mt_src = None
+                try:
+                    from analysis.fin1mt_gemini_cascade import find_fin1mt_gemini
+                    _r_f1n = find_fin1mt_gemini(video_path, ko2_s=_ko2_absolu)
+                    _fin1mt_absolu = _r_f1n.get("fin1mt_s") if isinstance(_r_f1n, dict) else _r_f1n
+                    _fin1mt_src = "gemini" if _fin1mt_absolu is not None else None
+                except Exception as _e_f1n:
+                    print(f"  [FIN1MT] Gemini en échec ({_e_f1n}) — repli sur le son")
+                if _fin1mt_absolu is None:
+                    print(f"  [FIN1MT] Recherche audio dans [KO2-16min, KO2-8min] (repli)...")
+                    _fin1mt_absolu = find_fin1mt_audio(video_path, ko2_s=_ko2_absolu)
+                    _fin1mt_src = "son (repli)" if _fin1mt_absolu is not None else None
                 if _fin1mt_absolu is not None:
-                    print(f"  [FIN1MT] Détecté à t={_fin1mt_absolu:.0f}s (absolu)")
+                    print(f"  [FIN1MT] Détecté à t={_fin1mt_absolu:.0f}s (absolu, source : {_fin1mt_src})")
                 else:
                     print(f"  [FIN1MT] Aucun signal crédible — pas de filtrage de pause pour ce match")
 
@@ -1217,6 +1246,11 @@ def run_pipeline(
                       f"— Fin1MT/FinMatch audio non calculés (dépendent de KO2)")
 
         # ── Filtrage de la pause (Fin1MT → KO2), si les deux sont connus ────────
+        if (_fin1mt_absolu is not None and _ko2_absolu is not None
+                and _fin1mt_absolu < _kickoff_offset + (half_duration_min - _FIN1MT_TOLERANCE_MIN) * 60):
+            print(f"  [FIN1MT] ⚠️ {(_fin1mt_absolu - _kickoff_offset) / 60:.1f} min de jeu seulement avant la fin de "
+                  f"1re mi-temps détectée — impossible : AUCUN filtrage de pause (aucune donnée de jeu supprimée)")
+            _fin1mt_absolu = None
         if _fin1mt_absolu is not None and _ko2_absolu is not None:
             _fin1mt_relatif = _fin1mt_absolu - _kickoff_offset
             _ko2_relatif = _ko2_absolu - _kickoff_offset
@@ -3793,7 +3827,10 @@ def run_pipeline(
     # de toute la vidéo : Raeren 6731 s au lieu de 2651 s -> seuil 19 touches au lieu de 7 -> 0 joueur.
     try:
         _t_ev = [float(e["time"]) for e in events if isinstance(e.get("time"), (int, float))]
-        _dur_stats = (max(_t_ev) - min(_t_ev)) if len(_t_ev) >= 2 and max(_t_ev) > min(_t_ev) else None
+        _t_ev.sort()
+        # 20/10/2026 : somme des intervalles de jeu (les trous > 60 s, ex. la pause, ne comptent pas)
+        _dur_stats = (sum(b - a for a, b in zip(_t_ev, _t_ev[1:]) if b - a <= 60)
+                      if len(_t_ev) >= 2 and _t_ev[-1] > _t_ev[0] else None)
     except Exception:
         _dur_stats = None
     if _dur_stats is None:
