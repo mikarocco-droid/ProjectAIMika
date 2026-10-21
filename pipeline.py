@@ -1909,6 +1909,65 @@ def run_pipeline(
                                   f"{_fmt_ko(_ta) if _ta else '  ?  '} {str(_cc.get('phase')):9s} "
                                   f"{str(_cc.get('team_color'))[:8]:8s} | {(_cc.get('evidence') or '')[:60]}")
 
+                # ── SECOND REGARD (20/10/2026, option SCOUTIA_KO_SECOND_REGARD=1, DÉSACTIVÉE par défaut) ──
+                # Franchimont 79:42 : tir vu (classification WIDE 79:41) sur le candidat 79:34, mais l'engagement
+                # (80:12) tombe après sa fenêtre et avant celle du candidat suivant. Cas visé : candidat REFUSÉ,
+                # classification voyant un tir au moment du candidat ou après, engagement probable (tir + 25 à
+                # 50 s) couvert par AUCUNE fenêtre réelle. -> UNE seule question, fenêtre décalée de +30 s.
+                # Si « but » : ajouté comme candidat ORDINAIRE (mêmes règles KO2 / anti-doublon / statut ; la
+                # classification d'origine est conservée : pas de confirmation sans son accord).
+                # Aucun changement de la déduplication ; aucune relance en cascade.
+                import os as _os_sr
+                if _os_sr.environ.get("SCOUTIA_KO_SECOND_REGARD", "").strip().lower() in ("1", "true", "oui"):
+                    _offs_sr = (_ko_kwargs.get("offsets") or [-25, 5]) if isinstance(_ko_kwargs, dict) else [-25, 5]
+                    _o0, _o1 = min(_offs_sr), max(_offs_sr)
+                    if len(_ko_results) < len(_ko_candidates):
+                        print("  [SECOND REGARD] ⚠️ validations non disponibles d'avance (mode séquentiel) — ignoré")
+                    else:
+                        _sr_cas = []
+                        for _ki_sr, _kc_sr in enumerate(_ko_candidates):
+                            _kind_sr, _r_sr = _ko_results.get(_ki_sr, (None, None))
+                            if _kind_sr != "ok" or not _r_sr or _r_sr.get("is_goal"):
+                                continue
+                            _c_sr = _cls_results.get(_ki_sr) or {}
+                            _oc_sr = str(_c_sr.get("outcome") or "").upper().strip("* ")
+                            _a_sr = _c_sr.get("action_time_abs")
+                            if _oc_sr not in ("WIDE", "SAVE", "BLOCKED", "GOAL", "POST") or _a_sr is None:
+                                continue
+                            _t_sr = _kc_sr["time"]
+                            if _a_sr < _t_sr - 5:
+                                continue                    # action tôt : sa suite est dans la fenêtre du candidat
+                            _s0, _s1 = _a_sr + 25, _a_sr + 50
+                            if any(_kj != _ki_sr and _kc2["time"] + _o0 <= _s0 and _kc2["time"] + _o1 >= _s1
+                                   for _kj, _kc2 in enumerate(_ko_candidates)):
+                                continue                    # engagement probable déjà examiné par un autre candidat
+                            _sr_cas.append((_ki_sr, _t_sr, _a_sr, _oc_sr, _kc_sr))
+                        print(f"  [SECOND REGARD] {len(_sr_cas)} cas sur {len(_ko_candidates)} candidats")
+                        _sr_ajouts = []
+                        for _ki_sr, _t_sr, _a_sr, _oc_sr, _kc_sr in _sr_cas:
+                            _t2 = _t_sr + 30
+                            try:
+                                _r2 = _ko_call(_t2)
+                            except Exception as _e_sr:
+                                _r2 = None
+                                print(f"  [SECOND REGARD] erreur {_fmt_ko(_t2)} : {_e_sr}")
+                            _dec = "BUT" if (_r2 and _r2.get("is_goal")) else "non"
+                            print(f"  [SECOND REGARD] candidat {_fmt_ko(_t_sr)} (classification {_oc_sr} à {_fmt_ko(_a_sr)}) "
+                                  f"→ fenêtre {_fmt_ko(_t2 + _o0)}→{_fmt_ko(_t2 + _o1)} : {_dec}"
+                                  + (f" | {(_r2.get('description') or _r2.get('evidence') or '')[:120]}" if _r2 else ""))
+                            if _r2 and _r2.get("is_goal"):
+                                # copie COMPLÈTE du candidat d'origine (tous ses champs : balance_delta…), seule
+                                # l'heure change — un candidat incomplet faisait échouer toute l'étape KO
+                                _sr_ajouts.append((dict(_kc_sr, time=_t2, second_regard=True),
+                                                   ("ok", _r2), _cls_results.get(_ki_sr)))
+                        if _sr_ajouts:
+                            _tous = [(_kc, _ko_results.get(_i), _cls_results.get(_i)) for _i, _kc in enumerate(_ko_candidates)]
+                            _tous = sorted(_tous + _sr_ajouts, key=lambda x: x[0]["time"])
+                            _ko_candidates = [x[0] for x in _tous]
+                            _ko_results = {i: x[1] for i, x in enumerate(_tous) if x[1] is not None}
+                            _cls_results = {i: x[2] for i, x in enumerate(_tous)}
+                            print(f"  [SECOND REGARD] {len(_sr_ajouts)} candidat(s) ajouté(s) aux règles ordinaires")
+
                 # ── Coup d'envoi de la 2e mi-temps (KO2) ───────────────────────────
                 # Seul le candidat le PLUS PROCHE de KO2 dans [KO2-15s, KO2+60s] est
                 # concerné ; les autres candidats de la fenêtre sont traités normalement.
