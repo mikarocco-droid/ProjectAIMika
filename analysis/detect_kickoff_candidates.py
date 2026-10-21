@@ -146,13 +146,40 @@ def detect_kickoff_candidates(
     if not candidates_raw:
         return []
 
-    # Déduplication : garder le meilleur score dans chaque fenêtre min_gap_s
-    candidates_raw.sort(key=lambda c: c["time"])
-    deduped = []
-    for c in candidates_raw:
-        if not deduped or c["time"] - deduped[-1]["time"] > min_gap_s:
+    # Déduplication. 20/10/2026 : trois modes (SCOUTIA_KO_DEDUP), l'historique reste le défaut.
+    #   fenetre    : meilleur score dans une fenêtre glissante de min_gap_s (historique). Défaut : un
+    #                candidat qui en remplace un autre DÉPLACE la référence -> un épisode distinct mais
+    #                mieux noté, à < 30 s, efface le précédent (Franchimont : remise en jeu 80:18 effacée
+    #                par 80:46 puis 80:48 -> but de 79:42 perdu).
+    #   episodes   : candidats bruts regroupés en épisodes (écart <= 6 s entre bruts consécutifs),
+    #                meilleur candidat de chaque épisode.
+    #   episodes20 : episodes, puis fusion des épisodes dont les meilleurs candidats sont à < 20 s.
+    import os as _os_dd
+    _mode = (_os_dd.environ.get("SCOUTIA_KO_DEDUP", "") or "fenetre").strip().lower()
+    if _mode not in ("fenetre", "episodes", "episodes20"):
+        print(f"  [KO_DETECTION] SCOUTIA_KO_DEDUP='{_mode}' inconnu — mode historique « fenetre »")
+        _mode = "fenetre"
+    if _mode == "fenetre":
+        deduped = []
+        for c in candidates_raw:
+            if not deduped or c["time"] - deduped[-1]["time"] > min_gap_s:
+                deduped.append(c)
+            elif c["score"] > deduped[-1]["score"]:
+                deduped[-1] = c
+    else:
+        episodes, cur = [], []
+        for c in candidates_raw:
+            if cur and c["time"] - cur[-1]["time"] > 6.0:
+                episodes.append(max(cur, key=lambda x: x["score"])); cur = []
+            cur.append(c)
+        if cur:
+            episodes.append(max(cur, key=lambda x: x["score"]))
+        deduped = []
+        for c in episodes:
+            if _mode == "episodes20" and deduped and c["time"] - deduped[-1]["time"] < 20.0:
+                if c["score"] > deduped[-1]["score"]:
+                    deduped[-1] = c
+                continue
             deduped.append(c)
-        elif c["score"] > deduped[-1]["score"]:
-            deduped[-1] = c
-
+    print(f"  [KO_DETECTION] déduplication « {_mode} » : {len(candidates_raw)} candidats bruts → {len(deduped)}")
     return deduped
