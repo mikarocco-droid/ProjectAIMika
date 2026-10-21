@@ -156,6 +156,21 @@ _STATE_LOCK = _thr_gem.Lock()
 _ABANDONS_CONSECUTIFS = 0
 _RATE_LIMIT_RETRIES   = 6     # tentatives max sur une limite PAR MINUTE
 _ABANDONS_MAX         = 3     # disjoncteur : 3 appels abandonnés d'affilée -> quota considéré épuisé
+# 20/10/2026 (replay Franchimont : disjoncteur après quelques secondes, 75 candidats sur 105 jamais validés) :
+#   - après une limite de débit, appels SÉRIALISÉS pendant _LENT_S (moins de pression sur la limite) ;
+#   - au lieu de couper Gemini, PAUSE globale de _PAUSE_S puis reprise de la MÊME question ;
+#     coupure définitive seulement après _PAUSES_MAX pauses ;
+#   - questions abandonnées COMPTÉES (gemini_etat()) : un run incomplet est signalé, jamais caché.
+_LENT_S, _PAUSE_S, _PAUSES_MAX = 600, 300, 3
+_LENT_JUSQUA, _PAUSE_JUSQUA, _N_PAUSES, _N_ABANDONS_TOTAL = 0.0, 0.0, 0, 0
+
+_VERROU_LENT = _thr_gem.Lock()
+
+
+def gemini_etat():
+    """État de l'accès à Gemini pour ce run : questions abandonnées, pauses, coupure."""
+    return {"questions_abandonnees": _N_ABANDONS_TOTAL, "pauses": _N_PAUSES, "gemini_coupe": _quota_exhausted}
+
 
 def gemini_max_parallel():
     """Nombre d'appels Gemini simultanés (variable GEMINI_MAX_PARALLEL, défaut 4)."""
@@ -421,6 +436,10 @@ def gemini_cache_summary():
         print(f"  [GEMINI CACHE] {n} question(s) : {_GC['hits']} relue(s) du cache (gratuites), "
               f"{_GC['misses']} payée(s), {_GC['strict_misses']} refusée(s) en mode strict | "
               f"{len(_GC['entries'])} réponse(s) dans le cache | sortie : {_GC['out'] or 'aucune'}")
+        _et = gemini_etat()
+        if _et["questions_abandonnees"]:
+            print(f"  [GEMINI] ⚠️ {_et['questions_abandonnees']} question(s) ABANDONNÉE(S) ({_et['pauses']} pause(s), "
+                  f"coupure : {'oui' if _et['gemini_coupe'] else 'non'}) — RÉSULTATS INCOMPLETS, relancer (le cache garde le reste)")
         if _VERROU["modeles_remplaces"]:
             print(f"  [GEMINI] Modèles demandés par les modules et remplacés par {_MODELE_UNIQUE} : {_VERROU['modeles_remplaces']}")
         return dict(questions=n, relues=_GC["hits"], payees=_GC["misses"], refusees=_GC["strict_misses"],
@@ -443,16 +462,26 @@ def _generate_with_retry(client, max_retries=2, **kwargs):
         return _gc_r                                   # réponse en cache : aucun appel, aucun coût
     if not _gc_ok:
         return None                                    # mode strict : comme une indisponibilité
+    global _LENT_JUSQUA, _PAUSE_JUSQUA, _N_PAUSES, _N_ABANDONS_TOTAL
     if _quota_exhausted:
+        with _STATE_LOCK:
+            _N_ABANDONS_TOTAL += 1                      # question non posée : compte comme abandonnée
         return None
     attempt, rl_attempts = 0, 0
     while True:
+        _attente = _PAUSE_JUSQUA - time.time()
+        if _attente > 0:
+            time.sleep(_attente)                        # pause globale en cours (limite de débit persistante)
         try:
             t0 = time.time()
             try:
                 _GC_INTERNE.actif = True
                 try:
-                    response = client.models.generate_content(**kwargs)
+                    if time.time() < _LENT_JUSQUA:      # mode lent : un appel à la fois
+                        with _VERROU_LENT:
+                            response = client.models.generate_content(**kwargs)
+                    else:
+                        response = client.models.generate_content(**kwargs)
                 finally:
                     _GC_INTERNE.actif = False
             finally:
@@ -468,18 +497,38 @@ def _generate_with_retry(client, max_retries=2, **kwargs):
             err_str = str(e)
             if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
                 if _is_daily_quota(err_str):
-                    print("  Quota Gemini journalier épuisé — validation désactivée")
+                    print("  Quota Gemini journalier épuisé — validation désactivée — RÉSULTATS INCOMPLETS")
                     _quota_exhausted = True
+                    with _STATE_LOCK:
+                        _N_ABANDONS_TOTAL += 1
                     return None
                 rl_attempts += 1
+                with _STATE_LOCK:
+                    if time.time() >= _LENT_JUSQUA:
+                        print(f"  Limite de débit Gemini — appels un par un pendant {_LENT_S // 60} min")
+                    _LENT_JUSQUA = time.time() + _LENT_S
                 if rl_attempts > _RATE_LIMIT_RETRIES:
+                    # Tant qu'il reste des pauses : AUCUN abandon — pause globale (ou attente de celle en cours),
+                    # puis reprise de la même question. Pauses épuisées : abandon + coupure, signalés.
                     with _STATE_LOCK:
-                        _ABANDONS_CONSECUTIFS += 1
-                        _n_ab = _ABANDONS_CONSECUTIFS
-                    print(f"  Limite de débit Gemini persistante — appel abandonné ({_n_ab} d'affilée)")
-                    if _n_ab >= _ABANDONS_MAX:
-                        print("  Disjoncteur : Gemini considéré comme épuisé pour ce run")
-                        _quota_exhausted = True
+                        if time.time() < _PAUSE_JUSQUA:
+                            _reprendre = True                    # une pause est déjà en cours : l'attendre
+                        elif _N_PAUSES < _PAUSES_MAX:
+                            _N_PAUSES += 1
+                            _PAUSE_JUSQUA = time.time() + _PAUSE_S
+                            _reprendre = True
+                            print(f"  Limite de débit persistante — PAUSE de {_PAUSE_S // 60} min "
+                                  f"({_N_PAUSES}/{_PAUSES_MAX}), puis reprise de la même question")
+                        else:
+                            _reprendre = False
+                            _N_ABANDONS_TOTAL += 1
+                            if not _quota_exhausted:
+                                print("  Disjoncteur : limite persistante après toutes les pauses — Gemini coupé "
+                                      "pour ce run — RÉSULTATS INCOMPLETS")
+                            _quota_exhausted = True
+                    if _reprendre:
+                        rl_attempts = 0
+                        continue
                     return None
                 m = re.search(r"retryDelay.*?(\d+)s", err_str)
                 wait = (int(m.group(1)) + 1) if m else min(60, 5 * 2 ** (rl_attempts - 1))
