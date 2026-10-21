@@ -189,6 +189,12 @@ def gemini_max_parallel():
     except Exception:
         return 4
 
+def _is_credit_depleted(err_str):
+    """20/10/2026 : crédits prépayés épuisés (402) — même statut RESOURCE_EXHAUSTED qu'une limite de débit,
+    mais attendre ne sert à rien : coupure immédiate et message explicite."""
+    return bool(re.search(r"\b402\b|credits? (are )?depleted|prepayment|billing", err_str, re.IGNORECASE))
+
+
 def _is_daily_quota(err_str):
     return bool(re.search(r"per ?day|perday|daily", err_str, re.IGNORECASE))
 
@@ -505,7 +511,7 @@ def _generate_with_retry(client, max_retries=2, **kwargs):
             return response
         except Exception as e:
             err_str = str(e)
-            if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+            if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str or "402" in err_str:
                 # 20/10/2026 : erreur BRUTE affichée une fois par message différent (quel quota ? quel service ?)
                 _sig = re.sub(r"\d+", "#", err_str)[:160]
                 with _STATE_LOCK:
@@ -513,6 +519,16 @@ def _generate_with_retry(client, max_retries=2, **kwargs):
                     _ERREURS_VUES.add(_sig)
                 if _nouveau:
                     print(f"  [GEMINI] Erreur brute de limite : {err_str[:700]}")
+                if _is_credit_depleted(err_str):
+                    with _STATE_LOCK:
+                        _deja = _quota_exhausted
+                        _quota_exhausted = True
+                        _N_ABANDONS_TOTAL += 1
+                    if not _deja:
+                        print("  [GEMINI] ❌ CRÉDITS GEMINI ÉPUISÉS (402) — aucune question ne peut aboutir. "
+                              "Recharger le compte dans AI Studio (https://ai.studio/projects, facturation), puis relancer. "
+                              "RÉSULTATS INCOMPLETS")
+                    return None
                 if _is_daily_quota(err_str):
                     print("  Quota Gemini journalier épuisé — validation désactivée — RÉSULTATS INCOMPLETS")
                     _quota_exhausted = True
