@@ -140,6 +140,15 @@ def get_client():
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY manquante dans .env")
         _client = genai.Client(api_key=api_key)
+        # 20/10/2026 : diagnostic — adresse réellement utilisée (Google en direct ou relais, ex. Kaggle)
+        try:
+            _base = (getattr(getattr(_client, "_api_client", None), "_http_options", None) or {})
+            _base = getattr(_base, "base_url", None) or (_base.get("base_url") if isinstance(_base, dict) else None)
+        except Exception:
+            _base = None
+        _env = {k: v for k, v in os.environ.items() if "GEMINI" in k.upper() and "URL" in k.upper() or k.upper() == "GOOGLE_GEMINI_BASE_URL"}
+        print(f"  [GEMINI] Client créé | adresse : {_base or 'par défaut (Google)'}"
+              + (f" | variables : {_env}" if _env else "") + f" | clé …{api_key[-4:]}")
     return _client
 
 
@@ -162,6 +171,7 @@ _ABANDONS_MAX         = 3     # disjoncteur : 3 appels abandonnés d'affilée ->
 #     coupure définitive seulement après _PAUSES_MAX pauses ;
 #   - questions abandonnées COMPTÉES (gemini_etat()) : un run incomplet est signalé, jamais caché.
 _LENT_S, _PAUSE_S, _PAUSES_MAX = 600, 300, 3
+_ERREURS_VUES = set()
 _LENT_JUSQUA, _PAUSE_JUSQUA, _N_PAUSES, _N_ABANDONS_TOTAL = 0.0, 0.0, 0, 0
 
 _VERROU_LENT = _thr_gem.Lock()
@@ -496,6 +506,13 @@ def _generate_with_retry(client, max_retries=2, **kwargs):
         except Exception as e:
             err_str = str(e)
             if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+                # 20/10/2026 : erreur BRUTE affichée une fois par message différent (quel quota ? quel service ?)
+                _sig = re.sub(r"\d+", "#", err_str)[:160]
+                with _STATE_LOCK:
+                    _nouveau = _sig not in _ERREURS_VUES
+                    _ERREURS_VUES.add(_sig)
+                if _nouveau:
+                    print(f"  [GEMINI] Erreur brute de limite : {err_str[:700]}")
                 if _is_daily_quota(err_str):
                     print("  Quota Gemini journalier épuisé — validation désactivée — RÉSULTATS INCOMPLETS")
                     _quota_exhausted = True
