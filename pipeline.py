@@ -1909,7 +1909,8 @@ def run_pipeline(
                                   f"{_fmt_ko(_ta) if _ta else '  ?  '} {str(_cc.get('phase')):9s} "
                                   f"{str(_cc.get('team_color'))[:8]:8s} | {(_cc.get('evidence') or '')[:60]}")
 
-                # ── SECOND REGARD (20/10/2026, option SCOUTIA_KO_SECOND_REGARD=1, DÉSACTIVÉE par défaut) ──
+                # ── SECOND REGARD (20/10/2026 ; ACTIVÉ par défaut le 22/10/2026 après 7 réponses justes sur 7 :
+                #    Franchimont 79:42 retrouvé, aucun faux positif ajouté — désactivation : SCOUTIA_KO_SECOND_REGARD=0) ──
                 # Franchimont 79:42 : tir vu (classification WIDE 79:41) sur le candidat 79:34, mais l'engagement
                 # (80:12) tombe après sa fenêtre et avant celle du candidat suivant. Cas visé : candidat REFUSÉ,
                 # classification voyant un tir au moment du candidat ou après, engagement probable (tir + 25 à
@@ -1918,7 +1919,7 @@ def run_pipeline(
                 # classification d'origine est conservée : pas de confirmation sans son accord).
                 # Aucun changement de la déduplication ; aucune relance en cascade.
                 import os as _os_sr
-                if _os_sr.environ.get("SCOUTIA_KO_SECOND_REGARD", "").strip().lower() in ("1", "true", "oui"):
+                if _os_sr.environ.get("SCOUTIA_KO_SECOND_REGARD", "1").strip().lower() not in ("0", "false", "non", "off"):
                     _offs_sr = (_ko_kwargs.get("offsets") or [-25, 5]) if isinstance(_ko_kwargs, dict) else [-25, 5]
                     _o0, _o1 = min(_offs_sr), max(_offs_sr)
                     if len(_ko_results) < len(_ko_candidates):
