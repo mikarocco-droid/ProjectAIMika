@@ -218,7 +218,9 @@ from types import SimpleNamespace as _NS_gc
 _GC_LOCK = _th_gc.Lock()
 _GC = {"loaded": False, "entries": {}, "out": None, "hits": 0, "misses": 0, "strict_misses": 0, "writes": 0}
 _GC_CTX_KEYS = ("video_path", "kickoff_time_abs", "t_ref_abs", "t_abs", "prompt_variant", "offsets",
-                "temperature", "source", "scale")
+                "temperature", "source", "scale",
+                # 21/10/2026 : voie « ballon » (_call_gemini_at_offset) et autres — heure examinée enregistrée
+                "center_time", "frame_id", "event_type", "goal_time", "t_center", "time_abs")
 
 
 def _gc_mode():
