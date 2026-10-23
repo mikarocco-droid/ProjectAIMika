@@ -2880,14 +2880,26 @@ def run_pipeline(
             print(f"  [EARLY REJECT] {_n_early} candidat(s) supprimé(s) avant Gemini (t < {MIN_EARLY_VIDEO_S}s)")
         # ─────────────────────────────────────────────────────────────────────
 
-        events_validated = validate_events_with_gemini(
-            events        = events_for_gemini_filtered,
-            video_path    = video_path,
-            fps           = fps,
-            sport         = sport,
-            MIN_CONF_GOAL = 0.85 if not is_summary else 0.75,
-            MIN_CONF_SHOT = 0.70,
-        )
+        # 23/10/2026 : VOIE « BALLON » désactivable (SCOUTIA_VOIE_BALLON=0), caméras high_side (Veo) seulement.
+        # Jeu de référence (6 matchs) : 24 vrais buts sur 24 trouvés AUSSI par la validation KO, aucun par cette
+        # voie seule ; 1 faux positif sur 11 vient d'elle ; ~780 questions et 37 % des jetons Gemini par match.
+        import os as _os_vb
+        # DÉSACTIVÉE par défaut (23/10/2026) après examen des logs de 6 matchs : 971 candidats examinés, contribution
+        # nette = 0 vrai but, 1 faux positif (Goe 35:17). Réactivation : SCOUTIA_VOIE_BALLON=1.
+        _voie_ballon = _os_vb.environ.get("SCOUTIA_VOIE_BALLON", "0").strip().lower() not in ("0", "off", "non", "false")
+        if not _voie_ballon and camera_type == "high_side":
+            print(f"  [VOIE BALLON] désactivée (caméra high_side) : {len(events_for_gemini_filtered)} candidat(s) écarté(s) "
+                  f"sans appel Gemini — les buts viennent de la validation KO")
+            events_validated = []
+        else:
+            events_validated = validate_events_with_gemini(
+                events        = events_for_gemini_filtered,
+                video_path    = video_path,
+                fps           = fps,
+                sport         = sport,
+                MIN_CONF_GOAL = 0.85 if not is_summary else 0.75,
+                MIN_CONF_SHOT = 0.70,
+            )
         # Réintégrer les buts cross_line confirmés
         events_validated = sorted(
             events_validated + cross_line_goals,
