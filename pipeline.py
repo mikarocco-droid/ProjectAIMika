@@ -1411,54 +1411,8 @@ def run_pipeline(
             events, frames_data = apply_match_end(events, frames_data, _match_end_s, fps=fps)
             _trace_ev("L1028 apply_match_end(events, frames_data, _ma", events)
 
-        # ── Alimenter le bootstrapper depuis frames_data ────────────────────────
-        if _team_bootstrapper is not None and frames_data:
-            try:
-                _bootstrap_seconds = 120.0
-                for _fd in frames_data:
-                    _t = _fd.get("frame", 0) / max(fps, 1)
-                    if _t > _bootstrap_seconds:
-                        break
-                    _frame_orig = _fd.get("_frame_orig")
-                    # frames_data n'a plus _frame_orig (supprimé après rendu)
-                    # Utiliser les couleurs déjà extraites par player_reid
-                    for _p in _fd.get("players", []):
-                        _pid   = _p.get("id") or _p.get("player_id")
-                        _color = _p.get("color")  # couleur extraite par PlayerReID
-                        _bbox  = _p.get("bbox")
-                        if _pid is None or _color is None or _bbox is None:
-                            continue
-                        # Injecter directement la couleur sans re-extraire
-                        _color_arr = np.array(_color, dtype=np.float32)
-                        if np.any(_color_arr > 10):
-                            pid_str = str(_pid)
-                            _team_bootstrapper._pid_colors[pid_str].append(_color_arr)
-                            if pid_str not in _team_bootstrapper._pid_first_seen:
-                                _team_bootstrapper._pid_first_seen[pid_str] = _t
-                            _team_bootstrapper._pid_last_seen[pid_str] = _t
-                            _team_bootstrapper._n_frames += 1
-            except Exception as _efb:
-                print(f"  [BOOTSTRAP] Alimentation échouée : {_efb}")
-
-        # ── Finaliser le bootstrapper d'équipes ──────────────────────────────────
-        if _team_bootstrapper is not None:
-            try:
-                _bs_summary = _team_bootstrapper.summary()
-                print(f"  [BOOTSTRAP] {_bs_summary['n_pids_total']} pids vus | "
-                      f"{_bs_summary['n_stable']} stables")
-                if _team_bootstrapper.is_ready() or _bs_summary['n_stable'] >= 4:
-                    _bs_result = _team_bootstrapper.finalize()
-                    if _bs_result:
-                        # Injecter dans teams (priorité sur KMeans du Step 4)
-                        for _tid, _tdata in _bs_result.items():
-                            if _tid not in teams:
-                                teams[_tid] = {}
-                            teams[_tid]["color_bgr"]    = _tdata["color_bgr"]
-                            teams[_tid]["color_name"]   = _tdata["color_name"]
-                            teams[_tid]["_bootstrap_conf"] = _tdata["confidence"]
-                        print(f"  [BOOTSTRAP] Couleurs injectées dans teams ✅")
-            except Exception as _ebs:
-                print(f"  [BOOTSTRAP] Finalisation échouée : {_ebs}")
+        # 23/10/2026 : blocs « bootstrapper d'équipes » SUPPRIMÉS (code mort : _team_bootstrapper toujours None ;
+        # ils auraient échoué de toute façon : np non importé, « teams » pas encore défini à cet endroit).
 
         # Récupérer les couleurs équipes depuis le module tracker (source la plus fiable)
         try:
@@ -4299,55 +4253,6 @@ def run_pipeline(
     print("Step 9 : Montage ignoré (désactivé)")
     montage_path = None
 
-    # ── Mode player : reel joueur spécifique ─────────────────────────────────
-    # Activé si mode="player" ET player_id fourni (ex: "11" ou "11_bleu")
-    _player_reel_path = None
-    if mode == "player" and player_id is not None and result_pe_mgr is not None:
-        try:
-            _jersey     = None
-            _team_color = None
-            _pid_parts  = str(player_id).split("_")
-            if _pid_parts[0].isdigit():
-                _jersey = int(_pid_parts[0])
-            if len(_pid_parts) > 1:
-                _team_color = "_".join(_pid_parts[1:])
-
-            # Mode gardien : identifier par position et équipe
-            _is_gk = (player_position or "").lower() in ("gardien", "goalkeeper", "gk")
-            if _is_gk:
-                # Déterminer l'équipe du gardien depuis player_id ou user_team_id
-                _gk_team_id = user_team_id if user_team_id is not None else 0
-                _player_highlights = result_pe_mgr.get_goalkeeper_highlights(
-                    team_id        = _gk_team_id,
-                    min_confidence = 0.3,  # seuil plus bas pour gardien
-                )
-                print(f"  [MODE PLAYER] Gardien équipe {_gk_team_id} : "
-                      f"{len(_player_highlights)} clips")
-            else:
-                _player_highlights = result_pe_mgr.get_player_highlights(
-                    jersey         = _jersey,
-                    team_color     = _team_color,
-                    min_confidence = get_owner_confidence_min(sport),
-                )
-
-            if _player_highlights:
-                _player_reel_path = os.path.join(
-                    output_dir,
-                    f"reel_player_{player_id}.mp4"
-                )
-                create_highlight_reel(
-                    highlights  = _player_highlights,
-                    output_path = _player_reel_path,
-                )
-                print(f"  [MODE PLAYER] Reel #{_jersey} ({_team_color}) : "
-                      f"{len(_player_highlights)} clips → {_player_reel_path}")
-            else:
-                print(f"  [MODE PLAYER] Aucun highlight pour #{_jersey} "
-                      f"(min_conf={get_owner_confidence_min(sport):.2f})")
-
-        except Exception as _epr:
-            print(f"  [MODE PLAYER] Reel joueur ignoré : {_epr}")
-
     # ─────────────────────────────────────────
     # 10. RANKINGS + RATINGS + COMMENTARY
     # ─────────────────────────────────────────
@@ -4482,6 +4387,57 @@ def run_pipeline(
     except Exception as _epe:
         print(f"  Player entities ignoré : {_epe}")
         result_pe_mgr = None
+
+    # 23/10/2026 : bloc DÉPLACÉ ici (avant : avant la création de result_pe_mgr -> NameError, analyse entière arrêtée en mode joueur)
+    # ── Mode player : reel joueur spécifique ─────────────────────────────────
+    # Activé si mode="player" ET player_id fourni (ex: "11" ou "11_bleu")
+    _player_reel_path = None
+    if mode == "player" and player_id is not None and result_pe_mgr is not None:
+        try:
+            _jersey     = None
+            _team_color = None
+            _pid_parts  = str(player_id).split("_")
+            if _pid_parts[0].isdigit():
+                _jersey = int(_pid_parts[0])
+            if len(_pid_parts) > 1:
+                _team_color = "_".join(_pid_parts[1:])
+
+            # Mode gardien : identifier par position et équipe
+            _is_gk = (player_position or "").lower() in ("gardien", "goalkeeper", "gk")
+            if _is_gk:
+                # Déterminer l'équipe du gardien depuis player_id ou user_team_id
+                _gk_team_id = user_team_id if user_team_id is not None else 0
+                _player_highlights = result_pe_mgr.get_goalkeeper_highlights(
+                    team_id        = _gk_team_id,
+                    min_confidence = 0.3,  # seuil plus bas pour gardien
+                )
+                print(f"  [MODE PLAYER] Gardien équipe {_gk_team_id} : "
+                      f"{len(_player_highlights)} clips")
+            else:
+                _player_highlights = result_pe_mgr.get_player_highlights(
+                    jersey         = _jersey,
+                    team_color     = _team_color,
+                    min_confidence = get_owner_confidence_min(sport),
+                )
+
+            if _player_highlights:
+                _player_reel_path = os.path.join(
+                    output_dir,
+                    f"reel_player_{player_id}.mp4"
+                )
+                create_highlight_reel(
+                    highlights  = _player_highlights,
+                    output_path = _player_reel_path,
+                )
+                print(f"  [MODE PLAYER] Reel #{_jersey} ({_team_color}) : "
+                      f"{len(_player_highlights)} clips → {_player_reel_path}")
+            else:
+                print(f"  [MODE PLAYER] Aucun highlight pour #{_jersey} "
+                      f"(min_conf={get_owner_confidence_min(sport):.2f})")
+
+        except Exception as _epr:
+            print(f"  [MODE PLAYER] Reel joueur ignoré : {_epr}")
+
 
     # ─────────────────────────────────────────
     # 11. SUMMARY — sur events_clean (buts + tirs validés uniquement)
