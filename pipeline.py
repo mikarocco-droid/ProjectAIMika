@@ -2136,6 +2136,42 @@ def run_pipeline(
                         "status":             _st,
                         "source":             "ko_classification",
                     })
+                # ── Occasions décrites par la validation KO (21/10/2026, option SCOUTIA_TF_DESCRIPTIONS_KO=1,
+                #    désactivée par défaut). Réponses DÉJÀ payées : aucun appel. Vérifié en vidéo sur Spa,
+                #    Franchimont, Minerois Ster : 7 vraies occasions sur 8 (la fausse : « post-goal » lu comme
+                #    « post » = poteau, corrigé ici). Candidats REFUSÉS comme but seulement.
+                import os as _os_tfk, re as _re_tfk
+                if _os_tfk.environ.get("SCOUTIA_TF_DESCRIPTIONS_KO", "").strip().lower() in ("1", "true", "oui"):
+                    _ACT = _re_tfk.compile(r"\b(shot|shoots|shoot|save[sd]?|parr(?:y|ies|ied)|post(?!-)|crossbar|"
+                                           r"deflect\w*|went wide|goes wide|wide of)\b", _re_tfk.I)
+                    _NEG = _re_tfk.compile(r"\bno (shot|save|chance|attempt)|without (a |any )?(shot|save)|\bno shots?\b", _re_tfk.I)
+                    _offs_tf = (_ko_kwargs.get("offsets") or [-25, 5]) if isinstance(_ko_kwargs, dict) else [-25, 5]
+                    _n_ajout = 0
+                    for _ki, _kc in enumerate(_ko_candidates):
+                        _kind, _r = _ko_results.get(_ki, (None, None))
+                        if _kind != "ok" or not _r or _r.get("is_goal"):
+                            continue
+                        _txt = str(_r.get("evidence_complete") or _r.get("description") or _r.get("evidence") or "")
+                        for _ph in _re_tfk.split(r"(?<=[.;])\s+", _txt):
+                            if not _ACT.search(_ph) or _NEG.search(_ph):
+                                continue
+                            _m = _re_tfk.search(r"(\d{1,3}):(\d{2})", _ph)
+                            if not _m:
+                                continue
+                            _t_occ = int(_m.group(1)) * 60 + int(_m.group(2))
+                            if not (_kc["time"] + min(_offs_tf) - 10 <= _t_occ <= _kc["time"] + max(_offs_tf) + 2):
+                                continue          # heure hors de la fenêtre examinée : mal lue
+                            if any(abs(_tf["time_abs"] - _t_occ) <= 15 for _tf in _temps_forts) or \
+                               any(abs(_t_occ - _gt) <= 20 for _gt in _ko_goal_times_abs):
+                                break             # déjà un temps fort, ou un but, à ce moment
+                            _temps_forts.append({
+                                "time_abs": _t_occ, "time": _t_occ - _kickoff_offset, "outcome": "OCCASION",
+                                "phase": None, "team_color": None, "evidence": _ph.strip()[:300],
+                                "candidate_time_abs": _kc["time"], "status": "temps_fort", "source": "ko_description",
+                            })
+                            _n_ajout += 1
+                            break                 # une occasion au plus par candidat
+                    print(f"  [TEMPS FORTS] descriptions de la validation KO : {_n_ajout} occasion(s) ajoutée(s)")
                 _temps_forts.sort(key=lambda _tf: _tf["time_abs"])
                 if _cls_results:
                     print(f"  [TEMPS FORTS] {len(_temps_forts)} temps fort(s) :")
@@ -4600,6 +4636,8 @@ def run_pipeline(
             print(f"  [TEMPS FORTS] {_tf['outcome']} {int(_tf['time_abs']//60):02d}:{int(_tf['time_abs']%60):02d} "
                   f"retiré : coïncide avec un but retenu (le but prime)")
             continue
+        # 21/10/2026 : libellé d'affichage unique (le détail de Gemini, souvent inexact, reste dans outcome/evidence)
+        _tf = dict(_tf, label=("But possible" if _tf.get("outcome") == "GOAL" else "Occasion"))
         _near = [e for e in _final_shots if abs(e.get("time", 0) + _ko_off_tf - _tf["time_abs"]) <= 12]
         if _near:
             _tf = dict(_tf, linked_event={"type": "shot", "time": _near[0].get("time")})
