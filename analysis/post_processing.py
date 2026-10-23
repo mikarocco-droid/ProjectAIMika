@@ -211,9 +211,12 @@ def filter_goals(events, window, frame_w, position_threshold):
         if not kept or abs(g["time"] - kept[-1]["time"]) >= ANTI_DEDUP:
             kept.append(g)
         else:
-            # Dans la fenêtre → garder le meilleur
-            if (g.get("confidence", 0), g.get("score", 0)) > \
-               (kept[-1].get("confidence", 0), kept[-1].get("score", 0)):
+            # Dans la fenêtre → garder le meilleur.
+            # 22/10/2026 : MÊME priorité qu'à la passe 1 (validé par Gemini d'abord). Avant : confiance seule —
+            # Goe 83:43 : but de la validation KO (validé, confiance 0.95) REMPLACÉ par un candidat posthoc à 6 s
+            # (non validé, confiance 0.97), ensuite rejeté par Gemini -> vrai but perdu.
+            _prio = lambda e: (1 if e.get("gemini_validated") else 0, e.get("confidence", 0), e.get("score", 0))
+            if _prio(g) > _prio(kept[-1]):
                 kept[-1] = g
 
     return sorted(others + kept, key=lambda x: x.get("time", 0))
