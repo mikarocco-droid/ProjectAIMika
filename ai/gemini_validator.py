@@ -228,23 +228,32 @@ def _gc_mode():
     return m if m in ("on", "off", "strict") else "on"
 
 
-def _gc_canon(o):
-    """Forme canonique et sérialisable de la requête (octets remplacés par leur empreinte)."""
+def _gc_canon(o, _vus=None, _prof=0):
+    """Forme canonique et sérialisable de la requête (octets remplacés par leur empreinte).
+    24/10/2026 : protégée contre les objets qui se référencent eux-mêmes et les structures trop profondes
+    (« maximum recursion depth exceeded » observé sur l'expérience 20). Sans effet sur les requêtes normales :
+    la clé du cache reste identique."""
     if isinstance(o, (bytes, bytearray)):
         return "sha256:" + _hl_gc.sha256(bytes(o)).hexdigest()
-    if isinstance(o, dict):
-        return {str(k): _gc_canon(v) for k, v in sorted(o.items(), key=lambda kv: str(kv[0]))}
-    if isinstance(o, (list, tuple)):
-        return [_gc_canon(v) for v in o]
     if isinstance(o, (str, int, float, bool)) or o is None:
         return o
+    if _prof > 40:
+        return "<profondeur>"
+    _vus = set() if _vus is None else _vus
+    if id(o) in _vus:
+        return "<cycle>"
+    _vus = _vus | {id(o)}
+    if isinstance(o, dict):
+        return {str(k): _gc_canon(v, _vus, _prof + 1) for k, v in sorted(o.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(o, (list, tuple)):
+        return [_gc_canon(v, _vus, _prof + 1) for v in o]
     if hasattr(o, "model_dump"):
         try:
-            return _gc_canon(o.model_dump(exclude_none=True))
+            return _gc_canon(o.model_dump(exclude_none=True), _vus, _prof + 1)
         except Exception:
             pass
     if hasattr(o, "__dict__"):
-        return _gc_canon({k: v for k, v in vars(o).items() if not k.startswith("_")})
+        return _gc_canon({k: v for k, v in vars(o).items() if not k.startswith("_")}, _vus, _prof + 1)
     return repr(o)
 
 
