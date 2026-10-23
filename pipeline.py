@@ -537,6 +537,9 @@ def _analyser_mi_temps(video_path, ko1_s, half_duration_min, output_dir, marge_a
     return events, jersey, fps, total, frames
 
 
+# Réglage par défaut de la lecture des maillots pour ce processus (voir run_pipeline)
+_LECTURE_MAILLOTS_DEFAUT = os.environ.get("SCOUTIA_LECTURE_MAILLOTS", "0").strip() or "0"
+
 def run_pipeline(
     video_path,
     sport             = "football",
@@ -630,6 +633,14 @@ def run_pipeline(
     use_single_yolo26 = True,    # YOLO26m unique pour joueurs+ballon (validé 2026-09-30)
     _match_data       = None,    # Replay Engine : dict depuis replay.load_cache() — skip YOLO/tracking si fourni
 ):
+    # 24/10/2026 : lecture des maillots fixée À CHAQUE ANALYSE (avant tout lancement du suivi, pour que les
+    # processus fils en héritent) : mode joueur -> activée automatiquement ; sinon -> réglage par défaut du
+    # processus (mémorisé au chargement du module). Évite qu'une analyse joueur la laisse active pour les
+    # analyses suivantes d'un même processus (worker Celery). Aucune action de l'utilisateur.
+    import os as _os_lm
+    _os_lm.environ["SCOUTIA_LECTURE_MAILLOTS"] = "1" if mode == "player" else _LECTURE_MAILLOTS_DEFAUT
+    if mode == "player":
+        print("  [MAILLOTS] mode joueur : lecture des maillots activée automatiquement")
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
 
@@ -3595,7 +3606,11 @@ def run_pipeline(
                 prio_players_filtered = prio_players[:40]
             # ─────────────────────────────────────────────────────────────────
 
-            if audit_mode:
+            _lecture_maillots_p = os.environ.get("SCOUTIA_LECTURE_MAILLOTS", "0").strip().lower() in ("1", "true", "oui", "on")
+            if not _lecture_maillots_p:
+                gemini_jerseys = {}
+                print("  [MAILLOTS] lecture ciblée des maillots désactivée (SCOUTIA_LECTURE_MAILLOTS=0)")
+            elif audit_mode:
                 gemini_jerseys = {}
                 print("  [AUDIT] read_jersey_numbers skippé")
             else:

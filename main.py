@@ -1035,7 +1035,15 @@ def process_video(
     # ~10 appels Gemini pour tout un match de ~180-200 track_id). Repli
     # sur Tesseract pour tout track_id que Gemini n'a pas resolu.
     jersey_map = dict(jersey_map_tesseract)
+    # 24/10/2026 : lecture des maillots par Gemini DÉSACTIVÉE par défaut (décision V1 : ~190 questions, ~1,6 $
+    # par match, lectures peu fiables — exp. 18). Réactivée par SCOUTIA_LECTURE_MAILLOTS=1 (automatiquement en
+    # mode joueur par le pipeline). Le suivi des joueurs et l'attribution des événements aux pistes sont inchangés.
+    _lecture_maillots = os.environ.get("SCOUTIA_LECTURE_MAILLOTS", "0").strip().lower() in ("1", "true", "oui", "on")
+    if not _lecture_maillots:
+        print("  [MAILLOTS] lecture des maillots par Gemini désactivée (SCOUTIA_LECTURE_MAILLOTS=0)")
     try:
+        if not _lecture_maillots:
+            raise RuntimeError("lecture des maillots désactivée")
         from ai.gemini_validator import read_jersey_numbers
 
         # Un representant par track_id : la frame ou sa bbox est la plus
