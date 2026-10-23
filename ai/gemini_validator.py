@@ -1082,6 +1082,10 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
             "goal_time_abs":  goal_time,
             "candidate_time": kickoff_time_abs,
             "description":    evidence,
+            # 21/10/2026 : texte COMPLET de EVIDENCE (description ci-dessus : 1re ligne, 200 caractères) —
+            # utilisé pour extraire les occasions décrites (temps forts)
+            "evidence_complete": ((re.search(r"EVIDENCE:\s*(.+)", text, re.S) or [None, ""])[1].strip()[:3000]
+                                  if isinstance(text, str) else ""),
             "source":         "ko_detection",
             **({"raw": text} if return_raw else {}),
             **({"restart_type": restart_type} if restart_type is not None else {}),
