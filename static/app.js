@@ -81,8 +81,120 @@ const SPORTS_CONFIG = {
 // ─────────────────────────────────────────
 let _uploadDone = false;
 
+// ─────────────────────────────────────────
+// ENVOI + DÉTECTION PENDANT L'ENVOI (24/10/2026)
+// Le coup d'envoi et les couleurs n'ont besoin que du DÉBUT de la vidéo : un aperçu (12 premières minutes + index
+// MP4) est envoyé EN PARALLÈLE du fichier complet, et la configuration (noms, couleurs, coup d'envoi) s'affiche dès
+// que la détection est finie. Le bouton « Lancer l'analyse » attend la fin du téléchargement complet.
+// Si l'aperçu est impossible (format non MP4/MOV, erreur), détection sur le fichier complet comme avant.
+// ─────────────────────────────────────────
+const DUREE_APERCU_S = 720;            // 12 min : couvre le coup d'envoi de la plupart des vidéos
+let _detectionLancee = false;          // une détection (aperçu ou fichier complet) est en cours ou faite
+let _apercuEnCours   = false;          // l'aperçu est en préparation ou en cours d'envoi
+let _uidComplet      = "";
+
+function revealConfig() {
+    const stepDetecting = document.getElementById("step-detecting");
+    if (stepDetecting) stepDetecting.style.display = "none";
+    if (stepConfig && stepConfig.style.display !== "block") {
+        stepConfig.style.display = "block";
+        setTimeout(() => stepConfig.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
+    }
+    updateSubmitBtn();
+}
+
+function afficherDetectionEnCours() {
+    const stepDetecting = document.getElementById("step-detecting");
+    if (stepDetecting) {
+        stepDetecting.style.display = "block";
+        stepDetecting.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+}
+
+async function _lireOctets(file, debut, n) {
+    return new DataView(await file.slice(debut, Math.min(file.size, debut + n)).arrayBuffer());
+}
+
+async function lireBoites(file) {
+    // Boîtes de premier niveau d'un MP4/MOV : [taille 32 bits][type 4 octets] (+ taille 64 bits si taille == 1)
+    const boites = [];
+    let o = 0;
+    while (o + 8 <= file.size && boites.length < 64) {
+        const dv = await _lireOctets(file, o, 16);
+        let taille = dv.getUint32(0);
+        const type = String.fromCharCode(dv.getUint8(4), dv.getUint8(5), dv.getUint8(6), dv.getUint8(7));
+        let entete = 8;
+        if (taille === 1 && dv.byteLength >= 16) { taille = Number(dv.getBigUint64(8)); entete = 16; }
+        else if (taille === 0) { taille = file.size - o; }
+        if (taille < entete) break;                      // fichier non MP4 ou corrompu
+        boites.push({ type, offset: o, taille, entete });
+        o += taille;
+    }
+    return boites;
+}
+
+async function preparerApercu(file) {
+    if (!/\.(mp4|mov|m4v)$/i.test(file.name || "")) return null;
+    const boites = await lireBoites(file);
+    const moov = boites.find(b => b.type === "moov"), mdat = boites.find(b => b.type === "mdat");
+    if (!moov || !mdat) return null;
+    // Durée de la vidéo (boîte « mvhd », au début de « moov »)
+    const tete = await _lireOctets(file, moov.offset, 256);
+    let p = -1;
+    for (let i = 0; i + 4 <= tete.byteLength; i++) {
+        if (tete.getUint8(i) === 0x6d && tete.getUint8(i + 1) === 0x76 && tete.getUint8(i + 2) === 0x68 && tete.getUint8(i + 3) === 0x64) { p = i; break; }
+    }
+    if (p < 0) return null;
+    const v = tete.getUint8(p + 4);
+    const echelle = v === 1 ? tete.getUint32(p + 24) : tete.getUint32(p + 16);
+    const duree   = v === 1 ? Number(tete.getBigUint64(p + 28)) : tete.getUint32(p + 20);
+    const duree_s = echelle ? duree / echelle : 0;
+    if (!duree_s) return null;
+    const duree_apercu_s = Math.min(DUREE_APERCU_S, duree_s);
+    const L = Math.min(file.size, Math.round(mdat.offset + mdat.entete + mdat.taille / duree_s * duree_apercu_s));
+    return { L, moov, mdat, duree_apercu_s };
+}
+
+async function lancerApercu(file) {
+    _apercuEnCours = true;
+    try {
+        const ap = await preparerApercu(file);
+        if (!ap || _detectionLancee) return;
+        const fd = new FormData();
+        fd.append("debut", file.slice(0, ap.L), "debut.mp4");
+        if (ap.moov.offset >= ap.L) fd.append("index", file.slice(ap.moov.offset, ap.moov.offset + ap.moov.taille), "index.bin");
+        fd.append("mdat_offset", ap.mdat.offset);
+        fd.append("mdat_entete", ap.mdat.entete);
+        fd.append("index_offset", ap.moov.offset);
+        fd.append("duree_apercu_s", ap.duree_apercu_s);
+        const resp = await fetch("/api/apercu-debut", { method: "POST", body: fd });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const data = await resp.json();
+        if (!data.upload_id || _detectionLancee) return;
+        _detectionLancee = true;
+        afficherDetectionEnCours();
+        await runTeamDetection(data.upload_id);
+        revealConfig();
+    } catch (e) {
+        console.warn("Aperçu pendant l'envoi indisponible :", e.message);
+    } finally {
+        _apercuEnCours = false;
+        // L'aperçu n'a pas servi et le fichier complet est déjà arrivé : détection sur le fichier complet
+        if (!_detectionLancee && _uploadDone) detecterSurFichierComplet();
+    }
+}
+
+function detecterSurFichierComplet() {
+    if (_detectionLancee) return;
+    _detectionLancee = true;
+    afficherDetectionEnCours();
+    if (_uidComplet) runTeamDetection(_uidComplet).then(revealConfig).catch(revealConfig);
+    else revealConfig();
+}
+
 function startUploadWithProgress(file) {
     if (!file) return;
+    _uploadDone = false; _detectionLancee = false; _uidComplet = "";
 
     // Afficher progression
     if (progressWrap) progressWrap.style.display = "block";
@@ -102,53 +214,27 @@ function startUploadWithProgress(file) {
         const p = Math.round(e.loaded / e.total * 100);
         if (progressBar) progressBar.style.width = p + "%";
         if (progressPct) progressPct.textContent = p + "%";
+        if (submitBtn && !_uploadDone) submitBtn.textContent = "Téléchargement en cours… " + p + "%";
     };
 
     xhr.onload = () => {
         if (progressWrap) progressWrap.style.display = "none";
-
-        if (xhr.status === 200) {
-            try {
-                const data = JSON.parse(xhr.responseText);
-                const uid  = data.upload_id || "";
-
-                // Stocker l'upload_id dans le form
-                if (previewUploadId) previewUploadId.value = uid;
-
-                // Afficher l'écran d'analyse intermédiaire
-                const stepDetecting = document.getElementById("step-detecting");
-                if (stepDetecting) {
-                    stepDetecting.style.display = "block";
-                    stepDetecting.scrollIntoView({ behavior: "smooth", block: "start" });
-                }
-
-                // 24/10/2026 : bloc en DOUBLE supprimé (« const stepDetecting » déclarée deux fois : erreur de
-                // syntaxe qui empêchait le navigateur d'exécuter tout app.js)
-
-                function revealConfig() {
-                    // Masquer detecting, révéler config
-                    if (stepDetecting) stepDetecting.style.display = "none";
-                    _uploadDone = true;
-                    if (stepConfig) {
-                        stepConfig.style.display = "block";
-                        setTimeout(() => {
-                            stepConfig.scrollIntoView({ behavior: "smooth", block: "start" });
-                        }, 150);
-                    }
-                    updateSubmitBtn();
-                }
-
-                if (uid) {
-                    runTeamDetection(uid).then(revealConfig).catch(revealConfig);
-                } else {
-                    revealConfig();
-                }
-
-            } catch (e) {
-                showUploadError("Réponse inattendue du serveur");
-            }
-        } else {
-            showUploadError("Erreur " + xhr.status);
+        if (xhr.status !== 200) {
+            let msg = "Erreur " + xhr.status;
+            try { msg = JSON.parse(xhr.responseText).message || msg; } catch (e) {}
+            showUploadError(msg);
+            return;
+        }
+        try {
+            const data = JSON.parse(xhr.responseText);
+            _uidComplet = data.upload_id || "";
+            if (previewUploadId) previewUploadId.value = _uidComplet;   // c'est ce fichier qui sera analysé
+            _uploadDone = true;
+            updateSubmitBtn();
+            // Détection sur le fichier complet seulement si l'aperçu n'a pas pu servir
+            if (!_detectionLancee && !_apercuEnCours) detecterSurFichierComplet();
+        } catch (e) {
+            showUploadError("Réponse inattendue du serveur");
         }
     };
 
@@ -156,6 +242,9 @@ function startUploadWithProgress(file) {
 
     xhr.open("POST", "/api/upload-preview");
     xhr.send(fd);
+
+    // En parallèle : aperçu du début de la vidéo, pour la détection pendant l'envoi
+    lancerApercu(file);
 }
 
 function showUploadError(msg) {
@@ -220,7 +309,8 @@ async function runTeamDetection(uploadId) {
         const data = await resp.json();
 
         if (!data.success) {
-            if (prog) prog.textContent = "Détection non disponible — renseignez manuellement.";
+            if (prog) prog.textContent = data.error || "Détection non disponible — renseignez manuellement.";
+            afficherKickoff(data.kickoff);         // saisie manuelle facultative du coup d'envoi
             await new Promise(r => setTimeout(r, 1500));
             return;
         }
@@ -245,7 +335,18 @@ async function runTeamDetection(uploadId) {
             const opt = document.getElementById(`team-side-opt-${tid}`);
             if (opt && team.color_name)
                 opt.textContent = (tid === 0 ? "🏠 " : "✈️ ") + "Équipe " + team.color_name;
+
+            // 24/10/2026 : couleurs transmises au pipeline (champs cachés prévus par le dashboard, jamais remplis :
+            // le pipeline ne pouvait pas rattacher les noms saisis aux équipes, ni le mode joueur à la couleur)
+            const col = document.getElementById(`team-color-${tid}-input`);
+            if (col) col.value = team.color_name || "";
+            const conf = document.getElementById(`team-confidence-${tid}-input`);
+            if (conf) conf.value = (team.confidence ?? team.confiance ?? "");
         }
+
+        // 24/10/2026 : coup d'envoi de la pré-analyse (renvoyé par le serveur, jamais exploité : le pipeline le
+        // recherchait une seconde fois)
+        afficherKickoff(data.kickoff);
 
         await new Promise(r => setTimeout(r, 800));
 
@@ -386,7 +487,7 @@ function updateSubmitBtn() {
 
     if (!_uploadDone) {
         submitBtn.disabled    = true;
-        submitBtn.textContent = "Sélectionnez une vidéo";
+        if (!/Téléchargement en cours/.test(submitBtn.textContent)) submitBtn.textContent = "Sélectionnez une vidéo";
         return;
     }
 
@@ -476,3 +577,62 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ─────────────────────────────────────────
 updateSport();
 toggleJoueurOptions();
+
+
+// ─────────────────────────────────────────
+// COUP D'ENVOI ET ÉQUIPE (24/10/2026) — fonctions appelées par le dashboard, absentes jusqu'ici
+// ─────────────────────────────────────────
+function _mmss(sec) {
+    sec = Math.max(0, Math.round(Number(sec) || 0));
+    return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+}
+
+function afficherKickoff(k) {
+    const input  = document.getElementById("kickoff-s-input");
+    const auto   = document.getElementById("kickoff-auto");
+    const manuel = document.getElementById("kickoff-manuel");
+    const temps  = document.getElementById("kickoff-auto-time");
+    if (!input) return;
+    if (k && k.status === "AUTO_CONFIRMED" && k.kickoff_s !== null && k.kickoff_s !== undefined) {
+        input.value = k.kickoff_s;                       // transmis au pipeline : pas de seconde détection
+        if (temps)  temps.textContent = _mmss(k.kickoff_s);
+        if (auto)   auto.style.display = "flex";
+        if (manuel) manuel.style.display = "none";
+    } else {
+        input.value = "";                                // vide : le pipeline fera sa propre détection
+        if (auto)   auto.style.display = "none";
+        if (manuel) manuel.style.display = "block";
+    }
+}
+
+function toggleKickoffManuel(afficher) {
+    const auto   = document.getElementById("kickoff-auto");
+    const manuel = document.getElementById("kickoff-manuel");
+    const raison = document.getElementById("kickoff-manuel-raison");
+    if (afficher) {
+        if (auto)   auto.style.display = "none";
+        if (manuel) manuel.style.display = "block";
+        if (raison) raison.textContent = "Indiquez le coup d'envoi (minutes:secondes dans la vidéo), ou laissez vide pour une détection automatique pendant l'analyse.";
+    }
+}
+
+function updateKickoffFromManuel() {
+    const champ = document.getElementById("kickoff-manuel-mmss");
+    const input = document.getElementById("kickoff-s-input");
+    if (!champ || !input) return;
+    const m = (champ.value || "").trim().match(/^(\d+):([0-5]\d)$/);
+    input.value = m ? (parseInt(m[1], 10) * 60 + parseInt(m[2], 10)) : "";   // invalide/vide : détection automatique
+}
+
+function selectMyTeam(tid) {
+    const champ = document.getElementById("user-team-id");
+    if (champ) champ.value = String(tid);
+    for (const t of [0, 1]) {
+        const btn = document.getElementById(`my-team-btn-${t}`);
+        if (!btn) continue;
+        const choisi = (t === tid);
+        btn.style.borderColor = choisi ? "var(--cyan)" : "var(--border)";
+        btn.style.color       = choisi ? "var(--cyan)" : "var(--gray)";
+        btn.textContent       = choisi ? "✓ Mon équipe" : "🏠 C'est mon équipe";
+    }
+}
