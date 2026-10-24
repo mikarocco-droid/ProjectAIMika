@@ -1,7 +1,7 @@
 # ai/gemini_validator.py
 # -*- coding: utf-8 -*-
 
-import os
+import os, sys
 import cv2
 import base64
 import json
@@ -473,7 +473,32 @@ def gemini_cache_summary():
                     taille=len(_GC["entries"]), sortie=_GC["out"])
 
 
+# 24/10/2026 : RÉFLEXION RÉDUITE (thinking_budget 0) pour la validation KO (second regard compris) et la
+# classification des temps forts. Mesuré (exp. 19 et 20, 44 questions) : validation KO 34 -> 38/44 justes,
+# -14 % ; classification 32 -> 33/44, -29 % ; aucun vrai but perdu. Autres étapes NON concernées (non mesurées).
+# Désactivation : SCOUTIA_REFLEXION_REDUITE=0.
+_FONCTIONS_REFLEXION_REDUITE = ("validate_kickoff_context_gemini", "classify_highlight_window")
+
+
+def _appliquer_reflexion_reduite(kwargs):
+    if os.environ.get("SCOUTIA_REFLEXION_REDUITE", "1").strip().lower() in ("0", "off", "non", "false"):
+        return kwargs
+    try:
+        appelant = sys._getframe(2).f_code.co_name
+    except Exception:
+        return kwargs
+    if appelant not in _FONCTIONS_REFLEXION_REDUITE:
+        return kwargs
+    cfg = kwargs.get("config")
+    if cfg is None:
+        cfg = {}
+    if isinstance(cfg, dict) and "thinking_config" not in cfg:
+        kwargs = dict(kwargs, config={**cfg, "thinking_config": {"thinking_budget": 0}})
+    return kwargs
+
+
 def _generate_with_retry(client, max_retries=2, **kwargs):
+    kwargs = _appliquer_reflexion_reduite(kwargs)
     """
     client.models.generate_content(**kwargs) avec gestion d'erreurs :
       - quota JOURNALIER (RESOURCE_EXHAUSTED + PerDay)  -> Gemini coupé pour le run
