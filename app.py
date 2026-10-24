@@ -330,6 +330,7 @@ def get_plan_obj(plan_name):
 # ─────────────────────────────────────────
 PLANS_MENSUELS = ("starter", "pro")      # quota remis à zéro chaque mois
 PARRAINAGE_FILLEULS_PAR_RECOMPENSE = 3   # 24/10/2026 : 1 analyse offerte par tranche de 3 filleuls valides
+LIMITE_PREANALYSES_JOUR = 5              # 24/10/2026 : pré-analyses (appels Gemini) par utilisateur et par jour
 
 
 class User(UserMixin, db.Model):
@@ -346,6 +347,8 @@ class User(UserMixin, db.Model):
     credits_offerts        = db.Column(db.Integer,     default=0)
     recompenses_parrainage = db.Column(db.Integer,     default=0)
     paiements_credites     = db.Column(db.Text,        nullable=True)   # paiements Unique déjà crédités
+    preanalyses_date       = db.Column(db.String(10),  nullable=True)   # jour (AAAA-MM-JJ) du compteur ci-dessous
+    preanalyses_n          = db.Column(db.Integer,     default=0)       # pré-analyses faites ce jour-là
 
     def can(self, feature):
         return config.PLANS.get(self.plan, {}).get(feature, False)
@@ -1033,6 +1036,8 @@ import glob as _glob
 @login_required
 def api_upload_preview():
     """Upload préliminaire XHR — reçoit la vidéo, retourne un upload_id."""
+    if current_user.analyses_left() <= 0:                     # 24/10/2026 : quota vérifié dès l'envoi
+        return jsonify({"error": "quota_exceeded", "message": "Quota atteint — passez à une formule supérieure."}), 403
     video = request.files.get("video")
     if not video:
         return jsonify({"error": "no video"}), 400
@@ -1048,6 +1053,79 @@ def api_upload_preview():
     return jsonify({"upload_id": uid, "tmp_path": tmp_path})
 
 
+def _preanalyse_refusee(user, compter=False):
+    """24/10/2026 : la pré-analyse (coup d'envoi, couleurs) appelle Gemini et coûte de l'argent : refusée si le
+    quota est épuisé, ou au-delà de LIMITE_PREANALYSES_JOUR par jour. Retourne None si autorisée, sinon le motif.
+    compter=True : la pré-analyse autorisée est comptée (au moment de la détection)."""
+    if user.analyses_left() <= 0:
+        return "Quota atteint — passez à une formule supérieure pour analyser cette vidéo."
+    jour = datetime.utcnow().strftime("%Y-%m-%d")
+    if user.preanalyses_date != jour:
+        user.preanalyses_date, user.preanalyses_n = jour, 0
+    if (user.preanalyses_n or 0) >= LIMITE_PREANALYSES_JOUR:
+        return (f"Limite de {LIMITE_PREANALYSES_JOUR} pré-analyses par jour atteinte : renseignez les équipes "
+                f"manuellement, la détection sera faite pendant l'analyse.")
+    if compter:
+        user.preanalyses_n = (user.preanalyses_n or 0) + 1
+        db.session.commit()
+    return None
+
+
+def _reconstituer_apercu(chemin, mdat_offset, mdat_entete, index_offset, index=b""):
+    """24/10/2026 : rend lisible le DÉBUT d'une vidéo (déjà enregistré dans « chemin ») à l'aide de son INDEX (bloc
+    « moov »), envoyés par le navigateur pendant le téléchargement complet. La taille déclarée du bloc d'images
+    (« mdat ») est ramenée à la partie reçue, et l'index est ajouté à la suite s'il se trouvait plus loin dans le
+    fichier. Les positions des images de cette partie restent valables : les premières minutes sont lisibles par
+    OpenCV et ffmpeg. Travail SUR PLACE (le début peut peser plusieurs centaines de Mo : rien en mémoire)."""
+    import struct
+    L = os.path.getsize(chemin)
+    with open(chemin, "r+b") as f:
+        if mdat_offset is not None and 0 <= mdat_offset < L:
+            taille = L - mdat_offset
+            f.seek(mdat_offset)
+            if mdat_entete == 16:          # taille sur 64 bits (« largesize »)
+                f.write(struct.pack(">I", 1)); f.seek(mdat_offset + 8); f.write(struct.pack(">Q", taille))
+            else:
+                f.write(struct.pack(">I", taille))
+        if index and (index_offset is None or index_offset >= L):
+            f.seek(0, 2)
+            f.write(index)                 # index situé APRÈS la partie reçue (cas fréquent : fin du fichier)
+
+
+@app.route("/api/apercu-debut", methods=["POST"])
+@login_required
+def api_apercu_debut():
+    """24/10/2026 : aperçu envoyé PENDANT le téléchargement complet (début de la vidéo + index), pour lancer tout de
+    suite la détection du coup d'envoi et des couleurs. Retourne un upload_id utilisable par /api/detect-teams."""
+    _refus = _preanalyse_refusee(current_user)
+    if _refus:
+        return jsonify({"error": "preanalyse_refusee", "message": _refus}), 403
+    debut = request.files.get("debut")
+    if not debut:
+        return jsonify({"error": "aperçu manquant"}), 400
+    index = request.files.get("index")
+    def _entier(nom):
+        try:
+            v = request.form.get(nom)
+            return int(v) if v not in (None, "") else None
+        except ValueError:
+            return None
+    tmp_dir = os.path.join(config.UPLOAD_FOLDER, "previews")
+    os.makedirs(tmp_dir, exist_ok=True)
+    uid = str(uuid.uuid4())[:8]
+    chemin = os.path.join(tmp_dir, f"prev_{uid}.mp4")
+    try:
+        debut.save(chemin)                 # enregistré directement sur le disque
+        _reconstituer_apercu(chemin, _entier("mdat_offset"), _entier("mdat_entete"), _entier("index_offset"),
+                             index.read() if index else b"")
+        duree_apercu = float(request.form.get("duree_apercu_s") or 0)
+        with open(os.path.join(tmp_dir, f"prev_{uid}.apercu.json"), "w", encoding="utf-8") as f:
+            json.dump({"duree_apercu_s": duree_apercu}, f)
+    except Exception as e:
+        return jsonify({"error": f"aperçu illisible : {e}"}), 400
+    return jsonify({"upload_id": uid})
+
+
 @app.route("/api/detect-teams/<upload_id>")
 @login_required
 def api_detect_teams(upload_id):
@@ -1061,7 +1139,22 @@ def api_detect_teams(upload_id):
     if not matches:
         return jsonify({"success": False, "error": "upload not found"}), 404
 
+    # 24/10/2026 : quota et limite journalière, comptée ICI (l'étape qui appelle Gemini)
+    _refus = _preanalyse_refusee(current_user, compter=True)
+    if _refus:
+        return jsonify({"success": False, "error": _refus,
+                        "kickoff": {"status": "ERROR", "kickoff_s": None, "reason": "preanalyse_refusee"}})
+    matches = [m for m in matches if not m.endswith(".apercu.json")]
+    if not matches:
+        return jsonify({"success": False, "error": "upload not found"}), 404
     video_path  = matches[0]
+    # 24/10/2026 : aperçu (début de la vidéo) — la recherche est limitée à sa durée
+    _apercu_info = None
+    try:
+        with open(os.path.join(tmp_dir, f"prev_{upload_id}.apercu.json"), encoding="utf-8") as _f_ap:
+            _apercu_info = json.load(_f_ap)
+    except Exception:
+        pass
     preview_dir = os.path.join(tmp_dir, f"preview_{upload_id}")
     os.makedirs(preview_dir, exist_ok=True)
     _prev_sport = request.args.get("sport", "football")
@@ -1078,6 +1171,8 @@ def api_detect_teams(upload_id):
         _cap_ko.release()
         _video_duration_s = _ko_total_frames / max(_ko_fps, 1)
         _max_search_s = min(_video_duration_s, (_half_duration_min / 3) * 2 * 60)
+        if _apercu_info and _apercu_info.get("duree_apercu_s"):
+            _max_search_s = min(_max_search_s, max(60.0, float(_apercu_info["duree_apercu_s"]) - 45.0))
 
         _kickoff_result = detect_kickoff_gemini_avec_retry(
             video_path, max_search_s=_max_search_s, max_retries=3,
@@ -1135,6 +1230,13 @@ def api_detect_teams(upload_id):
                 result[tid] = t
 
         result["kickoff"] = kickoff_info
+        # 24/10/2026 : l'aperçu (début de la vidéo) n'est plus utile une fois la détection faite
+        if _apercu_info:
+            for _f_sup in (video_path, os.path.join(tmp_dir, f"prev_{upload_id}.apercu.json")):
+                try:
+                    os.remove(_f_sup)
+                except OSError:
+                    pass
         return jsonify(result)
 
     except Exception as e:
@@ -1671,7 +1773,8 @@ def too_large(e):
 _COLONNES_AJOUTEES = {
     "analysis": {"celery_task_id": "VARCHAR(200)", "offerte": "BOOLEAN DEFAULT 0", "offerte_motif": "VARCHAR(200)"},
     "user":     {"code_parrain": "VARCHAR(16)", "parrain_id": "INTEGER", "credits_offerts": "INTEGER DEFAULT 0",
-                 "recompenses_parrainage": "INTEGER DEFAULT 0", "paiements_credites": "TEXT"},
+                 "recompenses_parrainage": "INTEGER DEFAULT 0", "paiements_credites": "TEXT",
+                 "preanalyses_date": "VARCHAR(10)", "preanalyses_n": "INTEGER DEFAULT 0"},
 }
 
 
