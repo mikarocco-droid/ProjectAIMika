@@ -32,8 +32,8 @@ const previewUploadId = document.getElementById("preview-upload-id");
 const SPORTS_CONFIG = {
     football: {
         icon: "⚽", hasGardien: true, hasNumero: true,
-        matchDesc:  "Highlights, rapport tactique, xG, top joueurs",
-        joueurDesc: "Rapport complet sur un joueur spécifique",
+        matchDesc:  "Buts, occasions, résumé vidéo et PDF",
+        joueurDesc: "Montage vidéo d'un joueur (moments où son numéro est lisible)",
         positions: [
             { group: "🥅 Gardien",  opts: ["gardien|Gardien"] },
             { group: "🛡️ Défense",  opts: ["defenseur|Défenseur", "lateraldroit|Latéral droit", "lateralgauche|Latéral gauche"] },
@@ -115,12 +115,15 @@ function startUploadWithProgress(file) {
                 // Stocker l'upload_id dans le form
                 if (previewUploadId) previewUploadId.value = uid;
 
-                // Afficher "Analyse en cours" pendant la détection
+                // Afficher l'écran d'analyse intermédiaire
                 const stepDetecting = document.getElementById("step-detecting");
                 if (stepDetecting) {
                     stepDetecting.style.display = "block";
                     stepDetecting.scrollIntoView({ behavior: "smooth", block: "start" });
                 }
+
+                // 24/10/2026 : bloc en DOUBLE supprimé (« const stepDetecting » déclarée deux fois : erreur de
+                // syntaxe qui empêchait le navigateur d'exécuter tout app.js)
 
                 function revealConfig() {
                     // Masquer detecting, révéler config
@@ -160,6 +163,7 @@ function showUploadError(msg) {
         progressWrap.innerHTML =
             `<div style="color:var(--red);font-size:0.82rem">❌ ${msg} — réessayez</div>`;
     }
+    _pickerLocked = false;
 }
 
 
@@ -169,46 +173,29 @@ function showUploadError(msg) {
 async function runTeamDetection(uploadId) {
     const prog = document.getElementById("detecting-progress");
 
-    // V5.2 (11/09/2026) : augmenté de 240s a 480s (8 min) suite a un cas
-    // reel observe ou le traitement serveur (KO1 avec plusieurs candidats
-    // rejetes + detection couleurs) a pris 267s - depassant l'ancien
-    // timeout de 245s (240+5s marge), causant un abort cote client AVANT
-    // que la reponse serveur (pourtant valide) n'arrive. Le frontend
-    // affichait alors le cadre "detecte automatiquement" VIDE (aucune
-    // donnee recue) plutot qu'une vraie erreur - bug diagnostique via les
-    // logs serveur (200 a 267s) vs "signal is aborted without reason"
-    // cote client.
-    const TIMEOUT_MS = 480000;  // 8 minutes (marge large sur le cas observé à 267s)
+    // Timeout de sécurité : max 90s, puis on révèle quand même le dashboard
+    const TIMEOUT_MS = 90000;
     let   timedOut   = false;
     const timeoutId  = setTimeout(() => {
         timedOut = true;
     }, TIMEOUT_MS);
 
-    // Messages de progression toutes les 20s (~10 messages sur 4 min)
+    // Messages de progression pendant l'attente
     const msgs = [
-        "Lancement du tracker vidéo…",
-        "Détection des joueurs (YOLO)…",
-        "Tracking et accumulation couleurs…",
-        "Analyse des profils joueurs stables…",
+        "Lecture des premières minutes de la vidéo…",
+        "Détection des joueurs en cours…",
+        "Analyse des couleurs de maillot…",
         "Calcul des clusters d'équipes…",
-        "Analyse en cours, merci de patienter…",
-        "Finalisation de la détection…",
     ];
     let msgIdx = 0;
     const msgInterval = setInterval(() => {
-        if (prog) {
-            prog.textContent = msgs[Math.min(msgIdx++, msgs.length - 1)];
+        if (prog && msgIdx < msgs.length) {
+            prog.textContent = msgs[msgIdx++];
         }
-    }, 20000);
+    }, 6000);
 
     try {
         if (prog) prog.textContent = msgs[0];
-        // Durée estimée affichée
-        const dur = document.getElementById("detecting-duration");
-        // V5.2 (11/09/2026) : estimation corrigee (etait "~1 min 30",
-        // trompeuse face a un cas reel observe a 267s/4min27s - le temps
-        // varie selon le nombre de candidats Q1 rejetes avant confirmation).
-        if (dur) dur.textContent = "~2 à 5 min";
 
         // Fetch avec AbortController pour pouvoir annuler
         const controller = new AbortController();
@@ -222,7 +209,7 @@ async function runTeamDetection(uploadId) {
                 setTimeout(() => {
                     controller.abort();
                     reject(new Error("timeout"));
-                }, TIMEOUT_MS + 5000)   // légère marge après TIMEOUT_MS
+                }, TIMEOUT_MS)
             )
         ]);
 
@@ -238,100 +225,26 @@ async function runTeamDetection(uploadId) {
             return;
         }
 
-        // Vérifier si les couleurs sont trop proches
-        const t0 = data["team_0"], t1 = data["team_1"];
-        const hex0 = t0?.color_hex, hex1 = t1?.color_hex;
-        const tooCLose = hex0 && hex1 && hex0 === hex1;
+        if (prog) prog.textContent = "✅ Couleurs détectées !";
 
-        if (prog) prog.textContent = tooCLose
-            ? "⚠️ Couleurs similaires — saisissez les noms manuellement"
-            : "✅ Couleurs détectées !";
-
-        // Mettre à jour les dots maillot + short + labels + placeholders
+        // Mettre à jour les dots + labels + placeholders
         for (const tid of [0, 1]) {
             const team = data["team_" + tid];
             if (!team) continue;
 
-            // Swatch maillot (grand cercle)
             const dot = document.getElementById(`team${tid}-color-dot`);
-            if (dot && team.color_hex) {
-                dot.style.background    = team.color_hex;
-                dot.style.borderColor   = team.color_hex;
-            }
+            if (dot && team.color_hex) dot.style.background = team.color_hex;
 
-            // Swatch short (petit carré en overlay)
-            const shortDot = document.getElementById(`team${tid}-short-dot`);
-            if (shortDot && team.short_hex) {
-                shortDot.style.background = team.short_hex;
-            }
-
-            // Bordure de la carte = couleur maillot
-            const card = document.getElementById(`team-card-${tid}`);
-            if (card && team.color_hex) {
-                card.style.borderColor = team.color_hex + "88"; // semi-transparent
-            }
-
-            // Label couleur — "bordeaux  · short bleu marine"
             const lbl = document.getElementById(`team${tid}-color-label`);
-            if (lbl && team.color_name) {
-                const parts = team.color_name.split("/");
-                const maillot = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
-                if (parts[1]) {
-                    lbl.innerHTML = maillot
-                        + `<span style="color:var(--gray);font-weight:400;font-size:0.78rem">
-                            &nbsp;· short ${parts[1]}</span>`;
-                } else {
-                    lbl.textContent = maillot;
-                }
-            }
+            if (lbl && team.color_name) lbl.textContent = "(" + team.color_name + ")";
 
-            // Placeholder champ nom
             const inp = document.getElementById(`team-name-input-${tid}`);
             if (inp && !inp.value && team.color_name)
-                inp.placeholder = "Ex: Équipe " + team.color_name.split("/")[0];
+                inp.placeholder = "Ex: Équipe " + team.color_name;
 
-            // V5.2 (11/09/2026) : champs cachés couleur, pour que
-            // pipeline.py puisse re-apparier team_name_X au bon team_id du
-            // tracker (voir analysis/team_color_matching.py — le clustering
-            // du tracker est INDEPENDANT de celui de cette pre-analyse,
-            // l'ordre 0/1 n'est pas garanti identique entre les deux).
-            // Seule la couleur MAILLOT est retenue (avant le "/" éventuel
-            // séparant maillot/short, cf. team.color_name).
-            // ⚠️ Pas de confiance par équipe exposée par
-            // _detect_teams_colors_autour_ko() actuellement (seulement un
-            // filtre interne high/medium par FRAME, pas par équipe finale) -
-            // champ confiance laissé vide plutôt que d'inventer une valeur;
-            // team_color_matching.py traite une confiance absente comme
-            // utilisable (seul "low" explicite désactive l'appariement).
-            const colorHidden = document.getElementById(`team-color-${tid}-input`);
-            if (colorHidden && team.color_name)
-                colorHidden.value = team.color_name.split("/")[0];
-            // NOTE : team-confidence-${tid}-input reste volontairement VIDE ici -
-            // _detect_teams_colors_autour_ko() (app.py) n'expose pas de
-            // confiance par équipe dans son résultat final (seulement en
-            // interne, par frame individuelle, pour filtrer quoi agréger) -
-            // rien à lire depuis `team` pour remplir ce champ. Confirmé sans
-            // impact : analysis/team_color_matching.py traite une confiance
-            // absente/vide comme utilisable (seul "low" explicite désactive
-            // l'appariement).
-
-            // Select équipe joueur
             const opt = document.getElementById(`team-side-opt-${tid}`);
             if (opt && team.color_name)
-                opt.textContent = (tid === 0 ? "🏠 " : "✈️ ") + "Équipe " + team.color_name.split("/")[0];
-
-
-        }
-
-        // ── COUP D'ENVOI — V5.2 ──────────────────────────────────────────
-        // AUTO_CONFIRMED : affiche le temps détecté, pré-remplit le champ
-        // caché transmis à /upload (évite une re-détection lors de
-        // l'analyse complète, cf. §12.17).
-        // NOT_FOUND/ERROR : bascule sur la saisie manuelle - jamais de
-        // valeur inventée, l'utilisateur peut toujours indiquer le KO
-        // lui-même, ou laisser vide pour analyser depuis le début.
-        if (data.kickoff) {
-            handleKickoffResult(data.kickoff);
+                opt.textContent = (tid === 0 ? "🏠 " : "✈️ ") + "Équipe " + team.color_name;
         }
 
         await new Promise(r => setTimeout(r, 800));
@@ -392,100 +305,6 @@ if (dropZone) {
         const file = fileInput.files[0];
         if (file) startUploadWithProgress(file);
     });
-}
-
-
-// ─────────────────────────────────────────
-// COUP D'ENVOI — AUTO / MANUEL
-// ─────────────────────────────────────────
-function handleKickoffResult(kickoff) {
-    const hiddenInput = document.getElementById("kickoff-s-input");
-    const autoDiv     = document.getElementById("kickoff-auto");
-    const manuelDiv    = document.getElementById("kickoff-manuel");
-    const autoTime    = document.getElementById("kickoff-auto-time");
-    const raisonSpan  = document.getElementById("kickoff-manuel-raison");
-
-    if (kickoff.status === "AUTO_CONFIRMED" && kickoff.kickoff_s != null) {
-        const mm = Math.floor(kickoff.kickoff_s / 60);
-        const ss = Math.round(kickoff.kickoff_s % 60);
-        if (autoTime) autoTime.textContent = `${mm}:${String(ss).padStart(2, "0")}`;
-        if (hiddenInput) hiddenInput.value = kickoff.kickoff_s;
-        if (autoDiv) autoDiv.style.display = "flex";
-        if (manuelDiv) manuelDiv.style.display = "none";
-    } else {
-        // NOT_FOUND ou ERROR : pas de valeur devinée, saisie manuelle proposée
-        if (raisonSpan) {
-            raisonSpan.textContent = kickoff.status === "ERROR"
-                ? "Détection automatique indisponible — indiquez le temps du coup d'envoi (minutes:secondes), ou laissez vide pour analyser depuis le début."
-                : "Coup d'envoi non trouvé automatiquement — indiquez-le (minutes:secondes), ou laissez vide pour analyser depuis le début.";
-        }
-        if (hiddenInput) hiddenInput.value = "";
-        if (autoDiv) autoDiv.style.display = "none";
-        if (manuelDiv) manuelDiv.style.display = "block";
-    }
-}
-
-function toggleKickoffManuel(forcerManuel) {
-    const autoDiv    = document.getElementById("kickoff-auto");
-    const manuelDiv  = document.getElementById("kickoff-manuel");
-    const raisonSpan = document.getElementById("kickoff-manuel-raison");
-    if (forcerManuel) {
-        if (raisonSpan) raisonSpan.textContent =
-            "Corrigez le temps du coup d'envoi (minutes:secondes), ou laissez vide pour analyser depuis le début.";
-        if (autoDiv) autoDiv.style.display = "none";
-        if (manuelDiv) manuelDiv.style.display = "block";
-    }
-}
-
-function updateKickoffFromManuel() {
-    const inp = document.getElementById("kickoff-manuel-mmss");
-    const hiddenInput = document.getElementById("kickoff-s-input");
-    if (!inp || !hiddenInput) return;
-    const val = (inp.value || "").trim();
-    if (!val) {
-        hiddenInput.value = "";  // vide = analyser depuis le début (comportement NOT_FOUND)
-        return;
-    }
-    const m = val.match(/^(\d+):([0-5]?\d)$/);
-    if (m) {
-        const secondes = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
-        hiddenInput.value = secondes;
-    }
-    // Si le format ne correspond pas encore (saisie en cours), on ne
-    // touche pas au champ caché - il garde sa dernière valeur valide.
-}
-
-
-// ─────────────────────────────────────────
-// SÉLECTION "MON ÉQUIPE"
-// ─────────────────────────────────────────
-function selectMyTeam(tid) {
-    // Stocker dans le champ hidden
-    const hidden = document.getElementById("user-team-id");
-    if (hidden) hidden.value = tid;
-
-    // Mettre à jour les boutons
-    for (const t of [0, 1]) {
-        const btn = document.getElementById(`my-team-btn-${t}`);
-        if (!btn) continue;
-        if (t === tid) {
-            btn.textContent  = "✅ Mon équipe";
-            btn.style.color  = "var(--cyan)";
-            btn.style.borderColor = "var(--cyan)";
-            btn.style.background  = "rgba(0,200,230,0.08)";
-        } else {
-            btn.textContent  = "🏠 C'est mon équipe";
-            btn.style.color  = "var(--gray)";
-            btn.style.borderColor = "var(--border)";
-            btn.style.background  = "transparent";
-        }
-    }
-
-    // Sync select équipe joueur
-    const opt = document.getElementById(`team-side-opt-${tid}`);
-    if (opt) opt.textContent = (opt.textContent || "").replace("🏠 ", "✅ ").replace("✈️ ", "✅ ");
-    const other = document.getElementById(`team-side-opt-${1 - tid}`);
-    if (other) other.textContent = (other.textContent || "").replace("✅ ", "✈️ ");
 }
 
 
@@ -553,14 +372,7 @@ modeMatch?.addEventListener("change",  toggleJoueurOptions);
 modeJoueur?.addEventListener("change", toggleJoueurOptions);
 sportSelect?.addEventListener("change", updateSport);
 numJoueur?.addEventListener("input",   updateSubmitBtn);
-positionEl?.addEventListener("change", () => {
-    updateSubmitBtn();
-    // Masquer/afficher numéro selon position
-    if (fieldNumero) {
-        const isGardien = positionEl?.value?.toLowerCase() === "gardien";
-        fieldNumero.style.display = isGardien ? "none" : "block";
-    }
-});
+positionEl?.addEventListener("change", updateSubmitBtn);
 
 
 // ─────────────────────────────────────────
@@ -579,9 +391,7 @@ function updateSubmitBtn() {
     }
 
     if (isJoueur) {
-        const isGardien = positionEl?.value?.toLowerCase() === "gardien";
-        // Gardien : numéro non requis (identifié par couleur)
-        const hasNum = isGardien || !cfg.hasNumero || numJoueur?.value;
+        const hasNum = !cfg.hasNumero || numJoueur?.value;
         const hasPos = positionEl?.value;
         if (!hasNum || !hasPos) {
             submitBtn.disabled    = true;
@@ -590,12 +400,8 @@ function updateSubmitBtn() {
         }
         submitBtn.disabled    = false;
         submitBtn.textContent = "Analyser le joueur " + cfg.icon;
-        // Masquer le champ numéro si gardien
-        if (fieldNumero) fieldNumero.style.display = isGardien ? "none" : "block";
         return;
     }
-    // Réafficher le champ numéro si on revient en mode match
-    if (fieldNumero) fieldNumero.style.display = "block";
 
     submitBtn.disabled    = false;
     submitBtn.textContent = "Lancer l'analyse " + cfg.icon;
@@ -608,18 +414,6 @@ function updateSubmitBtn() {
 const uploadForm = document.getElementById("upload-form");
 if (uploadForm) {
     uploadForm.addEventListener("submit", () => {
-        // V5.2 (11/09/2026) : si la pre-analyse a reussi (preview_upload_id
-        // rempli), le fichier est DEJA sur le serveur (uploads/previews/) -
-        // on vide le champ fichier natif juste avant la soumission finale
-        // pour eviter que le navigateur ne retransmette les memes octets
-        // une seconde fois. Le backend (/upload) reutilise alors le fichier
-        // de preview via preview_upload_id au lieu d'exiger un nouvel envoi
-        // (cf. app.py::upload()). Sans ce vidage, une video de plusieurs GB
-        // etait transferee ET stockee deux fois pour rien.
-        if (previewUploadId && previewUploadId.value && fileInput) {
-            fileInput.value = "";
-        }
-
         if (submitBtn) {
             submitBtn.disabled    = true;
             submitBtn.textContent = "Envoi en cours...";
