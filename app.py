@@ -562,13 +562,8 @@ def upload_complete(id):
     if a.status != "pending":
         return jsonify({"error": "déjà lancé"}), 400
 
-    thread = threading.Thread(
-        target = run_analysis,
-        args   = (a.id, None, a.sport, current_user.plan, a.mode, a.player_id),
-        kwargs = {"r2_key": a.r2_video_key},
-        daemon = True,
-    )
-    thread.start()
+    # 24/10/2026 : même chemin que l'envoi direct (Celery si joignable) — avant : fil d'exécution DANS le serveur web
+    _lancer_analyse(a.id, None, a.sport, current_user.plan, a.mode, a.player_id, r2_key=a.r2_video_key)
 
     return jsonify({"ok": True, "analysis_id": a.id})
 
@@ -748,42 +743,45 @@ def upload():
     db.session.add(analysis)
     db.session.commit()
 
-    if CELERY_AVAILABLE:
-        celery_run_analysis.apply_async(
-            kwargs = {
-                "video_path":      path,
-                "sport":           sport,
-                "output_dir":      os.path.join(config.OUTPUT_FOLDER, str(analysis.id)),
-                "mode":            mode,
-                "plan":            current_user.plan,
-                "analysis_id":     analysis.id,
-                "use_coarse_scan": True,
-                "team_names":      team_names or None,
-                "kickoff_s_precalcule": kickoff_s_precalcule,
-                "team_colors_gemini_precalcule": team_colors_gemini_precalcule,
-                "use_match_boundary_segments": use_match_boundary_segments,
-            },
-            task_id = f"analysis_{analysis.id}",
-            queue   = "pipeline",
-        )
-        analysis.celery_task_id = f"analysis_{analysis.id}"
-        db.session.commit()
-    else:
-        # Fallback : threading (mode dev sans Redis)
-        thread = threading.Thread(
-            target = run_analysis,
-            args   = (analysis.id, path, sport, current_user.plan,
-                      mode, player_id, None, team_names or None),
-            kwargs = {"player_position": player_position,
-                      "kickoff_s_precalcule": kickoff_s_precalcule,
-                      "team_colors_gemini_precalcule": team_colors_gemini_precalcule,
-                      "use_match_boundary_segments": use_match_boundary_segments},
-            daemon = True
-        )
-        thread.start()
+    # 24/10/2026 : chemin unique (Celery si joignable, sinon fil d'exécution), TOUS les paramètres transmis
+    _lancer_analyse(analysis.id, path, sport, current_user.plan, mode, player_id,
+                    team_names                    = team_names or None,
+                    player_position               = player_position,
+                    kickoff_s_precalcule          = kickoff_s_precalcule,
+                    team_colors_gemini_precalcule = team_colors_gemini_precalcule,
+                    use_match_boundary_segments   = use_match_boundary_segments)
 
     flash("Video uploadee — analyse en cours...")
     return redirect(url_for("dashboard"))
+
+
+# ─────────────────────────────────────────
+# LANCEMENT D'UNE ANALYSE (chemin unique)
+# ─────────────────────────────────────────
+def _lancer_analyse(analysis_id, video_path, sport, plan, mode="match", player_id=None, r2_key=None,
+                    team_names=None, player_position=None, kickoff_s_precalcule=None,
+                    team_colors_gemini_precalcule=None, use_match_boundary_segments=True):
+    """24/10/2026 : lance run_analysis() via Celery si la file est joignable, sinon dans un fil d'exécution.
+    Dans les deux cas, c'est la MÊME fonction complète qui tourne (statut, résultat, joueur, nettoyage, R2)."""
+    params = dict(mode=mode, player_id=player_id, r2_key=r2_key, team_names=team_names,
+                  player_position=player_position, kickoff_s_precalcule=kickoff_s_precalcule,
+                  team_colors_gemini_precalcule=team_colors_gemini_precalcule,
+                  use_match_boundary_segments=use_match_boundary_segments)
+    if CELERY_AVAILABLE:
+        try:
+            celery_run_analysis.apply_async(
+                kwargs  = dict(analysis_id=analysis_id, video_path=video_path, sport=sport, plan=plan, **params),
+                task_id = f"analysis_{analysis_id}",
+                queue   = "pipeline",
+            )
+            a = db.session.get(Analysis, analysis_id)
+            a.celery_task_id = f"analysis_{analysis_id}"
+            db.session.commit()
+            return "celery"
+        except Exception as e:
+            print(f"  ⚠️  Celery injoignable ({e}) — analyse #{analysis_id} lancée dans un fil d'exécution")
+    threading.Thread(target=run_analysis, args=(analysis_id, video_path, sport, plan), kwargs=params, daemon=True).start()
+    return "thread"
 
 
 # ─────────────────────────────────────────
@@ -815,6 +813,13 @@ def run_analysis(
         # le except ci-dessous stockait l'erreur sans la logger (corrige
         # egalement ci-dessous).
         from pipeline import run_pipeline
+        # 24/10/2026 : état d'accès à Gemini remis à zéro (une coupure d'une analyse précédente du même
+        # processus ne doit pas faire échouer celle-ci)
+        try:
+            from ai.gemini_validator import gemini_reinitialiser_etat
+            gemini_reinitialiser_etat()
+        except Exception as _e_gv:
+            print(f"  ⚠️  Remise à zéro de l'état Gemini impossible : {_e_gv}")
 
         # ── Mode R2 : télécharge la vidéo localement pour le pipeline ──
         if r2_key and config.R2_ENABLED:
@@ -844,6 +849,17 @@ def run_analysis(
             team_colors_gemini_precalcule = team_colors_gemini_precalcule,
             use_match_boundary_segments = use_match_boundary_segments,
         )
+
+        # 24/10/2026 : une analyse INCOMPLÈTE (questions au service d'IA abandonnées : crédit, quota) n'est pas
+        # livrée comme réussie. Levée AVANT la suppression de la vidéo, pour pouvoir relancer.
+        try:
+            from ai.gemini_validator import gemini_etat
+            _etat_gv = gemini_etat()
+        except Exception:
+            _etat_gv = {}
+        if _etat_gv.get("questions_abandonnees"):
+            raise RuntimeError(f"Analyse incomplète : {_etat_gv['questions_abandonnees']} question(s) au service d'IA "
+                               f"n'ont pas abouti (crédit ou quota) — à relancer")
 
         # ── Supprime la vidéo brute dès que l'analyse est terminée ──
         delete_raw_video(video_path, r2_key)

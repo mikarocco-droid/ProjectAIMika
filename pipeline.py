@@ -4547,6 +4547,27 @@ def run_pipeline(
     # ─────────────────────────────────────────
     # 12. AI SUMMARY (Claude)
     # ─────────────────────────────────────────
+    # 24/10/2026 : buts avec leur STATUT (confirmé / à vérifier) et décompte, pour l'affichage. L'équipe de chaque
+    # but n'est PAS connue (validation KO) : aucun score par équipe n'est inventé ; la couleur vue par la
+    # classification est transmise quand elle existe. Indicateur d'identification des joueurs : vrai seulement si
+    # la lecture des maillots a eu lieu (mode joueur) — sinon les statistiques individuelles ne sont pas affichées.
+    _buts_liste = []
+    for _e in (events_clean or []):
+        if _e.get("type") in ("goal", "score"):
+            _t = float(_e.get("time", 0) or 0)
+            _cls_b = _e.get("classification") or {}
+            _coul = _cls_b.get("team_color") if str(_cls_b.get("team_color") or "").upper() not in ("", "UNKNOWN", "NONE") else None
+            _buts_liste.append({"time": _t, "time_abs": _t + (float(_kickoff_offset or 0) if "_kickoff_offset" in dir() else 0.0),
+                                "status": _e.get("goal_status") or "confirmé",
+                                "team": _e.get("team") if _e.get("team") in (0, 1, "0", "1") else None,
+                                "team_color": _coul})
+    _buts_liste.sort(key=lambda b: b["time"])
+    if isinstance(summary, dict):
+        summary["goals_confirmes"]  = sum(1 for b in _buts_liste if b["status"] == "confirmé")
+        summary["goals_a_verifier"] = sum(1 for b in _buts_liste if b["status"] != "confirmé")
+        summary["score_par_equipe_disponible"] = bool(_buts_liste) and all(b["team"] is not None for b in _buts_liste)
+    _identification_joueurs = os.environ.get("SCOUTIA_LECTURE_MAILLOTS", "0").strip().lower() in ("1", "true", "oui", "on")
+
     print("Step 12 : AI summary...")
     ai_summary = None
     if audit_mode:
@@ -4578,6 +4599,8 @@ def run_pipeline(
             from export.pdf import generate_pdf
             pdf_path = generate_pdf(
                 result = {
+                    "buts":           _buts_liste,
+                    "identification_joueurs": _identification_joueurs,
                     "summary":        summary,
                     "stats":          stats,
                     "highlights":     highlights,
@@ -4633,6 +4656,8 @@ def run_pipeline(
         "bornes_mi_temps": ({k: v for k, v in _BORNES_MI_TEMPS.items() if k != "video"}
                             if _BORNES_MI_TEMPS.get("video") == video_path else None),
         "temps_forts":   _temps_forts_final,
+        "buts":          locals().get("_buts_liste", []),
+        "identification_joueurs": locals().get("_identification_joueurs", False),
         "summary":       summary,
         "coarse_stats":  coarse_stats,
         "events":        events_clean,

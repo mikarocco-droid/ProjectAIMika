@@ -1,9 +1,15 @@
 # tasks.py — Tâches Celery ScoutIA
-# Wrape run_pipeline() en tâche asynchrone
+#
+# 24/10/2026 : CHEMIN D'ANALYSE UNIQUE. La tâche délègue à app.run_analysis(), la fonction complète qui :
+#   - passe l'analyse en « processing », lance run_pipeline() avec TOUS les paramètres (dont le joueur demandé),
+#   - refuse une analyse incomplète (service d'IA indisponible, crédit ou quota) au lieu de la livrer,
+#   - enregistre le statut « done » et le résultat (result_json) dans la base,
+#   - supprime la vidéo brute et envoie les fichiers vers R2.
+# Avant : la tâche lançait run_pipeline() elle-même et n'écrivait RIEN dans la base (analyse « pending » pour
+# toujours, page de résultats vide, vidéo jamais supprimée) et ne transmettait pas le joueur demandé.
+# Pas de relance automatique : une erreur ne coûte plus jusqu'à trois analyses complètes (GPU et Gemini).
 
 import os
-import time
-import traceback
 from celery import Celery
 from celery.utils.log import get_task_logger
 
@@ -24,31 +30,21 @@ celery_app.conf.update(
     result_serializer      = "json",
     accept_content         = ["json"],
     task_track_started     = True,
-    task_acks_late         = True,          # requeue si worker crash
+    task_acks_late         = True,          # requeue si le worker meurt en cours de tâche
     worker_prefetch_multiplier = 1,         # 1 tâche à la fois par worker
     task_routes            = {
         "tasks.run_analysis": {"queue": "pipeline"},
     },
-    result_expires         = 86400,         # résultats conservés 24h
+    result_expires         = 86400,         # résultats Celery conservés 24h (le résultat utile est en base)
 )
 
 logger = get_task_logger(__name__)
 
 
-# ─────────────────────────────────────────
-# HELPERS PROGRESSION
-# ─────────────────────────────────────────
 def _update_state(task, step, total, message):
-    """Met à jour le statut visible depuis l'API."""
-    task.update_state(
-        state   = "PROGRESS",
-        meta    = {
-            "step":    step,
-            "total":   total,
-            "message": message,
-            "pct":     int(step / total * 100),
-        }
-    )
+    """Progression visible depuis /api/status."""
+    task.update_state(state="PROGRESS",
+                      meta={"step": step, "total": total, "message": message, "pct": int(step / total * 100)})
 
 
 # ─────────────────────────────────────────
@@ -57,93 +53,39 @@ def _update_state(task, step, total, message):
 @celery_app.task(
     bind             = True,
     name             = "tasks.run_analysis",
-    max_retries      = 2,
-    soft_time_limit  = 7200,   # 2h soft limit
-    time_limit       = 7800,   # 2h10 hard limit
+    max_retries      = 0,      # pas de relance automatique (voir l'en-tête)
+    soft_time_limit  = 7200,   # 2 h : l'exception est rattrapée par app.run_analysis -> statut « error »
+    time_limit       = 7800,   # 2 h 10 : arrêt forcé
 )
-def run_analysis(self, video_path, sport="football", output_dir=None,
-                 mode="match", plan="free", analysis_id=None,
-                 use_coarse_scan=True, team_names=None,
-                 kickoff_s_precalcule=None,
-                 team_colors_gemini_precalcule=None,
-                 use_match_boundary_segments=True):
-    """
-    Tâche Celery : lance run_pipeline() en arrière-plan.
-
-    Returns:
-        dict avec summary, highlights, pdf_path, reel_path
-    """
+def run_analysis(self, analysis_id, video_path=None, sport="football", plan="free",
+                 mode="match", player_id=None, r2_key=None, team_names=None,
+                 player_position=None, kickoff_s_precalcule=None,
+                 team_colors_gemini_precalcule=None, use_match_boundary_segments=True):
+    """Lance l'analyse complète d'app.py et renvoie son statut final (lu en base)."""
     task_id = self.request.id
-    logger.info(f"[{task_id}] START video={video_path} sport={sport}")
+    logger.info(f"[{task_id}] START analyse #{analysis_id} mode={mode} player_id={player_id}")
+    _update_state(self, 1, 10, "Analyse en cours...")
 
-    if output_dir is None:
-        output_dir = os.path.join("outputs", task_id)
-    os.makedirs(output_dir, exist_ok=True)
+    # Import différé : app.py importe ce module au chargement (import circulaire évité)
+    from app import run_analysis as _run_analysis_complete, app as _flask_app, db as _db, Analysis as _Analysis
 
-    try:
-        # ── Étape 1 : import pipeline ──────────────────────────────
-        _update_state(self, 1, 10, "Initialisation pipeline...")
-        from pipeline import run_pipeline
+    _run_analysis_complete(
+        analysis_id, video_path, sport, plan,
+        mode                          = mode,
+        player_id                     = player_id,
+        r2_key                        = r2_key,
+        team_names                    = team_names,
+        player_position               = player_position,
+        kickoff_s_precalcule          = kickoff_s_precalcule,
+        team_colors_gemini_precalcule = team_colors_gemini_precalcule,
+        use_match_boundary_segments   = use_match_boundary_segments,
+    )
 
-        # ── Étape 2 : lancement ────────────────────────────────────
-        _update_state(self, 2, 10, "Analyse en cours...")
-        t0 = time.time()
-
-        result = run_pipeline(
-            video_path      = video_path,
-            sport           = sport,
-            output_dir      = output_dir,
-            mode            = mode,
-            plan            = plan,
-            analysis_id     = analysis_id,
-            use_coarse_scan = use_coarse_scan,
-            team_names      = team_names,
-            kickoff_s_precalcule = kickoff_s_precalcule,
-            team_colors_gemini_precalcule = team_colors_gemini_precalcule,
-            use_match_boundary_segments = use_match_boundary_segments,
-        )
-
-        elapsed = time.time() - t0
-
-        # ── Étape 3 : préparer résultat sérialisable ───────────────
-        _update_state(self, 9, 10, "Finalisation...")
-
-        summary    = result.get("summary", {})
-        highlights = result.get("highlights", [])
-
-        # Nettoyer pour JSON (pas d'objets numpy etc.)
-        clean_result = {
-            "task_id":    task_id,
-            "status":     "SUCCESS",
-            "elapsed_s":  round(elapsed, 1),
-            "video_path": video_path,
-            "output_dir": output_dir,
-            "summary": {
-                "goals":     summary.get("goals", 0),
-                "shots":     summary.get("shots", 0),
-                "total_xg":  summary.get("total_xg", 0),
-                "players":   summary.get("players", 0),
-                "passes":    summary.get("passes", 0),
-                "possession": summary.get("possession", {}),
-                "mvp":       summary.get("mvp_jersey", "?"),
-                "formation": summary.get("formation", "?"),
-            },
-            "highlights_count": len(highlights),
-            "pdf_path":  result.get("pdf"),
-            "reel_path": result.get("reel"),
-            "coarse_stats": result.get("coarse_stats", {}),
-        }
-
-        logger.info(f"[{task_id}] DONE in {elapsed:.1f}s | "
-                    f"goals={clean_result['summary']['goals']} "
-                    f"shots={clean_result['summary']['shots']}")
-
-        return clean_result
-
-    except Exception as exc:
-        logger.error(f"[{task_id}] ERROR : {exc}\n{traceback.format_exc()}")
-        # Retry automatique (max 2 fois)
-        raise self.retry(exc=exc, countdown=30)
+    with _flask_app.app_context():
+        a = _db.session.get(_Analysis, analysis_id)
+        statut, message = (a.status, a.progress_msg) if a else ("introuvable", None)
+    logger.info(f"[{task_id}] FIN analyse #{analysis_id} : {statut} — {message}")
+    return {"analysis_id": analysis_id, "status": statut, "message": message}
 
 
 # ─────────────────────────────────────────
