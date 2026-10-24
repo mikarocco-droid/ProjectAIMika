@@ -462,6 +462,13 @@ def generate_pdf(result, output_path, sport="football"):
         if (h.get("main_type") or "").lower() in ("goal", "score")
     ]
     kpi_goals  = len(_highlights_goals) if _highlights_goals else _get_any(summary, "goals", "goal_count", "buts", default=0)
+    # 24/10/2026 : buts avec leur statut (pipeline) et identification des joueurs (vraie seulement en mode joueur).
+    # Sans identification : ni MVP, ni page « Joueurs », ni numéros (les pistes anonymes ne sont pas des joueurs).
+    _ident = bool(result.get("identification_joueurs", False))
+    _buts  = result.get("buts") or []
+    if _buts:
+        kpi_goals = sum(1 for b in _buts if b.get("status") == "confirmé")
+    kpi_a_verifier = sum(1 for b in _buts if b.get("status") != "confirmé")
     kpi_shots  = _get_any(summary, "shots",  "shots_on_target", "tirs_cadres", "shots_total", default=0)
     kpi_xg     = round(float(_get_any(summary, "total_xg", "xg", "xg_total", default=0.0)), 2)
     kpi_passes = _get_any(summary, "passes", "pass_count",  "n_passes", default=0)
@@ -499,11 +506,11 @@ def generate_pdf(result, output_path, sport="football"):
     # KPIs — FIX 1 : utilise kpi_* calculés avec fallbacks
     pdf.section_title("Match Summary")
     kpis = [
-        ("Goals",        kpi_goals,   ACCENT2),
+        ("Buts confirmes" if _buts else "Goals", kpi_goals, ACCENT2),
         ("Tirs cadres",  kpi_shots,   ACCENT),
         ("xG",           kpi_xg,      ACCENT3),
         ("Passes",       kpi_passes,  ACCENT4),
-        ("Joueurs",      kpi_players, GRAY_L),
+        ("Joueurs",      kpi_players, GRAY_L) if _ident else ("A verifier", kpi_a_verifier, GRAY_L),
     ]
     y0 = pdf.get_y()
     x  = 12
@@ -548,7 +555,7 @@ def generate_pdf(result, output_path, sport="football"):
     # MVP + Formation — FIX 5 : masquer formation si vide
     pdf.ln(3)
     yr = pdf.get_y()
-    if mvp_id:
+    if mvp_id and _ident:
         mvp_lbl = player_label(mvp_id, jersey_map)
         _mvp_team = None
         for _pid, _s in stats.items():
@@ -675,171 +682,172 @@ def generate_pdf(result, output_path, sport="football"):
             pdf.set_y(yh + 68)
             pdf.ln(2)
 
-    # ════════════════════════
-    # PAGE 3 — JOUEURS
-    # Enrichir deduped avec les vrais numeros depuis jersey_map + highlights
-    # ════════════════════════
-    # Enrichissement : remplacer les labels pid par vrais numeros jersey
-    _enriched = {}
-    for pid, s in deduped.items():
-        _jersey = jersey_map.get(str(s.get("_pid", pid))) or jersey_map.get(pid)
-        if _jersey:
+    if _ident:   # 24/10/2026 : page « Joueurs » seulement si les joueurs sont identifiés
+        # ════════════════════════
+        # PAGE 3 — JOUEURS
+        # Enrichir deduped avec les vrais numeros depuis jersey_map + highlights
+        # ════════════════════════
+        # Enrichissement : remplacer les labels pid par vrais numeros jersey
+        _enriched = {}
+        for pid, s in deduped.items():
+            _jersey = jersey_map.get(str(s.get("_pid", pid))) or jersey_map.get(pid)
+            if _jersey:
+                _lbl = f"#{_jersey}"
+            else:
+                _lbl = pid  # fallback sur le label existant
+            # Equipe du joueur
+            _team_id = s.get("team")
+            _team_name = team_display(_team_id, teams_data) if _team_id is not None else ""
+            _display_lbl = f"{_lbl} ({clean(_team_name)})" if _team_name else _lbl
+            _enriched[_display_lbl] = s
+
+        # Reconstruire depuis highlights si deduped insuffisant (< 3 joueurs avec tirs/buts)
+        _hl_players = {}
+        for h in highlights:
+            _pid = str(h.get("player") or "")
+            if not _pid:
+                continue
+            _jersey = jersey_map.get(_pid)
+            if not _jersey:
+                continue
             _lbl = f"#{_jersey}"
-        else:
-            _lbl = pid  # fallback sur le label existant
-        # Equipe du joueur
-        _team_id = s.get("team")
-        _team_name = team_display(_team_id, teams_data) if _team_id is not None else ""
-        _display_lbl = f"{_lbl} ({clean(_team_name)})" if _team_name else _lbl
-        _enriched[_display_lbl] = s
+            _team_id = h.get("team")
+            _team_name = team_display(_team_id, teams_data) if _team_id is not None else ""
+            _display_lbl = f"{_lbl} ({clean(_team_name)})" if _team_name else _lbl
+            if _display_lbl not in _hl_players:
+                _hl_players[_display_lbl] = {"tirs": 0, "buts": 0, "xg_total": 0.0,
+                                              "touches": 0, "key_passes": 0,
+                                              "_pid": _pid, "team": _team_id}
+            if h.get("main_type") == "shot":
+                _hl_players[_display_lbl]["tirs"] += 1
+                _hl_players[_display_lbl]["xg_total"] += float(h.get("xg", 0) or 0)
+            elif h.get("main_type") in ("goal", "score"):
+                _hl_players[_display_lbl]["buts"] += 1
+                _hl_players[_display_lbl]["xg_total"] += float(h.get("xg", 0) or 0)
+        # Fusionner avec enriched
+        for _lbl, _hs in _hl_players.items():
+            if _lbl in _enriched:
+                # Mettre à jour tirs/buts/xG depuis highlights (plus fiable)
+                _enriched[_lbl]["tirs"]     = _hs["tirs"]
+                _enriched[_lbl]["buts"]     = max(_enriched[_lbl].get("buts", 0), _hs["buts"])
+                _enriched[_lbl]["xg_total"] = round(_hs["xg_total"], 3)
+            else:
+                _enriched[_lbl] = _hs
 
-    # Reconstruire depuis highlights si deduped insuffisant (< 3 joueurs avec tirs/buts)
-    _hl_players = {}
-    for h in highlights:
-        _pid = str(h.get("player") or "")
-        if not _pid:
-            continue
-        _jersey = jersey_map.get(_pid)
-        if not _jersey:
-            continue
-        _lbl = f"#{_jersey}"
-        _team_id = h.get("team")
-        _team_name = team_display(_team_id, teams_data) if _team_id is not None else ""
-        _display_lbl = f"{_lbl} ({clean(_team_name)})" if _team_name else _lbl
-        if _display_lbl not in _hl_players:
-            _hl_players[_display_lbl] = {"tirs": 0, "buts": 0, "xg_total": 0.0,
-                                          "touches": 0, "key_passes": 0,
-                                          "_pid": _pid, "team": _team_id}
-        if h.get("main_type") == "shot":
-            _hl_players[_display_lbl]["tirs"] += 1
-            _hl_players[_display_lbl]["xg_total"] += float(h.get("xg", 0) or 0)
-        elif h.get("main_type") in ("goal", "score"):
-            _hl_players[_display_lbl]["buts"] += 1
-            _hl_players[_display_lbl]["xg_total"] += float(h.get("xg", 0) or 0)
-    # Fusionner avec enriched
-    for _lbl, _hs in _hl_players.items():
-        if _lbl in _enriched:
-            # Mettre à jour tirs/buts/xG depuis highlights (plus fiable)
-            _enriched[_lbl]["tirs"]     = _hs["tirs"]
-            _enriched[_lbl]["buts"]     = max(_enriched[_lbl].get("buts", 0), _hs["buts"])
-            _enriched[_lbl]["xg_total"] = round(_hs["xg_total"], 3)
-        else:
-            _enriched[_lbl] = _hs
+        if _enriched or deduped:
+            pdf.add_page()
+            pdf.section_title("Performances Joueurs")
 
-    if _enriched or deduped:
-        pdf.add_page()
-        pdf.section_title("Performances Joueurs")
+            _use = _enriched if _enriched else deduped
+            field = {l: s for l, s in _use.items() if not s.get("is_goalkeeper")}
+            gks   = {l: s for l, s in _use.items() if s.get("is_goalkeeper")}
+            max_xg = max((s.get("xg_total", 0) for s in field.values()), default=1) or 1
 
-        _use = _enriched if _enriched else deduped
-        field = {l: s for l, s in _use.items() if not s.get("is_goalkeeper")}
-        gks   = {l: s for l, s in _use.items() if s.get("is_goalkeeper")}
-        max_xg = max((s.get("xg_total", 0) for s in field.values()), default=1) or 1
+            headers = ["Joueur", "Touch.", "K.Pass", "Tirs", "Buts", "xG", "xA", "Note"]
+            widths  = [28, 18, 16, 14, 14, 16, 16, 16]
+            pdf.table_row(headers, widths, is_header=True)
 
-        headers = ["Joueur", "Touch.", "K.Pass", "Tirs", "Buts", "xG", "xA", "Note"]
-        widths  = [28, 18, 16, 14, 14, 16, 16, 16]
-        pdf.table_row(headers, widths, is_header=True)
+            sorted_field = sorted(
+                field.items(),
+                key=lambda x: x[1].get("touches", 0), reverse=True
+            )[:20]
 
-        sorted_field = sorted(
-            field.items(),
-            key=lambda x: x[1].get("touches", 0), reverse=True
-        )[:20]
+            xG_col_x = sum(widths[:6]) + 12
 
-        xG_col_x = sum(widths[:6]) + 12
-
-        for idx, (label, s) in enumerate(sorted_field):
-            pid    = s.get("_pid")
-            rating = "-"
-            if pid:
-                r = ratings.get(str(pid), {}) or ratings.get(pid, {})
-                if r and r.get("rating"):
-                    rating = round(float(r["rating"]), 1)
-
-            xg_val = round(s.get("xg_total", 0), 2)
-            xa_val = round(s.get("xa_total", 0), 2)
-            buts   = s.get("buts", 0)
-            kp     = s.get("key_passes", 0)
-
-            row = [
-                label,
-                s.get("touches", 0),
-                kp if kp > 0 else "",
-                s.get("tirs",    0) if s.get("tirs", 0) > 0 else "",
-                buts   if buts   > 0 else "",
-                xg_val if xg_val > 0 else "",
-                xa_val if xa_val > 0 else "",
-                rating,
-            ]
-            pdf.table_row(row, widths, alt=(idx % 2 == 0), highlight=(buts > 0))
-
-            if xg_val > 0:
-                ybar = pdf.get_y() - 1
-                pdf.progress_bar(xG_col_x, ybar, 16,
-                                 xg_val / float(max_xg), ACCENT3, h=2)
-
-        # Gardiens
-        if gks:
-            pdf.ln(5)
-            pdf.set_font("Helvetica", "B", 7)
-            pdf.set_text_color(*ACCENT)
-            pdf.cell(0, 5, "GOALKEEPERS",
-                     new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-            headers_gk = ["Joueur", "Touches", "Arrets", "Note"]
-            widths_gk  = [32, 30, 30, 30]
-            pdf.table_row(headers_gk, widths_gk, is_header=True)
-            for idx, (label, s) in enumerate(gks.items()):
+            for idx, (label, s) in enumerate(sorted_field):
                 pid    = s.get("_pid")
                 rating = "-"
                 if pid:
                     r = ratings.get(str(pid), {}) or ratings.get(pid, {})
                     if r and r.get("rating"):
                         rating = round(float(r["rating"]), 1)
-                pdf.table_row(
-                    [label, s.get("touches", 0), s.get("arrets", 0), rating],
-                    widths_gk, alt=(idx % 2 == 0)
-                )
 
-        # Top Performers
-        pdf.ln(5)
-        pdf.section_title("Top Performers")
-        yb = pdf.get_y()
+                xg_val = round(s.get("xg_total", 0), 2)
+                xa_val = round(s.get("xa_total", 0), 2)
+                buts   = s.get("buts", 0)
+                kp     = s.get("key_passes", 0)
 
-        # FIX 4 — fallback sur plusieurs clés pour top buteur
-        def top_by(*keys):
-            best_label, best_val = "-", 0
-            for l, s in field.items():
-                val = 0
-                for k in keys:
-                    v = s.get(k, 0)
-                    if v:
-                        val = v
-                        break
-                if val > best_val:
-                    best_val  = val
-                    best_label = l
-            return best_label if best_val > 0 else "-"
+                row = [
+                    label,
+                    s.get("touches", 0),
+                    kp if kp > 0 else "",
+                    s.get("tirs",    0) if s.get("tirs", 0) > 0 else "",
+                    buts   if buts   > 0 else "",
+                    xg_val if xg_val > 0 else "",
+                    xa_val if xa_val > 0 else "",
+                    rating,
+                ]
+                pdf.table_row(row, widths, alt=(idx % 2 == 0), highlight=(buts > 0))
 
-        _top_xg = top_by("xg_total", "xg")
-        badges = [
-            ("Top Buteur",   top_by("buts", "goals", "score"),  ACCENT2),
-            ("Top xG",       _top_xg if kpi_xg > 0 else "-",    ACCENT3),
-            ("Top Assists",  top_by("xa_total", "xa", "key_passes"), ACCENT4),
-            ("Top Interc.",  top_by("interceptions"),             ACCENT),
-        ]
-        bx = 12
-        for blabel, bval, bcolor in badges:
-            pdf.card_bg(bx, yb, 43, 18)
-            pdf.set_fill_color(*bcolor)
-            pdf.rect(bx, yb, 43, 2, "F")
-            pdf.set_font("Helvetica", "", 6)
-            pdf.set_text_color(*GRAY_L)
-            pdf.set_xy(bx, yb + 3)
-            pdf.cell(43, 4, clean(blabel), align="C")
-            pdf.set_font("Helvetica", "B", 9)
-            pdf.set_text_color(*bcolor)
-            pdf.set_xy(bx, yb + 8)
-            pdf.cell(43, 7, clean(str(bval)), align="C")
-            bx += 46
-        pdf.set_y(yb + 22)
+                if xg_val > 0:
+                    ybar = pdf.get_y() - 1
+                    pdf.progress_bar(xG_col_x, ybar, 16,
+                                     xg_val / float(max_xg), ACCENT3, h=2)
+
+            # Gardiens
+            if gks:
+                pdf.ln(5)
+                pdf.set_font("Helvetica", "B", 7)
+                pdf.set_text_color(*ACCENT)
+                pdf.cell(0, 5, "GOALKEEPERS",
+                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                headers_gk = ["Joueur", "Touches", "Arrets", "Note"]
+                widths_gk  = [32, 30, 30, 30]
+                pdf.table_row(headers_gk, widths_gk, is_header=True)
+                for idx, (label, s) in enumerate(gks.items()):
+                    pid    = s.get("_pid")
+                    rating = "-"
+                    if pid:
+                        r = ratings.get(str(pid), {}) or ratings.get(pid, {})
+                        if r and r.get("rating"):
+                            rating = round(float(r["rating"]), 1)
+                    pdf.table_row(
+                        [label, s.get("touches", 0), s.get("arrets", 0), rating],
+                        widths_gk, alt=(idx % 2 == 0)
+                    )
+
+            # Top Performers
+            pdf.ln(5)
+            pdf.section_title("Top Performers")
+            yb = pdf.get_y()
+
+            # FIX 4 — fallback sur plusieurs clés pour top buteur
+            def top_by(*keys):
+                best_label, best_val = "-", 0
+                for l, s in field.items():
+                    val = 0
+                    for k in keys:
+                        v = s.get(k, 0)
+                        if v:
+                            val = v
+                            break
+                    if val > best_val:
+                        best_val  = val
+                        best_label = l
+                return best_label if best_val > 0 else "-"
+
+            _top_xg = top_by("xg_total", "xg")
+            badges = [
+                ("Top Buteur",   top_by("buts", "goals", "score"),  ACCENT2),
+                ("Top xG",       _top_xg if kpi_xg > 0 else "-",    ACCENT3),
+                ("Top Assists",  top_by("xa_total", "xa", "key_passes"), ACCENT4),
+                ("Top Interc.",  top_by("interceptions"),             ACCENT),
+            ]
+            bx = 12
+            for blabel, bval, bcolor in badges:
+                pdf.card_bg(bx, yb, 43, 18)
+                pdf.set_fill_color(*bcolor)
+                pdf.rect(bx, yb, 43, 2, "F")
+                pdf.set_font("Helvetica", "", 6)
+                pdf.set_text_color(*GRAY_L)
+                pdf.set_xy(bx, yb + 3)
+                pdf.cell(43, 4, clean(blabel), align="C")
+                pdf.set_font("Helvetica", "B", 9)
+                pdf.set_text_color(*bcolor)
+                pdf.set_xy(bx, yb + 8)
+                pdf.cell(43, 7, clean(str(bval)), align="C")
+                bx += 46
+            pdf.set_y(yb + 22)
 
     # ════════════════════════
     # PAGE 4 — HIGHLIGHTS
@@ -893,7 +901,7 @@ def generate_pdf(result, output_path, sport="football"):
             xg_val  = h.get("xg", 0) or 0
             score   = h.get("score", 0)
             pid     = h.get("player")
-            p_label = player_label(pid, jersey_map) if pid else "?"
+            p_label = (player_label(pid, jersey_map) if pid else "?") if _ident else ""
             reason  = h.get("reason", "")
             is_goal = htype in ("goal", "score")
             color   = ACCENT2 if is_goal else ACCENT
@@ -980,6 +988,11 @@ def generate_pdf(result, output_path, sport="football"):
                     _goal_lines.append(f"{_mm} — {_plbl} : {_desc}.")
                 else:
                     _goal_lines.append(f"{_mm} — But de {_plbl}.")
+
+        # 24/10/2026 : buts du récit = liste du pipeline (heure de match + statut), pas les temps forts (mal datés)
+        if _buts:
+            _goal_lines = [f"{int(b.get('time', 0) // 60)}':{int(b.get('time', 0) % 60):02d} — "
+                           + ("but confirmé." if b.get("status") == "confirmé" else "but à vérifier.") for b in _buts]
 
         # Ajouter les tirs importants
         _shot_lines = []
