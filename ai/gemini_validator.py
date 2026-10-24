@@ -177,6 +177,20 @@ _LENT_JUSQUA, _PAUSE_JUSQUA, _N_PAUSES, _N_ABANDONS_TOTAL = 0.0, 0.0, 0, 0
 _VERROU_LENT = _thr_gem.Lock()
 
 
+def gemini_reinitialiser_etat():
+    """24/10/2026 : remet à zéro l'état d'accès à Gemini (coupure, abandons, pauses, mode lent) au DÉBUT de chaque
+    analyse. Un processus (worker Celery) enchaîne les analyses : sans cela, une coupure (crédits épuisés) d'une
+    analyse ferait échouer toutes les suivantes du même processus."""
+    global _quota_exhausted, _ABANDONS_CONSECUTIFS, _N_ABANDONS_TOTAL, _N_PAUSES, _PAUSE_JUSQUA, _LENT_JUSQUA
+    with _STATE_LOCK:
+        _quota_exhausted = False
+        _ABANDONS_CONSECUTIFS = 0
+        _N_ABANDONS_TOTAL = 0
+        _N_PAUSES = 0
+        _PAUSE_JUSQUA = 0.0
+        _LENT_JUSQUA = 0.0
+
+
 def gemini_etat():
     """État de l'accès à Gemini pour ce run : questions abandonnées, pauses, coupure."""
     return {"questions_abandonnees": _N_ABANDONS_TOTAL, "pauses": _N_PAUSES, "gemini_coupe": _quota_exhausted}
