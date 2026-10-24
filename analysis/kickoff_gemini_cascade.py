@@ -665,12 +665,17 @@ def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, mod
 
     fonction_q2 : V5.2, defaut=_q2_une_lecture (comportement inchange)."""
     t_bas, t_haut = premier_oui, t_verif
+    n_ok, n_err = 0, 0      # 24/10/2026 : vérifications abouties / en erreur
     for i_pas, pas in enumerate(PALIERS_RECHERCHE_FINE):
         tt = t_bas + pas
         dernier_non = t_bas
         while tt < t_haut:
             d = fonction_q2(client, video_path, tt, tmp_dir, etat, model_name=model_name)
             print(f"    [FINE pas={pas}s] t={tt:.0f}s : {'OUI' if d else 'NON' if d is not None else 'ERREUR'}")
+            if d is None:
+                n_err += 1
+            else:
+                n_ok += 1
             if d:
                 t_haut = tt
                 t_bas = dernier_non
@@ -679,6 +684,12 @@ def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, mod
             tt += pas
         else:
             t_bas = dernier_non
+    # 24/10/2026 : contrat « jamais de timestamp sur une recherche incertaine » — si AUCUNE vérification n'a
+    # abouti (extractions impossibles, Gemini indisponible), t_haut n'est que la borne haute de la recherche :
+    # elle ne doit pas être présentée comme le coup d'envoi (observé : 330 s « confirmé » sans aucune image lue).
+    if n_err > 0 and n_ok == 0:
+        print(f"    [FINE] aucune vérification aboutie ({n_err} erreur(s)) : coup d'envoi NON déterminé")
+        return None
     return t_haut
 
 
@@ -751,6 +762,8 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
             decision_q2_t0 = _voter_q2(client, video_path, t_verif_precoce_t0, tmp_dir, etat, model_name=model_name, fonction_q2=fonction_q2)
             if decision_q2_t0:
                 kickoff_s_t0 = _recherche_fine(client, video_path, tmp_dir, etat, premier_oui_t0, t_verif_precoce_t0, model_name=model_name, fonction_q2=fonction_q2)
+                if kickoff_s_t0 is None:
+                    return {"status": "ERROR", "kickoff_s": None, "reason": "FINE_SEARCH_FAILED"}
                 print(f"  [KICKOFF_GEMINI] KO détecté à t={kickoff_s_t0:.0f}s (via vérification t=0)")
                 return {"status": "AUTO_CONFIRMED", "kickoff_s": float(kickoff_s_t0), "reason": None}
             else:
@@ -823,6 +836,8 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
 
         print(f"  [KICKOFF_GEMINI] confirmé, recherche fine dans [{premier_oui:.0f}s, {t_verif:.0f}s]...")
         kickoff_s = _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, model_name=model_name, fonction_q2=fonction_q2)
+        if kickoff_s is None:
+            return {"status": "ERROR", "kickoff_s": None, "reason": "FINE_SEARCH_FAILED"}
         print(f"  [KICKOFF_GEMINI] KO détecté à t={kickoff_s:.0f}s")
         return {"status": "AUTO_CONFIRMED", "kickoff_s": float(kickoff_s), "reason": None}
 
@@ -832,7 +847,7 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
 def detect_kickoff_gemini(video_path, max_search_s,
                             max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
                             max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT,
-                            tmp_dir="/tmp", t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, delai_verif_q2_precoce=30, fonction_q2=_q2_une_lecture, pas_scan_fin=None):
+                            tmp_dir=None, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, delai_verif_q2_precoce=30, fonction_q2=_q2_une_lecture, pas_scan_fin=None):
     """
     Détecte le premier coup d'envoi d'un match par cascade Gemini
     (Q1 scan 60s -> Q2 confirmation -> recherche fine 15/5/1s).
@@ -884,6 +899,11 @@ def detect_kickoff_gemini(video_path, max_search_s,
         return {"status": "ERROR", "kickoff_s": None, "reason": f"CLIENT_INIT_FAILED: {e}",
                 "n_appels_gemini": 0, "duree_recherche_s": 0.0}
 
+    if not tmp_dir:
+        # 24/10/2026 : dossier temporaire du système (« /tmp » n'existe pas sous Windows : toutes les
+        # extractions d'images échouaient)
+        import tempfile as _tempfile
+        tmp_dir = os.path.join(_tempfile.gettempdir(), "scoutia_kickoff")
     os.makedirs(tmp_dir, exist_ok=True)
     etat = _EtatRecherche(max_gemini_calls, max_wallclock_s)
 
