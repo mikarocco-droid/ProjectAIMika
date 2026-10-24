@@ -87,21 +87,15 @@
   <!-- KPIs -->
   <div class="kpi-row">
     <div class="kpi-card">
+      {% if result.summary.goals_confirmes is defined %}
+      <div class="kpi-value">{{ result.summary.goals_confirmes }}</div>
+      <div class="kpi-label">Buts confirmés{% if result.summary.goals_a_verifier %} (+{{ result.summary.goals_a_verifier }} à vérifier){% endif %}</div>
+      {% else %}
       <div class="kpi-value">{{ result.summary.goals }}</div>
       <div class="kpi-label">Buts</div>
+      {% endif %}
     </div>
-    <div class="kpi-card">
-      <div class="kpi-value">{{ result.summary.shots }}</div>
-      <div class="kpi-label">Tirs</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-value">{{ result.summary.total_xg | round(2) }}</div>
-      <div class="kpi-label">xG total</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-value">{{ result.summary.passes }}</div>
-      <div class="kpi-label">Passes</div>
-    </div>
+    {# 24/10/2026 : tirs, xG et passes retirés — jamais validés (passes gonflées, xG fictif de 0,5 par but) #}
     {% if result.identification_joueurs %}
     <div class="kpi-card">
       <div class="kpi-value">{{ result.summary.players }}</div>
@@ -149,7 +143,8 @@
         {% for b in result.buts %}
         <div class="highlight-item">
           <span class="hl-num">{{ loop.index }}</span>
-          <span class="hl-time">{{ "%02d:%02d" | format((b.time / 60) | int, (b.time % 60) | int) }}</span>
+          <span class="hl-time">{{ "%02d'%02d" | format((b.time / 60) | int, (b.time % 60) | int) }}</span>
+          {% if b.time_abs is defined %}<span class="hl-xg">vidéo {{ "%02d:%02d" | format((b.time_abs / 60) | int, (b.time_abs % 60) | int) }}</span>{% endif %}
           {% if b.status == 'confirmé' %}
             <span class="hl-badge goal">but confirmé</span>
           {% else %}
@@ -164,6 +159,29 @@
         « À vérifier » : action détectée comme un but probable, sans confirmation complète. Un coup d'œil sur la vidéo permet de trancher.
       </p>
       {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Occasions (temps forts de la classification, précision mesurée ~95 %) — 24/10/2026 -->
+  {% if result.temps_forts %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">🎯</span>
+      <span class="result-section-title">Occasions ({{ result.temps_forts | length }})</span>
+    </div>
+    <div class="result-section-body">
+      <div class="highlights-grid">
+        {% for o in result.temps_forts %}
+        {% set tm = (o.time_abs or 0) - (result.kickoff_offset or 0) %}
+        <div class="highlight-item">
+          <span class="hl-num">{{ loop.index }}</span>
+          <span class="hl-time">{{ "%02d'%02d" | format((tm / 60) | int, (tm % 60) | int) }}</span>
+          <span class="hl-xg">vidéo {{ "%02d:%02d" | format(((o.time_abs or 0) / 60) | int, ((o.time_abs or 0) % 60) | int) }}</span>
+          <span class="hl-badge other">{{ (o.label or 'Occasion') | lower }}</span>
+        </div>
+        {% endfor %}
+      </div>
     </div>
   </div>
   {% endif %}
@@ -217,7 +235,7 @@
   <div class="result-section">
     <div class="result-section-header">
       <span class="result-section-icon">⚡</span>
-      <span class="result-section-title">Highlights ({{ result.highlights | length }})</span>
+      <span class="result-section-title">Highlights ({{ result.highlights | length }}) — heures dans la vidéo</span>
     </div>
     <div class="result-section-body">
       <div class="highlights-grid">
@@ -227,8 +245,14 @@
         {% set htype = h.main_type | default('shot') %}
         <div class="highlight-item">
           <span class="hl-num">{{ loop.index }}</span>
+          {% set st = namespace(v='') %}
+          {% if htype in ['goal','score'] %}
+            {% for b in (result.buts or []) %}
+              {% if b.time_abs is defined and 0 <= (b.time_abs - h.time_start) <= 90 %}{% set st.v = b.status %}{% endif %}
+            {% endfor %}
+          {% endif %}
           <span class="hl-badge {{ 'goal' if htype in ['goal','score'] else 'shot' if htype == 'shot' else 'other' }}">
-            {{ htype }}
+            {% if htype in ['goal','score'] %}{{ 'but' if st.v == 'confirmé' else 'but ?' }}{% else %}{{ htype }}{% endif %}
           </span>
           <span class="hl-time">{{ "%02d:%02d" | format(mins_s, secs_s) }}</span>
           {% if result.identification_joueurs %}
@@ -242,10 +266,8 @@
             {% else %}?{% endif %}
           </span>
           {% endif %}
-          {% if h.xg and h.xg > 0 %}
-            <span class="hl-xg">xG {{ h.xg | round(2) }}</span>
-          {% endif %}
-          <span class="hl-score">{{ h.score | default(0) | round(1) }}</span>
+          {# xG retiré (24/10/2026) : valeur fictive pour les buts de la validation KO #}
+          {# note d'importance retirée (24/10/2026) : non validée, incompréhensible pour le client #}
         </div>
         {% endfor %}
       </div>
@@ -304,7 +326,8 @@
   {% endif %}
 
   <!-- Formation & Tactique -->
-  {% if result.formation or result.tactical %}
+  {# 24/10/2026 : formation et texte de l'IA masqués (données non validées) #}
+  {% if false and (result.formation or result.tactical) %}
   <div class="result-section">
     <div class="result-section-header">
       <span class="result-section-icon">🧠</span>
@@ -329,7 +352,8 @@
   {% endif %}
 
   <!-- Heatmaps -->
-  {% if result.heatmaps %}
+  {# 24/10/2026 : cartes de chaleur masquées (coordonnées d'image d'une caméra mobile, non validées) #}
+  {% if false and result.heatmaps %}
   <div class="result-section">
     <div class="result-section-header">
       <span class="result-section-icon">🔥</span>
@@ -381,19 +405,18 @@
         <!-- CTA Club -->
         <div style="background:var(--surface);border:1px solid rgba(0,200,230,0.3);border-radius:14px;padding:1.25rem">
           <p style="font-family:var(--font-head);font-size:0.95rem;font-weight:700;color:var(--white);margin-bottom:0.75rem">
-            👥 Tu joues en équipe ?
+            👥 Tu analyses chaque match ?
           </p>
           <ul style="list-style:none;font-size:0.85rem;color:var(--gray);line-height:1.9;margin-bottom:1rem">
             <li>⚽ Highlights pour toute l'équipe</li>
-            <li>📊 Statistiques collectives automatiques</li>
-            <li>📄 PDF prêt pour coach / recruteurs</li>
-            <li>🏆 Suivi complet de la saison</li>
+            <li>🎯 Buts et occasions de chaque match</li>
+            <li>📄 PDF prêt pour le coach</li>
           </ul>
           <a href="/pricing" class="btn-primary" style="width:100%;justify-content:center;background:var(--cyan);color:var(--bg)">
-            Activer le mode Club — 99€/mois →
+            Voir les formules →
           </a>
           <p style="font-size:0.72rem;color:var(--gray-dim);text-align:center;margin-top:0.5rem">
-            <a href="/pricing" style="color:var(--cyan);text-decoration:none">🎁 Invite 3 coéquipiers → 1 analyse offerte</a>
+            <a href="/dashboard" style="color:var(--cyan);text-decoration:none">🎁 Invite 3 coéquipiers → 1 analyse offerte</a>
           </p>
         </div>
 

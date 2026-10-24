@@ -50,6 +50,10 @@
       <div class="kpi-label">Erreurs</div>
     </div>
     <div class="kpi-card">
+      <div class="kpi-value" style="color:var(--yellow)">{{ stats.offertes }}</div>
+      <div class="kpi-label">Offertes</div>
+    </div>
+    <div class="kpi-card">
       <div class="kpi-value" style="color:var(--gray)">{{ stats.plan_free }}</div>
       <div class="kpi-label">Free</div>
     </div>
@@ -76,7 +80,7 @@
         <th>Email</th>
         <th>Plan</th>
         <th>Admin</th>
-        <th>Analyses</th>
+        <th title="Vidéos décomptées du quota (hors analyses offertes et en erreur ; mois en cours pour Starter et Pro)">Vidéos décomptées</th>
         <th>Changer plan</th>
         <th>Action</th>
       </tr>
@@ -134,6 +138,7 @@
         <th>Statut</th>
         <th>Progression</th>
         <th>Date</th>
+        <th>Quota</th>
         <th>Action</th>
       </tr>
     </thead>
@@ -164,6 +169,22 @@
         </td>
         <td style="font-family:var(--font-mono);font-size:.75rem;color:var(--gray-dim)">
           {{ a.created_at.strftime('%d/%m/%y %H:%M') }}
+        </td>
+        <td>
+          {# 24/10/2026 : geste commercial — offrir l'analyse (hors quota) ou annuler l'offre #}
+          {% if a.offerte %}
+            <span class="badge" style="color:var(--yellow)" title="{{ a.offerte_motif or '' }}">🎁 offerte</span>
+            {% if a.offerte_motif %}<div style="font-size:.7rem;color:var(--gray-dim);max-width:160px">{{ a.offerte_motif }}</div>{% endif %}
+            <form class="action-form" action="/admin/analysis/{{ a.id }}/offrir" method="POST">
+              <button type="submit" class="btn-xs">Annuler l'offre</button>
+            </form>
+          {% else %}
+            <form class="action-form" action="/admin/analysis/{{ a.id }}/offrir" method="POST">
+              <input type="text" name="motif" placeholder="Motif (ex. résultat raté)" maxlength="200"
+                     style="font-size:.72rem;width:130px;padding:.2rem .4rem">
+              <button type="submit" class="btn-xs btn-save">Offrir</button>
+            </form>
+          {% endif %}
         </td>
         <td>
           <form class="action-form" action="/admin/analysis/{{ a.id }}/delete" method="POST"

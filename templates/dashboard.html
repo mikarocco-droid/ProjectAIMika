@@ -48,9 +48,10 @@
 
   <div class="upload-card">
     <h2>Nouvelle analyse</h2>
-    <p class="quota-info">{{ used }} / {{ plan.videos }} vidéos utilisées</p>
+    <p class="quota-info">{{ used }} / {{ plan.videos + (credits_offerts or 0) }} vidéos utilisées
+      {% if credits_offerts %}<span style="color:var(--yellow)">(dont {{ credits_offerts }} offerte{{ 's' if credits_offerts > 1 else '' }})</span>{% endif %}</p>
 
-    {% if used < plan.videos %}
+    {% if (analyses_left if analyses_left is defined else plan.videos - used) > 0 %}
     <form action="/upload" method="POST" enctype="multipart/form-data" id="upload-form">
       <input type="file" name="video" accept="video/*" id="file-input" hidden>
       <input type="hidden" name="preview_upload_id" id="preview-upload-id">
@@ -195,19 +196,9 @@
       <div class="sport-wrapper">
         <label>Sport</label>
         <select name="sport" id="sport-select">
-          <optgroup label="Sports collectifs">
-            <option value="football">⚽ Football</option>
-            <option value="mini-foot">⚽ Mini-foot / Futsal</option>
-            <option value="basketball">🏀 Basketball</option>
-            <option value="handball">🤾 Handball</option>
-            <option value="rugby">🏉 Rugby</option>
-            <option value="hockey sur glace">🏒 Hockey sur glace</option>
-          </optgroup>
-          <optgroup label="Sports de raquette">
-            <option value="tennis">🎾 Tennis</option>
-            <option value="tennis de table">🏓 Tennis de table</option>
-            <option value="padel">🎾 Padel</option>
-          </optgroup>
+          <option value="football">⚽ Football à 11</option>
+          {# 24/10/2026 : seul le football à 11 est validé pour la V1. À réactiver après validation :
+             mini-foot / futsal, basketball, handball, rugby, hockey sur glace, tennis, tennis de table, padel. #}
         </select>
       </div>
 
@@ -217,7 +208,7 @@
           <div class="mode-card">
             <div class="mode-icon">⚽</div>
             <div class="mode-title">Analyse du match</div>
-            <div class="mode-desc">Highlights, rapport tactique, top joueurs</div>
+            <div class="mode-desc" id="mode-match-desc">Buts, occasions, résumé vidéo et PDF</div>
           </div>
         </label>
         <label class="mode-option">
@@ -225,7 +216,7 @@
           <div class="mode-card">
             <div class="mode-icon">🎯</div>
             <div class="mode-title">Joueur ciblé</div>
-            <div class="mode-desc">Rapport complet sur un joueur spécifique</div>
+            <div class="mode-desc" id="mode-joueur-desc">Montage vidéo d'un joueur (moments où son numéro est lisible)</div>
           </div>
         </label>
       </div>
@@ -290,6 +281,9 @@
         <div class="analysis-date">{{ a.created_at.strftime('%d/%m/%Y %H:%M') }} — {{ a.sport }}</div>
       </div>
       <div class="analysis-status">
+        {% if a.offerte %}
+          <span class="status-done" style="color:var(--yellow)" title="Cette analyse ne compte pas dans votre quota">🎁 Offerte</span>
+        {% endif %}
         {% if a.status == "done" %}
           <span class="status-done">✓ Terminé</span>
           <a href="/results/{{ a.id }}" class="btn-small">Voir →</a>
@@ -314,20 +308,31 @@
 </div>
 
 
-  <!-- CTA Referral discret -->
-  <div style="margin-top:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.25rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
-    <div>
-      <p style="font-size:0.85rem;font-weight:600;color:var(--white);margin-bottom:0.2rem">
-        🎁 Invite ton équipe
-      </p>
-      <p style="font-size:0.8rem;color:var(--gray)">
-        Invite 3 coéquipiers → reçois 1 analyse gratuite
-      </p>
+  <!-- Parrainage (24/10/2026) : lien personnel ; 1 analyse offerte par tranche de 3 filleuls ayant analysé un match -->
+  {% if lien_parrainage %}
+  <div style="margin-top:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.25rem">
+    <p style="font-size:0.9rem;font-weight:600;color:var(--white);margin-bottom:0.25rem">🎁 Invite ton équipe</p>
+    <p style="font-size:0.8rem;color:var(--gray);margin-bottom:0.75rem">
+      Pour {{ par_recompense }} coéquipiers inscrits avec ton lien qui analysent leur premier match, tu reçois 1 analyse offerte.
+      <strong style="color:var(--white)">{{ filleuls_valides % par_recompense }} / {{ par_recompense }}</strong>
+      {% if filleuls_valides >= par_recompense %} · {{ filleuls_valides // par_recompense }} analyse{{ 's' if filleuls_valides // par_recompense > 1 else '' }} déjà gagnée{{ 's' if filleuls_valides // par_recompense > 1 else '' }}{% endif %}
+    </p>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+      <input type="text" readonly value="{{ lien_parrainage }}" id="lien-parrainage"
+             style="flex:1;min-width:220px;font-size:0.8rem" onclick="this.select()">
+      <button type="button" class="btn-small" onclick="copierLienParrainage(this)">Copier le lien</button>
     </div>
-    <a href="/pricing" class="btn-small" style="white-space:nowrap">
-      Découvrir le mode Club →
-    </a>
   </div>
+  <script>
+  function copierLienParrainage(btn) {
+    const champ = document.getElementById("lien-parrainage");
+    navigator.clipboard.writeText(champ.value).then(() => {
+      const t = btn.textContent; btn.textContent = "✓ Copié !";
+      setTimeout(() => { btn.textContent = t; }, 2000);
+    });
+  }
+  </script>
+  {% endif %}
 
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
