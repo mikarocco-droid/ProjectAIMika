@@ -673,9 +673,12 @@ def upload():
     # detection Gemini une seconde fois inutilement).
     _kickoff_raw = request.form.get("kickoff_s_precalcule", "").strip()
     try:
-        kickoff_s_precalcule = float(_kickoff_raw) if _kickoff_raw else 0.0
+        # 24/10/2026 : champ vide (pré-analyse en échec, pas de saisie) -> None : le pipeline lance SA détection
+        # du coup d'envoi (validée : 11 bornes sur 12 exactes). Avant : 0.0 -> analyse depuis le début de la
+        # vidéo, échauffement compris, sans aucune détection.
+        kickoff_s_precalcule = float(_kickoff_raw) if _kickoff_raw else None
     except ValueError:
-        kickoff_s_precalcule = 0.0
+        kickoff_s_precalcule = None
 
     # user_team_id : 0 = équipe A est la mienne, 1 = équipe B est la mienne
     # Si l'utilisateur a cliqué "C'est mon équipe" sur l'équipe B (tid=1),
@@ -1507,7 +1510,16 @@ def stripe_webhook():
         if user and data.get("plan") == "unique":
             # Achat Unique : crédit d'une analyse, formule inchangée ; sans référence du paiement, la page de
             # retour s'en charge (pas de double crédit possible)
-            _crediter_achat_unique(user, data.get("session_id") or data.get("checkout_session_id"))
+            _ref_wh = data.get("session_id") or data.get("checkout_session_id")
+            if _ref_wh:
+                _ok_wh = _crediter_achat_unique(user, _ref_wh)
+                print(f"  [STRIPE] achat Unique reçu par le webhook ({_ref_wh}) : "
+                      f"{'1 analyse créditée' if _ok_wh else 'déjà crédité'} — {user.email}")
+            else:
+                # À VÉRIFIER avant la production : sans identifiant, seul le retour sur /payment/success crédite.
+                # Un client qui ferme son navigateur avant ce retour ne serait pas crédité.
+                print(f"  ⚠️  [STRIPE] achat Unique reçu par le webhook SANS identifiant de paiement — {user.email} : "
+                      f"crédit laissé à la page de retour. Clés reçues : {sorted(data.keys())}")
         elif user:
             user.plan       = data.get("plan", user.plan)
             user.stripe_sub = data.get("subscription_id", user.stripe_sub)
