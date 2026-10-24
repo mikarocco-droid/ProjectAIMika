@@ -2138,6 +2138,73 @@ def run_pipeline(
                             break                 # une occasion au plus par candidat
                     print(f"  [TEMPS FORTS] descriptions de la validation KO : {_n_ajout} occasion(s) ajoutée(s)")
                 _temps_forts.sort(key=lambda _tf: _tf["time_abs"])
+
+                # ── 24/10/2026 : JOURNAL de tout ce que Gemini a observé (aucun appel supplémentaire) : issues et
+                #    phases de jeu des classifications, mentions des descriptions de la validation KO. INTERNE,
+                #    non affiché au client : sa fiabilité doit d'abord être mesurée (résultat « journal_gemini »
+                #    et fichier journal_gemini.csv).
+                import re as _re_jg
+                _JG_ISSUES = {"GOAL": "but", "SAVE": "arrêt du gardien", "WIDE": "tir à côté / au-dessus",
+                              "WOODWORK": "poteau / transversale", "LINE_CLEARANCE": "sauvé sur la ligne",
+                              "BLOCKED": "tir contré"}
+                _JG_PHASES = {"CORNER": "corner", "FREE_KICK": "coup franc", "PENALTY": "penalty"}
+                _JG_MOTS = [("corner", r"\bcorners?\b|corner kick"), ("6 mètres", r"goal[ -]?kick"),
+                            ("penalty", r"\bpenalty kick\b|\bpenalt(?:y|ies)\b(?!\s+(?:area|box|arc|zone|line))"), ("coup franc", r"free[ -]?kick"),
+                            ("poteau / transversale", r"\b(?:post(?!-)|crossbar|woodwork)\b"),
+                            ("arrêt du gardien", r"\bsave[sd]?\b|\bsaving\b|\bparr(?:y|ies|ied)\b|tips? (?:it )?over"),
+                            ("tir à côté / au-dessus", r"went wide|goes wide|wide of|over the bar|misses the target|off target"),
+                            ("tir contré", r"\bblock(?:ed|s)\b")]
+                _JG_NEG = _re_jg.compile(r"\bno (corner|shot|save|chance|attempt|penalty)|without (a |any )?(shot|save)|\bno shots?\b", _re_jg.I)
+                _journal_gemini = []
+
+                def _jg_ajout(_t, _type, _src, _eq, _txt, _cand):
+                    if any(_j["type"] == _type and abs(_j["time_abs"] - _t) <= 12 for _j in _journal_gemini):
+                        return
+                    _journal_gemini.append({"time_abs": round(float(_t), 1), "time": round(float(_t) - _kickoff_offset, 1),
+                                            "type": _type, "source": _src, "equipe": _eq,
+                                            "texte": str(_txt or "")[:240], "candidat_abs": _cand})
+
+                for _ki, _cls in sorted(_cls_results.items()):
+                    if not _cls:
+                        continue
+                    _t_c = _cls.get("action_time_abs") or _ko_candidates[_ki]["time"]
+                    if _cls.get("outcome") in _JG_ISSUES:
+                        _jg_ajout(_t_c, _JG_ISSUES[_cls["outcome"]], "classification", _cls.get("team_color"),
+                                  _cls.get("evidence"), _ko_candidates[_ki]["time"])
+                    if _cls.get("phase") in _JG_PHASES:
+                        _jg_ajout(_t_c, _JG_PHASES[_cls["phase"]], "classification", _cls.get("team_color"),
+                                  _cls.get("evidence"), _ko_candidates[_ki]["time"])
+                _offs_jg = (_ko_kwargs.get("offsets") or [-25, 30]) if isinstance(_ko_kwargs, dict) else [-25, 30]
+                for _ki, _kc in enumerate(_ko_candidates):
+                    _kind, _r = _ko_results.get(_ki, (None, None))
+                    if _kind != "ok" or not _r:
+                        continue
+                    _txt = str(_r.get("evidence_complete") or _r.get("description") or _r.get("evidence") or "")
+                    for _ph in _re_jg.split(r"(?<=[.;])\s+", _txt):
+                        if _JG_NEG.search(_ph):
+                            continue
+                        _m = _re_jg.search(r"(\d{1,3}):(\d{2})", _ph)
+                        _t_m = int(_m.group(1)) * 60 + int(_m.group(2)) if _m else None
+                        if _t_m is None or not (_kc["time"] + min(_offs_jg) - 10 <= _t_m <= _kc["time"] + max(_offs_jg) + 2):
+                            _t_m = _kc["time"]          # heure absente ou mal lue : celle du candidat (approximative)
+                        for _type, _motif in _JG_MOTS:
+                            if _re_jg.search(_motif, _ph, _re_jg.I):
+                                _jg_ajout(_t_m, _type, "description KO", None, _ph.strip(), _kc["time"])
+                _journal_gemini.sort(key=lambda _j: _j["time_abs"])
+                from collections import Counter as _Cnt_jg
+                print(f"  [JOURNAL GEMINI] {len(_journal_gemini)} observation(s) : "
+                      + ", ".join(f"{_k} {_v}" for _k, _v in _Cnt_jg(_j["type"] for _j in _journal_gemini).most_common()))
+                try:
+                    import csv as _csv_jg
+                    with open(os.path.join(output_dir, "journal_gemini.csv"), "w", newline="", encoding="utf-8") as _f_jg:
+                        _w_jg = _csv_jg.writer(_f_jg, delimiter=";")
+                        _w_jg.writerow(["minute_de_jeu", "heure_video", "type", "source", "equipe", "texte"])
+                        for _j in _journal_gemini:
+                            _w_jg.writerow([_fmt_ko(max(0, _j["time"])), _fmt_ko(_j["time_abs"]), _j["type"], _j["source"],
+                                            _j["equipe"] or "", _j["texte"]])
+                except Exception as _e_jg:
+                    print(f"  [JOURNAL GEMINI] fichier CSV impossible : {_e_jg}")
+
                 if _cls_results:
                     print(f"  [TEMPS FORTS] {len(_temps_forts)} temps fort(s) :")
                     for _tf in _temps_forts:
@@ -4567,11 +4634,27 @@ def run_pipeline(
         summary["goals_a_verifier"] = sum(1 for b in _buts_liste if b["status"] != "confirmé")
         summary["score_par_equipe_disponible"] = bool(_buts_liste) and all(b["team"] is not None for b in _buts_liste)
     _identification_joueurs = os.environ.get("SCOUTIA_LECTURE_MAILLOTS", "0").strip().lower() in ("1", "true", "oui", "on")
+    # Occasions (temps forts de la classification, 95 % de précision mesurée) pour le PDF, mêmes règles que la
+    # liste finale : un temps fort qui coïncide avec un but retenu est retiré (le but prime)
+    _ko_occ = float(_kickoff_offset or 0) if "_kickoff_offset" in dir() else 0.0
+    _occasions_pdf = []
+    for _tf_o in (locals().get("_temps_forts") or []):
+        _ta = float(_tf_o.get("time_abs", 0) or 0)
+        _fen = 60 if _tf_o.get("outcome") == "GOAL" else 15
+        if any(abs(_ta - b["time_abs"]) <= _fen for b in _buts_liste):
+            continue
+        _occasions_pdf.append({"time": _ta - _ko_occ, "time_abs": _ta,
+                               "label": "But possible" if _tf_o.get("outcome") == "GOAL" else "Occasion"})
+    _occasions_pdf.sort(key=lambda o: o["time"])
 
     print("Step 12 : AI summary...")
     ai_summary = None
     if audit_mode:
         print("  [SKIPPED — audit_mode]")
+    elif not os.environ.get("SCOUTIA_RESUME_IA", "0").strip().lower() in ("1", "true", "oui", "on"):
+        # 24/10/2026 : DÉSACTIVÉ par défaut — le texte était rédigé à partir de statistiques NON validées (passes,
+        # xG, dribbles…) et affirmait des choses fausses au client. Réactivation : SCOUTIA_RESUME_IA=1.
+        print("  [RÉSUMÉ IA] désactivé (SCOUTIA_RESUME_IA=0) : statistiques non validées")
     elif config.CLAUDE_API_KEY:
         try:
             from ai.claude import summarize
@@ -4600,7 +4683,10 @@ def run_pipeline(
             pdf_path = generate_pdf(
                 result = {
                     "buts":           _buts_liste,
+                    "occasions":      _occasions_pdf,
                     "identification_joueurs": _identification_joueurs,
+                    "fps":            fps,              # 24/10/2026 : vraie cadence (le PDF supposait 25 i/s)
+                    "kickoff_offset": (float(_kickoff_offset or 0) if "_kickoff_offset" in dir() else 0.0),
                     "summary":        summary,
                     "stats":          stats,
                     "highlights":     highlights,
@@ -4657,6 +4743,7 @@ def run_pipeline(
                             if _BORNES_MI_TEMPS.get("video") == video_path else None),
         "temps_forts":   _temps_forts_final,
         "buts":          locals().get("_buts_liste", []),
+        "journal_gemini": locals().get("_journal_gemini", []),
         "identification_joueurs": locals().get("_identification_joueurs", False),
         "summary":       summary,
         "coarse_stats":  coarse_stats,

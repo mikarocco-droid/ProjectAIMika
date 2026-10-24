@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv(".env/param.env")
 
 from flask import (
+    session,
     Flask, render_template, request, redirect,
     url_for, jsonify, send_from_directory, flash
 )
@@ -327,6 +328,10 @@ def get_plan_obj(plan_name):
 # ─────────────────────────────────────────
 # MODELS
 # ─────────────────────────────────────────
+PLANS_MENSUELS = ("starter", "pro")      # quota remis à zéro chaque mois
+PARRAINAGE_FILLEULS_PAR_RECOMPENSE = 3   # 24/10/2026 : 1 analyse offerte par tranche de 3 filleuls valides
+
+
 class User(UserMixin, db.Model):
     id              = db.Column(db.Integer,     primary_key=True)
     email           = db.Column(db.String(150), unique=True, nullable=False)
@@ -335,16 +340,53 @@ class User(UserMixin, db.Model):
     is_admin        = db.Column(db.Boolean,     default=False)
     stripe_customer = db.Column(db.String(100))
     stripe_sub      = db.Column(db.String(100))
+    # 24/10/2026 : parrainage et analyses offertes en crédit
+    code_parrain           = db.Column(db.String(16),  nullable=True)
+    parrain_id             = db.Column(db.Integer,     nullable=True)
+    credits_offerts        = db.Column(db.Integer,     default=0)
+    recompenses_parrainage = db.Column(db.Integer,     default=0)
+    paiements_credites     = db.Column(db.Text,        nullable=True)   # paiements Unique déjà crédités
 
     def can(self, feature):
         return config.PLANS.get(self.plan, {}).get(feature, False)
 
     def analyses_count(self):
-        return Analysis.query.filter_by(user_id=self.id).count()
+        """24/10/2026 : vidéos DÉCOMPTÉES du quota. Ne comptent pas : les analyses OFFERTES (geste commercial,
+        panneau d'administration) et celles en ERREUR (le client n'a rien reçu). Formules mensuelles (Starter,
+        Pro) : mois en cours seulement — avant, le total depuis l'inscription (un client Starter aurait été
+        bloqué définitivement après sa 20e analyse)."""
+        q = (Analysis.query.filter_by(user_id=self.id)
+             .filter(Analysis.status != "error")
+             .filter(db.or_(Analysis.offerte.is_(None), Analysis.offerte == False)))  # noqa: E712
+        if self.plan in PLANS_MENSUELS:
+            debut_mois = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            q = q.filter(Analysis.created_at >= debut_mois)
+        return q.count()
 
     def analyses_left(self):
         max_a = config.PLANS.get(self.plan, {}).get("max_analyses", 0)
-        return max(0, max_a - self.analyses_count())
+        # 24/10/2026 : + analyses gagnées (parrainage) ou offertes en crédit
+        return max(0, max_a + (self.credits_offerts or 0) - self.analyses_count())
+
+    def code_parrainage(self):
+        """Code personnel de parrainage (créé à la première demande)."""
+        if not self.code_parrain:
+            import secrets
+            while True:
+                code = secrets.token_urlsafe(6)[:8]
+                if not User.query.filter_by(code_parrain=code).first():
+                    break
+            self.code_parrain = code
+            db.session.commit()
+        return self.code_parrain
+
+    def filleuls_valides(self):
+        """Filleuls ayant terminé au moins une analyse (un compte vide ne compte pas)."""
+        ids = [u.id for u in User.query.filter_by(parrain_id=self.id).all()]
+        if not ids:
+            return 0
+        return (db.session.query(Analysis.user_id).filter(Analysis.user_id.in_(ids), Analysis.status == "done")
+                .distinct().count())
 
 
 class Analysis(db.Model):
@@ -374,6 +416,9 @@ class Analysis(db.Model):
     created_at         = db.Column(db.DateTime,    default=datetime.utcnow)
     # Celery — tracking tâche asynchrone
     celery_task_id     = db.Column(db.String(200), nullable=True)
+    # 24/10/2026 : geste commercial — analyse offerte (hors quota), avec son motif
+    offerte            = db.Column(db.Boolean,     default=False)
+    offerte_motif      = db.Column(db.String(200), nullable=True)
 
 
 @login_manager.user_loader
@@ -386,6 +431,9 @@ def load_user(user_id):
 # ─────────────────────────────────────────
 @app.route("/register", methods=["GET", "POST"])
 def register():
+    # 24/10/2026 : parrainage — le code du lien /register?ref=… est mémorisé jusqu'à l'inscription
+    if request.args.get("ref"):
+        session["ref_parrain"] = request.args.get("ref", "").strip()[:16]
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
         pwd   = request.form.get("password", "")
@@ -407,6 +455,11 @@ def register():
             password = generate_password_hash(pwd),
             plan     = "free"
         )
+        _code_ref = (session.pop("ref_parrain", None) or request.form.get("ref") or "").strip()
+        if _code_ref:
+            _parrain = User.query.filter_by(code_parrain=_code_ref).first()
+            if _parrain and _parrain.email != email:
+                user.parrain_id = _parrain.id
         db.session.add(user)
         db.session.commit()
 
@@ -470,7 +523,12 @@ def dashboard():
         analyses      = analyses,
         used          = used,
         plan          = plan,
-        analyses_left = current_user.analyses_left()
+        analyses_left = current_user.analyses_left(),
+        # 24/10/2026 : parrainage
+        lien_parrainage   = url_for("register", ref=current_user.code_parrainage(), _external=True),
+        filleuls_valides  = current_user.filleuls_valides(),
+        par_recompense    = PARRAINAGE_FILLEULS_PAR_RECOMPENSE,
+        credits_offerts   = current_user.credits_offerts or 0,
     )
 
 
@@ -516,6 +574,8 @@ def get_upload_url():
     sport        = request.json.get("sport", "football")
     mode         = request.json.get("mode", "match")
     player_id    = request.json.get("player_id") or None
+    mode, player_id = _mode_et_joueur(mode, player_id, request.json.get("numero_joueur"), request.json.get("team_side"),
+                                      request.json.get("team_color_0"), request.json.get("team_color_1"))
 
     if not allowed_file(filename):
         return jsonify({"error": "format non supporté"}), 400
@@ -599,6 +659,11 @@ def upload():
     team_color_1      = request.form.get("team_color_1", "").strip() or None
     team_confidence_0 = request.form.get("team_confidence_0", "").strip() or None
     team_confidence_1 = request.form.get("team_confidence_1", "").strip() or None
+    # 24/10/2026 : mode « Joueur ciblé » — le formulaire envoie mode=joueur, numero_joueur et team_side, alors
+    # que le pipeline attend mode=player et player_id (« 11 » ou « 11_<couleur> ») : le mode joueur ne
+    # s'activait jamais depuis le site.
+    mode, player_id = _mode_et_joueur(mode, player_id, request.form.get("numero_joueur"),
+                                      request.form.get("team_side"), team_color_0, team_color_1)
 
     # V5.2 §12.17 : KO detecte (ou saisi manuellement) pendant l'etape de
     # preview - transmis a run_pipeline() pour eviter une re-detection.
@@ -755,6 +820,54 @@ def upload():
     return redirect(url_for("dashboard"))
 
 
+def _mode_et_joueur(mode, player_id, numero, team_side, couleur_0=None, couleur_1=None):
+    """24/10/2026 : traduit le formulaire (mode=joueur, numéro, équipe A/B) dans le format du pipeline
+    (mode=player, player_id « 11 » ou « 11_<couleur de l'équipe> »)."""
+    mode = (mode or "match").strip().lower()
+    if mode in ("joueur", "player"):
+        mode = "player"
+        num = str(numero or "").strip()
+        if not player_id and num.isdigit():
+            couleur = {"0": couleur_0, "1": couleur_1}.get(str(team_side or "").strip())
+            couleur = str(couleur or "").strip().lower().replace(" ", "_")
+            player_id = f"{int(num)}_{couleur}" if couleur else str(int(num))
+    return mode, player_id
+
+
+def _crediter_achat_unique(user, ref_paiement):
+    """24/10/2026 : un achat « Unique » ajoute 1 analyse en CRÉDIT, sans changer la formule (avant : le compte
+    passait en formule « unique », limitée à 1 analyse depuis l'inscription — un utilisateur gratuit ayant déjà
+    fait son analyse ne pouvait pas utiliser la vidéo achetée). Chaque paiement n'est crédité qu'UNE fois, qu'il
+    arrive par la page de retour ou par le webhook."""
+    if not user or not ref_paiement:
+        return False
+    deja = [x for x in (user.paiements_credites or "").split(",") if x]
+    if ref_paiement in deja:
+        return False
+    user.credits_offerts = (user.credits_offerts or 0) + 1
+    user.paiements_credites = ",".join(deja + [ref_paiement])[-4000:]
+    db.session.commit()
+    return True
+
+
+def _recompenser_parrain(user_id):
+    """24/10/2026 : appelée quand une analyse se termine. Si l'utilisateur a un parrain, celui-ci reçoit
+    1 analyse offerte (crédit) par tranche complète de PARRAINAGE_FILLEULS_PAR_RECOMPENSE filleuls valides."""
+    u = db.session.get(User, user_id)
+    if not u or not u.parrain_id:
+        return
+    p = db.session.get(User, u.parrain_id)
+    if not p:
+        return
+    dues = p.filleuls_valides() // PARRAINAGE_FILLEULS_PAR_RECOMPENSE
+    deja = p.recompenses_parrainage or 0
+    if dues > deja:
+        p.credits_offerts = (p.credits_offerts or 0) + (dues - deja)
+        p.recompenses_parrainage = dues
+        db.session.commit()
+        print(f"  [PARRAINAGE] {p.email} : +{dues - deja} analyse(s) offerte(s) ({p.filleuls_valides()} filleuls valides)")
+
+
 # ─────────────────────────────────────────
 # LANCEMENT D'UNE ANALYSE (chemin unique)
 # ─────────────────────────────────────────
@@ -878,6 +991,11 @@ def run_analysis(
             a.output_dir       = output_dir
             a.r2_output_prefix = r2_prefix
             db.session.commit()
+            # 24/10/2026 : parrainage — jamais bloquant pour l'analyse elle-même
+            try:
+                _recompenser_parrain(a.user_id)
+            except Exception as _e_parr:
+                print(f"  ⚠️  Parrainage non mis à jour : {_e_parr}")
 
     except Exception as e:
         # Nettoyage en cas d'erreur
@@ -1332,6 +1450,12 @@ def payment_success():
         flash("Paiement non confirme — contactez le support")
         return redirect(url_for("dashboard"))
 
+    if data.get("plan") == "unique":
+        current_user.stripe_customer = data.get("customer_id") or current_user.stripe_customer
+        _crediter_achat_unique(current_user, session_id)
+        flash("Merci ! 1 analyse a été ajoutée à votre compte.")
+        return redirect(url_for("dashboard"))
+
     current_user.plan            = data["plan"]
     current_user.stripe_customer = data["customer_id"]
     current_user.stripe_sub      = data["subscription_id"]
@@ -1380,7 +1504,11 @@ def stripe_webhook():
 
     if event_type in ["payment_success", "renewal_success"]:
         user = User.query.filter_by(stripe_customer=data["customer_id"]).first()
-        if user:
+        if user and data.get("plan") == "unique":
+            # Achat Unique : crédit d'une analyse, formule inchangée ; sans référence du paiement, la page de
+            # retour s'en charge (pas de double crédit possible)
+            _crediter_achat_unique(user, data.get("session_id") or data.get("checkout_session_id"))
+        elif user:
             user.plan       = data.get("plan", user.plan)
             user.stripe_sub = data.get("subscription_id", user.stripe_sub)
             db.session.commit()
@@ -1424,6 +1552,7 @@ def admin():
         "done":           Analysis.query.filter_by(status="done").count(),
         "processing":     Analysis.query.filter_by(status="processing").count(),
         "errors":         Analysis.query.filter_by(status="error").count(),
+        "offertes":       Analysis.query.filter_by(offerte=True).count(),
         "plan_free":      User.query.filter_by(plan="free").count(),
         "plan_starter":   User.query.filter_by(plan="starter").count(),
         "plan_pro":       User.query.filter_by(plan="pro").count(),
@@ -1475,6 +1604,25 @@ def admin_delete_user(id):
     return redirect(url_for("admin"))
 
 
+@app.route("/admin/analysis/<int:id>/offrir", methods=["POST"])
+@login_required
+@admin_required
+def admin_offrir_analysis(id):
+    """24/10/2026 : geste commercial — l'analyse est offerte (elle sort du quota de l'utilisateur), ou l'offre est
+    annulée. Le motif est conservé."""
+    a = db.session.get(Analysis, id)
+    if not a:
+        flash("Analyse introuvable")
+        return redirect(url_for("admin"))
+    a.offerte = not bool(a.offerte)
+    a.offerte_motif = ((request.form.get("motif") or "").strip()[:200] or None) if a.offerte else None
+    db.session.commit()
+    u = db.session.get(User, a.user_id)
+    flash(f"Analyse #{a.id} {'offerte' if a.offerte else 'de nouveau décomptée'} — "
+          f"{u.email if u else '?'} : {u.analyses_count() if u else '?'} vidéo(s) décomptée(s)")
+    return redirect(url_for("admin"))
+
+
 @app.route("/admin/analysis/<int:id>/delete", methods=["POST"])
 @login_required
 @admin_required
@@ -1503,6 +1651,40 @@ def not_found(e):
 def too_large(e):
     flash("Fichier trop volumineux (max 10 GB)")
     return redirect(url_for("dashboard"))
+
+
+# ─────────────────────────────────────────
+# SCHÉMA DE LA BASE (24/10/2026)
+# ─────────────────────────────────────────
+_COLONNES_AJOUTEES = {
+    "analysis": {"celery_task_id": "VARCHAR(200)", "offerte": "BOOLEAN DEFAULT 0", "offerte_motif": "VARCHAR(200)"},
+    "user":     {"code_parrain": "VARCHAR(16)", "parrain_id": "INTEGER", "credits_offerts": "INTEGER DEFAULT 0",
+                 "recompenses_parrainage": "INTEGER DEFAULT 0", "paiements_credites": "TEXT"},
+}
+
+
+def _assurer_schema():
+    """Crée les tables manquantes et AJOUTE les colonnes récentes aux tables existantes (db.create_all() ne le
+    fait pas). Sans risque si elles existent déjà ; appelée au démarrage (serveur web et worker Celery)."""
+    from sqlalchemy import inspect as _sa_inspect, text as _sa_text
+    db.create_all()
+    insp = _sa_inspect(db.engine)
+    for table, colonnes in _COLONNES_AJOUTEES.items():
+        if table not in insp.get_table_names():
+            continue
+        existantes = {c["name"] for c in insp.get_columns(table)}
+        for nom, type_sql in colonnes.items():
+            if nom not in existantes:
+                with db.engine.begin() as cx:
+                    cx.execute(_sa_text(f"ALTER TABLE {table} ADD COLUMN {nom} {type_sql}"))
+                print(f"  [SCHÉMA] colonne ajoutée : {table}.{nom}")
+
+
+try:
+    with app.app_context():
+        _assurer_schema()
+except Exception as _e_schema:
+    print(f"  ⚠️  Vérification du schéma de la base impossible : {_e_schema}")
 
 
 # ─────────────────────────────────────────

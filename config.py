@@ -130,31 +130,35 @@ STRIPE_PRICE_IDS = {
 # ─────────────────────────────────────────
 # PLANS
 # ─────────────────────────────────────────
+# 24/10/2026 : alignées sur le site — gratuit = 1 analyse AVEC PDF (le PDF ne coûte rien : produit sur le serveur,
+# sans Gemini). Durées maximales portées à 3 h (un match complet filmé dure ~2 h) : elles ne sont appliquées nulle
+# part aujourd'hui, mais ne doivent pas bloquer un match le jour où elles le seront.
+# Rappel : les variables d'environnement (.env/param.env) l'emportent sur ces valeurs par défaut.
 PLANS = {
     "free": {
-        "max_analyses": int(os.getenv("PLAN_FREE_MAX",      3)),
-        "max_duration": int(os.getenv("PLAN_FREE_DURATION", 300)),
+        "max_analyses": int(os.getenv("PLAN_FREE_MAX",      1)),
+        "max_duration": int(os.getenv("PLAN_FREE_DURATION", 10800)),
         "highlights":   True,
-        "pdf":          False,
+        "pdf":          True,
         "montage":      False,
     },
     "starter": {
         "max_analyses": int(os.getenv("PLAN_STARTER_MAX",      20)),
-        "max_duration": int(os.getenv("PLAN_STARTER_DURATION", 3600)),
+        "max_duration": int(os.getenv("PLAN_STARTER_DURATION", 10800)),
         "highlights":   True,
         "pdf":          True,
         "montage":      False,
     },
     "pro": {
         "max_analyses": int(os.getenv("PLAN_PRO_MAX",      100)),
-        "max_duration": int(os.getenv("PLAN_PRO_DURATION", 7200)),
+        "max_duration": int(os.getenv("PLAN_PRO_DURATION", 10800)),
         "highlights":   True,
         "pdf":          True,
         "montage":      True,
     },
     "unique": {
         "max_analyses": int(os.getenv("PLAN_UNIQUE_MAX",      1)),
-        "max_duration": int(os.getenv("PLAN_UNIQUE_DURATION", 7200)),
+        "max_duration": int(os.getenv("PLAN_UNIQUE_DURATION", 10800)),
         "highlights":   True,
         "pdf":          True,
         "montage":      True,
