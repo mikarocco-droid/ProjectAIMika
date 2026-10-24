@@ -421,6 +421,12 @@ class ScoutPDF(FPDF):
 # ─────────────────────────────────────────
 # GENERATION
 # ─────────────────────────────────────────
+# 24/10/2026 : V1 — n'afficher QUE ce qui a été validé (buts avec statut, occasions, possession). Passes, tirs, xG,
+# tableau par équipe, formation, cartes de chaleur et textes générés à partir de ces données : jamais validés
+# (passes gonflées d'un facteur 10, xG fictif de 0,5 par but, cartes en coordonnées d'image d'une caméra mobile).
+AFFICHER_STATS_NON_VALIDEES = False
+
+
 def generate_pdf(result, output_path, sport="football"):
 
     if not FPDF_AVAILABLE:
@@ -450,7 +456,19 @@ def generate_pdf(result, output_path, sport="football"):
     commentary = result.get("commentary",     [])
     teams_data = result.get("teams",          {})
 
-    highlights = fix_highlight_times(highlights)
+    # 24/10/2026 : vraie cadence de la vidéo (25 i/s supposés auparavant : heures x 1,2 sur une vidéo à 30 i/s)
+    # et coup d'envoi, pour afficher le TEMPS DE MATCH partout (comme le récit et la page web).
+    _fps_pdf = float(result.get("fps") or 25.0)
+    _ko_pdf  = float(result.get("kickoff_offset") or 0.0)
+
+    def _temps_match(h):
+        if h.get("event_time") or h.get("time"):
+            return get_event_time(h, fps=_fps_pdf)
+        if h.get("frame"):
+            return max(0.0, float(h["frame"]) / _fps_pdf - _ko_pdf)
+        return get_event_time(h, fps=_fps_pdf)
+
+    highlights = fix_highlight_times(highlights, fps=_fps_pdf)
     deduped    = deduplicate_stats(stats, jersey_map) if stats else {}
     team_stats = compute_team_stats(stats) if stats else {}
 
@@ -469,6 +487,9 @@ def generate_pdf(result, output_path, sport="football"):
     if _buts:
         kpi_goals = sum(1 for b in _buts if b.get("status") == "confirmé")
     kpi_a_verifier = sum(1 for b in _buts if b.get("status") != "confirmé")
+    _occ = result.get("occasions") or []
+    if not AFFICHER_STATS_NON_VALIDEES:
+        formation, tactical, team_stats, heatmaps, story, commentary = "", {}, {}, {}, "", []
     kpi_shots  = _get_any(summary, "shots",  "shots_on_target", "tirs_cadres", "shots_total", default=0)
     kpi_xg     = round(float(_get_any(summary, "total_xg", "xg", "xg_total", default=0.0)), 2)
     kpi_passes = _get_any(summary, "passes", "pass_count",  "n_passes", default=0)
@@ -512,6 +533,12 @@ def generate_pdf(result, output_path, sport="football"):
         ("Passes",       kpi_passes,  ACCENT4),
         ("Joueurs",      kpi_players, GRAY_L) if _ident else ("A verifier", kpi_a_verifier, GRAY_L),
     ]
+    if not AFFICHER_STATS_NON_VALIDEES:
+        kpis = [("Buts confirmes" if _buts else "Buts", kpi_goals, ACCENT2),
+                ("A verifier", kpi_a_verifier, GRAY_L),
+                ("Occasions",  len(_occ),      ACCENT)]
+        if _ident:
+            kpis.append(("Joueurs", kpi_players, GRAY_L))
     y0 = pdf.get_y()
     x  = 12
     for label, val, color in kpis:
@@ -871,7 +898,7 @@ def generate_pdf(result, output_path, sport="football"):
 
         for h in highlights[:15]:
             # FIX 2 — utiliser get_event_time pour le bon timestamp
-            _ev_time = get_event_time(h)
+            _ev_time = _temps_match(h)
             htype = h.get("main_type", "shot")
             color = ACCENT2 if htype in ("goal", "score") else ACCENT
             pct   = min(_ev_time / max(dur_s, 1), 0.98)
@@ -907,7 +934,7 @@ def generate_pdf(result, output_path, sport="football"):
             color   = ACCENT2 if is_goal else ACCENT
 
             # FIX 2 — timestamp d'affichage = temps de l'event réel
-            _display_time = get_event_time(h)
+            _display_time = _temps_match(h)
 
             pdf.card_bg(12, yh, 186, 13, BG_CARD)
             pdf.set_fill_color(*color)
@@ -925,7 +952,11 @@ def generate_pdf(result, output_path, sport="football"):
             pdf.set_font("Helvetica", "B", 5.5)
             pdf.set_text_color(*HEADER_BG if is_goal else BG_DARK)
             pdf.set_xy(27, yh + 4)
-            pdf.cell(16, 5, htype[:4].upper(), align="C")
+            _badge = htype[:4].upper()
+            if is_goal and _buts:
+                _proches = [b for b in _buts if abs(float(b.get("time", 0)) - float(_display_time or 0)) <= 20]
+                _badge = "BUT" if _proches and _proches[0].get("status") == "confirmé" else "BUT ?"
+            pdf.cell(16, 5, _badge, align="C")
 
             # Timestamp — FIX 2 : _display_time au lieu de t_start
             pdf.set_font("Helvetica", "B", 11)
@@ -940,7 +971,7 @@ def generate_pdf(result, output_path, sport="football"):
             pdf.cell(28, 9, clean(p_label))
 
             # xG + barre
-            if xg_val and float(xg_val) > 0:
+            if AFFICHER_STATS_NON_VALIDEES and xg_val and float(xg_val) > 0:
                 pdf.set_font("Helvetica", "B", 8)
                 pdf.set_text_color(*ACCENT3)
                 pdf.set_xy(101, yh + 2)
@@ -964,7 +995,7 @@ def generate_pdf(result, output_path, sport="football"):
     # ════════════════════════
     # PAGE 5 — STORY
     # ════════════════════════
-    if story or commentary:
+    if story or commentary or _buts or _occ:
         pdf.add_page()
 
         # FIX 3 — fusionner commentary dans match story
@@ -976,7 +1007,7 @@ def generate_pdf(result, output_path, sport="football"):
         for h in highlights:
             htype = (h.get("main_type") or "").lower()
             if htype in ("goal", "score"):
-                _t     = get_event_time(h)
+                _t     = _temps_match(h)
                 _pid   = h.get("player")
                 _plbl  = player_label(_pid, jersey_map) if _pid else "?"
                 _titre = h.get("titre", "")
@@ -999,7 +1030,7 @@ def generate_pdf(result, output_path, sport="football"):
         for h in highlights:
             htype = (h.get("main_type") or "").lower()
             if htype == "shot":
-                _t    = get_event_time(h)
+                _t    = _temps_match(h)
                 _pid  = h.get("player")
                 _plbl = player_label(_pid, jersey_map) if _pid else "?"
                 _xg   = float(h.get("xg", 0) or 0)
@@ -1013,7 +1044,11 @@ def generate_pdf(result, output_path, sport="football"):
             _narrative_parts.append(_story_text)
         if _goal_lines:
             _narrative_parts.append("Buts : " + "  ".join(_goal_lines))
-        if _shot_lines:
+        if _occ:
+            _narrative_parts.append("Occasions : " + "  ".join(
+                f"{int(o.get('time', 0) // 60)}':{int(o.get('time', 0) % 60):02d} — {o.get('label', 'Occasion').lower()}."
+                for o in _occ))
+        if AFFICHER_STATS_NON_VALIDEES and _shot_lines:
             _narrative_parts.append("Occasions notables : " + "  ".join(_shot_lines))
 
         # Lignes de commentary pertinentes (filtrer les génériques, garder celles avec joueur ou action spécifique)
