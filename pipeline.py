@@ -1325,6 +1325,12 @@ def run_pipeline(
         _skip_ko2 = video_end_s is not None and video_end_s < _ko2_min_absolu
         if _skip_ko2:
             print(f"  [KO2] Skippé — video_end_s={video_end_s:.0f}s < KO2 attendu ≥ {_ko2_min_absolu:.0f}s")
+        elif _video_duration_s and _video_duration_s < _ko2_min_absolu:
+            # 24/10/2026 : vidéo plus courte qu'une mi-temps après le coup d'envoi (extrait, mi-temps seule,
+            # enregistrement coupé) — la reprise ne peut pas s'y trouver : recherches de KO2, Fin1MT et FinMatch
+            # sautées (avant : des centaines d'extractions d'images hors de la vidéo, 3 tentatives chacune)
+            _skip_ko2 = True
+            print(f"  [KO2] Skippé — vidéo de {_video_duration_s:.0f}s < reprise attendue ≥ {_ko2_min_absolu:.0f}s")
 
         _bornes_mt = _BORNES_MI_TEMPS if _BORNES_MI_TEMPS.get("video") == video_path else {}
         if _bornes_mt and not _skip_ko2:
