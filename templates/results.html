@@ -39,12 +39,18 @@
       <div class="results-meta">
         {{ analysis.sport }} · {{ analysis.created_at.strftime('%d/%m/%Y %H:%M') }}
         {% if result.summary.duration %} · {{ result.summary.duration }}{% endif %}
-        {% if result.summary.goals is defined %}
+        {% if result.summary.goals_confirmes is defined %}
+          · <span style="color:var(--red);font-weight:700">{{ result.summary.goals_confirmes }} but{{ 's' if result.summary.goals_confirmes > 1 else '' }} confirmé{{ 's' if result.summary.goals_confirmes > 1 else '' }}</span>
+          {% if result.summary.goals_a_verifier %}
+            · <span style="color:var(--yellow);font-weight:700">{{ result.summary.goals_a_verifier }} à vérifier</span>
+          {% endif %}
+        {% elif result.summary.goals is defined %}
           · <span style="color:var(--red);font-weight:700">{{ result.summary.goals }} but{{ 's' if result.summary.goals > 1 else '' }}</span>
         {% endif %}
       </div>
       {# Score en temps réel si buts détectés #}
-      {% if result.teams and result.summary.goals %}
+      {# 24/10/2026 : score par équipe affiché SEULEMENT si l'équipe de chaque but est connue (sinon « 0 — 0 » faux) #}
+      {% if result.teams and result.summary.goals and result.summary.score_par_equipe_disponible %}
         {% set t0 = result.teams.get('0', result.teams.get(0, {})) %}
         {% set t1 = result.teams.get('1', result.teams.get(1, {})) %}
         {% set score0 = namespace(v=0) %}
@@ -96,14 +102,21 @@
       <div class="kpi-value">{{ result.summary.passes }}</div>
       <div class="kpi-label">Passes</div>
     </div>
+    {% if result.identification_joueurs %}
     <div class="kpi-card">
       <div class="kpi-value">{{ result.summary.players }}</div>
       <div class="kpi-label">Joueurs</div>
     </div>
+    {% else %}
+    <div class="kpi-card">
+      <div class="kpi-value">{{ (result.temps_forts or []) | length }}</div>
+      <div class="kpi-label">Occasions</div>
+    </div>
+    {% endif %}
   </div>
 
   <!-- MVP -->
-  {% if result.mvp %}
+  {% if result.mvp and result.identification_joueurs %}
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.5rem;margin-bottom:1.5rem;display:flex;align-items:center;gap:1rem">
     <div style="background:var(--yellow);border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0">🏆</div>
     <div>
@@ -121,6 +134,37 @@
       {{ result.match_story[:200] }}{% if result.match_story|length > 200 %}...{% endif %}
     </div>
     {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Buts, avec leur statut (24/10/2026) -->
+  {% if result.buts %}
+  <div class="result-section">
+    <div class="result-section-header">
+      <span class="result-section-icon">⚽</span>
+      <span class="result-section-title">Buts ({{ result.buts | length }})</span>
+    </div>
+    <div class="result-section-body">
+      <div class="highlights-grid">
+        {% for b in result.buts %}
+        <div class="highlight-item">
+          <span class="hl-num">{{ loop.index }}</span>
+          <span class="hl-time">{{ "%02d:%02d" | format((b.time / 60) | int, (b.time % 60) | int) }}</span>
+          {% if b.status == 'confirmé' %}
+            <span class="hl-badge goal">but confirmé</span>
+          {% else %}
+            <span class="hl-badge other">à vérifier</span>
+          {% endif %}
+          {% if b.team_color %}<span class="hl-player">{{ b.team_color }}</span>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% if result.summary.goals_a_verifier %}
+      <p style="font-size:0.8rem;color:var(--gray);margin-top:0.75rem">
+        « À vérifier » : action détectée comme un but probable, sans confirmation complète. Un coup d'œil sur la vidéo permet de trancher.
+      </p>
+      {% endif %}
+    </div>
   </div>
   {% endif %}
 
@@ -187,6 +231,7 @@
             {{ htype }}
           </span>
           <span class="hl-time">{{ "%02d:%02d" | format(mins_s, secs_s) }}</span>
+          {% if result.identification_joueurs %}
           <span class="hl-player">
             {% if h.player %}
               {% if result.jersey_map and h.player|string in result.jersey_map %}
@@ -196,6 +241,7 @@
               {% endif %}
             {% else %}?{% endif %}
           </span>
+          {% endif %}
           {% if h.xg and h.xg > 0 %}
             <span class="hl-xg">xG {{ h.xg | round(2) }}</span>
           {% endif %}
@@ -208,7 +254,7 @@
   {% endif %}
 
   <!-- Joueurs -->
-  {% if result.stats %}
+  {% if result.stats and result.identification_joueurs %}
   <div class="result-section">
     <div class="result-section-header">
       <span class="result-section-icon">👥</span>
@@ -339,7 +385,7 @@
           </p>
           <ul style="list-style:none;font-size:0.85rem;color:var(--gray);line-height:1.9;margin-bottom:1rem">
             <li>⚽ Highlights pour toute l'équipe</li>
-            <li>📊 Stats joueurs automatiques</li>
+            <li>📊 Statistiques collectives automatiques</li>
             <li>📄 PDF prêt pour coach / recruteurs</li>
             <li>🏆 Suivi complet de la saison</li>
           </ul>
