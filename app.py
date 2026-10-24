@@ -1118,6 +1118,16 @@ def api_apercu_debut():
         debut.save(chemin)                 # enregistré directement sur le disque
         _reconstituer_apercu(chemin, _entier("mdat_offset"), _entier("mdat_entete"), _entier("index_offset"),
                              index.read() if index else b"")
+        # 24/10/2026 : l'aperçu doit être LISIBLE avant toute détection (un format imprévu donnait « Invalid data
+        # found » dès la 1re image) ; sinon refusé -> le navigateur se replie sur le fichier complet
+        import cv2 as _cv2_ap
+        _cap = _cv2_ap.VideoCapture(chemin)
+        _cap.set(_cv2_ap.CAP_PROP_POS_MSEC, 1000)
+        _ok_ap, _img_ap = _cap.read()
+        _cap.release()
+        if not _ok_ap or _img_ap is None:
+            os.remove(chemin)
+            return jsonify({"error": "aperçu illisible (format de vidéo non pris en charge pour l'aperçu)"}), 400
         duree_apercu = float(request.form.get("duree_apercu_s") or 0)
         with open(os.path.join(tmp_dir, f"prev_{uid}.apercu.json"), "w", encoding="utf-8") as f:
             json.dump({"duree_apercu_s": duree_apercu}, f)
