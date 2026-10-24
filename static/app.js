@@ -133,11 +133,67 @@ async function lireBoites(file) {
     return boites;
 }
 
+function _enfants(dv, debut, fin) {
+    // Boîtes enfants d'une boîte déjà lue en mémoire (dv = DataView du parent)
+    const out = [];
+    let o = debut;
+    while (o + 8 <= fin) {
+        const t = dv.getUint32(o);
+        const type = String.fromCharCode(dv.getUint8(o + 4), dv.getUint8(o + 5), dv.getUint8(o + 6), dv.getUint8(o + 7));
+        if (t < 8 || o + t > fin) break;
+        out.push({ type, debut: o, fin: o + t });
+        o += t;
+    }
+    return out;
+}
+
+async function _apercuFragmente(file, boites, moov) {
+    // 24/10/2026 : MP4 FRAGMENTÉ (caméras de longue durée, ex. Veo) — chaque fragment (moof + mdat) a son propre
+    // index : le DÉBUT du fichier, tel quel, est lisible. Le débit (octets par seconde) est estimé à partir de
+    // l'heure de début (« tfdt ») du premier et du dernier fragment lus.
+    const moofs = boites.filter(b => b.type === "moof");
+    if (moofs.length < 2 || moov.taille > 4 * 1024 * 1024) return null;
+    const mv = await _lireOctets(file, moov.offset, moov.taille);
+    const echelles = {};                               // track_ID -> échelle de temps (mdhd)
+    for (const trak of _enfants(mv, 8, mv.byteLength).filter(b => b.type === "trak")) {
+        let id = null, ech = null;
+        for (const e of _enfants(mv, trak.debut + 8, trak.fin)) {
+            if (e.type === "tkhd") { const v = mv.getUint8(e.debut + 8); id = mv.getUint32(e.debut + (v === 1 ? 28 : 20)); }
+            if (e.type === "mdia") {
+                for (const m of _enfants(mv, e.debut + 8, e.fin)) {
+                    if (m.type === "mdhd") { const v = mv.getUint8(m.debut + 8); ech = mv.getUint32(m.debut + (v === 1 ? 28 : 20)); }
+                }
+            }
+        }
+        if (id !== null && ech) echelles[id] = ech;
+    }
+    async function heureFragment(moof) {
+        const dv = await _lireOctets(file, moof.offset, moof.taille);
+        for (const traf of _enfants(dv, 8, dv.byteLength).filter(b => b.type === "traf")) {
+            let id = null, t = null;
+            for (const e of _enfants(dv, traf.debut + 8, traf.fin)) {
+                if (e.type === "tfhd") id = dv.getUint32(e.debut + 12);
+                if (e.type === "tfdt") { const v = dv.getUint8(e.debut + 8); t = v === 1 ? Number(dv.getBigUint64(e.debut + 12)) : dv.getUint32(e.debut + 12); }
+            }
+            if (id !== null && t !== null && echelles[id]) return t / echelles[id];
+        }
+        return null;
+    }
+    const t0 = await heureFragment(moofs[0]), t1 = await heureFragment(moofs[moofs.length - 1]);
+    if (t0 === null || t1 === null || t1 <= t0) return null;
+    const debit = (moofs[moofs.length - 1].offset - moofs[0].offset) / (t1 - t0);
+    const L = Math.min(file.size, Math.round(moofs[0].offset + debit * DUREE_APERCU_S));
+    const duree_apercu_s = Math.min(DUREE_APERCU_S, (L - moofs[0].offset) / debit);
+    return { L, fragmente: true, duree_apercu_s };
+}
+
 async function preparerApercu(file) {
     if (!/\.(mp4|mov|m4v)$/i.test(file.name || "")) return null;
     const boites = await lireBoites(file);
     const moov = boites.find(b => b.type === "moov"), mdat = boites.find(b => b.type === "mdat");
-    if (!moov || !mdat) return null;
+    if (!moov) return null;
+    if (boites.some(b => b.type === "moof")) return _apercuFragmente(file, boites, moov);
+    if (!mdat) return null;
     // Durée de la vidéo (boîte « mvhd », au début de « moov »)
     const tete = await _lireOctets(file, moov.offset, 256);
     let p = -1;
@@ -162,10 +218,12 @@ async function lancerApercu(file) {
         if (!ap || _detectionLancee) return;
         const fd = new FormData();
         fd.append("debut", file.slice(0, ap.L), "debut.mp4");
-        if (ap.moov.offset >= ap.L) fd.append("index", file.slice(ap.moov.offset, ap.moov.offset + ap.moov.taille), "index.bin");
-        fd.append("mdat_offset", ap.mdat.offset);
-        fd.append("mdat_entete", ap.mdat.entete);
-        fd.append("index_offset", ap.moov.offset);
+        if (!ap.fragmente) {               // MP4 classique : index et taille du bloc d'images à corriger
+            if (ap.moov.offset >= ap.L) fd.append("index", file.slice(ap.moov.offset, ap.moov.offset + ap.moov.taille), "index.bin");
+            fd.append("mdat_offset", ap.mdat.offset);
+            fd.append("mdat_entete", ap.mdat.entete);
+            fd.append("index_offset", ap.moov.offset);
+        }
         fd.append("duree_apercu_s", ap.duree_apercu_s);
         const resp = await fetch("/api/apercu-debut", { method: "POST", body: fd });
         if (!resp.ok) throw new Error("HTTP " + resp.status);
