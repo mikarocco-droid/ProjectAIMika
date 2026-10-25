@@ -1953,6 +1953,14 @@ def run_pipeline(
                         print(f"  [KO2] candidat {_fmt_ko(_ko_candidates[_ko2_cand_idx]['time'])} = probable "
                               f"coup d'envoi de la 2e mi-temps (KO2 à {_fmt_ko(_ko2_ref)})")
                 _ko_goal_times_abs = []     # pour écarter les doublons dans les temps forts
+                # 25/10/2026 : PAUSE DE LA MI-TEMPS — aucun but possible entre la fin de la 1re mi-temps (+ marge de
+                # sécurité) et la reprise. Juprelle : candidat 68:43 (19 s avant la reprise détectée à 69:02, hors de
+                # la fenêtre KO2) accepté comme but, alors que la classification décrivait « le match est à l'arrêt ».
+                # Wanze (fin de 1re MT détectée 44 s trop tôt) : l'engagement du but de 65:46 reste avant la marge.
+                _fin1mt_ref = _fin1mt_absolu if "_fin1mt_absolu" in dir() else None
+                _pause = None
+                if _ko2_ref is not None and _fin1mt_ref is not None and _fin1mt_ref + _MARGE_FIN1MT_APRES_S < _ko2_ref - 5:
+                    _pause = (_fin1mt_ref + _MARGE_FIN1MT_APRES_S, _ko2_ref - 5)
 
                 for _ki, _koc in enumerate(_ko_candidates):
                     _ko_t_abs = _koc["time"]
@@ -2047,6 +2055,10 @@ def run_pipeline(
                         # 20/10/2026 : heure par défaut (aucune heure KO ni classification) candidat - 15 s au lieu de
                         # - 10 s, évalué sur les caches de 4 matchs : Spa 89:05 retrouvé, aucun autre changement.
                         _gt_abs = _gt_prefere or _r.get("goal_time_abs") or _gt_from_cls or (_ko_t_abs - 15)
+                        if _pause is not None and _pause[0] <= _ko_t_abs <= _pause[1]:
+                            print(f"  [PAUSE] t={_fmt_ko(_ko_t_abs)} écarté : pendant la mi-temps "
+                                  f"({_fmt_ko(_pause[0])} → {_fmt_ko(_pause[1])}), aucun but possible")
+                            continue
                         _gt_rel = _gt_abs - _kickoff_offset
                         _ev = {
                             "type":           "goal",
@@ -4753,6 +4765,7 @@ def run_pipeline(
         "temps_forts":   _temps_forts_final,
         "buts":          locals().get("_buts_liste", []),
         "journal_gemini": locals().get("_journal_gemini", []),
+        "occasions":     locals().get("_occasions_pdf", []),   # 25/10/2026 : même liste que le PDF
         "identification_joueurs": locals().get("_identification_joueurs", False),
         "summary":       summary,
         "coarse_stats":  coarse_stats,
