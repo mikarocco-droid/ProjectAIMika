@@ -268,9 +268,9 @@ _BORNES_MI_TEMPS = {}          # bornes trouvées AVANT le suivi, réutilisées 
 # des mi-temps de 45 min (un arbitre peut arrêter à 43:30 quand le score est acquis). En dessous : détection
 # rejetée (son : Franchimont 46:17 = 40,9 min de jeu au lieu de 51:48).
 _FIN1MT_TOLERANCE_MIN = 3
-_MARGE_FIN1MT_APRES_S = 30
+_MARGE_FIN1MT_APRES_S = 90   # 25/10/2026 : 30 -> 90 s (Wanze : fin de 1re MT détectée 44 s trop tôt)
 _MARGE_KO2_AVANT_S = 30
-_MARGE_FINMATCH_APRES_S = 30
+_MARGE_FINMATCH_APRES_S = 90   # 25/10/2026 : 30 -> 90 s (même prudence pour la fin du match)
 
 
 def _appel_avec_tmp(fn, *args, tmp_dir=None, **kwargs):
@@ -836,10 +836,10 @@ def run_pipeline(
             # deja utilisees ailleurs dans le pipeline pour ces bornes -
             # cf. _MARGE_AVANT_KO_S=10 plus bas pour KO1).
             _MARGE_KO1_AVANT_S    = 10
-            _MARGE_FINMATCH_APRES_S = 30
+            _MARGE_FINMATCH_APRES_S = 90   # 25/10/2026 : 30 -> 90 s (même prudence pour la fin du match)
             # 20/10/2026 : marges aux bornes intérieures (aucune auparavant). KO2 détecté jusqu'à
             # +16/+18 s en retard (Stembert, Wanze) ; Fin1MT à -1 s (Juprelle).
-            _MARGE_FIN1MT_APRES_S = 30
+            _MARGE_FIN1MT_APRES_S = 90   # 25/10/2026 : 30 -> 90 s (Wanze : fin de 1re MT détectée 44 s trop tôt)
             _MARGE_KO2_AVANT_S    = 30
 
             _seg_1ere_mt = (max(0, _ko1_abs - _MARGE_KO1_AVANT_S), min(_duration_seg, _fin1mt_abs + _MARGE_FIN1MT_APRES_S))
@@ -4650,7 +4650,7 @@ def run_pipeline(
         if any(abs(_ta - b["time_abs"]) <= _fen for b in _buts_liste):
             continue
         _occasions_pdf.append({"time": _ta - _ko_occ, "time_abs": _ta,
-                               "label": "But possible" if _tf_o.get("outcome") == "GOAL" else "Occasion"})
+                               "label": "Occasion"})   # 25/10/2026 : plus de « But possible » (voir plus bas)
     _occasions_pdf.sort(key=lambda o: o["time"])
 
     print("Step 12 : AI summary...")
@@ -4735,7 +4735,10 @@ def run_pipeline(
                   f"retiré : coïncide avec un but retenu (le but prime)")
             continue
         # 21/10/2026 : libellé d'affichage unique (le détail de Gemini, souvent inexact, reste dans outcome/evidence)
-        _tf = dict(_tf, label=("But possible" if _tf.get("outcome") == "GOAL" else "Occasion"))
+        # 25/10/2026 : libellé unique « Occasion ». Un « but » vu par la seule classification et REFUSÉ par la
+        # validation KO n'est pas un but (jeu de référence : tous les vrais buts trouvés par la validation KO) ;
+        # c'est souvent une action dangereuse (Wanze 58:07 : centre dans la surface, sorti en corner).
+        _tf = dict(_tf, label="Occasion")
         _near = [e for e in _final_shots if abs(e.get("time", 0) + _ko_off_tf - _tf["time_abs"]) <= 12]
         if _near:
             _tf = dict(_tf, linked_event={"type": "shot", "time": _near[0].get("time")})
