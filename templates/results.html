@@ -211,7 +211,11 @@
       <span class="result-section-title">Possession</span>
     </div>
     <div class="result-section-body">
-      {% for team, pct in result.possession.items() | sort %}
+      {# 25/10/2026 : équipes 0 et 1 seulement (clés nombres ou texte selon la source ; « gk » ignoré) — le tri
+         des clés mélangeait nombres et texte : « '<' not supported between 'str' and 'int' » #}
+      {% for team in [0, 1] %}
+      {% set pct = result.possession.get(team, result.possession.get(team|string)) %}
+      {% if pct is not none %}
       <div class="possession-row">
         <div class="poss-label">
           {% if result.teams and (team|string) in result.teams and result.teams[team|string].name %}
@@ -225,6 +229,7 @@
         </div>
         <div class="poss-pct">{{ pct }}%</div>
       </div>
+      {% endif %}
       {% endfor %}
     </div>
   </div>
