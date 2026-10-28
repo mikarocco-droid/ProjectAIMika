@@ -38,7 +38,7 @@ import subprocess
 import concurrent.futures
 from collections import Counter
 
-MODEL_NAME = "gemini-3.1-pro-preview"  # PAS gemini-2.5-flash (jamais validé, voir §12.2)
+MODEL_NAME = "gemini-3.8-flash"  # 25/10/2026 : modèle unique du projet (avant : gemini-3.1-pro-preview, très cher)
 TEMPERATURE = 0.0
 
 # ── Garde-fous de production (§12.9, §12.12) ────────────────────────────
