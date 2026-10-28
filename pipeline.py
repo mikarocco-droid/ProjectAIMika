@@ -269,6 +269,11 @@ _BORNES_MI_TEMPS = {}          # bornes trouvées AVANT le suivi, réutilisées 
 # rejetée (son : Franchimont 46:17 = 40,9 min de jeu au lieu de 51:48).
 _FIN1MT_TOLERANCE_MIN = 3
 _MARGE_FIN1MT_APRES_S = 90   # 25/10/2026 : 30 -> 90 s (Wanze : fin de 1re MT détectée 44 s trop tôt)
+# 28/10/2026 : nom DISTINCT pour la règle de la pause de mi-temps. _MARGE_FIN1MT_APRES_S est aussi affectée À
+# L'INTÉRIEUR de run_pipeline (voie par segments) : Python la traite donc comme une variable LOCALE de toute la
+# fonction, et son usage dans une autre branche levait « cannot access local variable » -> TOUTE la détection
+# des buts par la validation KO était interrompue (Franchimont : 0 but sur 5).
+_MARGE_PAUSE_MI_TEMPS_S = 90
 _MARGE_KO2_AVANT_S = 30
 _MARGE_FINMATCH_APRES_S = 90   # 25/10/2026 : 30 -> 90 s (même prudence pour la fin du match)
 
@@ -1959,8 +1964,8 @@ def run_pipeline(
                 # Wanze (fin de 1re MT détectée 44 s trop tôt) : l'engagement du but de 65:46 reste avant la marge.
                 _fin1mt_ref = _fin1mt_absolu if "_fin1mt_absolu" in dir() else None
                 _pause = None
-                if _ko2_ref is not None and _fin1mt_ref is not None and _fin1mt_ref + _MARGE_FIN1MT_APRES_S < _ko2_ref - 5:
-                    _pause = (_fin1mt_ref + _MARGE_FIN1MT_APRES_S, _ko2_ref - 5)
+                if _ko2_ref is not None and _fin1mt_ref is not None and _fin1mt_ref + _MARGE_PAUSE_MI_TEMPS_S < _ko2_ref - 5:
+                    _pause = (_fin1mt_ref + _MARGE_PAUSE_MI_TEMPS_S, _ko2_ref - 5)
 
                 for _ki, _koc in enumerate(_ko_candidates):
                     _ko_t_abs = _koc["time"]
