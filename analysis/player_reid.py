@@ -181,6 +181,8 @@ class PlayerReID:
         self.memory      = {}
         self.next_id     = 0
         self.frame_count = 0
+        self._tracker_vers_id = {}       # 28/10/2026 : continuité par l'identifiant DeepSort (tracker_id -> id)
+        self.n_doublons_evites = 0       # attributions qui auraient donné un identifiant déjà pris dans l'image
 
         # Calibration équipes
         self._team_colors_calibrated = False
@@ -462,7 +464,10 @@ class PlayerReID:
     # ASSIGNATION ID
     # Amélioration : si deux IDs ont le même jersey → retourner le canonique
     # ─────────────────────────────────────────
-    def _assign_id(self, det):
+    def _assign_id(self, det, exclus=None):
+        """exclus : identifiants DÉJÀ attribués dans l'image en cours (28/10/2026 : un identifiant ne peut être
+        donné qu'une fois par image — avant, deux joueurs proches de la même équipe recevaient souvent le même)."""
+        exclus = exclus if exclus is not None else set()
         active_count = sum(
             1 for m in self.memory.values()
             if self.frame_count - m["last_seen"] <= self.TTL_ACTIVE
@@ -472,6 +477,8 @@ class PlayerReID:
         best_score = float("inf")
 
         for pid, mem in self.memory.items():
+            if pid in exclus:
+                continue
             if not self._spatial_gate(det["center"], mem["center"]):
                 continue
 
@@ -509,16 +516,9 @@ class PlayerReID:
             mem["last_seen"] = self.frame_count
             return best_id
 
-        if active_count >= self.MAX_PLAYERS:
-            if self.memory:
-                return min(
-                    self.memory.keys(),
-                    key=lambda p: np.linalg.norm(
-                        np.array(det["center"]) - np.array(self.memory[p]["center"])
-                    )
-                )
-            return 0
-
+        # 28/10/2026 : plus d'attribution FORCÉE de l'identifiant le plus proche quand MAX_PLAYERS est atteint
+        # (il pouvait être déjà pris dans l'image : doublons systématiques). Un nouvel identifiant est créé ; la
+        # mémoire des identifiants inactifs est de toute façon purgée (TTL).
         pid = self.next_id
         self.memory[pid] = {**det, "last_seen": self.frame_count}
         self.next_id += 1
@@ -594,20 +594,79 @@ class PlayerReID:
         _PROFILING_REID["embedding"] += time.perf_counter() - _t0
         _PROFILING_REID_N["embedding"] += 1
 
-        # Étape 3 (rapide, par détection) : assignation d'identité
-        results = []
+        # Étape 3 : assignation d'identité EXCLUSIVE dans l'image (28/10/2026)
+        #  a) continuité DeepSort : même tracker_id qu'à l'image précédente -> même identifiant (s'il est libre) ;
+        #  b) les autres détections se répartissent les identifiants restants par la méthode hongroise
+        #     (affectation optimale, un identifiant au plus par détection) ;
+        #  c) les détections sans correspondance reçoivent un nouvel identifiant (_assign_id avec exclusion).
+        _t0 = time.perf_counter()
+        enrichis = []
         for i, partiel in enumerate(partiels):
-            embedding = embeddings_par_indice.get(i, np.zeros(512))
-            enriched = {
+            enrichis.append({
                 "center":    partiel["center"],
                 "color":     partiel["color"],
-                "embedding": embedding,
+                "embedding": embeddings_par_indice.get(i, np.zeros(512)),
                 "team":      partiel["team"],
-            }
+            })
+        attribues, utilises = {}, set()
+        for i, partiel in enumerate(partiels):                                   # a) continuité DeepSort
+            tid = partiel["det"].get("id")
+            pid = self._tracker_vers_id.get(tid) if tid is not None else None
+            if pid is not None and pid in self.memory and pid not in utilises \
+                    and self._spatial_gate(enrichis[i]["center"], self.memory[pid]["center"]):
+                dt, mt = enrichis[i].get("team"), self.memory[pid].get("team")
+                if dt is None or mt is None or dt == mt:
+                    attribues[i] = pid; utilises.add(pid)
+        restants = [i for i in range(len(partiels)) if i not in attribues]       # b) affectation hongroise
+        candidats = [pid for pid in self.memory if pid not in utilises]
+        if restants and candidats:
+            INF = 1e9
+            couts = np.full((len(restants), len(candidats)), INF)
+            for a, i in enumerate(restants):
+                det = enrichis[i]
+                for b, pid in enumerate(candidats):
+                    mem = self.memory[pid]
+                    if not self._spatial_gate(det["center"], mem["center"]):
+                        continue
+                    dt, mt = det.get("team"), mem.get("team")
+                    if dt is not None and mt is not None and dt != mt:
+                        continue
+                    seuil = (self.THRESHOLD_ACTIVE if self.frame_count - mem["last_seen"] <= self.TTL_ACTIVE
+                             else self.THRESHOLD_SLEEP)
+                    sc = self._compute_score(det, mem)
+                    if sc < seuil:
+                        couts[a, b] = sc
+            try:
+                from scipy.optimize import linear_sum_assignment
+                lignes, colonnes = linear_sum_assignment(couts)
+                paires = list(zip(lignes, colonnes))
+            except Exception:                                                    # repli : glouton par coût croissant
+                paires, pris_l, pris_c = [], set(), set()
+                for a, b in sorted(np.ndindex(couts.shape), key=lambda ab: couts[ab]):
+                    if a not in pris_l and b not in pris_c:
+                        paires.append((a, b)); pris_l.add(a); pris_c.add(b)
+            for a, b in paires:
+                if couts[a, b] < INF:
+                    attribues[restants[a]] = candidats[b]; utilises.add(candidats[b])
+        ids = {}
+        for i in range(len(partiels)):
+            if i in attribues:                                                   # mise à jour de la mémoire
+                pid = attribues[i]; det = enrichis[i]; mem = self.memory[pid]; alpha = 0.3
+                mem["center"]    = det["center"]
+                mem["color"]     = alpha * det["color"] + (1 - alpha) * mem["color"]
+                mem["embedding"] = alpha * det["embedding"] + (1 - alpha) * mem["embedding"]
+                mem["team"]      = det.get("team") if det.get("team") is not None else mem.get("team")
+                mem["last_seen"] = self.frame_count
+                ids[i] = pid
+            else:                                                                # c) nouvel identifiant
+                ids[i] = self._assign_id(enrichis[i], exclus=utilises)
+                utilises.add(ids[i])
+        self._tracker_vers_id = {p["det"].get("id"): ids[i] for i, p in enumerate(partiels) if p["det"].get("id") is not None}
+        _PROFILING_REID["assign_id"] += time.perf_counter() - _t0
 
-            _t0 = time.perf_counter()
-            reid_id = self._assign_id(enriched)
-            _PROFILING_REID["assign_id"] += time.perf_counter() - _t0
+        results = []
+        for i, partiel in enumerate(partiels):
+            reid_id = ids[i]
 
             det = partiel["det"]
             results.append({
@@ -717,6 +776,8 @@ class PlayerReID:
         self.memory                  = {}
         self.next_id                 = 0
         self.frame_count             = 0
+        self._tracker_vers_id        = {}
+        self.n_doublons_evites       = 0
         self._team_colors_calibrated = False
         self._team_color_samples     = []
         self._team_centroids         = None
