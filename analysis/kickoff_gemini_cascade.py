@@ -1,0 +1,974 @@
+# analysis/kickoff_gemini_cascade.py
+# -*- coding: utf-8 -*-
+#
+# Détection du premier coup d'envoi par cascade Gemini — V5.2.
+#
+# Remplace kickoff_detector.py (LEGACY, désactivé — heuristique
+# "groups[-1]" destructive documentée, voir V5_2_FIABILITE_ROADMAP.md §7).
+#
+# Architecture validée sur les 9 matchs de référence, 2 runs indépendants
+# (9/9 les deux fois, écart max 5,2s, jamais en avance) — voir
+# V5_2_FIABILITE_ROADMAP.md §12. Code directement dérivé de
+# notebook_test_rigoureux_rapide_9matchs.py, prompts et seuils identiques.
+#
+# ⚠️ NE PAS REFORMULER LES PROMPTS (PROMPT_Q1, PROMPT_Q2) SANS RAISON
+# PRÉCISE ET DÉMONTRÉE. Formulations éprouvées sur 9 matchs x 2 runs —
+# une reformulation "pour simplifier" a déjà fait perdre un run complet
+# payant (Franchimont/Goe jamais détectés avec un texte raccourci) et
+# une régression a fait rater le KO de plus de 100s sur 3 matchs
+# (Q2 trop strict, ne comptait pas corner/coup franc comme "match
+# commencé"). Voir V5_2_FIABILITE_ROADMAP.md §12.2 pour l'historique
+# complet des itérations et leurs échecs.
+#
+# CONTRAT V1 (§12.9) :
+#   - Premier coup d'envoi uniquement. PAS le second (reprise après
+#     mi-temps) — hors périmètre, module séparé à construire plus tard.
+#   - Statuts explicites : AUTO_CONFIRMED / NOT_FOUND / ERROR.
+#     Pas de MANUAL_REQUIRED (aucun cas métier défini pour le distinguer
+#     de NOT_FOUND). Pas de champ confidence (jamais calculé dans cette
+#     architecture, ne pas promettre ce qui n'existe pas).
+#   - NOT_FOUND ou ERROR ne doivent JAMAIS être transformés en un faux
+#     timestamp par l'appelant. C'est le principe central de ce module :
+#     ne pas fabriquer une réponse quand les preuves sont insuffisantes.
+
+import os
+import time
+import json
+import subprocess
+import concurrent.futures
+from collections import Counter
+
+MODEL_NAME = "gemini-3.8-flash"  # 25/10/2026 : modèle unique du projet (avant : gemini-3.1-pro-preview, très cher)
+TEMPERATURE = 0.0
+
+# ── Garde-fous de production (§12.9, §12.12) ────────────────────────────
+# Constantes fixes, non exposées à l'utilisateur — protègent le pipeline
+# et le budget, indépendamment de max_search_s (choix utilisateur).
+MAX_GEMINI_CALLS_DEFAUT = 300   # budget d'appels ; le retry robuste peut
+                                 # multiplier les appels par checkpoint
+MAX_WALLCLOCK_S_DEFAUT  = 900   # 15min ; independant du budget d'appels -
+                                 # protege contre une video lente qui reste
+                                 # dans son budget mais bloque le pipeline
+
+TIMEOUT_S    = 60   # par tentative d'appel Gemini
+MAX_WORKERS  = 32   # PAS 8 : la parallelisation du scan Q1 combinee au
+                     # retry robuste peut demander jusqu'a 36 requetes
+                     # simultanees dans le pire cas - 8 causait une
+                     # cascade de faux timeouts (§12.7)
+
+SEUIL_Q1 = 3  # sur 4 criteres, PAS un ET strict (5/5 donnait 0 OUI sur
+              # tout un match, voir §12.2)
+
+PALIERS_RECHERCHE_FINE = [15, 5, 1]
+TAILLE_LOT_Q1 = 6
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# PROMPTS — NE PAS REFORMULER (voir avertissement en tête de fichier)
+# ─────────────────────────────────────────────────────────────────────────
+
+PROMPT_Q1_RIGOUREUX = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur.
+
+OBJECTIF : déterminer si cette image montre une scène d'AVANT-MATCH EN COURS DE MISE EN PLACE vers un coup d'envoi - PAS nécessairement l'instant exact où tout est déjà prêt. L'image peut être prise plusieurs dizaines de secondes avant le coup d'envoi réel, pendant que les joueurs arrivent encore ou se placent progressivement - c'est normal et acceptable.
+
+Ne rejette PAS une image simplement parce que :
+- des joueurs sont encore en train d'arriver ou de se placer
+- l'effectif n'est pas encore complet
+- la scène n'est pas parfaitement stable/figée
+
+═══════════════════════════════════════════════════
+VÉRIFICATIONS PRÉALABLES OBLIGATOIRES — À FAIRE EN PREMIER
+═══════════════════════════════════════════════════
+
+Si l'une des deux réponses ci-dessous est "oui", réponds directement "NON" à tout le reste, sans analyser davantage.
+
+QUESTION PRÉALABLE 1 — Un but ACTIF DU MATCH est-il visible dans l'image ? Un but actif du match se situe à l'une des DEUX EXTRÉMITÉS du terrain, dans l'alignement du jeu (généralement en fond de cadre, face à la caméra ou tournant le dos à elle).
+Si oui → NON automatique.
+⚠️ NE COMPTE PAS comme "but actif du match" : un petit but d'entraînement, de rangement, ou toute structure de type cage/poteaux positionnée SUR LE CÔTÉ du terrain (près d'une clôture, d'un bâtiment, ou hors de l'alignement des deux extrémités du terrain). Ce type de structure secondaire ne doit PAS déclencher le rejet automatique - seul un vrai but de match, aligné avec le terrain de jeu, compte ici.
+
+QUESTION PRÉALABLE 2 — Le jeu est-il MANIFESTEMENT déjà actif (joueurs en mouvement de jeu réel, ballon en circulation loin du centre) ?
+Si oui → NON automatique (ce n'est plus une scène d'avant-match, c'est déjà du jeu).
+
+═══════════════════════════════════════════════════
+CRITÈRES (jugés ensemble, pas un ET strict)
+═══════════════════════════════════════════════════
+
+1. ZONE CENTRALE PLAUSIBLE : la scène se situe-t-elle dans ou près de la zone centrale du terrain (rond central visible, OU ligne médiane visible, OU absence d'éléments indiquant clairement une autre zone comme un but/corner/surface de réparation) ?
+
+2. CARACTÈRE "AVANT-MATCH" GÉNÉRAL : la scène ressemble-t-elle à une phase de préparation avant un début de jeu (joueurs qui se placent, arrivent, s'organisent, discutent, ou attendent), plutôt qu'à une phase de jeu actif ou un arrêt de jeu localisé (corner, touche, coup franc excentré) ?
+
+3. AU MOINS UNE AMORCE DE SÉPARATION PAR ÉQUIPE : y a-t-il un signe, même partiel, que les deux équipes tendent à se répartir chacune de leur côté (pas obligatoirement terminé, mais visible en tendance) - plutôt que les deux équipes complètement mélangées au même endroit ?
+
+4. PAS UNE AUTRE REMISE EN JEU LOCALISÉE : la scène n'est pas clairement un corner, une touche, ou un coup franc loin du centre.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false}"""
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# V5.2 Phase A — variante Q1 DEDIEE A KO2, PAS utilisee pour KO1
+# ─────────────────────────────────────────────────────────────────────────
+# ⚠️ Le prompt Q1 original (ci-dessus) est PARTAGE et deja valide 9/9 pour
+# KO1 - ne pas le modifier sans revalidation complete (cf. avertissement
+# en tete de fichier : une reformulation a deja fait perdre un run
+# complet).
+#
+# Le critere "deux_equipes_visibles" ci-dessous a ete decouvert et valide
+# specifiquement sur des faux positifs KO2 (P1Minerois : une seule equipe
+# en echauffement pres de la touche satisfaisait les 4 criteres
+# originaux). CE CRITERE FAISAIT PARTIE DU TEST QUI A VALIDE KO2 9/9 -
+# ce n'est pas une amelioration optionnelle, c'est une piece necessaire
+# du comportement deja valide, qui n'avait par erreur jamais ete portee
+# en production avant ce fix (bug trouve suite a un audit demande
+# apres un run de production divergent du test).
+#
+# Utilise UNIQUEMENT par find_ko2_gemini (match_boundaries_v2.py) - KO1
+# continue d'utiliser PROMPT_Q1_RIGOUREUX + _q1_une_lecture originaux,
+# intacts.
+PROMPT_Q1_KO2 = PROMPT_Q1_RIGOUREUX.replace(
+    'Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :\n{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false}',
+    '''═══════════════════════════════════════════════════
+CRITÈRE OBLIGATOIRE SUPPLÉMENTAIRE (à part, pas optionnel)
+═══════════════════════════════════════════════════
+
+5. DEUX ÉQUIPES DISTINCTES VISIBLES : vois-tu clairement des joueurs des DEUX équipes (deux couleurs de maillot différentes, hors gardien) ? Une scène montrant une seule équipe en train de s'échauffer ou de se replacer (même avec son propre gardien dans une 3e couleur) NE COMPTE PAS - il faut voir les deux équipes adverses en même temps. Si tu ne vois qu'une seule couleur de maillot de champ (+ éventuellement un gardien), réponds false ici, même si les autres critères semblent satisfaits.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false}'''
+).replace(
+    # V5.2 FIX (vigilance signalee sur le JSON strict) : la formulation
+    # originale "reponds directement NON a tout le reste" pouvait etre
+    # mal interpretee par le modele comme "renvoie le texte NON" au lieu
+    # du JSON attendu, ce qui aurait fait echouer le parsing JSON en
+    # aval. Clarifie UNIQUEMENT pour KO2 - le prompt Q1 original (KO1)
+    # n'est pas touche, cette formulation potentiellement ambigue y
+    # reste identique a ce qui est deja valide 9/9.
+    'Si l\'une des deux réponses ci-dessous est "oui", réponds directement "NON" à tout le reste, sans analyser davantage.',
+    'Si l\'une des deux réponses ci-dessous est "oui", réponds immédiatement avec un JSON complet où TOUTES les valeurs (y compris deux_equipes_visibles) sont à false - ne réponds JAMAIS par le simple texte "NON", toujours le JSON structuré complet.'
+).replace(
+    # V5.2 FIX : ajout d'une 3e verification prealable - fanion de corner
+    # visible = signal visuel net et concret (comme le but), decouvert
+    # sur un faux positif reel (P1Minerois t=3652s : fanion de corner
+    # visible en arriere-plan, scene de coup franc pres de la touche
+    # acceptee a tort comme candidat KO2). UNIQUEMENT pour KO2 - prompt
+    # KO1 non touche.
+    "QUESTION PRÉALABLE 2 — Le jeu est-il MANIFESTEMENT déjà actif (joueurs en mouvement de jeu réel, ballon en circulation loin du centre) ?\nSi oui → NON automatique (ce n'est plus une scène d'avant-match, c'est déjà du jeu).",
+    "QUESTION PRÉALABLE 2 — Le jeu est-il MANIFESTEMENT déjà actif (joueurs en mouvement de jeu réel, ballon en circulation loin du centre) ?\nSi oui → NON automatique (ce n'est plus une scène d'avant-match, c'est déjà du jeu).\n\nQUESTION PRÉALABLE 3 — Un fanion de corner APPARTENANT AU TERRAIN SUR LEQUEL SE JOUE LE MATCH (piquet avec petit drapeau, à l'un des 4 coins DE CE terrain) est-il visible dans l'image ? ⚠️ Attention : si plusieurs terrains sont visibles côte à côte (complexe multi-terrains), ignore les fanions d'un terrain VOISIN - seul un fanion appartenant au terrain où se déroule CE match compte. En cas de doute sur l'appartenance du fanion à ce terrain précis, ne le compte pas.\nSi un fanion du terrain de jeu est identifié avec certitude → NON automatique (la scène se situe près d'un coin de ce terrain, pas au centre)."
+).replace(
+    # V5.2 FIX : ajout d'un critere de NOMBRE DE JOUEURS - decouvert sur un
+    # faux positif reel (Franchimont/Flash t=3438s : seulement 3 personnes
+    # visibles - 2 joueurs de la MEME equipe en echauffement + 1 gardien
+    # confondu avec un arbitre - acceptees a tort comme "deux equipes
+    # separees de part et d'autre du centre"). Une vraie mise en place de
+    # coup d'envoi implique un nombre significatif de joueurs des deux
+    # equipes (typiquement plusieurs par equipe qui convergent/se
+    # placent), pas 2-3 personnes isolees qui peuvent trivialement
+    # sembler "deux equipes" par la seule couleur. UNIQUEMENT KO2 - KO1
+    # non touche.
+    'Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :\n{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false}',
+    '''6. NOMBRE DE JOUEURS SUFFISANT : compte le nombre total de joueurs visibles dans l'image (hors arbitre). Une vraie mise en place de coup d'envoi implique la présence d'un nombre significatif de joueurs des deux équipes convergeant ou se plaçant vers le centre - PAS seulement 1 ou 2 joueurs isolés par équipe. Si tu ne comptes que 2-3 joueurs au total sur toute l'image (même avec des couleurs différentes), ce n'est PAS une mise en place de coup d'envoi complète - c'est probablement un échauffement localisé, une discussion entre quelques joueurs, ou une scène similaire. Indique le nombre de joueurs compté, et réponds false à ce critère si tu comptes moins de 5 joueurs au total.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false}'''
+).replace(
+    # V5.2 FIX : ajout d'une verification "UN SEUL ballon" - signal
+    # objectif et verifiable (comme le fanion), decouvert sur une image
+    # reelle montrant DEUX ballons visibles simultanement (un pres d'un
+    # joueur au centre, un autre pres d'un groupe de joueurs plus loin) -
+    # preuve certaine qu'il ne peut pas s'agir d'un vrai match (le
+    # football se joue avec un seul ballon), meme si le reste de la
+    # scene (equipes separees, nombre de joueurs) semblait plausible.
+    # Typique d'un echauffement multi-ateliers ou plusieurs ballons
+    # circulent en parallele. UNIQUEMENT KO2 - KO1 non touche.
+    'Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :\n{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false}',
+    '''7. UN SEUL BALLON VISIBLE : compte le nombre de ballons de football visibles dans l'image. Un vrai match ou une vraie mise en place de coup d'envoi ne peut avoir qu'UN SEUL ballon sur le terrain. Si tu vois DEUX ballons ou plus, même à des endroits différents de l'image, c'est la preuve certaine qu'il ne s'agit PAS d'un vrai match (probablement un échauffement avec plusieurs ateliers/ballons en parallèle) - réponds false à ce critère dans ce cas, même si tout le reste semble plausible.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false, "nombre_ballons_compte": <entier>, "un_seul_ballon": true/false}'''
+).replace(
+    # V5.2 FIX CRITIQUE : le critere precedent ne verifiait que "PAS
+    # PLUSIEURS ballons" - un cas avec ZERO ballon visible passait donc
+    # a travers sans etre detecte (un_seul_ballon pouvait etre repondu
+    # true meme si nombre_ballons_compte=0) ! Decouvert sur un vrai faux
+    # positif P1Minerois (t=3674s) : aucun ballon visible dans l'image
+    # (verifie par visionnage reel), scene acceptee a tort. Un vrai
+    # coup d'envoi a NECESSAIREMENT un ballon visible au centre - son
+    # absence est un signal fort d'anomalie (echauffement, ballon hors
+    # cadre, discussion), pas juste l'absence de multiples ballons.
+    '''7. UN SEUL BALLON VISIBLE : compte le nombre de ballons de football visibles dans l'image. Un vrai match ou une vraie mise en place de coup d'envoi ne peut avoir qu'UN SEUL ballon sur le terrain. Si tu vois DEUX ballons ou plus, même à des endroits différents de l'image, c'est la preuve certaine qu'il ne s'agit PAS d'un vrai match (probablement un échauffement avec plusieurs ateliers/ballons en parallèle) - réponds false à ce critère dans ce cas, même si tout le reste semble plausible.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false, "nombre_ballons_compte": <entier>, "un_seul_ballon": true/false}''',
+    '''7. EXACTEMENT UN BALLON VISIBLE, PRÈS DU CENTRE : compte le nombre de ballons de football visibles dans l'image. Une vraie mise en place de coup d'envoi a TOUJOURS un ballon visible, posé près du point central. Deux cas font échouer ce critère (réponds false) :
+   a) ZÉRO ballon visible nulle part dans l'image - un vrai coup d'envoi imminent implique que le ballon soit visible et positionné, pas absent/hors cadre.
+   b) DEUX ballons ou plus visibles simultanément - signe d'échauffement avec plusieurs ateliers.
+Seul le cas d'EXACTEMENT UN ballon visible, plausiblement proche du centre, valide ce critère.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"zone_centrale_plausible": true/false, "caractere_avant_match": true/false, "amorce_separation": true/false, "pas_autre_remise_en_jeu": true/false, "deux_equipes_visibles": true/false, "nombre_joueurs_compte": <entier>, "nombre_joueurs_suffisant": true/false, "nombre_ballons_compte": <entier>, "un_seul_ballon": true/false}'''
+)
+assert PROMPT_Q1_KO2 != PROMPT_Q1_RIGOUREUX, "Le remplacement du prompt KO2 a échoué (texte cible introuvable) - vérifier que PROMPT_Q1_RIGOUREUX n'a pas changé de formulation"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# V5.2 - Vote adaptatif CIBLE sur le comptage de ballons, UNIQUEMENT pour
+# KO2 (_q1_une_lecture_ko2). Decouvert par diagnostic rigoureux (10 appels
+# identiques sur une meme image, Wanze t=4671s) : sur 9 champs de sortie
+# de PROMPT_Q1_KO2, 8 sont stables a 100% - SEUL "nombre_ballons_compte"
+# est volatil (60%/40% entre 1 et 2 ballons sur 10 appels identiques),
+# et "un_seul_ballon" qui en depend directement herite exactement de la
+# meme instabilite. La decision finale d'un_seul_ballon (donc de tout
+# _q1_une_lecture_ko2) devient donc volatile a cause d'un SEUL capteur
+# localise, pas d'une instabilite generale du jugement.
+#
+# Verification experimentale du vote isole (meme point, meme image) :
+# 3 appels ne posant QUE la question du comptage (rien d'autre) ont
+# donne un vote unanime 3/3=2 ballons, confirme correct par inspection
+# visuelle directe de l'image par l'utilisateur - la ou le prompt
+# complet a 9 champs se trompait 4 fois sur 10.
+#
+# Principe : appel complet normal d'abord (comme avant, aucun cout
+# supplementaire dans le cas courant). Seulement SI le compte rapporte
+# est 1 ou 2 (la zone specifiquement identifiee comme instable, la
+# frontiere qui determine un_seul_ballon), on declenche un vote isole
+# et adaptatif (3 appels, 5 de plus seulement en cas d'egalite) sur
+# CETTE SEULE question, et on recalcule un_seul_ballon a partir du
+# compte verifie par vote plutot que du compte du premier appel seul.
+# Les scenes a 0 ou 3+ ballons (non-ambigues) ne coutent rien de plus.
+# ─────────────────────────────────────────────────────────────────────────
+PROMPT_COMPTAGE_BALLONS_SEUL = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur.
+
+OBJECTIF UNIQUE : compte précisément le nombre de ballons de football visibles dans cette image, où qu'ils soient (au sol, en l'air, tenus par un joueur, au premier plan ou en arrière-plan). Ne réponds à rien d'autre.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"nombre_ballons_visibles": <entier>}"""
+
+
+def _compter_ballons_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_COMPTAGE_BALLONS_SEUL, etat, model_name=model_name)
+    if result is None:
+        return None
+    return result.get("nombre_ballons_visibles")
+
+
+def _voter_nombre_ballons(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
+    """Vote adaptatif isole sur le seul comptage de ballons - 3 appels,
+    5 de plus SEULEMENT en cas d'egalite stricte (pas de majorite claire
+    parmi les valeurs obtenues). Retourne le compte majoritaire, ou None
+    si tous les appels echouent."""
+    votes = []
+    for _ in range(3):
+        n = _compter_ballons_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
+        if n is not None:
+            votes.append(n)
+    if not votes:
+        return None
+    compte = Counter(votes)
+    resultats_tries = compte.most_common()
+    egalite = len(resultats_tries) > 1 and resultats_tries[0][1] == resultats_tries[1][1]
+    if egalite:
+        for _ in range(5):
+            n = _compter_ballons_une_lecture(client, video_path, t, tmp_dir, etat, model_name=model_name)
+            if n is not None:
+                votes.append(n)
+        compte = Counter(votes)
+    return compte.most_common(1)[0][0]
+
+PROMPT_Q2_RIGOUREUX = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur.
+
+OBJECTIF : déterminer si le jeu est MANIFESTEMENT en cours dans cette image - y compris si le jeu est momentanément à l'arrêt pour une raison de match (pas nécessairement en mouvement à cet instant précis). Un jugement strict, pas une impression.
+
+═══════════════════════════════════════════════════
+CRITÈRES D'ACCEPTATION (au moins un doit être clairement observable)
+═══════════════════════════════════════════════════
+
+1. Le ballon est visiblement en mouvement, loin de la zone centrale.
+
+2. Un arrêt de jeu RECONNAISSABLE comme faisant partie du match en cours - ces situations COMPTENT comme "jeu déjà commencé", même si personne ne bouge à cet instant précis :
+   - CORNER : ballon posé près d'un coin du terrain
+   - COUP FRANC : joueurs formant un mur, ballon fixe loin du centre
+   - TOUCHE : ballon ou joueur près d'une ligne de touche, joueur s'apprêtant à relancer à deux mains au-dessus de la tête
+   - PENALTY : ballon sur le point de penalty, gardien seul dans sa surface face au tireur
+   - faute sifflée, joueur au sol, célébration après un but
+
+3. Un seul ballon est visible sur le terrain ET les joueurs sont clairement en action de jeu ou en position de reprise (pas dispersés sans logique de jeu).
+
+═══════════════════════════════════════════════════
+INDICE IMPORTANT - NOMBRE DE BALLONS
+═══════════════════════════════════════════════════
+
+Si tu observes PLUSIEURS ballons sur le terrain simultanément, c'est un signe fort d'ÉCHAUFFEMENT, pas de jeu réel (un match n'utilise qu'un seul ballon à la fois). Dans ce cas, réponds NON même si les joueurs semblent actifs ou en mouvement.
+
+═══════════════════════════════════════════════════
+NE RÉPONDS PAS "oui" SIMPLEMENT PARCE QUE
+═══════════════════════════════════════════════════
+
+- les joueurs sont dispersés sans formation claire (peut être de l'échauffement, une entrée sur le terrain, ou une animation d'avant-match)
+- la scène montre de l'agitation générale sans preuve claire qu'il s'agit du match lui-même (présentation, célébration hors-jeu, public, pom-pom girls)
+- un seul joueur bouge légèrement
+
+Réponds "non" si la scène ressemble à : échauffement dispersé (souvent plusieurs ballons visibles), entrée des joueurs sur le terrain, présentation ou animation avant-match, ou une formation de coup d'envoi en préparation.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, sans balises markdown :
+{"match_deja_commence": true/false}"""
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# V5.2 - PROMPT ALTERNATIF "AVANT/APRES" pour KO2 UNIQUEMENT
+# ─────────────────────────────────────────────────────────────────────────
+# Remplace PROMPT_Q2_RIGOUREUX ("le match a-t-il commence ?") par un signal
+# moins fragile : classifier l'image comme AVANT/TRANSITION/APRES le coup
+# d'envoi, le ballon devenant un indice parmi d'autres plutot qu'une
+# condition eliminatoire. Motive par une decouverte empirique reelle :
+# le critere "match deja commence" pouvait repondre NON a tort simplement
+# parce que le ballon etait hors cadre/en touche/masque (Wanze, image
+# t=4749s confirmee par visionnage reel), meme quand le jeu avait
+# clairement repris. Experience de caracterisation (9 matchs, [-10s,+10s]
+# seconde par seconde) a montre 6/9 sequences parfaitement monotones avec
+# ce nouveau signal, contre une non-monotonie averee avec l'ancien
+# critere sur au moins 1 cas (Stembert).
+# NE remplace PAS PROMPT_Q2_RIGOUREUX ci-dessus (garde intact pour KO1 et
+# comme reference/comparaison) - ajoute une voie alternative, activable
+# via parametre.
+PROMPT_AVANT_APRES = """Tu vas analyser UNE SEULE image extraite d'une vidéo de match de football amateur, autour du moment supposé d'un coup d'envoi (début de match ou de mi-temps).
+
+OBJECTIF : classifier cette image par rapport au coup d'envoi - PAS déterminer si "le jeu est actif", mais si la scène se situe AVANT ou APRÈS l'instant du coup d'envoi lui-même.
+
+═══════════════════════════════════════════════════
+CATÉGORIES POSSIBLES
+═══════════════════════════════════════════════════
+
+AVANT : les joueurs sont encore positionnés pour l'engagement (formation figée ou presque, de part et d'autre du centre, en attente).
+
+TRANSITION : l'instant est ambigu, semble être exactement au moment du coup d'envoi ou juste après (le ballon vient d'être touché, mouvement à peine amorcé).
+
+APRES : le jeu a clairement repris - joueurs qui se dispersent depuis le centre, se replacent, courent, ou occupent des positions de jeu établies (plus la formation d'engagement).
+
+INCERTAIN : l'image ne permet vraiment pas de juger (cadrage, flou, éléments masqués empêchant toute conclusion).
+
+═══════════════════════════════════════════════════
+INDICES À CONSIDÉRER ENSEMBLE (aucun n'est éliminatoire à lui seul)
+═══════════════════════════════════════════════════
+
+- Joueurs figés en formation d'engagement → AVANT
+- Joueurs qui commencent tout juste à s'écarter du centre → TRANSITION ou APRES
+- Joueurs dispersés normalement sur le terrain, en mouvement actif → APRES
+- Ballon au point central, immobile → plutôt AVANT (mais pas une preuve absolue - peut aussi être juste avant que quelqu'un ne le touche)
+- Ballon visible en mouvement ou hors du centre → plutôt APRES
+- Ballon NON visible (hors cadre, en touche, masqué) → NE PAS conclure AVANT automatiquement - regarde les AUTRES indices (position des joueurs) pour juger quand même
+- Scène de corner/touche/coup franc excentré → INCERTAIN pour cette tâche (pas liée au coup d'envoi)
+
+Réponds STRICTEMENT en JSON, avec un raisonnement bref :
+{"classification": "AVANT"|"TRANSITION"|"APRES"|"INCERTAIN", "raisonnement": "..."}"""
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ÉTAT INTERNE DE RECHERCHE — regroupe compteurs/horloge/executor pour
+# éviter les globals (ce module peut être appelé plusieurs fois en
+# parallèle sur des matchs différents dans le pipeline)
+# ─────────────────────────────────────────────────────────────────────────
+
+class _EtatRecherche:
+    def __init__(self, max_gemini_calls, max_wallclock_s):
+        self.n_appels = 0
+        self.t_debut = time.monotonic()
+        self.max_gemini_calls = max_gemini_calls
+        self.max_wallclock_s = max_wallclock_s
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
+    def budget_epuise(self):
+        if self.n_appels >= self.max_gemini_calls:
+            return "CALL_BUDGET_REACHED"
+        if time.monotonic() - self.t_debut >= self.max_wallclock_s:
+            return "WALLCLOCK_LIMIT_REACHED"
+        return None
+
+    def fermer(self):
+        self.executor.shutdown(wait=False)
+
+
+def obtenir_duree_video(video_path):
+    """Retourne la duree reelle de la video en secondes (float), via
+    ffprobe. Retourne None si la duree ne peut pas etre determinee
+    (fichier illisible, etc.) - l'appelant doit alors se rabattre sur un
+    comportement prudent (ne pas supposer une duree infinie).
+
+    Utilise pour NE JAMAIS chercher au-dela de la fin reelle de la
+    video (evite des extractions qui echouent silencieusement ou
+    gaspillent des appels sur des points hors-video, decouvert en
+    production sur FinMatch ou la fenetre [KO2+40min, KO2+55min]
+    pouvait depasser la duree reelle du fichier)."""
+    try:
+        resultat = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", video_path
+        ], capture_output=True, text=True, check=True, timeout=30)
+        return float(resultat.stdout.strip())
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, OSError) as e:
+        print(f"  [DUREE_VIDEO] impossible de déterminer la durée de {video_path} : {e}")
+        return None
+
+
+def _extraire_frame(video_path, t_secondes, tmp_dir):
+    """Retourne les bytes de l'image, ou None si l'extraction echoue
+    (typiquement : t_secondes au-dela de la duree reelle de la video -
+    ffmpeg ne produit alors aucun fichier de sortie, sans forcement lever
+    d'exception lui-meme). Ne JAMAIS laisser une extraction hors bornes
+    faire planter tout le pipeline - la garde budget_epuise()/fenetre
+    officielle est censee eviter ce cas en amont, mais une video plus
+    courte que prevu peut toujours se produire en pratique."""
+    t_secondes = max(0, t_secondes)
+    chemin = os.path.join(tmp_dir, f"ko_frame_{t_secondes:.1f}.jpg")
+    try:
+        subprocess.run([
+            "ffmpeg", "-y", "-ss", str(t_secondes), "-i", video_path,
+            "-frames:v", "1", "-q:v", "2", chemin
+        ], check=True, capture_output=True)
+        with open(chemin, "rb") as f:
+            data = f.read()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+        print(f"    [EXTRACTION] échec à t={t_secondes:.1f}s (probablement hors durée de la vidéo) : {e}")
+        return None
+    finally:
+        try:
+            os.remove(chemin)
+        except OSError:
+            pass
+    return data
+
+
+def _appeler_gemini_json(client, image_bytes, prompt, etat, model_name=MODEL_NAME):
+    from google.genai import types
+    etat.n_appels += 1
+
+    def _appel():
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), prompt],
+            config=types.GenerateContentConfig(temperature=TEMPERATURE),
+        )
+        texte = response.text.strip()
+        if texte.startswith("```"):
+            texte = texte.split("```")[1]
+            if texte.startswith("json"):
+                texte = texte[4:]
+        return json.loads(texte.strip())
+
+    try:
+        future = etat.executor.submit(_appel)
+        return future.result(timeout=TIMEOUT_S)
+    except Exception:
+        return None  # traite comme "pas d'avis" par l'appelant, retry gere plus haut
+
+
+def _appeler_json_robuste(client, video_path, t, tmp_dir, prompt, etat, model_name=MODEL_NAME):
+    """2 tentatives a t exact, puis t+1s, puis t-1s (chacun 2 tentatives) -
+    jusqu'a 6 appels sur 3 images differentes avant d'abandonner ce
+    checkpoint. Un echec silencieux casserait la garantie de couverture
+    exhaustive du scan (cf. V5_2_FIABILITE_ROADMAP.md §12.6bis).
+
+    V5.2 : logging ajoute pour visibilite - si le retry se declenche
+    frequemment, c'est un signe d'instabilite API reelle a surveiller."""
+    for delta in (0, 1, -1):
+        tt = max(0, t + delta)
+        image_bytes = _extraire_frame(video_path, tt, tmp_dir)
+        if image_bytes is None:
+            print(f"    [RETRY] extraction impossible à t={tt:.0f}s (delta={delta:+d}), "
+                  f"passage à l'offset suivant sans appeler Gemini")
+            continue
+        for _tentative in range(2):
+            resultat = _appeler_gemini_json(client, image_bytes, prompt, etat, model_name=model_name)
+            if resultat is not None:
+                if delta != 0 or _tentative != 0:
+                    print(f"    [RETRY] succès à t={tt:.0f}s après {delta:+d}s/tentative {_tentative+1} "
+                          f"(échec initial à t={t:.0f}s)")
+                return resultat
+            print(f"    [RETRY] échec à t={tt:.0f}s (delta={delta:+d}, tentative {_tentative+1}/2)")
+    print(f"    [RETRY] ÉCHEC TOTAL sur checkpoint t={t:.0f}s (6 appels, 3 frames, tous échoués)")
+    return None  # echec total, checkpoint reellement perdu (rare)
+
+
+def _q1_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q1_RIGOUREUX, etat, model_name=model_name)
+    if result is None:
+        return None
+    criteres = [
+        result.get("zone_centrale_plausible", False),
+        result.get("caractere_avant_match", False),
+        result.get("amorce_separation", False),
+        result.get("pas_autre_remise_en_jeu", False),
+    ]
+    return sum(criteres) >= SEUIL_Q1
+
+
+def _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
+    """V5.2 Phase A : variante Q1 pour KO2 UNIQUEMENT - meme 4 criteres +
+    deux_equipes_visibles + nombre_joueurs_suffisant + un_seul_ballon,
+    tous OBLIGATOIRES (voir PROMPT_Q1_KO2 ci-dessus).
+    KO1 continue d'utiliser _q1_une_lecture (original), intact.
+
+    V5.2 : si le comptage de ballons rapporte par cet appel complet est
+    1 ou 2 (la zone specifiquement identifiee comme instable par
+    diagnostic - voir _voter_nombre_ballons ci-dessus), on verifie ce
+    compte precis par un vote isole et adaptatif avant de calculer
+    un_seul_ballon, plutot que de faire confiance au premier appel
+    seul sur ce capteur precis. Aucun cout supplementaire si le compte
+    est 0 ou >=3 (zones non ambigues).
+
+    model_name : V5.2 - parametrable pour comparer Pro vs Flash sur KO2,
+    sans toucher au defaut (Pro) utilise partout ailleurs y compris KO1."""
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q1_KO2, etat, model_name=model_name)
+    if result is None:
+        return None
+    criteres = [
+        result.get("zone_centrale_plausible", False),
+        result.get("caractere_avant_match", False),
+        result.get("amorce_separation", False),
+        result.get("pas_autre_remise_en_jeu", False),
+    ]
+    deux_equipes = result.get("deux_equipes_visibles", False)
+    nombre_suffisant = result.get("nombre_joueurs_suffisant", False)
+
+    nombre_ballons_compte = result.get("nombre_ballons_compte")
+    if nombre_ballons_compte in (1, 2):
+        # V5.2 FIX : ne PAS garder le booleen un_seul_ballon du premier
+        # appel en ET logique ici - si ce premier appel a compte 2 (donc
+        # son propre un_seul_ballon=False) et que le vote verifie ensuite
+        # que c'est en realite 1, un ET avec l'ancien booleen aurait
+        # garde False a tort (base sur un compte perime). On derive
+        # un_seul_ballon UNIQUEMENT du compte verifie par vote.
+        nombre_ballons_verifie = _voter_nombre_ballons(client, video_path, t, tmp_dir, etat, model_name=model_name)
+        if nombre_ballons_verifie is not None:
+            nombre_ballons_compte = nombre_ballons_verifie
+    un_seul_ballon = nombre_ballons_compte == 1
+
+    return (sum(criteres) >= SEUIL_Q1) and deux_equipes and nombre_suffisant and un_seul_ballon
+
+
+def _q1_une_lecture_ko2_vote_economique(client, video_path, t, tmp_dir, etat, max_confirmations=2, model_name=MODEL_NAME):
+    """V5.2 : variante ECONOMIQUE du vote majoritaire, appliquee SEULEMENT
+    quand le premier appel dit OUI - pas sur chaque point scanne (la
+    plupart disent NON correctement et n'ont pas besoin de confirmation
+    couteuse). Motivation : diagnostic reel (P1Minerois, t=3652s) a montre
+    2 appels sur la MEME image donnant 2 verdicts opposes (OUI puis NON)
+    - un seul "OUI" chanceux peut faire derailler toute la recherche vers
+    un faux Q2+recherche fine couteux, alors qu'un "NON" incorrect n'a
+    qu'un cout faible (on continue simplement le scan).
+
+    Cout ajoute : +max_confirmations appels UNIQUEMENT sur les points ou
+    le 1er appel dit deja OUI (rares compares aux NON) - pas un
+    multiplicateur global sur tout le scan."""
+    premier = _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=model_name)
+    if not premier:
+        return premier  # NON ou erreur : pas de confirmation, cout inchange
+
+    print(f"    [VOTE_Q1] premier appel=OUI à t={t:.0f}s, confirmation par {max_confirmations} appels supplémentaires...")
+    votes = [premier]
+    for _ in range(max_confirmations):
+        v = _q1_une_lecture_ko2(client, video_path, t, tmp_dir, etat, model_name=model_name)
+        if v is not None:
+            votes.append(v)
+    decision = sum(votes) > len(votes) / 2
+    print(f"    [VOTE_Q1] votes={votes} → décision finale={'OUI' if decision else 'NON'}"
+          f"{' (majorité a corrigé un premier OUI isolé)' if not decision else ''}")
+    return decision
+
+
+def _q2_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME):
+    result = _appeler_json_robuste(client, video_path, t, tmp_dir, PROMPT_Q2_RIGOUREUX, etat, model_name=model_name)
+    if result is None:
+        return None
+    return bool(result.get("match_deja_commence", False))
+
+
+def _q2_avant_apres_une_lecture(client, video_path, t, tmp_dir, etat, model_name=MODEL_NAME, max_retry_incertain=2):
+    """V5.2 : variante Q2 utilisant le signal AVANT/TRANSITION/APRES/INCERTAIN
+    au lieu de "match deja commence". Mapping : AVANT->False, APRES/
+    TRANSITION->True (coherent avec la semantique "au moins commence").
+    INCERTAIN -> retente a des offsets voisins (t+1,t-1...) plutot que de
+    conclure au hasard - une image vraiment illisible ne doit pas peser
+    sur la decision.
+
+    Retourne True/False, ou None si toujours INCERTAIN apres les
+    tentatives (l'appelant doit alors traiter comme une erreur/retry,
+    pas comme une reponse fiable)."""
+    for tentative in range(max_retry_incertain + 1):
+        tt = t if tentative == 0 else t + tentative  # essaie t, puis t+1, t+2...
+        result = _appeler_json_robuste(client, video_path, tt, tmp_dir, PROMPT_AVANT_APRES, etat, model_name=model_name)
+        if result is None:
+            continue  # echec API, deja gere par retry interne de _appeler_json_robuste, on tente l'offset suivant
+        classification = result.get("classification", "INCERTAIN")
+        if classification == "AVANT":
+            return False
+        elif classification in ("APRES", "TRANSITION"):
+            return True
+        # INCERTAIN : on boucle vers la tentative suivante (offset different)
+    return None  # reste INCERTAIN apres toutes les tentatives
+
+
+def _voter_q2(client, video_path, t, tmp_dir, etat, max_appels=3, model_name=MODEL_NAME, fonction_q2=_q2_une_lecture):
+    """Vote majoritaire avec arret anticipe - meme principe que
+    detect_ko_vision.py::voter_transition(), max_appels=3 (pas 5, pour
+    maitriser le cout sur ce point de decision critique).
+
+    fonction_q2 : V5.2, defaut=_q2_une_lecture (comportement inchange).
+    Permet de passer _q2_avant_apres_une_lecture pour le signal alternatif."""
+    votes = []
+    for _ in range(max_appels):
+        v = fonction_q2(client, video_path, t, tmp_dir, etat, model_name=model_name)
+        if v is None:
+            if not votes:
+                return None
+            break
+        votes.append(v)
+        n_true = sum(votes)
+        n_false = len(votes) - n_true
+        restants = max_appels - len(votes)
+        if n_true > n_false + restants or n_false > n_true + restants:
+            break
+    if not votes:
+        return None
+    return sum(votes) > len(votes) / 2
+
+
+def _scan_q1_par_lots(client, video_path, tmp_dir, etat, t_debut, t_max, pas=60, taille_lot=TAILLE_LOT_Q1, fonction_q1=_q1_une_lecture, model_name=MODEL_NAME):
+    """Scanne Q1 par lots parallèles, traite dans l'ordre chronologique -
+    identique en decision au scan sequentiel, juste plus rapide.
+    Verifie le budget (appels/wallclock) avant chaque lot.
+
+    fonction_q1 : V5.2 Phase A, defaut=_q1_une_lecture (KO1, inchange).
+    Permet de passer _q1_une_lecture_ko2 pour la recherche KO2.
+    model_name : V5.2, parametrable pour comparer Pro vs Flash sur KO2."""
+    t = t_debut
+    while t <= t_max:
+        raison_arret = etat.budget_epuise()
+        if raison_arret:
+            return None, t, raison_arret
+
+        lot = [t + i * pas for i in range(taille_lot) if t + i * pas <= t_max]
+        futures = {tt: etat.executor.submit(fonction_q1, client, video_path, tt, tmp_dir, etat, model_name=model_name) for tt in lot}
+
+        for tt in lot:
+            decision = futures[tt].result()
+            if decision:
+                return tt, tt, None
+
+        t += taille_lot * pas
+
+    return None, t, None
+
+
+def _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, model_name=MODEL_NAME, fonction_q2=_q2_une_lecture):
+    """Affine entre premier_oui (Q2=NON, deja verifie) et t_verif (Q2=OUI,
+    deja verifie) par paliers decroissants. t_bas et t_haut ne sont
+    jamais reredemandes (deja connus a chaque palier).
+
+    fonction_q2 : V5.2, defaut=_q2_une_lecture (comportement inchange)."""
+    t_bas, t_haut = premier_oui, t_verif
+    n_ok, n_err = 0, 0      # 24/10/2026 : vérifications abouties / en erreur
+    for i_pas, pas in enumerate(PALIERS_RECHERCHE_FINE):
+        tt = t_bas + pas
+        dernier_non = t_bas
+        while tt < t_haut:
+            d = fonction_q2(client, video_path, tt, tmp_dir, etat, model_name=model_name)
+            print(f"    [FINE pas={pas}s] t={tt:.0f}s : {'OUI' if d else 'NON' if d is not None else 'ERREUR'}")
+            if d is None:
+                n_err += 1
+            else:
+                n_ok += 1
+            if d:
+                t_haut = tt
+                t_bas = dernier_non
+                break
+            dernier_non = tt
+            tt += pas
+        else:
+            t_bas = dernier_non
+    # 24/10/2026 : contrat « jamais de timestamp sur une recherche incertaine » — si AUCUNE vérification n'a
+    # abouti (extractions impossibles, Gemini indisponible), t_haut n'est que la borne haute de la recherche :
+    # elle ne doit pas être présentée comme le coup d'envoi (observé : 330 s « confirmé » sans aucune image lue).
+    if n_err > 0 and n_ok == 0:
+        print(f"    [FINE] aucune vérification aboutie ({n_err} erreur(s)) : coup d'envoi NON déterminé")
+        return None
+    return t_haut
+
+
+def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, delai_verif_q2_precoce=30, fonction_q2=_q2_une_lecture, pas_scan_fin=None):
+    # V5.2 Phase A : t_debut parametrable (defaut=60, comportement KO1
+    # inchange) - necessaire pour reutiliser cette meme cascade pour KO2,
+    # qui doit demarrer sa recherche a KO1+quelque chose, pas a t=60s.
+    # pas_scan parametrable (defaut=60, comportement KO1 inchange) -
+    # KO2 a besoin d'un pas plus fin (20s, valide empiriquement sur
+    # Franchimont : la camera ne se stabilise sur le centre que
+    # brievement lors de la reprise, un pas de 60s peut sauter par-dessus
+    # cette fenetre - observe concretement en production, cf. diagnostic
+    # Franchimont/Stembert KO2 errone).
+    # model_name parametrable (defaut=MODEL_NAME=Pro, inchange pour KO1) -
+    # permet de comparer Pro vs Flash pour KO2 sans toucher KO1.
+    # delai_verif_q2 parametrable (defaut=60, comportement KO1 inchange) -
+    # ce delai etait calibre pour pas_scan=60 (KO1) : verifier Q2 "un pas
+    # de scan plus loin". Avec pas_scan=20 pour KO2, un delai fixe de 60s
+    # verifie 3 pas de scan plus loin au lieu de 1, ce qui peut rendre le
+    # controle "fenetre degeneree" (Q2 deja vrai au point premier_oui)
+    # trop sensible - suspicion signalee, jamais teste avant ce fix.
+    # fonction_q2 parametrable (defaut=_q2_une_lecture, comportement
+    # inchange) - permet de passer _q2_avant_apres_une_lecture pour le
+    # signal alternatif AVANT/APRES, moins fragile que "match deja
+    # commence" (qui dependait trop de la visibilite du ballon).
+    #
+    # V5.2 STRATEGIE C (09/09/2026, suite diagnostic Andrimont) :
+    # verification Q2 en DEUX temps - d'abord a +delai_verif_q2_precoce
+    # (30s), et SEULEMENT si NON, a +delai_verif_q2 (60s), avant de
+    # rejeter le candidat. Justification empirique : test reel sur les
+    # 10 matchs de reference (09/09/2026) a montre un cas (Andrimont,
+    # candidat a t=300s, tres proche du vrai KO1) ou +30s confirmait
+    # correctement (OUI) alors que +60s rejetait a tort (NON) - sans
+    # cette verification precoce, le systeme continuait a scanner et
+    # finissait par confirmer un candidat errone 480s plus tard
+    # (erreur +472s au lieu de +7.5s). Teste sans regression sur les 9
+    # autres matchs (les 2 seuls autres cas de divergence trouves,
+    # Raeren et Juprelle, vont dans l'autre sens - +60 confirme la ou
+    # +30 ne confirme pas encore - et sont donc deja couverts par le
+    # filet de securite +60s existant, sans perte).
+    t = t_debut  # t=0 (ou avant t_debut) toujours "avant-match" pour KO1,
+                 # mais pour KO2 t_debut sera deja loin dans la video
+
+    # V5.2 FIX (11/09/2026) : verification ponctuelle a t=0 avant de
+    # commencer le scan normal. Hypothese implicite du code (aucun KO
+    # avant t_debut, generalement 60s) violee sur un match reel ou
+    # KO1~8s. Si Q1(t=0)=True, le signal existe quelque part dans
+    # [0, t_debut] - injecte directement comme "premier_oui" (comme si
+    # le scan grossier l'avait trouve a t=0), pour reutiliser TOUTE la
+    # logique existante (verification Q2, recherche fine) sans dupliquer
+    # de code. Cout : 1 seul appel Gemini supplementaire dans le cas
+    # normal (signal absent a t=0, comportement inchange).
+    # GARDE : uniquement pertinent pour KO1 (t_debut proche de 0, ex.
+    # 60s) - pour KO2, t_debut est deja loin dans la video (~KO1+49min)
+    # et verifier "formation de coup d'envoi a t=0" n'a aucun sens
+    # (c'est la 1ere mi-temps, pas la reprise). Sans cette garde,
+    # chaque recherche KO2 gaspillerait 1 appel pour rien.
+    # Validation : match reel KO1~8s corrige (431s errone -> 10s
+    # correct, +2s d'ecart, moins cher : 10 appels au lieu de 23).
+    # Non-regression testee sur 5/11 matchs de reference (Andrimont,
+    # Franchimont, Goe, MelenP1, Spa) : 5/5 corrects, ecarts <=3s.
+    SEUIL_T_DEBUT_PROCHE_ZERO = 120
+    if 0 < t_debut <= SEUIL_T_DEBUT_PROCHE_ZERO:
+        print(f"  [KICKOFF_GEMINI] vérification préalable à t=0s (hypothèse 'jamais de KO avant t_début' à confirmer)...")
+        signal_t0 = fonction_q1(client, video_path, 0, tmp_dir, etat, model_name=model_name)
+        if signal_t0:
+            print(f"  [KICKOFF_GEMINI] signal détecté à t=0s - le KO est probablement avant t_début={t_debut:.0f}s, recherche fine directe dans [0s, {t_debut:.0f}s]...")
+            premier_oui_t0 = 0
+            t_verif_precoce_t0 = min(premier_oui_t0 + delai_verif_q2_precoce, t_debut)
+            decision_q2_t0 = _voter_q2(client, video_path, t_verif_precoce_t0, tmp_dir, etat, model_name=model_name, fonction_q2=fonction_q2)
+            if decision_q2_t0:
+                kickoff_s_t0 = _recherche_fine(client, video_path, tmp_dir, etat, premier_oui_t0, t_verif_precoce_t0, model_name=model_name, fonction_q2=fonction_q2)
+                if kickoff_s_t0 is None:
+                    return {"status": "ERROR", "kickoff_s": None, "reason": "FINE_SEARCH_FAILED"}
+                print(f"  [KICKOFF_GEMINI] KO détecté à t={kickoff_s_t0:.0f}s (via vérification t=0)")
+                return {"status": "AUTO_CONFIRMED", "kickoff_s": float(kickoff_s_t0), "reason": None}
+            else:
+                print(f"  [KICKOFF_GEMINI] signal à t=0s non confirmé par Q2, poursuite du scan normal depuis t_début={t_debut:.0f}s")
+        else:
+            print(f"  [KICKOFF_GEMINI] aucun signal à t=0s, hypothèse confirmée, scan normal depuis t_début={t_debut:.0f}s")
+
+    # V5.2 (11/09/2026) : pas adaptatif. Tant qu'aucun signal Q1 n'a
+    # jamais ete vu (meme rejete ensuite par Q2), on scanne au pas
+    # grossier (pas_scan) - bon marche, loin de la vraie transition. Des
+    # qu'un premier signal Q1=OUI est rencontre (signe qu'on est entre
+    # dans la "zone chaude"), on passe au pas fin (pas_scan_fin) pour
+    # TOUTE la suite du scan - objectif : ne plus rater la vraie
+    # transition a cause d'un decalage de grille (valide sur KO2/Goe,
+    # KO1=1082/1083 corriges), sans payer le cout du pas fin sur toute
+    # la fenetre. pas_scan_fin=None (defaut) = comportement inchange
+    # (KO1 n'utilise pas ce parametre, garde pas_scan=60 fixe).
+    a_vu_premier_signal = False
+    while t <= t_max:
+        pas_scan_actuel = pas_scan_fin if (a_vu_premier_signal and pas_scan_fin is not None) else pas_scan
+        print(f"  [KICKOFF_GEMINI] scan Q1 depuis t={t:.0f}s (max={t_max:.0f}s, pas={pas_scan_actuel}s, modele={model_name})")
+        premier_oui, t, raison_arret = _scan_q1_par_lots(client, video_path, tmp_dir, etat, t, t_max, pas=pas_scan_actuel, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name)
+        if raison_arret:
+            print(f"  [KICKOFF_GEMINI] arrêt : {raison_arret}")
+            return {"status": "NOT_FOUND", "kickoff_s": None, "reason": raison_arret}
+        if premier_oui is None:
+            print(f"  [KICKOFF_GEMINI] aucun candidat Q1 trouvé jusqu'à t={t_max:.0f}s")
+            return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
+        a_vu_premier_signal = True
+
+        t_verif_precoce = premier_oui + delai_verif_q2_precoce
+        t_verif_tardif = premier_oui + delai_verif_q2
+        if t_verif_tardif > t_max:
+            print(f"  [KICKOFF_GEMINI] candidat à t={premier_oui:.0f}s mais vérification hors limite")
+            return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
+
+        print(f"  [KICKOFF_GEMINI] candidat Q1 à t={premier_oui:.0f}s, vote Q2 précoce à t={t_verif_precoce:.0f}s...")
+        decision_q2 = _voter_q2(client, video_path, t_verif_precoce, tmp_dir, etat, model_name=model_name, fonction_q2=fonction_q2)
+        print(f"  [KICKOFF_GEMINI] vote Q2 précoce : {'OUI' if decision_q2 else 'NON' if decision_q2 is not None else 'ERREUR'}")
+        t_verif = t_verif_precoce
+
+        raison_arret = etat.budget_epuise()
+        if raison_arret:
+            print(f"  [KICKOFF_GEMINI] arrêt : {raison_arret}")
+            return {"status": "NOT_FOUND", "kickoff_s": None, "reason": raison_arret}
+
+        if not decision_q2 and t_verif_tardif != t_verif_precoce:
+            print(f"  [KICKOFF_GEMINI] candidat rejeté par vote précoce, vote Q2 tardif à t={t_verif_tardif:.0f}s...")
+            decision_q2 = _voter_q2(client, video_path, t_verif_tardif, tmp_dir, etat, model_name=model_name, fonction_q2=fonction_q2)
+            print(f"  [KICKOFF_GEMINI] vote Q2 tardif : {'OUI' if decision_q2 else 'NON' if decision_q2 is not None else 'ERREUR'}")
+            t_verif = t_verif_tardif
+
+            raison_arret = etat.budget_epuise()
+            if raison_arret:
+                print(f"  [KICKOFF_GEMINI] arrêt : {raison_arret}")
+                return {"status": "NOT_FOUND", "kickoff_s": None, "reason": raison_arret}
+
+        if not decision_q2:
+            print(f"  [KICKOFF_GEMINI] candidat rejeté, reprise à t={t_verif:.0f}s")
+            t = t_verif  # reprend le scan Q1 ici, pas t_verif+60 (trou de couverture, §12.3)
+            continue
+
+        # Garde de securite : si Q2 est deja vrai au point de depart, la
+        # fenetre [premier_oui, t_verif] est invalide (vrai KO probablement
+        # avant premier_oui) - ne jamais deviner, signaler NOT_FOUND.
+        premier_check = fonction_q2(client, video_path, premier_oui, tmp_dir, etat, model_name=model_name)
+        if premier_check:
+            # 28/10/2026 : SECONDE CHANCE VÉRIFIÉE. Le ballon est déjà en jeu au premier point vu : le coup d'envoi a eu
+            # lieu juste AVANT (Franchimont, run du 28/10 : KO2 réel à 3719 s, abandon à 3719 s). On recule de 30 s ;
+            # si le ballon n'y était PAS encore en jeu (vérifié), le coup d'envoi est dans [t_recul, premier_oui] :
+            # recherche fine habituelle. Sinon, abandon comme avant (jamais de valeur devinée).
+            t_recul = max(0.0, premier_oui - 30)
+            recul_check = fonction_q2(client, video_path, t_recul, tmp_dir, etat, model_name=model_name)
+            print(f"  [KICKOFF_GEMINI] fenêtre dégénérée (Q2 déjà vrai à t={premier_oui:.0f}s) — "
+                  f"vérification à t={t_recul:.0f}s : {'OUI' if recul_check else 'NON' if recul_check is not None else 'ERREUR'}")
+            if recul_check is False:
+                print(f"  [KICKOFF_GEMINI] seconde chance : recherche fine dans [{t_recul:.0f}s, {premier_oui:.0f}s]...")
+                kickoff_s = _recherche_fine(client, video_path, tmp_dir, etat, t_recul, premier_oui, model_name=model_name, fonction_q2=fonction_q2)
+                if kickoff_s is None:
+                    return {"status": "ERROR", "kickoff_s": None, "reason": "FINE_SEARCH_FAILED"}
+                print(f"  [KICKOFF_GEMINI] KO détecté à t={kickoff_s:.0f}s (seconde chance après fenêtre dégénérée)")
+                return {"status": "AUTO_CONFIRMED", "kickoff_s": float(kickoff_s), "reason": "DEGENERATE_WINDOW_RESOLU"}
+            print(f"  [KICKOFF_GEMINI] fenêtre dégénérée confirmée : abandon (aucune valeur devinée)")
+            return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "DEGENERATE_WINDOW"}
+
+        print(f"  [KICKOFF_GEMINI] confirmé, recherche fine dans [{premier_oui:.0f}s, {t_verif:.0f}s]...")
+        kickoff_s = _recherche_fine(client, video_path, tmp_dir, etat, premier_oui, t_verif, model_name=model_name, fonction_q2=fonction_q2)
+        if kickoff_s is None:
+            return {"status": "ERROR", "kickoff_s": None, "reason": "FINE_SEARCH_FAILED"}
+        print(f"  [KICKOFF_GEMINI] KO détecté à t={kickoff_s:.0f}s")
+        return {"status": "AUTO_CONFIRMED", "kickoff_s": float(kickoff_s), "reason": None}
+
+    return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "VIDEO_EXHAUSTED"}
+
+
+def detect_kickoff_gemini(video_path, max_search_s,
+                            max_gemini_calls=MAX_GEMINI_CALLS_DEFAUT,
+                            max_wallclock_s=MAX_WALLCLOCK_S_DEFAUT,
+                            tmp_dir=None, t_debut=60, pas_scan=60, fonction_q1=_q1_une_lecture, taille_lot=TAILLE_LOT_Q1, model_name=MODEL_NAME, delai_verif_q2=60, delai_verif_q2_precoce=30, fonction_q2=_q2_une_lecture, pas_scan_fin=None):
+    """
+    Détecte le premier coup d'envoi d'un match par cascade Gemini
+    (Q1 scan 60s -> Q2 confirmation -> recherche fine 15/5/1s).
+
+    Contrat V1 (V5_2_FIABILITE_ROADMAP.md §12.9) :
+    - Premier KO uniquement (pas la reprise après mi-temps).
+    - Ne fabrique JAMAIS un timestamp sur une recherche incertaine ou
+      épuisée - retourne NOT_FOUND explicitement dans ce cas.
+
+    Paramètres
+    ----------
+    video_path : str
+        Chemin de la vidéo à analyser.
+    max_search_s : float
+        Limite de recherche (secondes), déjà bornée par l'appelant
+        (typiquement min(video_duration_s, formule half_duration_min), §12.10).
+    max_gemini_calls : int
+        Budget d'appels Gemini, garde-fou technique fixe (pas exposé à
+        l'utilisateur final).
+    max_wallclock_s : float
+        Limite de temps réel (secondes), garde-fou technique fixe,
+        indépendant du budget d'appels.
+    tmp_dir : str
+        Répertoire pour les frames temporaires extraites.
+    t_debut : float
+        V5.2 Phase A : point de départ du scan (défaut=60, comportement
+        KO1 identique à avant). Permet de réutiliser cette cascade pour
+        KO2 en démarrant le scan à un point avancé de la vidéo (ex:
+        KO1+49min) plutôt qu'au tout début.
+
+    Retourne
+    --------
+    dict avec au minimum :
+        {"status": "AUTO_CONFIRMED" | "NOT_FOUND" | "ERROR",
+         "kickoff_s": float | None,
+         "reason": str | None,
+         "n_appels_gemini": int,
+         "duree_recherche_s": float}
+    """
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return {"status": "ERROR", "kickoff_s": None, "reason": "MISSING_API_KEY",
+                "n_appels_gemini": 0, "duree_recherche_s": 0.0}
+
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+    except Exception as e:
+        return {"status": "ERROR", "kickoff_s": None, "reason": f"CLIENT_INIT_FAILED: {e}",
+                "n_appels_gemini": 0, "duree_recherche_s": 0.0}
+
+    if not tmp_dir:
+        # 24/10/2026 : dossier temporaire du système (« /tmp » n'existe pas sous Windows : toutes les
+        # extractions d'images échouaient)
+        import tempfile as _tempfile
+        tmp_dir = os.path.join(_tempfile.gettempdir(), "scoutia_kickoff")
+    os.makedirs(tmp_dir, exist_ok=True)
+    etat = _EtatRecherche(max_gemini_calls, max_wallclock_s)
+
+    try:
+        resultat = _rechercher_kickoff(client, video_path, tmp_dir, etat, max_search_s, t_debut=t_debut, pas_scan=pas_scan, fonction_q1=fonction_q1, taille_lot=taille_lot, model_name=model_name, delai_verif_q2=delai_verif_q2, delai_verif_q2_precoce=delai_verif_q2_precoce, fonction_q2=fonction_q2, pas_scan_fin=pas_scan_fin)
+    except Exception as e:
+        resultat = {"status": "ERROR", "kickoff_s": None, "reason": f"UNEXPECTED_EXCEPTION: {e}"}
+    finally:
+        etat.fermer()
+
+    resultat["n_appels_gemini"] = etat.n_appels
+    resultat["duree_recherche_s"] = time.monotonic() - etat.t_debut
+    return resultat
+
+
+def detect_kickoff_gemini_avec_retry(video_path, max_search_s,
+                                       max_retries=3, t_debut=60, **kwargs):
+    """
+    Enveloppe detect_kickoff_gemini() avec un retry automatique -
+    UNIQUEMENT sur NOT_FOUND, pas sur ERROR.
+
+    Justification : NOT_FOUND (notamment DEGENERATE_WINDOW) peut venir
+    de la variance residuelle de Gemini documentee tout au long de
+    V5_2_FIABILITE_ROADMAP.md §12 - observe concretement : meme match
+    (Andrimont), 2 appels consecutifs a ce module -> 1x NOT_FOUND/
+    DEGENERATE_WINDOW, 1x AUTO_CONFIRMED (310s). Un nouvel essai complet
+    peut recuperer le bon resultat sans intervention manuelle.
+
+    ERROR n'est PAS retente : ces conditions (cle API manquante, client
+    mal initialise, exception inattendue) sont plus probablement
+    structurelles que transitoires - reessayer ne les resoudrait pas et
+    gaspillerait du budget/temps pour rien.
+
+    Cout dans le pire cas : jusqu'a max_retries x le cout d'un essai
+    normal (appels + temps). A surveiller en production - si NOT_FOUND
+    est frequent, ce multiplicateur peut devenir significatif.
+
+    t_debut : voir detect_kickoff_gemini (V5.2 Phase A, defaut=60,
+    permet la reutilisation pour KO2).
+    """
+    dernier_resultat = None
+    for tentative in range(1, max_retries + 1):
+        print(f"[KICKOFF_GEMINI] tentative {tentative}/{max_retries}")
+        resultat = detect_kickoff_gemini(video_path, max_search_s, t_debut=t_debut, **kwargs)
+        resultat["tentative"] = tentative
+        print(f"[KICKOFF_GEMINI] tentative {tentative} → status={resultat['status']} "
+              f"kickoff_s={resultat['kickoff_s']} reason={resultat.get('reason')}")
+        if resultat["status"] != "NOT_FOUND":
+            return resultat  # AUTO_CONFIRMED ou ERROR : on s'arrete la
+        dernier_resultat = resultat
+
+    print(f"[KICKOFF_GEMINI] échec après {max_retries} tentatives (NOT_FOUND persistant)")
+    return dernier_resultat  # NOT_FOUND apres max_retries tentatives
