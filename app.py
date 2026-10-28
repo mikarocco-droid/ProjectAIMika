@@ -26,6 +26,15 @@ from werkzeug.utils import secure_filename
 
 import config
 from config import allowed_file
+
+# 25/10/2026 : VERROU GEMINI chargé dès le démarrage — tous les appels du serveur web et du worker Celery, y compris
+# la PRÉ-ANALYSE (coup d'envoi, couleurs), passent par le modèle unique gemini-3.8-flash. Avant, gemini_validator
+# n'était chargé qu'au lancement de l'analyse : la pré-analyse appelait gemini-3.1-pro-preview et gemini-2.5-flash
+# (facture : 0,312 M de jetons de sortie en 3.1 Pro lors des tests locaux).
+try:
+    import ai.gemini_validator as _gv_verrou   # noqa: F401  (installe le verrou à l'import)
+except Exception as _e_verrou:
+    print(f"  ⚠️  VERROU GEMINI NON INSTALLÉ ({_e_verrou}) : la pré-analyse utiliserait d'autres modèles")
 # Celery — import conditionnel (fallback threading si Celery indispo)
 try:
     from tasks import run_analysis as celery_run_analysis
