@@ -831,7 +831,22 @@ def _rechercher_kickoff(client, video_path, tmp_dir, etat, t_max, t_debut=60, pa
         # avant premier_oui) - ne jamais deviner, signaler NOT_FOUND.
         premier_check = fonction_q2(client, video_path, premier_oui, tmp_dir, etat, model_name=model_name)
         if premier_check:
-            print(f"  [KICKOFF_GEMINI] fenêtre dégénérée détectée (Q2 déjà vrai à t={premier_oui:.0f}s)")
+            # 28/10/2026 : SECONDE CHANCE VÉRIFIÉE. Le ballon est déjà en jeu au premier point vu : le coup d'envoi a eu
+            # lieu juste AVANT (Franchimont, run du 28/10 : KO2 réel à 3719 s, abandon à 3719 s). On recule de 30 s ;
+            # si le ballon n'y était PAS encore en jeu (vérifié), le coup d'envoi est dans [t_recul, premier_oui] :
+            # recherche fine habituelle. Sinon, abandon comme avant (jamais de valeur devinée).
+            t_recul = max(0.0, premier_oui - 30)
+            recul_check = fonction_q2(client, video_path, t_recul, tmp_dir, etat, model_name=model_name)
+            print(f"  [KICKOFF_GEMINI] fenêtre dégénérée (Q2 déjà vrai à t={premier_oui:.0f}s) — "
+                  f"vérification à t={t_recul:.0f}s : {'OUI' if recul_check else 'NON' if recul_check is not None else 'ERREUR'}")
+            if recul_check is False:
+                print(f"  [KICKOFF_GEMINI] seconde chance : recherche fine dans [{t_recul:.0f}s, {premier_oui:.0f}s]...")
+                kickoff_s = _recherche_fine(client, video_path, tmp_dir, etat, t_recul, premier_oui, model_name=model_name, fonction_q2=fonction_q2)
+                if kickoff_s is None:
+                    return {"status": "ERROR", "kickoff_s": None, "reason": "FINE_SEARCH_FAILED"}
+                print(f"  [KICKOFF_GEMINI] KO détecté à t={kickoff_s:.0f}s (seconde chance après fenêtre dégénérée)")
+                return {"status": "AUTO_CONFIRMED", "kickoff_s": float(kickoff_s), "reason": "DEGENERATE_WINDOW_RESOLU"}
+            print(f"  [KICKOFF_GEMINI] fenêtre dégénérée confirmée : abandon (aucune valeur devinée)")
             return {"status": "NOT_FOUND", "kickoff_s": None, "reason": "DEGENERATE_WINDOW"}
 
         print(f"  [KICKOFF_GEMINI] confirmé, recherche fine dans [{premier_oui:.0f}s, {t_verif:.0f}s]...")
