@@ -103,7 +103,8 @@ def _slim_frames_data(frames_data):
     """
     Réduit frames_data aux champs strictement nécessaires pour la suite du pipeline.
     Supprime les images brutes (_frame_orig, _frame_rgb) qui gonflent la taille.
-    Garde : frame, frame_id, frame_w, frame_h, players (id, bbox, center, team, color),
+    Garde : frame, frame_id, frame_w, frame_h, players (id, bbox, center, team, color, jersey, conf,
+            time_since_update, fiable),
             ball (center, x, bbox, conf), fps.
     """
     slim = []
@@ -120,6 +121,11 @@ def _slim_frames_data(frames_data):
                 "color":      p.get("color"),
                 "jersey":     p.get("jersey"),
                 "conf":       p.get("conf"),
+                # 28/10/2026 : fraîcheur de la piste DeepSort (0 = vraie détection dans l'image ; > 0 = position
+                # PRÉDITE par Kalman) et marque « fiable » du mode découplé. Indispensables pour reconstruire les
+                # identités après l'analyse (écarter les positions prédites) ; ignorés par le reste du pipeline.
+                "time_since_update": p.get("time_since_update"),
+                "fiable":     p.get("fiable"),
             })
 
         ball = f.get("ball") or {}
