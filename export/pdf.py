@@ -891,11 +891,11 @@ def generate_pdf(result, output_path, sport="football"):
             dur_s = 900
 
         # Timeline
+        # 31/10/2026 : étiquettes des heures sur PLUSIEURS LIGNES quand elles se chevaucheraient (Minerois Ster :
+        # « 98:1100:49 », buts à 2 min 38 d'écart). Les repères restent à leur place ; aucune heure n'est supprimée.
         tl_x, tl_y, tl_w = 12, pdf.get_y(), 186
-        pdf.card_bg(tl_x, tl_y, tl_w, 16)
-        pdf.set_fill_color(*GRAY_D)
-        pdf.rect(tl_x + 5, tl_y + 10, tl_w - 10, 1.5, "F")
-
+        pdf.set_font("Helvetica", "", 5)
+        _tl_items = []
         for h in highlights[:15]:
             # FIX 2 — utiliser get_event_time pour le bon timestamp
             _ev_time = _temps_match(h)
@@ -903,12 +903,32 @@ def generate_pdf(result, output_path, sport="football"):
             color = ACCENT2 if htype in ("goal", "score") else ACCENT
             pct   = min(_ev_time / max(dur_s, 1), 0.98)
             mx    = tl_x + 5 + int((tl_w - 10) * pct)
-            pdf.set_fill_color(*color)
+            _lbl  = fmt_time(_ev_time)
+            _tl_items.append((mx, color, _lbl, pdf.get_string_width(_lbl) + 1.0))
+        _tl_items.sort(key=lambda it: it[0])
+        _fin_ligne, _rangs = [], []        # bord droit de la dernière étiquette de chaque ligne
+        for mx, _c, _lbl, _w in _tl_items:
+            _g = max(tl_x + 1, min(mx - _w / 2, tl_x + tl_w - 1 - _w))   # étiquette gardée dans le cadre
+            _r = next((r for r, f in enumerate(_fin_ligne) if _g >= f + 0.5), None)
+            if _r is None:
+                if len(_fin_ligne) < 5:
+                    _fin_ligne.append(0.0); _r = len(_fin_ligne) - 1
+                else:
+                    _r = min(range(len(_fin_ligne)), key=lambda r: _fin_ligne[r])
+            _fin_ligne[_r] = _g + _w
+            _rangs.append((mx, _c, _lbl, _w, _g, _r))
+        _n_lignes = max(1, len(_fin_ligne))
+        _tl_h = 18.5 + 3.5 * (_n_lignes - 1)
+        pdf.card_bg(tl_x, tl_y, tl_w, _tl_h)
+        pdf.set_fill_color(*GRAY_D)
+        pdf.rect(tl_x + 5, tl_y + 10, tl_w - 10, 1.5, "F")
+        for mx, _c, _lbl, _w, _g, _r in _rangs:
+            pdf.set_fill_color(*_c)
             pdf.rect(mx - 2, tl_y + 7, 4, 6, "F")
             pdf.set_font("Helvetica", "", 5)
             pdf.set_text_color(*GRAY_L)
-            pdf.set_xy(mx - 5, tl_y + 11)
-            pdf.cell(10, 4, fmt_time(_ev_time), align="C")
+            pdf.set_xy(_g, tl_y + 13.5 + 3.5 * _r)        # sous les repères (avant : à moitié cachées)
+            pdf.cell(_w, 4, _lbl, align="C")
 
         # Légende
         pdf.set_font("Helvetica", "", 6)
@@ -918,7 +938,7 @@ def generate_pdf(result, output_path, sport="football"):
         pdf.set_text_color(*ACCENT)
         pdf.set_xy(tl_x + 28, tl_y + 2)
         pdf.cell(20, 4, "TIR", align="L")
-        pdf.set_y(tl_y + 20)
+        pdf.set_y(tl_y + _tl_h + 4)
 
         # Cartes highlights — FIX 2 : afficher event_time pas time_start
         for i, h in enumerate(highlights[:15]):
