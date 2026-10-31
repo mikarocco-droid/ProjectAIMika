@@ -2110,8 +2110,10 @@ def run_pipeline(
                         if any(abs(_t_act - _gt) <= 60 for _gt in _ko_goal_times_abs):
                             continue          # même but que celui retenu par la validation KO
                         _st = "but_possible_à_examiner"   # jamais compté comme but automatiquement
-                    if any(_tf["outcome"] == _cls["outcome"] and abs(_tf["time_abs"] - _t_act) <= 12
-                           for _tf in _temps_forts):
+                    # 30/10/2026 : doublon détecté QUEL QUE SOIT le résultat vu par Gemini. Tous les temps forts sont
+                    # affichés « Occasion » depuis le 25/10 : deux candidats qui voient la même action avec deux
+                    # issues différentes (Minerois Ster 111:35 SAVE et 111:36 GOAL) donnaient deux occasions.
+                    if any(abs(_tf["time_abs"] - _t_act) <= 12 for _tf in _temps_forts):
                         continue              # doublon (deux candidats voient la même action)
                     _temps_forts.append({
                         "time_abs":           _t_act,
