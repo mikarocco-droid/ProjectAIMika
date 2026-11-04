@@ -87,6 +87,20 @@ def detect_kickoff_candidates(
         dispersion_before, dispersion_after,
     }
     """
+    # 04/11/2026 : seuils réglables par variables d'environnement, SANS changement par défaut (0.10 / 0.20).
+    #   SCOUTIA_KO_DELTA_MIN : hausse minimale de la balance des équipes (Raeren, run du 04/11 : le replacement après
+    #   le but de 20:08 ne montait qu'à +0.07 → aucun candidat ; à 0.07, un candidat 20:23 apparaît, comme au run du 18/10)
+    #   SCOUTIA_KO_APRES_MIN : niveau minimal de la balance après. À VALIDER sur tout le jeu de référence avant tout
+    #   changement de défaut (plus de candidats = plus de questions Gemini et risque de faux buts).
+    import os as _os_seuils
+    try:
+        balance_delta_min = float(_os_seuils.environ.get("SCOUTIA_KO_DELTA_MIN", "") or balance_delta_min)
+        balance_after_min = float(_os_seuils.environ.get("SCOUTIA_KO_APRES_MIN", "") or balance_after_min)
+    except ValueError:
+        print("  [KO_DETECTION] ⚠️ SCOUTIA_KO_DELTA_MIN / SCOUTIA_KO_APRES_MIN illisible : seuils par défaut")
+    if (balance_delta_min, balance_after_min) != (0.10, 0.20):
+        print(f"  [KO_DETECTION] seuils NON STANDARD : hausse ≥ {balance_delta_min:g}, balance après ≥ {balance_after_min:g}")
+
     series = _build_series(frames_data, fps, frame_w, frame_h, start_s)
     if not series:
         return []
