@@ -274,6 +274,12 @@ _MARGE_FIN1MT_APRES_S = 90   # 25/10/2026 : 30 -> 90 s (Wanze : fin de 1re MT d�
 # fonction, et son usage dans une autre branche levait « cannot access local variable » -> TOUTE la détection
 # des buts par la validation KO était interrompue (Franchimont : 0 but sur 5).
 _MARGE_PAUSE_MI_TEMPS_S = 90
+# 04/11/2026 : RÈGLE DE FIN DE MATCH (désactivée par défaut, à valider en run complet : SCOUTIA_REGLE_FIN_MATCH=1).
+# Un but dont le candidat de coup d'envoi tombe dans les _MARGE_FIN_MATCH_S dernières secondes avant la fin du match
+# détectée (ou après) est RÉTROGRADÉ en « à_vérifier » (jamais supprimé). Minerois Ster (replay 04/11) : dernier corner
+# à 119:48 parti en 6 m, puis coup de sifflet final ; Gemini a pris le regroupement de fin de match pour « but puis
+# remise en jeu » (faux but « confirmé » à 119:50). Même piège que la reprise de la 2e mi-temps, déjà couverte.
+_MARGE_FIN_MATCH_S = 30
 _MARGE_KO2_AVANT_S = 30
 _MARGE_FINMATCH_APRES_S = 90   # 25/10/2026 : 30 -> 90 s (même prudence pour la fin du match)
 
@@ -1966,6 +1972,14 @@ def run_pipeline(
                 _pause = None
                 if _ko2_ref is not None and _fin1mt_ref is not None and _fin1mt_ref + _MARGE_PAUSE_MI_TEMPS_S < _ko2_ref - 5:
                     _pause = (_fin1mt_ref + _MARGE_PAUSE_MI_TEMPS_S, _ko2_ref - 5)
+                import os as _os_finm
+                _finmatch_ref = None
+                if _os_finm.environ.get("SCOUTIA_REGLE_FIN_MATCH", "").strip() == "1":
+                    _bm_fm = _BORNES_MI_TEMPS if _BORNES_MI_TEMPS.get("video") == video_path else {}
+                    _finmatch_ref = _bm_fm.get("finmatch")
+                    print(f"  [FIN DE MATCH] règle active : " + (f"buts dont le coup d'envoi est après "
+                          f"{_fmt_ko(_finmatch_ref - _MARGE_FIN_MATCH_S)} → à_vérifier" if _finmatch_ref
+                          else "fin du match non détectée (replay ?), règle sans effet"))
 
                 for _ki, _koc in enumerate(_ko_candidates):
                     _ko_t_abs = _koc["time"]
@@ -2064,6 +2078,11 @@ def run_pipeline(
                             print(f"  [PAUSE] t={_fmt_ko(_ko_t_abs)} écarté : pendant la mi-temps "
                                   f"({_fmt_ko(_pause[0])} → {_fmt_ko(_pause[1])}), aucun but possible")
                             continue
+                        if _finmatch_ref is not None and _ko_t_abs >= _finmatch_ref - _MARGE_FIN_MATCH_S:
+                            print(f"  [FIN DE MATCH] t={_fmt_ko(_ko_t_abs)} rétrogradé en à_vérifier : coup d'envoi détecté "
+                                  f"{_finmatch_ref - _ko_t_abs:+.0f} s avant la fin du match ({_fmt_ko(_finmatch_ref)})")
+                            _g_status = "à_vérifier"
+                            _g_reason = "juste avant la fin du match — " + _g_reason
                         _gt_rel = _gt_abs - _kickoff_offset
                         _ev = {
                             "type":           "goal",
