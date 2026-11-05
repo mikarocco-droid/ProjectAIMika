@@ -6,6 +6,7 @@ import cv2
 import base64
 import json
 import re
+import math
 import time
 import numpy as np
 
@@ -926,6 +927,14 @@ def _ko_parse_goal_time(text, t_ref, offsets, margin=2.0, marge_avant=10.0):
     for t in candidates:
         if lo <= t <= hi:
             return float(t)
+    # 05/11/2026 : Gemini perd parfois un chiffre des minutes (« 06:09 » pour 64:09 à Spa, « 05:42 » pour 55:42 à
+    # Minerois Ster : 3 réponses « but » sur 93 dans les caches). Récupération PRUDENTE : mêmes secondes, minutes
+    # dont l'écriture commence par celles annoncées, et une SEULE heure possible dans la fenêtre ; sinon None (comme avant).
+    if c is None and a < 100:
+        _possibles = [t for t in range(int(math.ceil(lo)), int(hi) + 1)
+                      if t % 60 == b and str(t // 60).startswith(str(a)) and t // 60 != a]
+        if len(_possibles) == 1:
+            return float(_possibles[0])
     return None
 
 
