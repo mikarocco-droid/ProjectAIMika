@@ -69,8 +69,8 @@ def detect_kickoff_candidates(
     frame_w,
     frame_h,
     start_s             = 0.0,
-    balance_delta_min   = 0.10,   # permissif — rappel prioritaire (5/5 buts couverts)
-    balance_after_min   = 0.20,   # niveau minimal de balance après
+    balance_delta_min   = 0.07,   # 05/11/2026 : 0.10 → 0.07 (validé sur Raeren, Minerois Ster, Franchimont, Spa, Andrimont)
+    balance_after_min   = 0.15,   # 05/11/2026 : 0.20 → 0.15 (idem)
     window_before_s     = 15.0,   # fenêtre avant pour baseline
     window_after_s      = 10.0,   # fenêtre après pour mesure
     min_gap_s           = 30.0,   # réduit pour ne pas fusionner des KO proches
@@ -87,18 +87,20 @@ def detect_kickoff_candidates(
         dispersion_before, dispersion_after,
     }
     """
-    # 04/11/2026 : seuils réglables par variables d'environnement, SANS changement par défaut (0.10 / 0.20).
+    # 05/11/2026 : DÉFAUT PASSÉ À 0.07 / 0.15. Replays comparés au réglage 0.10 / 0.20 : Raeren +1 vrai but (20:08),
+    #   Minerois Ster, Franchimont, Spa, Andrimont (cache partiel) : aucun vrai but perdu, aucun faux but ajouté.
+    #   Pour revenir à l'ancien réglage : SCOUTIA_KO_DELTA_MIN=0.10 et SCOUTIA_KO_APRES_MIN=0.20.
+    # 04/11/2026 : seuils réglables par variables d'environnement.
     #   SCOUTIA_KO_DELTA_MIN : hausse minimale de la balance des équipes (Raeren, run du 04/11 : le replacement après
     #   le but de 20:08 ne montait qu'à +0.07 → aucun candidat ; à 0.07, un candidat 20:23 apparaît, comme au run du 18/10)
-    #   SCOUTIA_KO_APRES_MIN : niveau minimal de la balance après. À VALIDER sur tout le jeu de référence avant tout
-    #   changement de défaut (plus de candidats = plus de questions Gemini et risque de faux buts).
+    #   SCOUTIA_KO_APRES_MIN : niveau minimal de la balance après.
     import os as _os_seuils
     try:
         balance_delta_min = float(_os_seuils.environ.get("SCOUTIA_KO_DELTA_MIN", "") or balance_delta_min)
         balance_after_min = float(_os_seuils.environ.get("SCOUTIA_KO_APRES_MIN", "") or balance_after_min)
     except ValueError:
         print("  [KO_DETECTION] ⚠️ SCOUTIA_KO_DELTA_MIN / SCOUTIA_KO_APRES_MIN illisible : seuils par défaut")
-    if (balance_delta_min, balance_after_min) != (0.10, 0.20):
+    if (balance_delta_min, balance_after_min) != (0.07, 0.15):
         print(f"  [KO_DETECTION] seuils NON STANDARD : hausse ≥ {balance_delta_min:g}, balance après ≥ {balance_after_min:g}")
 
     series = _build_series(frames_data, fps, frame_w, frame_h, start_s)
