@@ -3743,7 +3743,13 @@ def run_pipeline(
                 if e.get("type") in ("goal", "score")
                 and e.get("gemini_validated", False)
             ]
-            if confirmed_goals and not audit_mode:
+            # 05/11/2026 : lecture du buteur par Gemini DÉSACTIVÉE par défaut (SCOUTIA_LECTURE_BUTEUR=1 pour la rétablir).
+            # Coût ≈ 0,15-0,19 $ par match pour un résultat rare et non vérifié (Spa : 0 buteur, Andrimont : 1, Franchimont :
+            # 3 dont un sur un faux but). Le joueur sera identifié plus tard par la lecture des numéros PARSeq (gratuite).
+            _lecture_buteur = os.environ.get("SCOUTIA_LECTURE_BUTEUR", "0").strip().lower() in ("1", "true", "oui", "on")
+            if confirmed_goals and not _lecture_buteur:
+                print(f"  [BUTEUR] lecture du buteur par Gemini désactivée (SCOUTIA_LECTURE_BUTEUR=0) : {len(confirmed_goals)} appel(s) évité(s)")
+            if confirmed_goals and not audit_mode and _lecture_buteur:
                 from ai.gemini_validator import read_goal_scorers, read_highlight_visuals
 
                 # V5.2 (17/09/2026) : "highlights" n'est peuple qu'au Step 8
