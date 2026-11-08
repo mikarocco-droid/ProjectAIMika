@@ -512,8 +512,31 @@ def _appliquer_reflexion_reduite(kwargs):
     return kwargs
 
 
+# 08/11/2026 : RÉSOLUTION DES IMAGES envoyées à Gemini (paramètre media_resolution de Gemini 3). Par défaut, chaque
+# image compte ≈ 1 120 jetons ; MEDIA_RESOLUTION_MEDIUM ≈ 560, LOW ≈ 280. Les images représentent ≈ 95 % du coût de la
+# validation KO et de la classification. SCOUTIA_MEDIA_RESOLUTION = "" (défaut, inchangé) | "medium" | "low".
+# Appliqué aux mêmes étapes que la réflexion réduite. À VALIDER sur les buts de référence avant tout changement de défaut.
+def _appliquer_resolution(kwargs):
+    niveau = os.environ.get("SCOUTIA_MEDIA_RESOLUTION", "").strip().lower()
+    if niveau not in ("low", "medium"):
+        return kwargs
+    try:
+        appelant = sys._getframe(2).f_code.co_name
+    except Exception:
+        return kwargs
+    if appelant not in _FONCTIONS_REFLEXION_REDUITE:
+        return kwargs
+    cfg = kwargs.get("config")
+    if cfg is None:
+        cfg = {}
+    if isinstance(cfg, dict) and "media_resolution" not in cfg:
+        kwargs = dict(kwargs, config={**cfg, "media_resolution": f"MEDIA_RESOLUTION_{niveau.upper()}"})
+    return kwargs
+
+
 def _generate_with_retry(client, max_retries=2, **kwargs):
     kwargs = _appliquer_reflexion_reduite(kwargs)
+    kwargs = _appliquer_resolution(kwargs)          # la clé du cache inclut la résolution : pas de mélange
     """
     client.models.generate_content(**kwargs) avec gestion d'erreurs :
       - quota JOURNALIER (RESOURCE_EXHAUSTED + PerDay)  -> Gemini coupé pour le run
