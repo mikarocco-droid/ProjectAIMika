@@ -516,15 +516,40 @@ def _appliquer_reflexion_reduite(kwargs):
 # image compte ≈ 1 120 jetons ; MEDIA_RESOLUTION_MEDIUM ≈ 560, LOW ≈ 280. Les images représentent ≈ 95 % du coût de la
 # validation KO et de la classification. SCOUTIA_MEDIA_RESOLUTION = "" (défaut, inchangé) | "medium" | "low".
 # Appliqué aux mêmes étapes que la réflexion réduite. À VALIDER sur les buts de référence avant tout changement de défaut.
+# 08/11 (2) : réglage PAR ÉTAPE — SCOUTIA_MEDIA_RESOLUTION_KO / SCOUTIA_MEDIA_RESOLUTION_CLASSIF (à défaut :
+# SCOUTIA_MEDIA_RESOLUTION) — et « ESCALADE » : dans le bloc « with haute_resolution(): », les questions partent en
+# résolution NORMALE (cas difficiles : désaccord entre la validation KO et la classification, second regard).
+import threading as _thr_res, contextlib as _ctx_res
+_RES_LOCAL = _thr_res.local()
+
+
+@_ctx_res.contextmanager
+def haute_resolution():
+    ancien = getattr(_RES_LOCAL, "force", False)
+    _RES_LOCAL.force = True
+    try:
+        yield
+    finally:
+        _RES_LOCAL.force = ancien
+
+
+def resolution_reduite_active():
+    return any(os.environ.get(k, "").strip().lower() in ("low", "medium")
+               for k in ("SCOUTIA_MEDIA_RESOLUTION", "SCOUTIA_MEDIA_RESOLUTION_KO", "SCOUTIA_MEDIA_RESOLUTION_CLASSIF"))
+
+
 def _appliquer_resolution(kwargs):
-    niveau = os.environ.get("SCOUTIA_MEDIA_RESOLUTION", "").strip().lower()
-    if niveau not in ("low", "medium"):
-        return kwargs
+    if getattr(_RES_LOCAL, "force", False):
+        return kwargs                                   # escalade : résolution normale
     try:
         appelant = sys._getframe(2).f_code.co_name
     except Exception:
         return kwargs
     if appelant not in _FONCTIONS_REFLEXION_REDUITE:
+        return kwargs
+    cle = "SCOUTIA_MEDIA_RESOLUTION_KO" if appelant == "validate_kickoff_context_gemini" else "SCOUTIA_MEDIA_RESOLUTION_CLASSIF"
+    niveau = (os.environ.get(cle, "") or os.environ.get("SCOUTIA_MEDIA_RESOLUTION", "")).strip().lower()
+    if niveau not in ("low", "medium"):
         return kwargs
     cfg = kwargs.get("config")
     if cfg is None:
