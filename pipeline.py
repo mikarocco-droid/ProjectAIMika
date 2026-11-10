@@ -1820,6 +1820,14 @@ def run_pipeline(
                 # (sauts à 60 s d'un but confirmé) appliquées dans l'ORDRE d'origine :
                 # résultat identique au mode séquentiel, quelques appels en plus
                 # pour les candidats finalement sautés.
+                try:
+                    from ai.gemini_validator import haute_resolution as _haute_res_ctx, \
+                        resolution_reduite_active as _res_reduite_active
+                except Exception:                                   # ancien validateur : pas d'escalade
+                    import contextlib as _ctx_e
+                    _haute_res_ctx = _ctx_e.nullcontext
+                    _res_reduite_active = lambda: False
+
                 def _ko_call(_t):
                     return validate_kickoff_context_gemini(
                         video_path       = video_path,
@@ -1930,7 +1938,8 @@ def run_pipeline(
                         for _ki_sr, _t_sr, _a_sr, _oc_sr, _kc_sr in _sr_cas:
                             _t2 = _t_sr + 30
                             try:
-                                _r2 = _ko_call(_t2)
+                                with _haute_res_ctx():          # 08/11 : second regard en résolution normale
+                                    _r2 = _ko_call(_t2)
                             except Exception as _e_sr:
                                 _r2 = None
                                 print(f"  [SECOND REGARD] erreur {_fmt_ko(_t2)} : {_e_sr}")
@@ -1950,6 +1959,34 @@ def run_pipeline(
                             _ko_results = {i: x[1] for i, x in enumerate(_tous) if x[1] is not None}
                             _cls_results = {i: x[2] for i, x in enumerate(_tous)}
                             print(f"  [SECOND REGARD] {len(_sr_ajouts)} candidat(s) ajouté(s) aux règles ordinaires")
+
+                # ── 08/11 : ESCALADE EN RÉSOLUTION NORMALE des cas difficiles (seulement si une résolution réduite est
+                # active) : la validation KO et la classification ne sont pas d'accord → la validation KO est reposée
+                # en résolution normale et SA réponse remplace la première. Cas : KO « but » mais classification ≠ GOAL
+                # (buts « à vérifier ») ; KO « pas de but » mais classification GOAL (ex. Franchimont 79:42).
+                if _res_reduite_active() and os.environ.get("SCOUTIA_ESCALADE", "1").strip() != "0":
+                    _esc = []
+                    for _ki_e, _kc_e in enumerate(_ko_candidates):
+                        _pr = _ko_results.get(_ki_e)
+                        _r_e = _pr[1] if (_pr and _pr[0] == "ok") else None
+                        if _r_e is None:
+                            continue
+                        _co = (_cls_results.get(_ki_e) or {}).get("outcome")
+                        if (_r_e.get("is_goal") and _co != "GOAL") or (not _r_e.get("is_goal") and _co == "GOAL"):
+                            _esc.append(_ki_e)
+                    print(f"  [ESCALADE] {len(_esc)} cas de désaccord KO / classification reposés en résolution normale")
+                    for _ki_e in _esc:
+                        _t_e = _ko_candidates[_ki_e]["time"]
+                        _avant = bool(_ko_results[_ki_e][1].get("is_goal"))
+                        try:
+                            with _haute_res_ctx():
+                                _r_hr = _ko_call(_t_e)
+                            _ko_results[_ki_e] = ("ok", _r_hr)
+                            print(f"  [ESCALADE] {_fmt_ko(_t_e)} (classification "
+                                  f"{(_cls_results.get(_ki_e) or {}).get('outcome')}) : résolution réduite "
+                                  f"{'BUT' if _avant else 'non'} → normale {'BUT' if _r_hr.get('is_goal') else 'non'}")
+                        except Exception as _e_esc:
+                            print(f"  [ESCALADE] {_fmt_ko(_t_e)} : erreur {_e_esc} — première réponse conservée")
 
                 # ── Coup d'envoi de la 2e mi-temps (KO2) ───────────────────────────
                 # Seul le candidat le PLUS PROCHE de KO2 dans [KO2-15s, KO2+60s] est
