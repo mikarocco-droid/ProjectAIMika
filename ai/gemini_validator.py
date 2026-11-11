@@ -533,9 +533,20 @@ def haute_resolution():
         _RES_LOCAL.force = ancien
 
 
+# 09/11 : DÉFAUTS VALIDÉS sur les 10 matchs de référence (41/43 vrais buts, les 2 manquants comme en résolution normale ;
+# faux buts 24 → 13 grâce à l'escalade ; ≈ 1,10 $ par match au lieu de ≈ 2,70-3 $ pour ces deux étapes) :
+# validation KO « medium », classification « low », escalade en résolution normale des désaccords.
+# Pour revenir à l'ancien comportement : SCOUTIA_MEDIA_RESOLUTION_KO=high et SCOUTIA_MEDIA_RESOLUTION_CLASSIF=high.
+_RES_DEFAUT = {"SCOUTIA_MEDIA_RESOLUTION_KO": "medium", "SCOUTIA_MEDIA_RESOLUTION_CLASSIF": "low"}
+
+
+def _niveau_resolution(cle):
+    v = os.environ.get(cle, "").strip().lower() or os.environ.get("SCOUTIA_MEDIA_RESOLUTION", "").strip().lower()
+    return v or _RES_DEFAUT.get(cle, "")
+
+
 def resolution_reduite_active():
-    return any(os.environ.get(k, "").strip().lower() in ("low", "medium")
-               for k in ("SCOUTIA_MEDIA_RESOLUTION", "SCOUTIA_MEDIA_RESOLUTION_KO", "SCOUTIA_MEDIA_RESOLUTION_CLASSIF"))
+    return any(_niveau_resolution(k) in ("low", "medium") for k in _RES_DEFAUT)
 
 
 def _appliquer_resolution(kwargs):
@@ -548,7 +559,7 @@ def _appliquer_resolution(kwargs):
     if appelant not in _FONCTIONS_REFLEXION_REDUITE:
         return kwargs
     cle = "SCOUTIA_MEDIA_RESOLUTION_KO" if appelant == "validate_kickoff_context_gemini" else "SCOUTIA_MEDIA_RESOLUTION_CLASSIF"
-    niveau = (os.environ.get(cle, "") or os.environ.get("SCOUTIA_MEDIA_RESOLUTION", "")).strip().lower()
+    niveau = _niveau_resolution(cle)
     if niveau not in ("low", "medium"):
         return kwargs
     cfg = kwargs.get("config")
