@@ -73,6 +73,8 @@ class _Demandeur:
         self.plafond = plafond
         self.jet = {"q": 0, "e": 0, "s": 0}
         self.arret = None
+        self.reduites = 0      # requêtes recompressées pour passer sous la limite de Gemini
+        self.echecs = 0        # questions en échec (réseau, refus…)
 
     def cout(self):
         return self.jet["e"] / 1e6 * 0.75 + self.jet["s"] / 1e6 * 3.75
@@ -84,15 +86,24 @@ class _Demandeur:
             self.arret = f"plafond {self.plafond} $ atteint"
             return None
         cv2, np = self.cv2, self.np
-        ims = []
+        brutes = []
         for i, t in enumerate(instants, 1):
             self.cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
             ok, img = self.cap.read()
             img = img.copy() if ok else np.zeros((1080, 1920, 3), np.uint8)
             if etiquette:
                 cv2.putText(img, f"{i}  {fmt(t)}", (14, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 255, 255), 4)
-            ims.append(self.types.Part.from_bytes(data=cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes(),
-                                                  mime_type="image/jpeg"))
+            brutes.append(img)
+        # 11/11 : Gemini refuse les requêtes de plus de 30 Mo (« Request body too large »). Qualité JPEG 85 comme avant ;
+        # SEULEMENT si la requête dépasse ~28 Mo, les images sont recompressées (même taille en pixels) jusqu'à passer.
+        for q in (85, 70, 55, 40):
+            data = [cv2.imencode(".jpg", im, [cv2.IMWRITE_JPEG_QUALITY, q])[1].tobytes() for im in brutes]
+            if sum(map(len, data)) * 1.37 < 28e6:     # ×1,37 : encodage base64 de la requête
+                break
+        if q != 85:
+            self.reduites += 1
+            print(f"  [ATTRIBUTION] requête de {len(brutes)} images recompressée (JPEG {q}) pour passer sous 30 Mo")
+        ims = [self.types.Part.from_bytes(data=d, mime_type="image/jpeg") for d in data]
         cfg = {"temperature": 0.0, "thinking_config": {"thinking_level": "low"}}
         if resolution in ("low", "medium"):
             cfg["media_resolution"] = f"MEDIA_RESOLUTION_{resolution.upper()}"
@@ -106,6 +117,7 @@ class _Demandeur:
             d, _ = json.JSONDecoder().raw_decode(t_[t_.index("{"):])
             return d
         except Exception as e:
+            self.echecs += 1
             print(f"  [ATTRIBUTION] ⚠️ question en échec : {e}")
             return None
 
@@ -182,9 +194,9 @@ def attribuer_buts(video_path, buts, debut_1mt, fin_1mt):
                 "score_estime": {"A": est["A"], "B": est["B"]},
                 "buts_sans_equipe": sum(1 for b in buts_tries if not b.get("equipe")),
                 "questions": dem.jet["q"], "cout_dollars": round(dem.cout(), 3), "escalades": n_esc,
-                "incomplet": dem.arret}
+                "incomplet": dem.arret, "requetes_recompressees": dem.reduites, "questions_en_echec": dem.echecs}
     print(f"  [ATTRIBUTION] score confirmé {nom['A']} {conf['A']} - {conf['B']} {nom['B']} | estimé {est['A']} - {est['B']} | "
-          f"{dem.jet['q']} question(s) ≈ {dem.cout():.3f} $ | escalades {n_esc}" + (f" | ⚠️ {dem.arret}" if dem.arret else ""))
+          f"{dem.jet['q']} question(s) ≈ {dem.cout():.3f} $ | escalades {n_esc} | recompressées {dem.reduites} | échecs {dem.echecs}" + (f" | ⚠️ {dem.arret}" if dem.arret else ""))
     try:
         dem.cap.release()
     except Exception:
