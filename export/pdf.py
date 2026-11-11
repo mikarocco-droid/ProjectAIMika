@@ -539,6 +539,23 @@ def generate_pdf(result, output_path, sport="football"):
                 ("Occasions",  len(_occ),      ACCENT)]
         if _ident:
             kpis.append(("Joueurs", kpi_players, GRAY_L))
+    # 09/11/2026 : SCORE PAR ÉQUIPE (attribution des buts validée sur les 43 buts). Le score CONFIRMÉ ne compte que les
+    # buts attribués avec certitude ; l'ESTIMÉ ajoute les attributions probables. Rien n'est inventé pour les autres.
+    _att = result.get("attribution_equipes") or {}
+    if _att.get("tenues"):
+        _tA, _tB = _att["tenues"].get("A", "A"), _att["tenues"].get("B", "B")
+        _sc, _se = _att.get("score_confirme", {}), _att.get("score_estime", {})
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_text_color(*WHITE)
+        pdf.cell(0, 6, clean(f"Score : {_tA}  {_se.get('A', 0)} - {_se.get('B', 0)}  {_tB}"),
+                 align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_font("Helvetica", "", 7.5)
+        pdf.set_text_color(*GRAY_L)
+        _note = f"dont confirmé : {_sc.get('A', 0)} - {_sc.get('B', 0)}"
+        if _att.get("buts_sans_equipe"):
+            _note += f"  |  {_att['buts_sans_equipe']} but(s) sans équipe identifiée (hors score)"
+        pdf.cell(0, 5, clean(_note), align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.ln(2)
     y0 = pdf.get_y()
     x  = 12
     for label, val, color in kpis:
@@ -1043,7 +1060,9 @@ def generate_pdf(result, output_path, sport="football"):
         # 24/10/2026 : buts du récit = liste du pipeline (heure de match + statut), pas les temps forts (mal datés)
         if _buts:
             _goal_lines = [f"{int(b.get('time', 0) // 60)}':{int(b.get('time', 0) % 60):02d} — "
-                           + ("but confirmé." if b.get("status") == "confirmé" else "but à vérifier.") for b in _buts]
+                           + ("but confirmé" if b.get("status") == "confirmé" else "but à vérifier")
+                           + (f" ({b['tenue_equipe']}{', probable' if b.get('niveau_equipe') == 'probable' else ''})."
+                              if b.get("tenue_equipe") else ".") for b in _buts]
 
         # Ajouter les tirs importants
         _shot_lines = []
