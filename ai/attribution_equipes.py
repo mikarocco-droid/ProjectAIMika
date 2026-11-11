@@ -7,10 +7,13 @@ Méthode validée sur les 43 buts de référence (questions identiques au notebo
     + Q3 arbitrage (shorts) si Q1 et Q2 ne concordent pas ;
   • CONFIRMÉ = Q1 et Q2 d'accord (écart ≥ 4) ; PROBABLE = écart ≥ 2 et au moins deux réponses concordantes ;
     sinon NON ATTRIBUÉ.
+11/11 : DÉFAUT REMIS EN RÉSOLUTION NORMALE. En production (4 matchs), « moyenne + escalade » a donné 2 attributions
+FAUSSES (Franchimont, Raeren) : critère « 0 faux » non tenu. Historique du réglage abandonné :
 Réglage de coût (test du 09/11 sur les 43 buts) : questions d'abord en résolution MOYENNE (0 erreur d'équipe, mais
 quelques abstentions), puis ESCALADE en résolution NORMALE des seuls buts « non attribués ». Calcul sur ces données :
 41 buts attribués justes / 43, 0 faux (normale partout : 40 / 0), ≈ −37 % de coût. Règle à confirmer en production.
-Réglages : SCOUTIA_ATTRIBUTION=0 (désactive), SCOUTIA_ATTRIBUTION_RESOLUTION=medium|low|high,
+Réglages : SCOUTIA_ATTRIBUTION=0 (désactive), SCOUTIA_ATTRIBUTION_RESOLUTION=high (défaut)|medium|low,
+SCOUTIA_ATTRIBUTION_PAS_Q2 (secondes entre deux images de Q2, défaut 1 — en test le 11/11),
 SCOUTIA_ATTRIBUTION_PLAFOND (dollars, défaut 1.5).
 """
 import os, json, collections
@@ -110,8 +113,9 @@ class _Demandeur:
 def _attribuer_un_but(dem, g, k, lim, ff, tenues, resolution):
     (a0, a1), (b0, b1) = tenues
     d1 = dem([g + d for d in range(-8, 7, 2)], AQ1.format(**ff), resolution)
-    inst = list(range(int(k), int(min(k + 45, lim)) + 1)) if (k is not None and g + 10 <= k < lim) else \
-        list(range(int(g) + 15, int(min(g + 120, lim)) + 1))
+    pas = max(1, int(os.environ.get("SCOUTIA_ATTRIBUTION_PAS_Q2", "1")))      # secondes entre deux images de Q2
+    inst = list(range(int(k), int(min(k + 45, lim)) + 1, pas)) if (k is not None and g + 10 <= k < lim) else \
+        list(range(int(g) + 15, int(min(g + 120, lim)) + 1, pas))
     d2 = dem(inst, AQ2.format(**ff), resolution)
     s1 = _eq(d1, "scoring_team"); s2 = AUTRE.get(_eq(d2, "kickoff_team"))
     pts = collections.Counter()
@@ -141,7 +145,7 @@ def attribuer_buts(video_path, buts, debut_1mt, fin_1mt):
     Ajoute à chaque but : equipe ('A'/'B'/None), niveau_equipe, tenue_equipe. Renvoie un dict de synthèse."""
     if os.environ.get("SCOUTIA_ATTRIBUTION", "1").strip() == "0" or not buts:
         return None
-    res = os.environ.get("SCOUTIA_ATTRIBUTION_RESOLUTION", "medium").strip().lower()
+    res = os.environ.get("SCOUTIA_ATTRIBUTION_RESOLUTION", "high").strip().lower()   # 11/11 : normale (medium = 2 faux sur 4 matchs)
     plafond = float(os.environ.get("SCOUTIA_ATTRIBUTION_PLAFOND", "1.5"))
     dem = _Demandeur(video_path, plafond)
     deb = float(debut_1mt) + 60
