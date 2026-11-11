@@ -4711,15 +4711,30 @@ def run_pipeline(
             _t = float(_e.get("time", 0) or 0)
             _cls_b = _e.get("classification") or {}
             _coul = _cls_b.get("team_color") if str(_cls_b.get("team_color") or "").upper() not in ("", "UNKNOWN", "NONE") else None
-            _buts_liste.append({"time": _t, "time_abs": _t + (float(_kickoff_offset or 0) if "_kickoff_offset" in dir() else 0.0),
+            _ko_b = (float(_kickoff_offset or 0) if "_kickoff_offset" in dir() else 0.0)
+            _buts_liste.append({"time": _t, "time_abs": _t + _ko_b,
+                                "candidate_time_abs": (float(_e["candidate_time"]) + _ko_b) if _e.get("candidate_time") is not None else None,
                                 "status": _e.get("goal_status") or "confirmé",
                                 "team": _e.get("team") if _e.get("team") in (0, 1, "0", "1") else None,
                                 "team_color": _coul})
     _buts_liste.sort(key=lambda b: b["time"])
+    # 09/11/2026 : ATTRIBUTION DES BUTS AUX ÉQUIPES (méthode validée sur les 43 buts, résolution moyenne + escalade)
+    _attribution = None
+    if _buts_liste and not audit_mode:
+        try:
+            from ai.attribution_equipes import attribuer_buts
+            _bm_a = _BORNES_MI_TEMPS if _BORNES_MI_TEMPS.get("video") == video_path else {}
+            _ko1_a = float(_bm_a.get("ko1") or (float(_kickoff_offset or 0) if "_kickoff_offset" in dir() else 0.0))
+            print("Step 11b : Attribution des buts aux équipes...")
+            _attribution = attribuer_buts(video_path, _buts_liste, _ko1_a, _bm_a.get("fin1mt"))
+        except Exception as _e_att:
+            print(f"  [ATTRIBUTION] ⚠️ erreur : {_e_att} — buts affichés sans équipe")
     if isinstance(summary, dict):
         summary["goals_confirmes"]  = sum(1 for b in _buts_liste if b["status"] == "confirmé")
         summary["goals_a_verifier"] = sum(1 for b in _buts_liste if b["status"] != "confirmé")
-        summary["score_par_equipe_disponible"] = bool(_buts_liste) and all(b["team"] is not None for b in _buts_liste)
+        summary["score_par_equipe_disponible"] = bool(_attribution) and any(b.get("equipe") for b in _buts_liste)
+        if _attribution:
+            summary["attribution_equipes"] = _attribution
     _identification_joueurs = os.environ.get("SCOUTIA_LECTURE_MAILLOTS", "0").strip().lower() in ("1", "true", "oui", "on")
     # Occasions (temps forts de la classification, 95 % de précision mesurée) pour le PDF, mêmes règles que la
     # liste finale : un temps fort qui coïncide avec un but retenu est retiré (le but prime)
@@ -4770,6 +4785,7 @@ def run_pipeline(
             pdf_path = generate_pdf(
                 result = {
                     "buts":           _buts_liste,
+                    "attribution_equipes": _attribution,
                     "occasions":      _occasions_pdf,
                     "identification_joueurs": _identification_joueurs,
                     "fps":            fps,              # 24/10/2026 : vraie cadence (le PDF supposait 25 i/s)
@@ -4833,6 +4849,7 @@ def run_pipeline(
                             if _BORNES_MI_TEMPS.get("video") == video_path else None),
         "temps_forts":   _temps_forts_final,
         "buts":          locals().get("_buts_liste", []),
+        "attribution_equipes": locals().get("_attribution"),
         "journal_gemini": locals().get("_journal_gemini", []),
         "occasions":     locals().get("_occasions_pdf", []),   # 25/10/2026 : même liste que le PDF
         "identification_joueurs": locals().get("_identification_joueurs", False),
