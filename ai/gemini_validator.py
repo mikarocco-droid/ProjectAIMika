@@ -499,11 +499,22 @@ def _installer_verrou_gemini():
         if cfg is not None and hasattr(cfg, "model_dump"):
             cfg = cfg.model_dump(exclude_none=True)
         cfg = dict(cfg or {})
-        cfg["service_tier"] = "flex"
         ho = dict(cfg.get("http_options") or {})
         ho.setdefault("timeout", 900_000)                 # 15 min : une question Flex peut attendre en file
-        cfg["http_options"] = ho
-        kw_flex = dict(kwargs, config=cfg)
+        # 12/11 : selon la version de google-genai, « service_tier » est un champ de la configuration (récent) ou
+        # inconnu (ancien : erreur « extra_forbidden » AVANT tout envoi). Forme retenue mémorisée au 1er essai :
+        # champ → sinon champ ajouté au corps de la requête → sinon Flex IMPOSSIBLE : tarif standard (jamais de
+        # question perdue) avec alerte.
+        forme = _VERROU.get("forme_flex", "champ")
+        if forme == "impossible":
+            with _GC_LOCK:
+                _VERROU["tiers"]["standard (Flex impossible avec cette version de google-genai)"] = \
+                    _VERROU["tiers"].get("standard (Flex impossible avec cette version de google-genai)", 0) + 1
+            return _orig(self, *args, **kwargs)
+        if forme == "champ":
+            kw_flex = dict(kwargs, config=dict(cfg, service_tier="flex", http_options=ho))
+        else:
+            kw_flex = dict(kwargs, config=dict(cfg, http_options=dict(ho, extra_body={"serviceTier": "flex"})))
         t0, attente = time.time(), 30.0
         attente_max = float(os.environ.get("SCOUTIA_FLEX_ATTENTE_MAX_S", "43200"))
         try:
@@ -523,6 +534,17 @@ def _installer_verrou_gemini():
                 return r
             except Exception as e:
                 msg = str(e)
+                if ("extra_forbidden" in msg or "Extra inputs are not permitted" in msg or "unexpected keyword" in msg) \
+                        and forme in ("champ", "corps"):
+                    suivante = "corps" if forme == "champ" else "impossible"
+                    with _GC_LOCK:
+                        if _VERROU.get("forme_flex", "champ") == forme:
+                            _VERROU["forme_flex"] = suivante
+                            print(f"  [GEMINI FLEX] forme « {forme} » refusée par google-genai "
+                                  f"{getattr(sys.modules.get('google.genai'), '__version__', '?')} → essai « {suivante} »"
+                                  + (" : ⚠️⚠️ FLEX IMPOSSIBLE, questions au tarif STANDARD (mettre à jour google-genai)"
+                                     if suivante == "impossible" else ""))
+                    return _appel_tier(self, args, kwargs, appelant)
                 temporaire = any(x in msg for x in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "high demand",
                                                     "timed out", "Timeout", "timeout", "DEADLINE"))
                 if not temporaire:
