@@ -77,7 +77,9 @@ class _Demandeur:
         self.echecs = 0        # questions en échec (réseau, refus…)
 
     def cout(self):
-        return self.jet["e"] / 1e6 * 0.75 + self.jet["s"] / 1e6 * 3.75
+        pe, ps = {"gemini-3-flash-preview": (0.50, 3.00)}.get(
+            os.environ.get("SCOUTIA_GEMINI_MODELE", "gemini-3.8-flash").strip(), (0.75, 3.75))   # $/M (tarifs 2026)
+        return self.jet["e"] / 1e6 * pe + self.jet["s"] / 1e6 * ps
 
     def __call__(self, instants, consigne, resolution, etiquette=True):
         if self.arret:
