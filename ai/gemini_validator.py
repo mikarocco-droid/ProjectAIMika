@@ -433,7 +433,7 @@ def _gc_generate(client, **kwargs):
 # ═════════════════════════════════════════════════════════════════════════
 _GC_INTERNE = _th_gc.local()
 _MODELE_UNIQUE = os.environ.get("SCOUTIA_GEMINI_MODELE", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
-_VERROU = {"installe": False, "modeles_remplaces": {}, "versions": {}, "alerte_version": None}
+_VERROU = {"installe": False, "modeles_remplaces": {}, "versions": {}, "alerte_version": None, "tiers": {}}
 
 
 # 12/11/2026 : SURVEILLANCE DU MODÈLE RÉELLEMENT UTILISÉ (SCOUTIA_GEMINI_VERSION_VALIDEE = version de référence). Chaque réponse de Gemini indique la version qui a répondu
@@ -479,6 +479,63 @@ def _installer_verrou_gemini():
         return
     _orig = _gm.Models.generate_content
 
+    # 12/11/2026 : MODE « FLEX » (SCOUTIA_GEMINI_TIER = "" standard, défaut | "flex"). Flex : même modèle, même question,
+    # tarif −50 %, délai variable (test du 12/11 : 4 s à 5 min) et refus possibles quand Google est chargé (503).
+    # Les questions des BORNES (« _appel ») restent en standard : le suivi GPU en dépend.
+    # En cas de refus : nouvel essai avec attente croissante (30 s → 10 min), puis bascule au tarif STANDARD quand
+    # l'ÉCHÉANCE DU MATCH approche : SCOUTIA_FLEX_ECHEANCE = heure limite (secondes depuis 1970) pour finir en Flex, fixée
+    # par le site à la commande (ex. commande + 36 h pour une promesse de 48 h : 12 h de marge pour le reste au tarif
+    # standard). La limite porte sur le MATCH entier, pas sur chaque question : les questions s'enchaînent en plusieurs
+    # vagues, une limite par question se cumulerait. Sans échéance : 12 h d'attente au plus par question (garde-fou). La clé du cache n'inclut PAS
+    # le niveau de service : une réponse Flex et une réponse standard à la même question sont interchangeables.
+    def _appel_tier(self, args, kwargs, appelant):
+        tier = os.environ.get("SCOUTIA_GEMINI_TIER", "").strip().lower()
+        if tier != "flex" or appelant == "_appel":
+            if tier == "flex":
+                with _GC_LOCK:
+                    _VERROU["tiers"]["standard (bornes)"] = _VERROU["tiers"].get("standard (bornes)", 0) + 1
+            return _orig(self, *args, **kwargs)
+        cfg = kwargs.get("config")
+        if cfg is not None and hasattr(cfg, "model_dump"):
+            cfg = cfg.model_dump(exclude_none=True)
+        cfg = dict(cfg or {})
+        cfg["service_tier"] = "flex"
+        ho = dict(cfg.get("http_options") or {})
+        ho.setdefault("timeout", 900_000)                 # 15 min : une question Flex peut attendre en file
+        cfg["http_options"] = ho
+        kw_flex = dict(kwargs, config=cfg)
+        t0, attente = time.time(), 30.0
+        attente_max = float(os.environ.get("SCOUTIA_FLEX_ATTENTE_MAX_S", "43200"))
+        try:
+            echeance = float(os.environ.get("SCOUTIA_FLEX_ECHEANCE", "") or 0)
+        except ValueError:
+            echeance = 0.0
+        if echeance and time.time() >= echeance:
+            with _GC_LOCK:
+                _VERROU["tiers"]["standard (échéance du match atteinte)"] = \
+                    _VERROU["tiers"].get("standard (échéance du match atteinte)", 0) + 1
+            return _orig(self, *args, **kwargs)
+        while True:
+            try:
+                r = _orig(self, *args, **kw_flex)
+                with _GC_LOCK:
+                    _VERROU["tiers"]["flex"] = _VERROU["tiers"].get("flex", 0) + 1
+                return r
+            except Exception as e:
+                msg = str(e)
+                temporaire = any(x in msg for x in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "high demand",
+                                                    "timed out", "Timeout", "timeout", "DEADLINE"))
+                if not temporaire:
+                    raise
+                if time.time() - t0 + attente > attente_max or (echeance and time.time() + attente >= echeance):
+                    with _GC_LOCK:
+                        _VERROU["tiers"]["standard (repli après attente Flex)"] = \
+                            _VERROU["tiers"].get("standard (repli après attente Flex)", 0) + 1
+                    print(f"  [GEMINI FLEX] attente dépassée ({(time.time() - t0) / 60:.0f} min) : question posée au tarif standard")
+                    return _orig(self, *args, **kwargs)
+                time.sleep(attente)
+                attente = min(attente * 2, 600.0)
+
     def _generate_verrouille(self, *args, **kwargs):
         # 12/11/2026 : RÉFLEXION DES BORNES (coups d'envoi des 2 mi-temps, fins de mi-temps). Leurs questions passent
         # par la fonction « _appel » des modules *_gemini_cascade, en réflexion PAR DÉFAUT (68 % de leur coût mesuré le
@@ -502,8 +559,12 @@ def _installer_verrou_gemini():
             with _GC_LOCK:
                 _VERROU["modeles_remplaces"][demande] = _VERROU["modeles_remplaces"].get(demande, 0) + 1
         kwargs["model"] = _MODELE_UNIQUE
+        try:
+            _appelant = sys._getframe(1).f_code.co_name
+        except Exception:
+            _appelant = ""
         if getattr(_GC_INTERNE, "actif", False) or args:
-            _r = _orig(self, *args, **kwargs)          # appel interne déjà géré par le cache
+            _r = _appel_tier(self, args, kwargs, _appelant)   # appel interne déjà géré par le cache
             _verifier_version(_r)
             return _r
         key, cached, allowed = _gc_lookup(kwargs)
@@ -511,7 +572,7 @@ def _installer_verrou_gemini():
             return cached
         if not allowed:
             raise RuntimeError("SCOUTIA_GEMINI_CACHE=strict : question absente du cache")
-        response = _orig(self, *args, **kwargs)
+        response = _appel_tier(self, args, kwargs, _appelant)
         _verifier_version(response)
         _gc_store(key, kwargs, response)
         return response
@@ -538,11 +599,15 @@ def gemini_cache_summary():
                   f"coupure : {'oui' if _et['gemini_coupe'] else 'non'}) — RÉSULTATS INCOMPLETS, relancer (le cache garde le reste)")
         if _VERROU["modeles_remplaces"]:
             print(f"  [GEMINI] Modèles demandés par les modules et remplacés par {_MODELE_UNIQUE} : {_VERROU['modeles_remplaces']}")
+        if _VERROU["tiers"]:
+            print(f"  [GEMINI] Niveaux de service des questions payées : {_VERROU['tiers']} "
+                  f"(Flex = tarif −50 % ; vérifier la facturation dans la console Google)")
         if _VERROU["versions"]:
             print(f"  [GEMINI] Versions qui ont réellement répondu : {_VERROU['versions']}"
                   + (f" | ⚠️⚠️ ALERTE : {_VERROU['alerte_version']}" if _VERROU["alerte_version"] else " | conforme"))
         return dict(questions=n, relues=_GC["hits"], payees=_GC["misses"], refusees=_GC["strict_misses"],
                     taille=len(_GC["entries"]), sortie=_GC["out"], versions=dict(_VERROU["versions"]),
+                    tiers=dict(_VERROU["tiers"]),
                     alerte_version=_VERROU["alerte_version"])
 
 
