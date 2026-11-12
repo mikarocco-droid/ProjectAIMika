@@ -393,7 +393,17 @@ def _gc_store(key, kwargs, response):
         return                                              # on ne fige pas une réponse vide
     um = getattr(response, "usage_metadata", None)
     usage = {k: getattr(um, k, None) for k in ("prompt_token_count", "candidates_token_count",
-                                               "total_token_count", "thoughts_token_count")} if um else {}
+                                               "total_token_count", "thoughts_token_count",
+                                               "cached_content_token_count")} if um else {}
+    # 12/11 : niveau de service réellement appliqué (en-tête de la réponse : « standard » ou « flex »)
+    try:
+        _hd = getattr(getattr(response, "sdk_http_response", None), "headers", None) or {}
+        usage["service_tier"] = _hd.get("x-gemini-service-tier")
+    except Exception:
+        pass
+    with _GC_LOCK:
+        _VERROU["jetons_entree"] = _VERROU.get("jetons_entree", 0) + int(usage.get("prompt_token_count") or 0)
+        _VERROU["jetons_caches"] = _VERROU.get("jetons_caches", 0) + int(usage.get("cached_content_token_count") or 0)
     e = {"key": key, "text": txt, "model_version": getattr(response, "model_version", None),
          "usage": usage, "model": kwargs.get("model"), "contexte": _gc_context(),
          "enregistre_le": time.strftime("%Y-%m-%dT%H:%M:%S")}
@@ -621,6 +631,10 @@ def gemini_cache_summary():
                   f"coupure : {'oui' if _et['gemini_coupe'] else 'non'}) — RÉSULTATS INCOMPLETS, relancer (le cache garde le reste)")
         if _VERROU["modeles_remplaces"]:
             print(f"  [GEMINI] Modèles demandés par les modules et remplacés par {_MODELE_UNIQUE} : {_VERROU['modeles_remplaces']}")
+        if _VERROU.get("jetons_entree"):
+            _je, _jc = _VERROU["jetons_entree"], _VERROU.get("jetons_caches", 0)
+            print(f"  [GEMINI] Mise en cache automatique de Google : {_jc} jetons d'entrée sur {_je} "
+                  f"({100 * _jc / _je:.1f} %) facturés au tarif réduit du cache")
         if _VERROU["tiers"]:
             print(f"  [GEMINI] Niveaux de service des questions payées : {_VERROU['tiers']} "
                   f"(Flex = tarif −50 % ; vérifier la facturation dans la console Google)")
