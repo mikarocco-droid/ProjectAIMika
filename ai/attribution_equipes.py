@@ -79,6 +79,8 @@ class _Demandeur:
     def cout(self):
         pe, ps = {"gemini-3-flash-preview": (0.50, 3.00)}.get(
             os.environ.get("SCOUTIA_GEMINI_MODELE", "gemini-3.8-flash").strip(), (0.75, 3.75))   # $/M (tarifs 2026)
+        if os.environ.get("SCOUTIA_GEMINI_TIER", "").strip().lower() == "flex":
+            pe, ps = pe / 2, ps / 2                      # tarif Flex (−50 %), hors replis au tarif standard
         return self.jet["e"] / 1e6 * pe + self.jet["s"] / 1e6 * ps
 
     def __call__(self, instants, consigne, resolution, etiquette=True):
