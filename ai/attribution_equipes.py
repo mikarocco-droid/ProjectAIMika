@@ -68,7 +68,9 @@ class _Demandeur:
         from google import genai
         from google.genai import types
         self.cv2, self.np, self.types = cv2, np, types
-        self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+        _url = os.environ.get("SCOUTIA_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/").strip()
+        self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""),
+                                   http_options={"base_url": _url} if _url else None)   # 12/11 : pas le relais Kaggle
         self.cap = cv2.VideoCapture(video_path)
         self.plafond = plafond
         self.jet = {"q": 0, "e": 0, "s": 0}

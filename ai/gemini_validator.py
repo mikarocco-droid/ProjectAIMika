@@ -133,6 +133,11 @@ def get_dynamic_threshold(event):
 # INIT CLIENT
 # ─────────────────────────────────────────
 _client = None
+# 12/11/2026 : les modules des bornes créent leur propre client (genai.Client()) : on fixe aussi l'adresse par la
+# variable d'environnement lue par google-genai, pour qu'ils évitent eux aussi le relais Kaggle.
+if os.environ.get("SCOUTIA_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/").strip():
+    os.environ["GOOGLE_GEMINI_BASE_URL"] = os.environ.get("SCOUTIA_GEMINI_BASE_URL",
+                                                          "https://generativelanguage.googleapis.com/").strip()
 
 def get_client():
     global _client
@@ -140,7 +145,11 @@ def get_client():
         api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY manquante dans .env")
-        _client = genai.Client(api_key=api_key)
+        # 12/11/2026 : google-genai 3.x passe par défaut par le relais Kaggle (https://dp.kaggle.net/palmapi/) quand il
+        # tourne sur Kaggle. Run Flex du 12/11 via ce relais : 16 réponses en 7 h 50. On impose l'adresse officielle de
+        # Google (SCOUTIA_GEMINI_BASE_URL pour en choisir une autre).
+        _url = os.environ.get("SCOUTIA_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/").strip()
+        _client = genai.Client(api_key=api_key, http_options={"base_url": _url} if _url else None)
         # 20/10/2026 : diagnostic — adresse réellement utilisée (Google en direct ou relais, ex. Kaggle)
         try:
             _base = (getattr(getattr(_client, "_api_client", None), "_http_options", None) or {})
