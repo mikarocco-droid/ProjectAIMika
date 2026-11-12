@@ -433,7 +433,41 @@ def _gc_generate(client, **kwargs):
 # ═════════════════════════════════════════════════════════════════════════
 _GC_INTERNE = _th_gc.local()
 _MODELE_UNIQUE = os.environ.get("SCOUTIA_GEMINI_MODELE", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
-_VERROU = {"installe": False, "modeles_remplaces": {}}
+_VERROU = {"installe": False, "modeles_remplaces": {}, "versions": {}, "alerte_version": None}
+
+
+# 12/11/2026 : SURVEILLANCE DU MODÈLE RÉELLEMENT UTILISÉ (SCOUTIA_GEMINI_VERSION_VALIDEE = version de référence). Chaque réponse de Gemini indique la version qui a répondu
+# (model_version). Alerte si elle ne correspond pas au modèle demandé, ou si c'est une version JAMAIS VUE dans les
+# réponses déjà en cache pour ce modèle (Google a changé ce qu'il y a derrière le nom) : les réglages du pipeline ont
+# été validés sur une version précise, un changement silencieux peut produire des faux buts.
+_VERSIONS_CONNUES = None
+
+
+def _verifier_version(response):
+    global _VERSIONS_CONNUES
+    v = getattr(response, "model_version", None)
+    if not v:
+        return
+    with _GC_LOCK:
+        _VERROU["versions"][v] = _VERROU["versions"].get(v, 0) + 1
+        if _VERROU["versions"][v] > 1:
+            return                                          # déjà examinée pendant ce run
+        if _VERSIONS_CONNUES is None:
+            _VERSIONS_CONNUES = {e.get("model_version") for e in _GC["entries"].values()
+                                 if isinstance(e, dict) and str(e.get("model") or _MODELE_UNIQUE) == _MODELE_UNIQUE} - {None}
+        motif = None
+        # version validée de référence (mesurée sur les runs de validation du 07 au 12/11 : « gemini-3.8-flash »)
+        _validee = os.environ.get("SCOUTIA_GEMINI_VERSION_VALIDEE",
+                                  "gemini-3.8-flash" if _MODELE_UNIQUE == "gemini-3.8-flash" else "").strip()
+        if _validee and v != _validee:
+            motif = f"la version validée est {_validee}, mais c'est {v} qui a répondu"
+        elif not str(v).startswith(_MODELE_UNIQUE):
+            motif = f"le modèle demandé est {_MODELE_UNIQUE}, mais c'est {v} qui a répondu"
+        elif _VERSIONS_CONNUES and v not in _VERSIONS_CONNUES:
+            motif = f"version {v} jamais vue dans les réponses validées ({sorted(_VERSIONS_CONNUES)})"
+        if motif and not _VERROU["alerte_version"]:
+            _VERROU["alerte_version"] = motif
+            print(f"  [GEMINI] ⚠️⚠️ ALERTE MODÈLE : {motif} — résultats à vérifier, revalider avant d'utiliser en production")
 
 
 def _installer_verrou_gemini():
@@ -446,19 +480,39 @@ def _installer_verrou_gemini():
     _orig = _gm.Models.generate_content
 
     def _generate_verrouille(self, *args, **kwargs):
+        # 12/11/2026 : RÉFLEXION DES BORNES (coups d'envoi des 2 mi-temps, fins de mi-temps). Leurs questions passent
+        # par la fonction « _appel » des modules *_gemini_cascade, en réflexion PAR DÉFAUT (68 % de leur coût mesuré le
+        # 07/11). SCOUTIA_REFLEXION_BORNES = "" (défaut, inchangé) | "low" | "minimal" | "0" (budget nul). Les questions
+        # elles-mêmes ne changent pas. La clé du cache inclut ce réglage (pas de mélange de réponses).
+        _niv_b = os.environ.get("SCOUTIA_REFLEXION_BORNES", "").strip().lower()
+        if _niv_b:
+            try:
+                _app = sys._getframe(1).f_code.co_name
+            except Exception:
+                _app = ""
+            if _app == "_appel":
+                _cfg = kwargs.get("config")
+                if _cfg is not None and hasattr(_cfg, "model_dump"):
+                    _cfg = _cfg.model_dump(exclude_none=True)
+                _cfg = dict(_cfg or {})
+                _cfg["thinking_config"] = {"thinking_budget": 0} if _niv_b == "0" else {"thinking_level": _niv_b}
+                kwargs = dict(kwargs, config=_cfg)
         demande = kwargs.get("model")
         if demande and demande != _MODELE_UNIQUE:
             with _GC_LOCK:
                 _VERROU["modeles_remplaces"][demande] = _VERROU["modeles_remplaces"].get(demande, 0) + 1
         kwargs["model"] = _MODELE_UNIQUE
         if getattr(_GC_INTERNE, "actif", False) or args:
-            return _orig(self, *args, **kwargs)        # appel interne déjà géré par le cache
+            _r = _orig(self, *args, **kwargs)          # appel interne déjà géré par le cache
+            _verifier_version(_r)
+            return _r
         key, cached, allowed = _gc_lookup(kwargs)
         if cached is not None:
             return cached
         if not allowed:
             raise RuntimeError("SCOUTIA_GEMINI_CACHE=strict : question absente du cache")
         response = _orig(self, *args, **kwargs)
+        _verifier_version(response)
         _gc_store(key, kwargs, response)
         return response
 
@@ -484,8 +538,12 @@ def gemini_cache_summary():
                   f"coupure : {'oui' if _et['gemini_coupe'] else 'non'}) — RÉSULTATS INCOMPLETS, relancer (le cache garde le reste)")
         if _VERROU["modeles_remplaces"]:
             print(f"  [GEMINI] Modèles demandés par les modules et remplacés par {_MODELE_UNIQUE} : {_VERROU['modeles_remplaces']}")
+        if _VERROU["versions"]:
+            print(f"  [GEMINI] Versions qui ont réellement répondu : {_VERROU['versions']}"
+                  + (f" | ⚠️⚠️ ALERTE : {_VERROU['alerte_version']}" if _VERROU["alerte_version"] else " | conforme"))
         return dict(questions=n, relues=_GC["hits"], payees=_GC["misses"], refusees=_GC["strict_misses"],
-                    taille=len(_GC["entries"]), sortie=_GC["out"])
+                    taille=len(_GC["entries"]), sortie=_GC["out"], versions=dict(_VERROU["versions"]),
+                    alerte_version=_VERROU["alerte_version"])
 
 
 # 24/10/2026 : RÉFLEXION RÉDUITE (thinking_budget 0) pour la validation KO (second regard compris) et la
