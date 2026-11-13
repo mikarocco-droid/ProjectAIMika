@@ -149,7 +149,11 @@ def get_client():
         # tourne sur Kaggle. Run Flex du 12/11 via ce relais : 16 réponses en 7 h 50. On impose l'adresse officielle de
         # Google (SCOUTIA_GEMINI_BASE_URL pour en choisir une autre).
         _url = os.environ.get("SCOUTIA_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/").strip()
-        _client = genai.Client(api_key=api_key, http_options={"base_url": _url} if _url else None)
+        # 13/11 : délai maximal d'une requête (sans lui, une question Flex retenue chez Google peut attendre des heures
+        # sans que l'attente maximale SCOUTIA_FLEX_ATTENTE_MAX_S puisse jouer). 10 min par défaut.
+        _to = int(os.environ.get("SCOUTIA_GEMINI_TIMEOUT_MS", "600000") or 0)
+        _ho = {k: v for k, v in (("base_url", _url), ("timeout", _to)) if v}
+        _client = genai.Client(api_key=api_key, http_options=_ho or None)
         # 20/10/2026 : diagnostic — adresse réellement utilisée (Google en direct ou relais, ex. Kaggle)
         try:
             _base = (getattr(getattr(_client, "_api_client", None), "_http_options", None) or {})
@@ -212,7 +216,7 @@ def gemini_max_parallel():
         # 12/11 : en Flex, chaque question peut attendre plusieurs minutes chez Google : on les pose presque toutes
         # « d'un coup » (32 par défaut, jusqu'à 128). En standard : 4 par défaut, comme avant.
         _flex = os.environ.get("SCOUTIA_GEMINI_TIER", "").strip().lower() == "flex"
-        return max(1, min(128, int(os.environ.get("GEMINI_MAX_PARALLEL", "32" if _flex else "4"))))
+        return max(1, min(128, int(os.environ.get("GEMINI_MAX_PARALLEL", "128"))))   # 13/11 : 128 validé (standard et Flex)
     except Exception:
         return 4
 

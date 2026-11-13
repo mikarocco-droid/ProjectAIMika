@@ -70,7 +70,8 @@ class _Demandeur:
         self.cv2, self.np, self.types = cv2, np, types
         _url = os.environ.get("SCOUTIA_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/").strip()
         self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""),
-                                   http_options={"base_url": _url} if _url else None)   # 12/11 : pas le relais Kaggle
+                                   http_options={k: v for k, v in (("base_url", _url), ("timeout", int(os.environ.get(
+                                       "SCOUTIA_GEMINI_TIMEOUT_MS", "600000") or 0))) if v} or None)   # pas le relais Kaggle ; délai max 10 min
         self.cap = cv2.VideoCapture(video_path)
         self.plafond = plafond
         self.jet = {"q": 0, "e": 0, "s": 0}
