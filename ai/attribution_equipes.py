@@ -77,6 +77,8 @@ class _Demandeur:
         self.arret = None
         self.reduites = 0      # requêtes recompressées pour passer sous la limite de Gemini
         self.echecs = 0        # questions en échec (réseau, refus…)
+        import threading
+        self._verrou = threading.Lock()   # 13/11 : buts traités en parallèle (lecture vidéo et compteurs protégés)
 
     def cout(self):
         pe, ps = {"gemini-3-flash-preview": (0.50, 3.00)}.get(
@@ -86,20 +88,21 @@ class _Demandeur:
         return self.jet["e"] / 1e6 * pe + self.jet["s"] / 1e6 * ps
 
     def __call__(self, instants, consigne, resolution, etiquette=True):
-        if self.arret:
-            return None
-        if self.cout() > self.plafond:
-            self.arret = f"plafond {self.plafond} $ atteint"
-            return None
         cv2, np = self.cv2, self.np
         brutes = []
-        for i, t in enumerate(instants, 1):
-            self.cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
-            ok, img = self.cap.read()
-            img = img.copy() if ok else np.zeros((1080, 1920, 3), np.uint8)
-            if etiquette:
-                cv2.putText(img, f"{i}  {fmt(t)}", (14, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 255, 255), 4)
-            brutes.append(img)
+        with self._verrou:
+            if self.arret:
+                return None
+            if self.cout() > self.plafond:
+                self.arret = f"plafond {self.plafond} $ atteint"
+                return None
+            for i, t in enumerate(instants, 1):
+                self.cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+                ok, img = self.cap.read()
+                img = img.copy() if ok else np.zeros((1080, 1920, 3), np.uint8)
+                if etiquette:
+                    cv2.putText(img, f"{i}  {fmt(t)}", (14, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 255, 255), 4)
+                brutes.append(img)
         # 11/11 : Gemini refuse les requêtes de plus de 30 Mo (« Request body too large »). Qualité JPEG 85 comme avant ;
         # SEULEMENT si la requête dépasse ~28 Mo, les images sont recompressées (même taille en pixels) jusqu'à passer.
         for q in (85, 70, 55, 40):
@@ -107,7 +110,8 @@ class _Demandeur:
             if sum(map(len, data)) * 1.37 < 28e6:     # ×1,37 : encodage base64 de la requête
                 break
         if q != 85:
-            self.reduites += 1
+            with self._verrou:
+                self.reduites += 1
             print(f"  [ATTRIBUTION] requête de {len(brutes)} images recompressée (JPEG {q}) pour passer sous 30 Mo")
         ims = [self.types.Part.from_bytes(data=d, mime_type="image/jpeg") for d in data]
         cfg = {"temperature": 0.0, "thinking_config": {"thinking_level": "low"}}
@@ -116,25 +120,31 @@ class _Demandeur:
         try:
             r = self.client.models.generate_content(model="gemini-3.8-flash", contents=[consigne] + ims, config=cfg)
             um = getattr(r, "usage_metadata", None)
-            self.jet["q"] += 1
-            self.jet["e"] += int(getattr(um, "prompt_token_count", 0) or 0)
-            self.jet["s"] += int(getattr(um, "candidates_token_count", 0) or 0) + int(getattr(um, "thoughts_token_count", 0) or 0)
+            with self._verrou:
+                self.jet["q"] += 1
+                self.jet["e"] += int(getattr(um, "prompt_token_count", 0) or 0)
+                self.jet["s"] += int(getattr(um, "candidates_token_count", 0) or 0) + int(getattr(um, "thoughts_token_count", 0) or 0)
             t_ = r.text or ""
             d, _ = json.JSONDecoder().raw_decode(t_[t_.index("{"):])
             return d
         except Exception as e:
-            self.echecs += 1
+            with self._verrou:
+                self.echecs += 1
             print(f"  [ATTRIBUTION] ⚠️ question en échec : {e}")
             return None
 
 
 def _attribuer_un_but(dem, g, k, lim, ff, tenues, resolution):
     (a0, a1), (b0, b1) = tenues
-    d1 = dem([g + d for d in range(-8, 7, 2)], AQ1.format(**ff), resolution)
     pas = max(1, int(os.environ.get("SCOUTIA_ATTRIBUTION_PAS_Q2", "1")))      # secondes entre deux images de Q2
     inst = list(range(int(k), int(min(k + 45, lim)) + 1, pas)) if (k is not None and g + 10 <= k < lim) else \
         list(range(int(g) + 15, int(min(g + 120, lim)) + 1, pas))
-    d2 = dem(inst, AQ2.format(**ff), resolution)
+    # 13/11 : Q1 et Q2 sont indépendantes → posées en même temps (mêmes questions, mêmes images)
+    from concurrent.futures import ThreadPoolExecutor as _TPE_q
+    with _TPE_q(max_workers=2) as _px:
+        _f1 = _px.submit(dem, [g + d for d in range(-8, 7, 2)], AQ1.format(**ff), resolution)
+        _f2 = _px.submit(dem, inst, AQ2.format(**ff), resolution)
+        d1, d2 = _f1.result(), _f2.result()
     s1 = _eq(d1, "scoring_team"); s2 = AUTRE.get(_eq(d2, "kickoff_team"))
     pts = collections.Counter()
     if s1: pts[s1] += 2
@@ -182,15 +192,32 @@ def attribuer_buts(video_path, buts, debut_1mt, fin_1mt):
     ff = dict(a0=a0, a1=a1, b0=b0, b1=b1, r=_rappel(a0, a1, b0, b1))
     buts_tries = sorted(buts, key=lambda b: float(b["time_abs"]))
     n_esc = 0
-    for i, b in enumerate(buts_tries):
+
+    def _un(i):
+        b = buts_tries[i]
         g = float(b["time_abs"])
         k = b.get("candidate_time_abs")
         suiv = float(buts_tries[i + 1]["time_abs"]) if i + 1 < len(buts_tries) else None
         lim = (suiv - 5) if suiv else 10 ** 9
         niv, tete = _attribuer_un_but(dem, g, k, lim, ff, tenues, res)
+        esc = 0
         if niv == "non attribué" and res in ("low", "medium") and not dem.arret:
-            n_esc += 1                                    # escalade en résolution normale
+            esc = 1                                       # escalade en résolution normale
             niv, tete = _attribuer_un_but(dem, g, k, lim, ff, tenues, "high")
+        return niv, tete, esc
+
+    # 13/11 : tous les buts en même temps (SCOUTIA_ATTRIBUTION_PARALLELE, défaut 32 ; 1 = un par un comme avant).
+    # Chaque but reçoit exactement les mêmes questions qu'avant : seul l'ordre d'envoi change.
+    n_par = max(1, int(os.environ.get("SCOUTIA_ATTRIBUTION_PARALLELE", "32")))
+    if n_par > 1 and len(buts_tries) > 1:
+        from concurrent.futures import ThreadPoolExecutor as _TPE_b
+        with _TPE_b(max_workers=min(n_par, len(buts_tries))) as _pb:
+            resultats = list(_pb.map(_un, range(len(buts_tries))))
+    else:
+        resultats = [_un(i) for i in range(len(buts_tries))]
+    for b, (niv, tete, esc) in zip(buts_tries, resultats):
+        n_esc += esc
+        g = float(b["time_abs"])
         b["equipe"], b["niveau_equipe"], b["tenue_equipe"] = tete, niv, (nom[tete] if tete else None)
         print(f"  [ATTRIBUTION] but {fmt(g)} ({b.get('status')}) → {nom[tete] if tete else 'équipe non identifiée'} ({niv})")
     conf = collections.Counter(b["equipe"] for b in buts_tries if b.get("niveau_equipe") == "confirmé")
