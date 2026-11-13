@@ -1845,11 +1845,15 @@ def run_pipeline(
                     _ko_npar = _gmp()
                 except Exception:
                     _ko_npar = 1
+                try:   # 14/11 : grosses vagues (coups d'envoi, classification) → Flex si le mode Flex est actif
+                    from ai.gemini_validator import vague_flex as _vague_flex
+                except Exception:
+                    _vague_flex = lambda _f: _f
                 if _ko_npar > 1 and len(_ko_candidates) > 1:
                     from concurrent.futures import ThreadPoolExecutor as _TPE_ko
                     print(f"  [KO_DETECTION] validation en parallèle : {len(_ko_candidates)} candidats, {_ko_npar} simultanés")
                     with _TPE_ko(max_workers=_ko_npar) as _pool_ko:
-                        _futs_ko = [(_ki, _pool_ko.submit(_ko_call, _kc["time"])) for _ki, _kc in enumerate(_ko_candidates)]
+                        _futs_ko = [(_ki, _pool_ko.submit(_vague_flex(_ko_call), _kc["time"])) for _ki, _kc in enumerate(_ko_candidates)]
                         for _ki, _fu in _futs_ko:
                             try:
                                 _ko_results[_ki] = ("ok", _fu.result())
@@ -1884,9 +1888,9 @@ def run_pipeline(
                     if _ko_npar > 1 and len(_ko_candidates) > 1:
                         from concurrent.futures import ThreadPoolExecutor as _TPE_cls
                         with _TPE_cls(max_workers=_ko_npar) as _pool_cls:
-                            _cls_list = list(_pool_cls.map(_cls_call, [_kc["time"] for _kc in _ko_candidates]))
+                            _cls_list = list(_pool_cls.map(_vague_flex(_cls_call), [_kc["time"] for _kc in _ko_candidates]))
                     else:
-                        _cls_list = [_cls_call(_kc["time"]) for _kc in _ko_candidates]
+                        _cls_list = [_vague_flex(_cls_call)(_kc["time"]) for _kc in _ko_candidates]
                     _cls_results = dict(enumerate(_cls_list))
                     print(f"  [TEMPS FORTS] classification : {sum(1 for _c in _cls_list if _c)} / "
                           f"{len(_cls_list)} candidats analysés")
