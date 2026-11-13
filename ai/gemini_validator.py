@@ -209,7 +209,10 @@ def gemini_etat():
 def gemini_max_parallel():
     """Nombre d'appels Gemini simultanés (variable GEMINI_MAX_PARALLEL, défaut 4)."""
     try:
-        return max(1, min(16, int(os.environ.get("GEMINI_MAX_PARALLEL", "4"))))
+        # 12/11 : en Flex, chaque question peut attendre plusieurs minutes chez Google : on les pose presque toutes
+        # « d'un coup » (32 par défaut, jusqu'à 128). En standard : 4 par défaut, comme avant.
+        _flex = os.environ.get("SCOUTIA_GEMINI_TIER", "").strip().lower() == "flex"
+        return max(1, min(128, int(os.environ.get("GEMINI_MAX_PARALLEL", "32" if _flex else "4"))))
     except Exception:
         return 4
 
@@ -534,7 +537,7 @@ def _installer_verrou_gemini():
             kw_flex = dict(kwargs, config=dict(cfg, service_tier="flex", http_options=ho))
         else:
             kw_flex = dict(kwargs, config=dict(cfg, http_options=dict(ho, extra_body={"serviceTier": "flex"})))
-        t0, attente = time.time(), 30.0
+        t0, attente = time.time(), 20.0
         attente_max = float(os.environ.get("SCOUTIA_FLEX_ATTENTE_MAX_S", "43200"))
         try:
             echeance = float(os.environ.get("SCOUTIA_FLEX_ECHEANCE", "") or 0)
@@ -574,8 +577,8 @@ def _installer_verrou_gemini():
                             _VERROU["tiers"].get("standard (repli après attente Flex)", 0) + 1
                     print(f"  [GEMINI FLEX] attente dépassée ({(time.time() - t0) / 60:.0f} min) : question posée au tarif standard")
                     return _orig(self, *args, **kwargs)
-                time.sleep(attente)
-                attente = min(attente * 2, 600.0)
+                time.sleep(attente * (0.75 + 0.5 * _rnd_gem.random()))   # essais rapprochés, un peu décalés
+                attente = min(attente * 1.5, 120.0)
 
     def _generate_verrouille(self, *args, **kwargs):
         # 12/11/2026 : RÉFLEXION DES BORNES (coups d'envoi des 2 mi-temps, fins de mi-temps). Leurs questions passent
