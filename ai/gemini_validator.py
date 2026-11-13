@@ -567,8 +567,10 @@ def _installer_verrou_gemini():
                                   + (" : ⚠️⚠️ FLEX IMPOSSIBLE, questions au tarif STANDARD (mettre à jour google-genai)"
                                      if suivante == "impossible" else ""))
                     return _appel_tier(self, args, kwargs, appelant)
+                # 13/11 : « 500 INTERNAL » (erreur passagère côté Google) vu en Flex : réessayé aussi, sinon la question
+                # était abandonnée (candidat de coup d'envoi perdu).
                 temporaire = any(x in msg for x in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "high demand",
-                                                    "timed out", "Timeout", "timeout", "DEADLINE"))
+                                                    "timed out", "Timeout", "timeout", "DEADLINE", "500", "INTERNAL"))
                 if not temporaire:
                     raise
                 if time.time() - t0 + attente > attente_max or (echeance and time.time() + attente >= echeance):
