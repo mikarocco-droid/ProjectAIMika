@@ -176,6 +176,25 @@ rebound_sig         = 0.15   # bonus signal pour candidats avec rebond filet
 # ── Parallélisme et relances (13/10/2026) ───────────────────────────────────
 import threading as _thr_gem, random as _rnd_gem
 _STATE_LOCK = _thr_gem.Lock()
+
+# 14/11/2026 : en mode Flex, seules les GROSSES VAGUES passent en Flex (coups d'envoi, classification, équipes Q1/Q2) ;
+# les petites vagues (second regard, escalade, tenues, arbitrage Q3, scoring…) restent au tarif standard : une seule
+# question Flex peut retenir une vague pendant des heures pour quelques centimes d'économie.
+# Le code appelant enveloppe ses fonctions par vague_flex(fn) ; le marqueur vaut pour le fil d'exécution qui pose la
+# question. SCOUTIA_FLEX_GROSSES_VAGUES=0 : tout en Flex comme avant (sauf les bornes).
+_FLEX_TL = _thr_gem.local()
+
+
+def vague_flex(fn):
+    """Enveloppe une fonction pour que les questions Gemini qu'elle pose partent en Flex (si le mode Flex est actif)."""
+    def _enveloppe(*a, **k):
+        avant = getattr(_FLEX_TL, "actif", False)
+        _FLEX_TL.actif = True
+        try:
+            return fn(*a, **k)
+        finally:
+            _FLEX_TL.actif = avant
+    return _enveloppe
 _ABANDONS_CONSECUTIFS = 0
 _RATE_LIMIT_RETRIES   = 6     # tentatives max sur une limite PAR MINUTE
 _ABANDONS_MAX         = 3     # disjoncteur : 3 appels abandonnés d'affilée -> quota considéré épuisé
@@ -521,6 +540,10 @@ def _installer_verrou_gemini():
                 with _GC_LOCK:
                     _VERROU["tiers"]["standard (bornes)"] = _VERROU["tiers"].get("standard (bornes)", 0) + 1
             return _orig(self, *args, **kwargs)
+        if os.environ.get("SCOUTIA_FLEX_GROSSES_VAGUES", "1").strip() != "0" and not getattr(_FLEX_TL, "actif", False):
+            with _GC_LOCK:
+                _VERROU["tiers"]["standard (petite vague)"] = _VERROU["tiers"].get("standard (petite vague)", 0) + 1
+            return _orig(self, *args, **kwargs)
         cfg = kwargs.get("config")
         if cfg is not None and hasattr(cfg, "model_dump"):
             cfg = cfg.model_dump(exclude_none=True)
@@ -542,7 +565,9 @@ def _installer_verrou_gemini():
         else:
             kw_flex = dict(kwargs, config=dict(cfg, http_options=dict(ho, extra_body={"serviceTier": "flex"})))
         t0, attente = time.time(), 20.0
-        attente_max = float(os.environ.get("SCOUTIA_FLEX_ATTENTE_MAX_S", "43200"))
+        # 14/11 : 2 h 15 par défaut (mesures du 13/11 : ≈ 88 à 92 % des réponses Flex obtenues avant ; au-delà,
+        # bascule au tarif standard pour ne pas retenir la vague pendant des heures)
+        attente_max = float(os.environ.get("SCOUTIA_FLEX_ATTENTE_MAX_S", "8100"))
         try:
             echeance = float(os.environ.get("SCOUTIA_FLEX_ECHEANCE", "") or 0)
         except ValueError:

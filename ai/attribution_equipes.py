@@ -143,8 +143,15 @@ def _attribuer_un_but(dem, g, k, lim, ff, tenues, resolution):
     # 13/11 : Q1 et Q2 sont indépendantes → posées en même temps (mêmes questions, mêmes images)
     from concurrent.futures import ThreadPoolExecutor as _TPE_q
     with _TPE_q(max_workers=2) as _px:
-        _f1 = _px.submit(dem, [g + d for d in range(-8, 7, 2)], AQ1.format(**ff), resolution)
-        _f2 = _px.submit(dem, inst, AQ2.format(**ff), resolution)
+        try:   # 14/11 : Q1/Q2 = grosse vague → Flex si le mode Flex est actif (tenues et Q3 restent au standard)
+            from ai.gemini_validator import vague_flex as _vf
+        except Exception:
+            try:
+                from gemini_validator import vague_flex as _vf
+            except Exception:
+                _vf = lambda _f: _f
+        _f1 = _px.submit(_vf(dem), [g + d for d in range(-8, 7, 2)], AQ1.format(**ff), resolution)
+        _f2 = _px.submit(_vf(dem), inst, AQ2.format(**ff), resolution)
         d1, d2 = _f1.result(), _f2.result()
     s1 = _eq(d1, "scoring_team"); s2 = AUTRE.get(_eq(d2, "kickoff_team"))
     pts = collections.Counter()
