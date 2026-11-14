@@ -89,7 +89,13 @@ class AdaptateurRFDETR:
         # 15/11 : l'emplacement de la table des classes change selon les versions de rfdetr (rfdetr.util supprimé en
         # 1.9.0) → on la cherche à plusieurs endroits, en commençant par celle du modèle lui-même.
         noms = _noms_des_classes(self.modele)
+        self._noms = noms
         self._vers_ultralytics = {i: _IDS_ULTRALYTICS[n] for i, n in noms.items() if n in _IDS_ULTRALYTICS}
+        # 15/11 : selon la version de rfdetr et le schéma du fichier de poids, la personne sort en 0 OU en 1 (rfdetr
+        # 1.8.2 a déplacé « person » de 1 à 0, les anciens poids gardant parfois l'ancien schéma). La table des noms
+        # ne suffit donc pas : on CALIBRE sur les premières détections (la classe la plus fréquente d'une image de
+        # football est forcément « personne ») — voir _calibrer().
+        self._calibre = bool(poids)
         if len(self._vers_ultralytics) != 2:
             raise RuntimeError(f"classes personne / ballon introuvables dans RF-DETR : {self._vers_ultralytics}")
         # Poids réentraînés sur nos images : ce sont NOS classes (à fixer à l'entraînement) — 0 = joueur, 1 = ballon
@@ -112,6 +118,8 @@ class AdaptateurRFDETR:
         dets = self.modele.predict(rgb, threshold=float(conf))
         if not isinstance(dets, list):
             dets = [dets]
+        if not self._calibre:
+            self._calibrer(dets)
         resultats = []
         for d in dets:
             boites = []
@@ -121,6 +129,24 @@ class AdaptateurRFDETR:
                     boites.append(_Boite(k_u, float(c), xyxy))
             resultats.append(_Resultat(boites))
         return resultats
+
+    def _calibrer(self, dets):
+        from collections import Counter
+        brut = Counter(int(k) for d in dets for k in d.class_id)
+        if not brut:
+            return                                     # rien détecté : on réessaiera à l'appel suivant
+        personne = brut.most_common(1)[0][0]
+        decalage = next((dd for dd in (0, 1, -1) if self._noms.get(personne + dd) == "person"), None)
+        ballon_nom = next((i for i, n in self._noms.items() if n == "sports ball"), None)
+        if decalage is not None and ballon_nom is not None:
+            ballon = ballon_nom - decalage
+        else:                                          # table des noms inutilisable : schémas COCO connus
+            ballon = 32 if personne == 0 else 37
+        avant = dict(self._vers_ultralytics)
+        self._vers_ultralytics = {personne: 0, ballon: 32}
+        self._calibre = True
+        print(f"  RF-DETR calibré sur les détections : classes brutes les plus fréquentes {brut.most_common(5)} "
+              f"→ personne = {personne}, ballon = {ballon} (table des noms : {avant})")
 
 
 _ADAPTATEUR = None
