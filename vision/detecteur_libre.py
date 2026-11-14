@@ -13,8 +13,12 @@
 # avec la numérotation COCO d'Ultralytics (personne = 0, ballon = 32). Le reste du pipeline (suivi DeepSort,
 # ré-identification, ballon HSV…) ne change pas.
 #
-# ACTIVATION : variable SCOUTIA_DETECTEUR = "rfdetr" (taille : SCOUTIA_RFDETR_TAILLE = medium | small | base |
-# large | nano ; poids réentraînés : SCOUTIA_RFDETR_POIDS = chemin .pth). Non définie = YOLO comme avant.
+# ACTIVATION (15/11, fichier SÉPARÉ : detector.py et main.py ne sont PAS modifiés) :
+#     os.environ["SCOUTIA_DETECTEUR"] = "rfdetr"
+#     import vision.detecteur_libre as dl ; dl.brancher()      ← AVANT « from pipeline import run_pipeline »
+# brancher() remplace, en mémoire seulement, ultralytics.YOLO et vision.detector.YOLO par RF-DETR. Sans cet appel, le
+# pipeline tourne exactement comme avant (YOLO). Taille : SCOUTIA_RFDETR_TAILLE = medium (défaut) | small | base |
+# large | nano ; poids réentraînés : SCOUTIA_RFDETR_POIDS = chemin .pth.
 # NON VALIDÉ : à tester (test_detecteur_libre.py) puis revalider sur les 10 matchs de référence avant tout usage.
 # ════════════════════════════════════════════════════════════════════════════════════════════
 import os
@@ -104,18 +108,33 @@ class AdaptateurRFDETR:
             self._vers_ultralytics = {int(a): int(b) for a, b in (x.split(":") for x in _c.split(","))}
         self.nom = f"rfdetr-{taille}" + (f" ({os.path.basename(poids)})" if poids else " (COCO)")
         self.resolution = getattr(getattr(self.modele, "model", None), "resolution", None)
-        try:
+        self._predicteur = self.modele
+        self.optimise = False
+        try:                                            # rfdetr ≤ 1.8
             self.modele.optimize_for_inference()
-        except Exception as e:
-            print(f"  RF-DETR : optimisation pour l'inférence indisponible ({e}) — vitesse non optimale")
-        print(f"  Détecteur LIBRE : {self.nom} | résolution {self.resolution} | licence Apache 2.0 | "
+            self.optimise = True
+        except Exception:
+            try:                                        # rfdetr ≥ 1.9 : « predictor = native_model.inference(...) »
+                _p = self.modele.inference()
+                if hasattr(_p, "predict"):
+                    self._predicteur, self.optimise = _p, True
+            except Exception as e:
+                print(f"  RF-DETR : optimisation pour l'inférence indisponible ({e}) — vitesse non optimale")
+        print(f"  Détecteur LIBRE : {self.nom} | résolution {self.resolution} | optimisé : {'oui' if self.optimise else 'NON'} | licence Apache 2.0 | "
               f"rfdetr {getattr(rfdetr, '__version__', '?')} | classes {self._vers_ultralytics} (RF-DETR → Ultralytics)")
 
     def __call__(self, source, conf=0.25, verbose=False, imgsz=None, **_ignores):
         # imgsz est ignoré : RF-DETR travaille à sa propre résolution (fixe selon la taille du modèle)
         images = source if isinstance(source, (list, tuple)) else [source]
         rgb = [img[:, :, ::-1].copy() if isinstance(img, np.ndarray) and img.ndim == 3 else img for img in images]  # BGR → RGB
-        dets = self.modele.predict(rgb, threshold=float(conf))
+        try:
+            dets = self._predicteur.predict(rgb, threshold=float(conf))
+        except Exception as e:
+            if self._predicteur is self.modele:
+                raise
+            print(f"  RF-DETR : prédicteur optimisé en échec ({e}) → modèle normal")
+            self._predicteur, self.optimise = self.modele, False
+            dets = self.modele.predict(rgb, threshold=float(conf))
         if not isinstance(dets, list):
             dets = [dets]
         if not self._calibre:
@@ -155,6 +174,7 @@ class AdaptateurRFDETR:
 
 
 _ADAPTATEUR = None
+_YOLO_ORIGINAL = None
 
 
 def charger_modele(nom):
@@ -166,5 +186,30 @@ def charger_modele(nom):
         if _ADAPTATEUR is None:
             _ADAPTATEUR = AdaptateurRFDETR()
         return _ADAPTATEUR
+    if _YOLO_ORIGINAL is not None:
+        return _YOLO_ORIGINAL(nom)
     from ultralytics import YOLO
     return YOLO(nom)
+
+
+def brancher():
+    """Branche RF-DETR à la place d'Ultralytics YOLO, EN MÉMOIRE (aucun fichier du pipeline modifié).
+    À appeler après os.environ["SCOUTIA_DETECTEUR"] = "rfdetr" et AVANT d'importer / lancer le pipeline.
+    detector.py fait « from ultralytics import YOLO » (joueurs) et « from ultralytics import YOLO as _YOLO » (YOLO26m) :
+    on remplace donc ultralytics.YOLO et, si le module est déjà importé, vision.detector.YOLO."""
+    global _YOLO_ORIGINAL
+    if not detecteur_libre_actif():
+        print("  Détecteur LIBRE : SCOUTIA_DETECTEUR ≠ rfdetr → rien n'est branché, YOLO reste utilisé")
+        return False
+    import sys
+    import ultralytics
+    if _YOLO_ORIGINAL is None:
+        _YOLO_ORIGINAL = ultralytics.YOLO
+    ultralytics.YOLO = charger_modele
+    if "vision.detector" in sys.modules:
+        sys.modules["vision.detector"].YOLO = charger_modele
+    else:
+        import vision.detector as _vd
+        _vd.YOLO = charger_modele
+    print("  Détecteur LIBRE branché : ultralytics.YOLO et vision.detector.YOLO → RF-DETR (en mémoire)")
+    return True

@@ -3,9 +3,7 @@
 
 import cv2
 import numpy as np
-# 15/11/2026 (plan B licence) : plus d'import direct d'Ultralytics ; charger_modele() choisit YOLO ou RF-DETR
-# (SCOUTIA_DETECTEUR=rfdetr). Sans la variable : comportement strictement inchangé (YOLO).
-from vision.detecteur_libre import charger_modele as YOLO, detecteur_libre_actif
+from ultralytics import YOLO
 from vision.ball import BallDetector
 import config
 
@@ -54,9 +52,6 @@ def load_player_model(sport):
         "basketball": "models/yolov8_basketball.pt",
         "handball":   "models/yolov8_handball.pt",
     }
-    if detecteur_libre_actif():   # 15/11 : détecteur libre (RF-DETR), même instance pour joueurs et ballon
-        m = YOLO("rfdetr")
-        return m, m.nom
     sport_model = specialized.get(sport)
     if sport_model and os.path.exists(sport_model):
         print(f"  Modele specialise joueurs : {sport_model}")
@@ -658,7 +653,7 @@ class Detector:
         )
         if self._use_single_yolo26:
             try:
-                from vision.detecteur_libre import charger_modele as _YOLO
+                from ultralytics import YOLO as _YOLO
                 self._ball_model      = _YOLO(ball_model_name)
                 self._ball_model_name = ball_model_name
                 self.model            = self._ball_model  # remplace le modèle joueurs
@@ -671,7 +666,7 @@ class Detector:
                 self._ball_model_name = self.model_name
         elif ball_model_name and ball_model_name != self.model_name:
             try:
-                from vision.detecteur_libre import charger_modele as _YOLO
+                from ultralytics import YOLO as _YOLO
                 self._ball_model      = _YOLO(ball_model_name)
                 self._ball_model_name = ball_model_name
                 print(f"  Detector ballon : {ball_model_name} (conf={ball_conf}) | joueurs : {self.model_name}")
