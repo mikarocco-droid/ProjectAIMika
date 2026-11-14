@@ -115,7 +115,8 @@ class AdaptateurRFDETR:
             self.optimise = True
         except Exception:
             try:                                        # rfdetr ≥ 1.9 : « predictor = native_model.inference(...) »
-                _p = self.modele.inference()
+                self._lot_optimise = int(os.environ.get("SCOUTIA_RFDETR_LOT", "4"))   # main.py : lots de 4 images
+                _p = self.modele.inference(batch_size=self._lot_optimise)
                 if hasattr(_p, "predict"):
                     self._predicteur, self.optimise = _p, True
             except Exception as e:
@@ -127,12 +128,15 @@ class AdaptateurRFDETR:
         # imgsz est ignoré : RF-DETR travaille à sa propre résolution (fixe selon la taille du modèle)
         images = source if isinstance(source, (list, tuple)) else [source]
         rgb = [img[:, :, ::-1].copy() if isinstance(img, np.ndarray) and img.ndim == 3 else img for img in images]  # BGR → RGB
+        # 15/11 : le prédicteur optimisé n'accepte qu'une taille de lot fixe (4) ; les autres lots (dernier lot d'un
+        # morceau, image seule) passent par le modèle normal, sans désactiver l'optimisation pour la suite.
+        _pred = self._predicteur if len(rgb) == getattr(self, "_lot_optimise", len(rgb)) else self.modele
         try:
-            dets = self._predicteur.predict(rgb, threshold=float(conf))
+            dets = _pred.predict(rgb, threshold=float(conf))
         except Exception as e:
-            if self._predicteur is self.modele:
+            if _pred is self.modele:
                 raise
-            print(f"  RF-DETR : prédicteur optimisé en échec ({e}) → modèle normal")
+            print(f"  RF-DETR : prédicteur optimisé en échec ({e}) → modèle normal pour la suite", flush=True)
             self._predicteur, self.optimise = self.modele, False
             dets = self.modele.predict(rgb, threshold=float(conf))
         if not isinstance(dets, list):
@@ -147,6 +151,13 @@ class AdaptateurRFDETR:
                 if k_u is not None:
                     boites.append(_Boite(k_u, float(c), xyxy))
             resultats.append(_Resultat(boites))
+        self._n_images = getattr(self, "_n_images", 0) + len(resultats)
+        self._n_joueurs = getattr(self, "_n_joueurs", 0) + sum(1 for r in resultats for b in r.boxes if b.cls[0] == 0)
+        self._n_ballon = getattr(self, "_n_ballon", 0) + sum(1 for r in resultats if any(b.cls[0] == 32 for b in r.boxes))
+        if self._n_images in (40, 400) or self._n_images % 4000 < len(resultats):
+            print(f"  [RF-DETR processus {os.getpid()}] {self._n_images} images | {self._n_joueurs / self._n_images:.1f} "
+                  f"joueurs/image | ballon sur {100 * self._n_ballon / self._n_images:.0f} % des images | "
+                  f"optimisé : {'oui' if self.optimise else 'non'}", flush=True)
         return resultats
 
     def _calibrer(self, dets):
@@ -154,23 +165,20 @@ class AdaptateurRFDETR:
         brut = Counter(int(k) for d in dets for k in d.class_id)
         if not brut:
             return                                     # rien détecté : on réessaiera à l'appel suivant
-        personne = brut.most_common(1)[0][0]
-        # 15/11 (run Kaggle) : les poids COCO sortent en numérotation COCO D'ORIGINE (91 catégories : personne = 1,
-        # ballon = 37), pas en « 80 classes décalées de 1 » (ballon = 33, erreur du premier calibrage). Deux schémas
-        # seulement : personne = 0 → 80 classes (ballon = 32) ; personne = 1 → COCO d'origine (ballon = 37).
-        if personne == 0:
-            ballon = 32
-        elif personne == 1:
-            ballon = 37
+        # 15/11 (run Kaggle 2) : NE PLUS prendre « la classe la plus fréquente » — sur Minerois Ster, le parking
+        # derrière le terrain donne presque autant de voitures (classe 3) que de personnes (1) : un processus de suivi
+        # a pu prendre la voiture pour la personne et ne plus voir aucun joueur (2e mi-temps : 0 événement).
+        # Règle fixe : la classe 0 n'existe qu'en numérotation « 80 classes » (où 0 = personne, présente sur toute
+        # image de football) ; sans 0 → numérotation COCO d'origine (1 = personne, 37 = ballon).
+        if 0 in brut:
+            personne, ballon = 0, 32
         else:
-            print(f"  RF-DETR : classe la plus fréquente inattendue ({personne}) — calibrage abandonné, table des noms gardée")
-            self._calibre = True
-            return
+            personne, ballon = 1, 37
         avant = dict(self._vers_ultralytics)
         self._vers_ultralytics = {personne: 0, ballon: 32}
         self._calibre = True
-        print(f"  RF-DETR calibré sur les détections : classes brutes les plus fréquentes {brut.most_common(5)} "
-              f"→ personne = {personne}, ballon = {ballon} (table des noms : {avant})")
+        print(f"  [processus {os.getpid()}] RF-DETR calibré : classes brutes les plus fréquentes {brut.most_common(5)} "
+              f"→ personne = {personne}, ballon = {ballon} (table des noms : {avant})", flush=True)
 
 
 _ADAPTATEUR = None
