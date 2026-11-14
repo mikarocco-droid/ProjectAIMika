@@ -121,6 +121,9 @@ class AdaptateurRFDETR:
                     self._predicteur, self.optimise = _p, True
             except Exception as e:
                 print(f"  RF-DETR : optimisation pour l'inférence indisponible ({e}) — vitesse non optimale")
+        import sys as _sys_u
+        print(f"  [processus {os.getpid()}] Ultralytics chargé dans ce processus : "
+              f"{'OUI ⚠️' if 'ultralytics' in _sys_u.modules else 'non ✅'}", flush=True)
         print(f"  Détecteur LIBRE : {self.nom} | résolution {self.resolution} | optimisé : {'oui' if self.optimise else 'NON'} | licence Apache 2.0 | "
               f"rfdetr {getattr(rfdetr, '__version__', '?')} | classes {self._vers_ultralytics} (RF-DETR → Ultralytics)")
 
@@ -210,6 +213,17 @@ def brancher():
         print("  Détecteur LIBRE : SCOUTIA_DETECTEUR ≠ rfdetr → rien n'est branché, YOLO reste utilisé")
         return False
     import sys
+    # 15/11 : avec detector.py du 15/11 (charger_modele), la variable d'environnement suffit, y compris dans les
+    # processus de suivi (ils héritent de l'environnement) : AUCUN import d'Ultralytics, aucun crochet.
+    try:
+        import importlib.util as _iu
+        _spec = _iu.find_spec("vision.detector")
+        _src = open(_spec.origin, encoding="utf-8").read() if _spec and _spec.origin else ""
+    except Exception:
+        _src = ""
+    if "charger_modele as YOLO" in _src:
+        print("  Détecteur LIBRE actif (detector.py du 15/11) : RF-DETR partout, Ultralytics jamais importé")
+        return True
     import ultralytics
     if _YOLO_ORIGINAL is None:
         _YOLO_ORIGINAL = ultralytics.YOLO
