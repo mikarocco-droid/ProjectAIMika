@@ -211,5 +211,44 @@ def brancher():
     else:
         import vision.detector as _vd
         _vd.YOLO = charger_modele
-    print("  Détecteur LIBRE branché : ultralytics.YOLO et vision.detector.YOLO → RF-DETR (en mémoire)")
+    _installer_crochet_sous_processus()
+    print("  Détecteur LIBRE branché : ultralytics.YOLO et vision.detector.YOLO → RF-DETR (en mémoire, "
+          "et dans les processus de suivi des mi-temps)")
     return True
+
+
+_CROCHET = '''# sitecustomize.py ÉCRIT PAR vision/detecteur_libre.py (ScoutIA, plan B licence) — ne pas versionner.
+# Les mi-temps sont suivies dans des PROCESSUS SÉPARÉS (spawn) : le remplacement en mémoire du processus principal ne
+# les atteint pas. Python importe sitecustomize au démarrage de chaque processus dont le PYTHONPATH contient ce
+# dossier : on y rebranche RF-DETR, puis on exécute l'éventuel sitecustomize d'origine (Kaggle).
+import os, sys
+_ici = os.path.dirname(os.path.abspath(__file__))
+if os.environ.get("SCOUTIA_DETECTEUR", "").strip().lower() == "rfdetr":
+    try:
+        import importlib.util, ultralytics
+        _spec = importlib.util.spec_from_file_location("detecteur_libre_crochet", os.environ["SCOUTIA_DETECTEUR_FICHIER"])
+        _m = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_m)
+        _m._YOLO_ORIGINAL = ultralytics.YOLO
+        ultralytics.YOLO = _m.charger_modele
+        print(f"  [processus {os.getpid()}] Détecteur LIBRE branché (RF-DETR) dans ce processus de suivi", flush=True)
+    except Exception as _e:
+        print(f"  [processus {os.getpid()}] ⚠️ Détecteur LIBRE NON branché ({_e}) → YOLO utilisé", flush=True)
+for _p in sys.path:
+    _f = os.path.join(_p, "sitecustomize.py")
+    if _p and os.path.abspath(_p) != _ici and os.path.isfile(_f):
+        exec(compile(open(_f, encoding="utf-8").read(), _f, "exec"))
+        break
+'''
+
+
+def _installer_crochet_sous_processus():
+    """Écrit un sitecustomize.py dans un dossier dédié et l'ajoute au PYTHONPATH : les processus lancés ensuite
+    (suivi des mi-temps en parallèle) rebranchent RF-DETR au démarrage."""
+    dossier = os.path.join(os.environ.get("TMPDIR", "/tmp"), "scoutia_crochet_detecteur")
+    os.makedirs(dossier, exist_ok=True)
+    with open(os.path.join(dossier, "sitecustomize.py"), "w", encoding="utf-8") as f:
+        f.write(_CROCHET)
+    os.environ["SCOUTIA_DETECTEUR_FICHIER"] = os.path.abspath(__file__)
+    pp = os.environ.get("PYTHONPATH", "")
+    if dossier not in pp.split(os.pathsep):
+        os.environ["PYTHONPATH"] = dossier + (os.pathsep + pp if pp else "")
