@@ -136,12 +136,17 @@ class AdaptateurRFDETR:
         if not brut:
             return                                     # rien détecté : on réessaiera à l'appel suivant
         personne = brut.most_common(1)[0][0]
-        decalage = next((dd for dd in (0, 1, -1) if self._noms.get(personne + dd) == "person"), None)
-        ballon_nom = next((i for i, n in self._noms.items() if n == "sports ball"), None)
-        if decalage is not None and ballon_nom is not None:
-            ballon = ballon_nom - decalage
-        else:                                          # table des noms inutilisable : schémas COCO connus
-            ballon = 32 if personne == 0 else 37
+        # 15/11 (run Kaggle) : les poids COCO sortent en numérotation COCO D'ORIGINE (91 catégories : personne = 1,
+        # ballon = 37), pas en « 80 classes décalées de 1 » (ballon = 33, erreur du premier calibrage). Deux schémas
+        # seulement : personne = 0 → 80 classes (ballon = 32) ; personne = 1 → COCO d'origine (ballon = 37).
+        if personne == 0:
+            ballon = 32
+        elif personne == 1:
+            ballon = 37
+        else:
+            print(f"  RF-DETR : classe la plus fréquente inattendue ({personne}) — calibrage abandonné, table des noms gardée")
+            self._calibre = True
+            return
         avant = dict(self._vers_ultralytics)
         self._vers_ultralytics = {personne: 0, ballon: 32}
         self._calibre = True
