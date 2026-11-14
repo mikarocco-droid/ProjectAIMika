@@ -30,6 +30,25 @@ def detecteur_libre_actif():
     return os.environ.get("SCOUTIA_DETECTEUR", "").strip().lower() == "rfdetr"
 
 
+def _noms_des_classes(modele):
+    """Table {numéro RF-DETR: nom COCO}, quelle que soit la version de rfdetr."""
+    for source in (lambda: getattr(modele, "class_names", None),
+                   lambda: __import__("rfdetr.utilities.coco_classes", fromlist=["COCO_CLASSES"]).COCO_CLASSES,
+                   lambda: __import__("rfdetr.utilities", fromlist=["COCO_CLASSES"]).COCO_CLASSES,
+                   lambda: __import__("rfdetr.util.coco_classes", fromlist=["COCO_CLASSES"]).COCO_CLASSES):
+        try:
+            t = source()
+        except Exception:
+            continue
+        if isinstance(t, dict) and t:
+            return {int(k): str(v) for k, v in t.items()}
+        if isinstance(t, (list, tuple)) and t:
+            return {i: str(v) for i, v in enumerate(t)}
+    # Dernier recours : numérotation COCO d'origine (personne = 1, ballon = 37), celle de rfdetr ≤ 1.8
+    print("  RF-DETR : table des classes introuvable → numérotation COCO d'origine supposée (1 = personne, 37 = ballon)")
+    return {1: "person", 37: "sports ball"}
+
+
 class _Valeur:
     """Imite un tenseur Ultralytics d'une seule ligne : v[0] et v[0].tolist()."""
     def __init__(self, valeur):
@@ -60,15 +79,17 @@ class AdaptateurRFDETR:
 
     def __init__(self, taille=None, poids=None):
         import rfdetr
-        from rfdetr.util.coco_classes import COCO_CLASSES
         taille = (taille or os.environ.get("SCOUTIA_RFDETR_TAILLE", "medium")).strip().lower()
         if taille not in _TAILLES:
             raise ValueError(f"taille RF-DETR '{taille}' refusée : {sorted(_TAILLES)} (XL / 2XL exclues : licence PML)")
         poids = poids or os.environ.get("SCOUTIA_RFDETR_POIDS", "").strip() or None
         classe = getattr(rfdetr, _TAILLES[taille])
         self.modele = classe(pretrain_weights=poids) if poids else classe()
-        # Correspondance des classes PAR NOM (RF-DETR numérote COCO à partir de 1 : personne = 1, ballon = 37)
-        self._vers_ultralytics = {i: _IDS_ULTRALYTICS[n] for i, n in COCO_CLASSES.items() if n in _IDS_ULTRALYTICS}
+        # Correspondance des classes PAR NOM (RF-DETR numérote COCO à partir de 1 : personne = 1, ballon = 37).
+        # 15/11 : l'emplacement de la table des classes change selon les versions de rfdetr (rfdetr.util supprimé en
+        # 1.9.0) → on la cherche à plusieurs endroits, en commençant par celle du modèle lui-même.
+        noms = _noms_des_classes(self.modele)
+        self._vers_ultralytics = {i: _IDS_ULTRALYTICS[n] for i, n in noms.items() if n in _IDS_ULTRALYTICS}
         if len(self._vers_ultralytics) != 2:
             raise RuntimeError(f"classes personne / ballon introuvables dans RF-DETR : {self._vers_ultralytics}")
         # Poids réentraînés sur nos images : ce sont NOS classes (à fixer à l'entraînement) — 0 = joueur, 1 = ballon
@@ -81,7 +102,8 @@ class AdaptateurRFDETR:
             self.modele.optimize_for_inference()
         except Exception as e:
             print(f"  RF-DETR : optimisation pour l'inférence indisponible ({e}) — vitesse non optimale")
-        print(f"  Détecteur LIBRE : {self.nom} | résolution {self.resolution} | licence Apache 2.0")
+        print(f"  Détecteur LIBRE : {self.nom} | résolution {self.resolution} | licence Apache 2.0 | "
+              f"rfdetr {getattr(rfdetr, '__version__', '?')} | classes {self._vers_ultralytics} (RF-DETR → Ultralytics)")
 
     def __call__(self, source, conf=0.25, verbose=False, imgsz=None, **_ignores):
         # imgsz est ignoré : RF-DETR travaille à sa propre résolution (fixe selon la taille du modèle)
