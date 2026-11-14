@@ -278,14 +278,19 @@ def process_batch(
     effective_batch = b_size if b_size is not None else YOLO_BATCH_SIZE
 
     small_frames  = [bf[2] for bf in batch_frames]
-    _t0 = _profile_start()
-    batch_results = detector.model(
-        small_frames,
-        conf    = config.YOLO_CONFIDENCE,
-        verbose = False,
-        imgsz   = int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))
-    )
-    _profile_end(_t0, "yolo_batch")
+    # 15/11/2026 FIX VITESSE : en mode « YOLO26m unique », ce premier passage était calculé puis aussitôt
+    # REMPLACÉ par le passage « yolo_single_yolo26 » ci-dessous (run du 11/11 : 346 s de GPU perdues, ≈ 6 min).
+    # Il n'est donc lancé que hors de ce mode. Résultat attendu : détections strictement identiques (c'était déjà
+    # le second passage qui servait), « yolo_batch » absent du profilage.
+    if not getattr(detector, '_use_single_yolo26', False):
+        _t0 = _profile_start()
+        batch_results = detector.model(
+            small_frames,
+            conf    = config.YOLO_CONFIDENCE,
+            verbose = False,
+            imgsz   = int(os.environ.get('YOLO_IMGSZ', config.YOLO_IMGSZ))
+        )
+        _profile_end(_t0, "yolo_batch")
 
     # ── Branche de test ballon separé (ex. yolo26m) ──────────────────
     # Si detector._ball_model est different du modele joueurs, on lance
