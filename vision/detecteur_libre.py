@@ -24,6 +24,20 @@
 import os
 import numpy as np
 
+# 15/11 (run Spa sans Ultralytics : suivi 3 à 4 fois plus lent) : en s'important, Ultralytics réglait des paramètres
+# globaux du processus, dont cv2.setNumThreads(0) (OpenCV sans multi-fils, pour ne pas concurrencer PyTorch). Sans
+# Ultralytics, OpenCV reprend tous ses fils dans CHAQUE processus de suivi (2 en parallèle) → sur-souscription du
+# processeur : DeepSort 92 → 470 ms, ré-identification 61 → 201 ms par appel, alors que RF-DETR (GPU) ne ralentissait
+# que de 147 à 202 ms. On reproduit ces réglages ici, dès l'import (detector.py importe ce module dans chaque
+# processus), quand le détecteur libre est actif. Hypothèse à confirmer par le profilage du prochain run.
+if os.environ.get("SCOUTIA_DETECTEUR", "").strip().lower() == "rfdetr":
+    try:
+        import cv2 as _cv2_reglage
+        _cv2_reglage.setNumThreads(0)
+    except Exception:
+        pass
+    os.environ.setdefault("NUMEXPR_MAX_THREADS", str(min(8, max(1, (os.cpu_count() or 1)))))
+
 # Numérotation COCO « 80 classes » d'Ultralytics, utilisée par detector.py (player_cls = 0, ball_cls = 32)
 _IDS_ULTRALYTICS = {"person": 0, "sports ball": 32}
 _TAILLES = {"nano": "RFDETRNano", "small": "RFDETRSmall", "medium": "RFDETRMedium",
