@@ -1313,6 +1313,21 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
     elif prompt_variant != "default":
         raise ValueError(f"prompt_variant inconnu : {prompt_variant}")
 
+    # 15/11/2026 : champ GOAL_SEEN (« but visible ou seulement déduit »). SCOUTIA_KO_PREUVE = "" (défaut, question
+    # inchangée) | "1". Test ciblé du 15/11 : doublon de Minerois Ster 100:12 → RESTART_ONLY 4/4 ; Spa 21:36 (fenêtre
+    # élargie) → CELEBRATION 2/2. Le champ seul pousse Gemini vers « but » sur les replacements : il n'a de sens
+    # qu'avec la règle du pipeline (RESTART_ONLY + but confirmé juste avant → doublon rejeté).
+    if os.environ.get("SCOUTIA_KO_PREUVE", "").strip() == "1":
+        _anchor_ev_p = "EVIDENCE: [short justification based on observed images]"
+        if prompt.count(_anchor_ev_p) != 1:
+            raise ValueError("SCOUTIA_KO_PREUVE=1 : ancre EVIDENCE introuvable")
+        prompt = prompt.replace(_anchor_ev_p,
+            "GOAL_SEEN: [SHOT_OR_BALL_IN_NET / CELEBRATION / RESTART_ONLY / NONE] — what these frames ACTUALLY show of "
+            "the goal you report: SHOT_OR_BALL_IN_NET = the shot or the ball entering the net is visible in at least one "
+            "frame; CELEBRATION = the goal itself is not visible but the scorers' celebration is; RESTART_ONLY = only "
+            "players walking back to their halves and/or the centre kickoff are visible (the goal, if any, happened "
+            "before the first frame); NONE = no goal.\n" + _anchor_ev_p)
+
     if prompt_variant in ("fenetre", "fenetre_chrono"):
         # 19/10/2026 (exp. 14) : le but peut se situer APRÈS l'heure du candidat (Raeren, suivi
         # filtré : candidat 33:18, but 33:24). La consigne de production demande « just before ».
@@ -1336,6 +1351,7 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
                 "the very start of the sequence, with no visible goal action, return UNCERTAIN.\n\n")
 
     restart_type = None
+    goal_seen = None
     try:
         # 17/10/2026 : temperature=None (défaut) -> requête strictement inchangée ;
         # temperature=0 -> décisions plus constantes (même mécanisme que la classification).
@@ -1382,6 +1398,9 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
                     goal_time = _ko_parse_goal_time(gt, kickoff_time_abs, OFFSETS_KO)
             elif "RESTART_TYPE:" in line:
                 restart_type = line.split(":", 1)[1].strip().upper() or None
+            elif "GOAL_SEEN:" in line:
+                _m_gs = re.search(r"(SHOT_OR_BALL_IN_NET|CELEBRATION|RESTART_ONLY|NONE)", line.split(":", 1)[1].upper())
+                goal_seen = _m_gs.group(1) if _m_gs else None
             elif "EVIDENCE:" in line:
                 evidence = line.split(":", 1)[1].strip()[:200]
 
@@ -1407,6 +1426,7 @@ def validate_kickoff_context_gemini(video_path, kickoff_time_abs, fps=30,
             "source":         "ko_detection",
             **({"raw": text} if return_raw else {}),
             **({"restart_type": restart_type} if restart_type is not None else {}),
+            **({"goal_seen": goal_seen} if goal_seen is not None else {}),
         }
 
     except Exception as e:
