@@ -1017,6 +1017,44 @@ def run_pipeline(
         print(f"  [REPLAY] {len(events)} events | {len(frames_data)} frames | fps={fps}")
         print(f"  [REPLAY] kickoff_offset={_kickoff_offset:.1f}s | team_colors={_captured_team_colors}")
 
+        # 15/11/2026 : BORNES DE MI-TEMPS EN REPLAY (SCOUTIA_REPLAY_BORNES=1, désactivé par défaut ; aucun effet hors
+        # replay). En replay, la reprise (KO2) et la fin de 1re mi-temps n'étaient jamais connues : les règles de
+        # production « candidat KO2 sans but vu → écarté » et « aucun but pendant la pause » ne s'appliquaient pas
+        # (Minerois Ster 70:51, Franchimont 61:45 comptés comme faux buts). Source des bornes, par priorité :
+        #   1. SCOUTIA_REPLAY_KO2 / SCOUTIA_REPLAY_FIN1MT (secondes, temps absolu de la vidéo) ;
+        #   2. le TROU du suivi dans le cache : à sa création, la production supprime les images de la pause
+        #      (apply_pause_filter, [Fin1MT, KO2]) — le plus grand trou ≥ 3 min entre KO1 + (mi-temps − 10 min) et
+        #      KO1 + (mi-temps + 30 min) donne Fin1MT (début du trou) et KO2 (fin du trou).
+        # Aucun appel Gemini. Les bornes sont affichées pour être comparées aux valeurs mesurées en production.
+        if os.environ.get("SCOUTIA_REPLAY_BORNES", "").strip() == "1":
+            def _env_s(_nom):
+                try:
+                    _v = os.environ.get(_nom, "").strip()
+                    return float(_v) if _v else None
+                except ValueError:
+                    return None
+            _ko2_absolu, _fin1mt_absolu = _env_s("SCOUTIA_REPLAY_KO2"), _env_s("SCOUTIA_REPLAY_FIN1MT")
+            _src_bornes = "réglage SCOUTIA_REPLAY_KO2 / SCOUTIA_REPLAY_FIN1MT" if _ko2_absolu is not None else None
+            if _ko2_absolu is None:
+                _ts_b = sorted(float(_fd.get("frame", 0) or 0) / max(fps, 1) for _fd in frames_data)
+                _lo_b, _hi_b = (half_duration_min - 10) * 60, (half_duration_min + 30) * 60
+                _trou_b = None
+                for _a_b, _b_b in zip(_ts_b, _ts_b[1:]):
+                    if _b_b - _a_b >= 180 and _lo_b <= _a_b <= _hi_b and (
+                            _trou_b is None or _b_b - _a_b > _trou_b[1] - _trou_b[0]):
+                        _trou_b = (_a_b, _b_b)
+                if _trou_b is not None:
+                    _fin1mt_absolu = _kickoff_offset + _trou_b[0]
+                    _ko2_absolu = _kickoff_offset + _trou_b[1]
+                    _src_bornes = f"trou du suivi dans le cache ({(_trou_b[1] - _trou_b[0]) / 60:.1f} min)"
+            if _ko2_absolu is not None:
+                print(f"  [KO2] REPLAY : reprise {int(_ko2_absolu // 60):02d}:{int(_ko2_absolu % 60):02d} | fin de 1re "
+                      f"mi-temps " + (f"{int(_fin1mt_absolu // 60):02d}:{int(_fin1mt_absolu % 60):02d}"
+                                      if _fin1mt_absolu is not None else "inconnue") + f" | source : {_src_bornes}")
+            else:
+                print(f"  [KO2] REPLAY : aucune borne trouvée (pas de trou ≥ 3 min dans le suivi) — règles de reprise "
+                      f"et de pause inactives pour ce match")
+
     elif not candidate_segments:
         # ── DÉTECTION COUP D'ENVOI — AVANT process_video() ──────────────────────
         # V5.2 : deplacee ici (etait apres process_video()) pour eviter de
