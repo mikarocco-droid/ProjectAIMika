@@ -2065,6 +2065,27 @@ def run_pipeline(
                               f"— but déjà confirmé à proximité, skip")
                         continue
 
+                    # 15/11/2026 : RÈGLE « BUT SEULEMENT DÉDUIT » (avec SCOUTIA_KO_PREUVE=1, champ GOAL_SEEN de Gemini).
+                    # Un « but » dont Gemini ne voit QUE le replacement / le coup d'envoi (RESTART_ONLY) est un doublon
+                    # s'il suit de ≤ 90 s un but déjà confirmé (Minerois Ster : 99:04 confirmé, candidat 100:12 annoncé
+                    # à 99:57 « following a goal scored just prior to the opening frame »), ou la reprise de la 2e
+                    # mi-temps s'il tombe juste après elle. Un RESTART_ONLY SANS but confirmé juste avant est GARDÉ
+                    # (Spa 89:05, fenêtre de production : RESTART_ONLY 2/2 et vrai but).
+                    if (_os_kof.environ.get("SCOUTIA_KO_PREUVE", "").strip() == "1" and (_pre_r or {}).get("is_goal")
+                            and (_pre_r or {}).get("goal_seen") == "RESTART_ONLY"):
+                        _avant = [ct for ct in _already_confirmed if 0 < _ko_t_abs - ct <= 90]
+                        if _avant:
+                            print(f"  [PREUVE] t={_fmt_ko(_ko_t_abs)} écarté : but seulement déduit du replacement "
+                                  f"(GOAL_SEEN=RESTART_ONLY), {_ko_t_abs - max(_avant):.0f} s après le but confirmé "
+                                  f"de {_fmt_ko(max(_avant))} — même but")
+                            continue
+                        if _ko2_ref is not None and _ko2_ref - 15 <= _ko_t_abs <= _ko2_ref + 90:
+                            print(f"  [PREUVE] t={_fmt_ko(_ko_t_abs)} écarté : but seulement déduit du replacement "
+                                  f"(GOAL_SEEN=RESTART_ONLY) à la reprise de la 2e mi-temps ({_fmt_ko(_ko2_ref)})")
+                            continue
+                        print(f"  [PREUVE] t={_fmt_ko(_ko_t_abs)} : but seulement déduit (RESTART_ONLY), aucun but "
+                              f"confirmé juste avant ni reprise : gardé")
+
                     print(f"  [KO_DETECTION] t={int(_ko_t_abs//60):02d}:{int(_ko_t_abs%60):02d} "
                           f"score={_koc['score']:.3f} bal_delta={_koc['balance_delta']:.3f}")
 
