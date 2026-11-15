@@ -30,13 +30,32 @@ import numpy as np
 # processeur : DeepSort 92 → 470 ms, ré-identification 61 → 201 ms par appel, alors que RF-DETR (GPU) ne ralentissait
 # que de 147 à 202 ms. On reproduit ces réglages ici, dès l'import (detector.py importe ce module dans chaque
 # processus), quand le détecteur libre est actif. Hypothèse à confirmer par le profilage du prochain run.
-if os.environ.get("SCOUTIA_DETECTEUR", "").strip().lower() == "rfdetr":
+# 15/11 (2e run lent malgré cv2) : la vraie cause trouvée dans le code d'Ultralytics 8.4 — son __init__.py fait
+#     if not os.environ.get("OMP_NUM_THREADS"): os.environ["OMP_NUM_THREADS"] = "1"
+# Importé au démarrage de chaque processus de suivi (versions précédentes), il limitait PyTorch et NumPy à 1 fil de
+# calcul par processus. Sans lui, chaque processus (2 en parallèle) prend tous les cœurs → sur-souscription
+# (DeepSort 92 → 470 ms/appel). On reproduit les DEUX réglages d'Ultralytics : fils OpenMP/BLAS et cv2.setNumThreads(0).
+# La variable d'environnement doit être posée AVANT l'import de torch/numpy : brancher() la pose dans le processus
+# principal (les processus de suivi en héritent) ; ici, en secours, torch.set_num_threads(1) si torch est déjà chargé.
+def _limiter_fils():
+    for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        os.environ.setdefault(_v, "1")
+    os.environ.setdefault("NUMEXPR_MAX_THREADS", str(min(8, max(1, (os.cpu_count() or 1)))))
     try:
         import cv2 as _cv2_reglage
         _cv2_reglage.setNumThreads(0)
     except Exception:
         pass
-    os.environ.setdefault("NUMEXPR_MAX_THREADS", str(min(8, max(1, (os.cpu_count() or 1)))))
+    import sys as _sys_fils
+    if "torch" in _sys_fils.modules:
+        try:
+            _sys_fils.modules["torch"].set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "1") or 1))
+        except Exception:
+            pass
+
+
+if os.environ.get("SCOUTIA_DETECTEUR", "").strip().lower() == "rfdetr":
+    _limiter_fils()
 
 # Numérotation COCO « 80 classes » d'Ultralytics, utilisée par detector.py (player_cls = 0, ball_cls = 32)
 _IDS_ULTRALYTICS = {"person": 0, "sports ball": 32}
@@ -136,8 +155,10 @@ class AdaptateurRFDETR:
             except Exception as e:
                 print(f"  RF-DETR : optimisation pour l'inférence indisponible ({e}) — vitesse non optimale")
         import sys as _sys_u
+        _fils_torch = _sys_u.modules["torch"].get_num_threads() if "torch" in _sys_u.modules else "?"
         print(f"  [processus {os.getpid()}] Ultralytics chargé dans ce processus : "
-              f"{'OUI ⚠️' if 'ultralytics' in _sys_u.modules else 'non ✅'}", flush=True)
+              f"{'OUI ⚠️' if 'ultralytics' in _sys_u.modules else 'non ✅'} | fils PyTorch : {_fils_torch} "
+              f"(attendu : 1) | OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}", flush=True)
         print(f"  Détecteur LIBRE : {self.nom} | résolution {self.resolution} | optimisé : {'oui' if self.optimise else 'NON'} | licence Apache 2.0 | "
               f"rfdetr {getattr(rfdetr, '__version__', '?')} | classes {self._vers_ultralytics} (RF-DETR → Ultralytics)")
 
@@ -235,8 +256,10 @@ def brancher():
         _src = open(_spec.origin, encoding="utf-8").read() if _spec and _spec.origin else ""
     except Exception:
         _src = ""
+    _limiter_fils()   # 15/11 : posé ici, AVANT le lancement des processus de suivi (ils héritent de l'environnement)
     if "charger_modele as YOLO" in _src:
-        print("  Détecteur LIBRE actif (detector.py du 15/11) : RF-DETR partout, Ultralytics jamais importé")
+        print("  Détecteur LIBRE actif (detector.py du 15/11) : RF-DETR partout, Ultralytics jamais importé | "
+              f"fils de calcul par processus : OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')} (comme Ultralytics)")
         return True
     import ultralytics
     if _YOLO_ORIGINAL is None:
