@@ -2042,6 +2042,37 @@ def run_pipeline(
                         except Exception as _e_esc:
                             print(f"  [ESCALADE] {_fmt_ko(_t_e)} : erreur {_e_esc} — première réponse conservée")
 
+                # 15/11/2026 : DOUBLE REGARD (SCOUTIA_KO_DOUBLE_REGARD=1, désactivé par défaut). Un « but » que la
+                # classification ne confirme pas est reposé avec une fenêtre ÉTALÉE (−50 s → +30 s, une image toutes les
+                # 5 s). Si elle ne voit pas de but, il ne compte plus comme but et devient une ACTION DANGEREUSE.
+                # Test D (52 candidats, 2 essais) : faux buts 8/11 → 1/11 ; seul vrai but perdu, Franchimont 79:43,
+                # était « confirmé » par la classification (donc non reposé par cette règle). Les questions de la
+                # fenêtre étalée sont posées en parallèle ici, seulement pour les candidats « but » sans classification GOAL.
+                _dr_actif = _os_kof.environ.get("SCOUTIA_KO_DOUBLE_REGARD", "").strip() == "1"
+                _dr_results = {}
+                _OFFS_DR = list(range(-50, 31, 5))
+                def _ko_call_dr(_t):
+                    return validate_kickoff_context_gemini(
+                        video_path=video_path, kickoff_time_abs=_t, fps=fps, frame_w=_frame_w, frame_h=_frame_h,
+                        kickoff_offset=_kickoff_offset, source="ko_detection", **dict(_ko_kwargs, offsets=_OFFS_DR))
+                if _dr_actif:
+                    _dr_cas = [_ki_d for _ki_d in range(len(_ko_candidates))
+                               if (_ko_results.get(_ki_d) or (None, None))[0] == "ok"
+                               and ((_ko_results[_ki_d][1] or {}).get("is_goal"))
+                               and str((_cls_results.get(_ki_d) or {}).get("outcome") or "").upper() != "GOAL"]
+                    if _dr_cas:
+                        from concurrent.futures import ThreadPoolExecutor as _TPE_dr
+                        with _TPE_dr(max_workers=max(1, min(_ko_npar, len(_dr_cas)))) as _pool_dr:
+                            _f_dr = {_ki_d: _pool_dr.submit(_ko_call_dr, _ko_candidates[_ki_d]["time"]) for _ki_d in _dr_cas}
+                            for _ki_d, _fu in _f_dr.items():
+                                try:
+                                    _dr_results[_ki_d] = _fu.result()
+                                except Exception as _e_dr:
+                                    _dr_results[_ki_d] = None
+                                    print(f"  [DOUBLE REGARD] erreur {_fmt_ko(_ko_candidates[_ki_d]['time'])} : {_e_dr} — but gardé")
+                    print(f"  [DOUBLE REGARD] actif : {len(_dr_cas)} candidat(s) « but » sans classification GOAL reposé(s) "
+                          f"en fenêtre étalée")
+
                 # ── Coup d'envoi de la 2e mi-temps (KO2) ───────────────────────────
                 # Seul le candidat le PLUS PROCHE de KO2 dans [KO2-15s, KO2+60s] est
                 # concerné ; les autres candidats de la fenêtre sont traités normalement.
@@ -2195,6 +2226,30 @@ def run_pipeline(
                                   f"{_finmatch_ref - _ko_t_abs:+.0f} s avant la fin du match ({_fmt_ko(_finmatch_ref)})")
                             _g_status = "à_vérifier"
                             _g_reason = "juste avant la fin du match — " + _g_reason
+                        if _dr_actif and _g_status == "à_vérifier":
+                            if _ki not in _dr_results:
+                                try:
+                                    _dr_results[_ki] = _ko_call_dr(_ko_t_abs)
+                                except Exception as _e_dr2:
+                                    _dr_results[_ki] = None
+                                    print(f"  [DOUBLE REGARD] erreur {_fmt_ko(_ko_t_abs)} : {_e_dr2} — but gardé")
+                            _r_dr = _dr_results.get(_ki)
+                            if _r_dr is not None and not _r_dr.get("is_goal"):
+                                _t_dr = (_cls or {}).get("action_time_abs") or _gt_abs
+                                print(f"  [DOUBLE REGARD] t={_fmt_ko(_ko_t_abs)} but {_fmt_ko(_gt_abs)} REJETÉ (fenêtre étalée : "
+                                      f"pas de but) → action dangereuse à {_fmt_ko(_t_dr)} | "
+                                      f"{str(_r_dr.get('description') or '')[:120]}")
+                                if not any(abs(_tf["time_abs"] - _t_dr) <= 12 for _tf in _temps_forts):
+                                    _temps_forts.append({
+                                        "time_abs": _t_dr, "time": _t_dr - _kickoff_offset,
+                                        "outcome": _cls_out if _cls_out in ("SAVE", "WIDE", "WOODWORK", "LINE_CLEARANCE", "BLOCKED") else "OCCASION",
+                                        "phase": (_cls or {}).get("phase"), "team_color": (_cls or {}).get("team_color"),
+                                        "evidence": str(_r_dr.get("description") or _r.get("description") or "")[:300],
+                                        "candidate_time_abs": _ko_t_abs, "status": "temps_fort", "source": "double_regard",
+                                    })
+                                continue
+                            if _r_dr is not None:
+                                print(f"  [DOUBLE REGARD] t={_fmt_ko(_ko_t_abs)} but {_fmt_ko(_gt_abs)} gardé (fenêtre étalée : but)")
                         _gt_rel = _gt_abs - _kickoff_offset
                         _ev = {
                             "type":           "goal",
