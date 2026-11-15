@@ -1754,6 +1754,18 @@ def run_pipeline(
                 _ko_fen_env = _os_kof.environ.get("SCOUTIA_KO_FENETRE", "30").strip()
                 if _ko_reglage_b and _ko_fen_env == "30":
                     _ko_kwargs["offsets"] = _ko_kwargs["offsets"] + [20, 25, 30]
+                # 15/11/2026 (Spa, but 20:50, coup d'envoi 21:26, candidat 21:36) : la fenêtre commence 25 s avant le
+                # candidat, soit ≈ 15 s avant le coup d'envoi — ni le but ni la célébration ne sont montrés à Gemini.
+                # Test ciblé : fenêtre −25 s → « pas de but » 6/6 (medium et normale) ; fenêtre −50 s → « but » 3/3,
+                # heure 20:49-20:50. SCOUTIA_KO_AVANT = 25 (défaut, production inchangée) | 40 | 50 : images ajoutées
+                # avant −25 s, toutes les 5 s. EN TEST — à valider sur les 10 matchs (vrais ET faux buts).
+                _ko_avant_env = _os_kof.environ.get("SCOUTIA_KO_AVANT", "25").strip()
+                if _ko_reglage_b and _ko_avant_env in ("30", "35", "40", "45", "50", "55", "60"):
+                    _ko_kwargs["offsets"] = list(range(-int(_ko_avant_env), -25, 5)) + _ko_kwargs["offsets"]
+                    print(f"  [KO_DETECTION] SCOUTIA_KO_AVANT={_ko_avant_env} : fenêtre élargie vers l'arrière "
+                          f"({len(_ko_kwargs['offsets'])} images)")
+                elif _ko_avant_env not in ("", "25"):
+                    print(f"  [KO_DETECTION] ⚠️ SCOUTIA_KO_AVANT='{_ko_avant_env}' non reconnu : fenêtre de production")
                 # 19/10/2026 (exp. 14 et 14b) : consigne « fenêtre complète » (le but peut suivre le candidat).
                 # Raeren 7/7 sur les 2 suivis (33:24 récupéré), Andrimont 5/5, moins de faux buts acceptés.
                 # RETOUR IMMÉDIAT à la consigne précédente, sans modifier le code : SCOUTIA_KO_CONSIGNE=stoppages
