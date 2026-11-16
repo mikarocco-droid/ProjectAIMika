@@ -72,6 +72,20 @@ def _dedupliquer(candidates_raw, _mode, min_gap_s):
       episodes   : candidats bruts regroupés en épisodes (écart <= 6 s entre bruts consécutifs), meilleur de chaque.
       episodes20 : episodes, puis fusion des épisodes dont les meilleurs candidats sont à < 20 s.
     (15/11 : sortie en fonction pour la trace ; comportement inchangé.)"""
+    if _mode == "couverture":
+        # 16/11/2026 : SANS CHAÎNE. Un groupe ne s'étend jamais à plus de 25 s de son PREMIER candidat brut ; on garde
+        # le meilleur score du groupe. Tout candidat brut est donc au plus 25 s AVANT le candidat gardé, c'est-à-dire
+        # dans la fenêtre examinée par Gemini (−25 s → +30 s). Franchimont (suivi RF-DETR) : 99:42 n'est plus emporté
+        # par la chaîne 99:42 → 100:08 → 100:12 → 100:34 → 100:40 du mode « fenetre ».
+        deduped, groupe = [], []
+        for c in candidates_raw:
+            if groupe and c["time"] - groupe[0]["time"] > 25.0:
+                deduped.append(max(groupe, key=lambda x: x["score"]))
+                groupe = []
+            groupe.append(c)
+        if groupe:
+            deduped.append(max(groupe, key=lambda x: x["score"]))
+        return deduped
     if _mode == "fenetre":
         deduped = []
         for c in candidates_raw:
@@ -121,7 +135,7 @@ def _trace_candidats(candidates_raw, min_gap_s):
         for c in brut:
             print(f"  [KO_TRACE]    brut {_h(c['time'])} score={c['score']:.3f} hausse={c['balance_delta']:.3f} "
                   f"balance après={c['balance_after']:.3f} joueurs au centre {c['n_center_before']:.1f}→{c['n_center_after']:.1f}")
-        for mode in ("fenetre", "episodes", "episodes20"):
+        for mode in ("fenetre", "couverture", "episodes", "episodes20"):
             garde = [c for c in _dedupliquer(candidates_raw, mode, min_gap_s) if a <= c["time"] <= b]
             print(f"  [KO_TRACE]    mode « {mode} » garde : " + (", ".join(f"{_h(c['time'])} ({c['score']:.3f})" for c in garde) or "aucun"))
 
@@ -158,6 +172,15 @@ def detect_kickoff_candidates(
     #   le but de 20:08 ne montait qu'à +0.07 → aucun candidat ; à 0.07, un candidat 20:23 apparaît, comme au run du 18/10)
     #   SCOUTIA_KO_APRES_MIN : niveau minimal de la balance après.
     import os as _os_seuils
+    # 16/11/2026 : SCOUTIA_KO_PISTES=reelles (désactivé par défaut) — les pistes PRÉDITES (time_since_update > 0,
+    # « fantômes » ≈ 80 % des joueurs enregistrés) ne comptent plus dans les signaux des candidats (équilibre des
+    # équipes, joueurs au centre, dispersion). Le suivi lui-même n'est pas modifié. Un joueur sans
+    # time_since_update (anciens caches) est gardé. Test H (16/11) : seul ce réglage place un candidat à +5 s du
+    # penalty de Raeren 69:12 (Gemini : but 3/3 en résolution réduite et normale).
+    if (_os_seuils.environ.get("SCOUTIA_KO_PISTES", "") or "").strip().lower() == "reelles":
+        frames_data = [dict(f, players=[p for p in (f.get("players") or [])
+                                        if (p.get("time_since_update") or 0) <= 0]) for f in frames_data]
+        print("  [KO_DETECTION] pistes : vraies détections seulement (SCOUTIA_KO_PISTES=reelles)")
     try:
         balance_delta_min = float(_os_seuils.environ.get("SCOUTIA_KO_DELTA_MIN", "") or balance_delta_min)
         balance_after_min = float(_os_seuils.environ.get("SCOUTIA_KO_APRES_MIN", "") or balance_after_min)
@@ -227,7 +250,7 @@ def detect_kickoff_candidates(
 
     import os as _os_dd
     _mode = (_os_dd.environ.get("SCOUTIA_KO_DEDUP", "") or "fenetre").strip().lower()
-    if _mode not in ("fenetre", "episodes", "episodes20"):
+    if _mode not in ("fenetre", "couverture", "episodes", "episodes20"):
         print(f"  [KO_DETECTION] SCOUTIA_KO_DEDUP='{_mode}' inconnu — mode historique « fenetre »")
         _mode = "fenetre"
     deduped = _dedupliquer(candidates_raw, _mode, min_gap_s)
