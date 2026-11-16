@@ -1,6 +1,7 @@
 # analysis/player_reid.py
 # -*- coding: utf-8 -*-
 
+import os
 import numpy as np
 import cv2
 import time
@@ -163,7 +164,7 @@ class PlayerReID:
     CALIB_FRAMES     = 50
     CALIB_MIN_SAMPLE = 8
 
-    def __init__(self, fps=25):
+    def __init__(self, fps=25, sans_normes=False):
         # V5.2 (13/09/2026) : TTL calculés en fonction du fps EFFECTIF
         # (rythme réel des appels à process(), pas le fps natif de la
         # vidéo) — corrige un bug où TTL_ACTIVE/TTL_SLEEP étaient des
@@ -194,6 +195,27 @@ class PlayerReID:
         self._diag_gaps = []
         self._diag_calibration = None
         self._diag_decisions = {"team0": 0, "team1": 0, "none_ambigu": 0, "gk": 0}
+
+        # 16/11/2026 : COULEURS DES ÉQUIPES PAR TRANCHE D'ENVIRON 15 MIN, apprises et vérifiées AVANT le suivi
+        # (analysis/couleurs_equipes.py, SCOUTIA_COULEURS_FIXES=1 dans le pipeline). Le suivi appelle
+        # appliquer_norme_couleurs(t) à chaque image ; sans norme pour l'instant t → calibration locale comme avant.
+        self._normes_couleurs = None
+        self._norme_active    = None
+        if not sans_normes:
+            try:
+                from analysis.couleurs_equipes import charger_normes
+                self._normes_couleurs = charger_normes()
+            except Exception:
+                self._normes_couleurs = None
+            if self._normes_couleurs:
+                print(f"  [COULEURS] suivi : {sum(1 for x in self._normes_couleurs if x[3] is not None)} norme(s) "
+                      f"de couleurs fixées par tranche (pas de calibration locale là où elles existent)")
+                _deb = os.environ.get("SCOUTIA_COULEURS_DEBUT_S", "").strip()
+                if _deb:
+                    try:
+                        self.appliquer_norme_couleurs(float(_deb))
+                    except ValueError:
+                        pass
 
         # jersey_map intégré : {reid_id → jersey_number}
         # Permet de stabiliser les IDs via les numéros détectés
@@ -328,6 +350,21 @@ class PlayerReID:
               f"cluster0={n_cluster0} ({100*n_cluster0/len(samples):.1f}%)  "
               f"cluster1={n_cluster1} ({100*n_cluster1/len(samples):.1f}%)  "
               f"distance_centroides={dist_entre_centroides:.3f}")
+
+    def appliquer_norme_couleurs(self, t_s):
+        """16/11 : prend la norme de couleurs de la tranche de l'instant t_s (temps absolu de la vidéo), si elle existe.
+        Sans norme pour cet instant : garde les couleurs actuelles (norme précédente ou calibration locale)."""
+        if not self._normes_couleurs:
+            return
+        from analysis.couleurs_equipes import norme_pour
+        c = norme_pour(self._normes_couleurs, t_s)
+        if c is None or c is self._norme_active:
+            return
+        self._norme_active           = c
+        self._team_centroids         = c
+        self._team_colors_calibrated = True
+        self._diag_calibration       = {"source": "norme de couleurs par tranche",
+                                        "distance_entre_centroides": float(np.linalg.norm(c[0] - c[1]))}
 
     def _infer_team(self, color):
         c = color.astype(np.float32)
