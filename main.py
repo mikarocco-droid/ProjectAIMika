@@ -489,6 +489,9 @@ def process_batch(
         )
         _profile_end(_t0, "rescale")
 
+        # 16/11/2026 : norme de couleurs de la tranche de 15 min de cette image (SCOUTIA_COULEURS_FIXES=1)
+        if fps and getattr(getattr(tracker, "reid", None), "_normes_couleurs", None):
+            tracker.reid.appliquer_norme_couleurs(frame_id / fps)
         _t0 = _profile_start()
         tracked = tracker.update(players, frame_orig)
         _profile_end(_t0, "tracker_update")

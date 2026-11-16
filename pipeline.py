@@ -300,6 +300,7 @@ def _worker_mi_temps(args):
     from main import process_video
     import inspect as _insp
     video_path, debut_s, fin_s, kw = args[:4]
+    os.environ["SCOUTIA_COULEURS_DEBUT_S"] = str(float(debut_s))   # 16/11 : norme de couleurs de CETTE mi-temps
     fichier_arret = args[4] if len(args) > 4 else None
     if fichier_arret and "fichier_arret" in _insp.signature(process_video).parameters:
         kw = dict(kw, fichier_arret=fichier_arret)
@@ -1138,6 +1139,32 @@ def run_pipeline(
         # ── FALLBACK : process_video() complet ───────────────────────────
         print("Step 1 : Tracking + Events (full pass)...")
         _mi_temps_ok = False
+        # 16/11/2026 : COULEURS DES ÉQUIPES FIXÉES POUR TOUT LE MATCH (SCOUTIA_COULEURS_FIXES=1, désactivé par défaut).
+        # Par TRANCHE D'ENVIRON 15 MIN (3 par mi-temps, 2e estimée) car la lumière change (jour → éclairage) : apprises
+        # AVANT le suivi sur 4 moments, vérifiées sur 4 autres (repère : plus petite équipe ≥ 25 %, « gardien » ≤ 15 %),
+        # rangées dans le même ordre d'une tranche à l'autre ; transmises aux processus de suivi par un fichier (lu par
+        # PlayerReID, appliqué image par image). Mi-temps sans norme fiable : calibration locale comme avant.
+        os.environ.pop("SCOUTIA_COULEURS_EQUIPES_FICHIER", None)
+        if os.environ.get("SCOUTIA_COULEURS_FIXES", "").strip() == "1" and _kickoff_offset > 0:
+            try:
+                import time as _t_coul, cv2 as _cv2_coul
+                from analysis.couleurs_equipes import calibrer_couleurs_match
+                from vision.detector import Detector as _Det_coul
+                _t0_coul = _t_coul.time()
+                _det_coul = _Det_coul(sport=sport, camera_type=camera_type, ball_model_name=ball_model_name,
+                                      ball_conf=ball_conf, use_single_yolo26=use_single_yolo26)
+                _cap_coul = _cv2_coul.VideoCapture(video_path)
+                _duree_coul = (_cap_coul.get(_cv2_coul.CAP_PROP_FRAME_COUNT) or 0) / max(_cap_coul.get(_cv2_coul.CAP_PROP_FPS) or 25.0, 1)
+                _cap_coul.release()
+                _f_coul = calibrer_couleurs_match(video_path, _kickoff_offset, half_duration_min,
+                                                  os.path.join(output_dir, "couleurs_equipes.json"), _det_coul,
+                                                  duree_s=_duree_coul or None)
+                del _det_coul
+                if _f_coul:
+                    os.environ["SCOUTIA_COULEURS_EQUIPES_FICHIER"] = os.path.abspath(_f_coul)
+                print(f"  [COULEURS] passage préalable : {(_t_coul.time() - _t0_coul) / 60:.1f} min")
+            except Exception as _e_coul:
+                print(f"  [COULEURS] ⚠️ passage préalable en échec ({_e_coul}) — calibration locale comme avant")
         if use_match_boundary_segments:
             if _kickoff_offset <= 0:
                 print("  [MI-TEMPS] Coup d'envoi inconnu (0.0 / non détecté) — lecture complète")
