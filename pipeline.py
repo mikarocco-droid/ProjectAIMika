@@ -2045,6 +2045,7 @@ def run_pipeline(
                 # active) : la validation KO et la classification ne sont pas d'accord → la validation KO est reposée
                 # en résolution normale et SA réponse remplace la première. Cas : KO « but » mais classification ≠ GOAL
                 # (buts « à vérifier ») ; KO « pas de but » mais classification GOAL (ex. Franchimont 79:42).
+                _ko_premiere_heure = {}   # 17/11 : heure de la 1re réponse (avant escalade), pour le redatage
                 if _res_reduite_active() and os.environ.get("SCOUTIA_ESCALADE", "1").strip() != "0":
                     _esc = []
                     for _ki_e, _kc_e in enumerate(_ko_candidates):
@@ -2059,6 +2060,8 @@ def run_pipeline(
                     for _ki_e in _esc:
                         _t_e = _ko_candidates[_ki_e]["time"]
                         _avant = bool(_ko_results[_ki_e][1].get("is_goal"))
+                        if _ko_results[_ki_e][1].get("is_goal"):
+                            _ko_premiere_heure[_ki_e] = _ko_results[_ki_e][1].get("goal_time_abs")
                         try:
                             with _haute_res_ctx():
                                 _r_hr = _ko_call(_t_e)
@@ -2142,7 +2145,17 @@ def run_pipeline(
                         # détections + episodes » (16/11) : un candidat placé tôt datait le but au moment où le coup
                         # de pied arrêté se prépare (Spa 39:06 annoncé 38:35 = ballon posé sur le point de penalty ;
                         # Raeren 50:17 annoncé 49:39 = faute sifflée), puis le candidat bien placé était sauté.
-                        if (_pre_gt is not None and _os_finm.environ.get("SCOUTIA_KO_REDATER", "").strip() == "1"):
+                        # 17/11 (2) : SCOUTIA_KO_REDATER_PREMIERE=1 — si l'ESCALADE n'a pas donné d'heure, prendre celle de
+                        # la 1re réponse du même candidat (Spa 39:32 : 1re réponse 39:07, escalade « inconnue »).
+                        _gt_rd = _pre_gt
+                        if (_gt_rd is None and _pre_r is not None and _pre_r.get("is_goal")
+                                and _os_finm.environ.get("SCOUTIA_KO_REDATER_PREMIERE", "").strip() == "1"):
+                            _gt_rd = _ko_premiere_heure.get(_ki)
+                            if _gt_rd is not None:
+                                print(f"  [REDATAGE] candidat {_fmt_ko(_ko_t_abs)} : escalade sans heure, heure de la 1re "
+                                      f"réponse reprise ({_fmt_ko(_gt_rd)})")
+                        if (_gt_rd is not None and _os_finm.environ.get("SCOUTIA_KO_REDATER", "").strip() == "1"):
+                            _pre_gt = _gt_rd
                             _ct_proche = min(_already_confirmed, key=lambda ct: abs(_pre_gt - ct))
                             if 20 < _pre_gt - _ct_proche <= 40:
                                 for _e_rd in events:
