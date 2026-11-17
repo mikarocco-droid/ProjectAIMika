@@ -14,11 +14,9 @@
 # ré-identification, ballon HSV…) ne change pas.
 #
 # ACTIVATION (15/11, fichier SÉPARÉ : detector.py et main.py ne sont PAS modifiés) :
-#     os.environ["SCOUTIA_DETECTEUR"] = "rfdetr"
-#     import vision.detecteur_libre as dl ; dl.brancher()      ← AVANT « from pipeline import run_pipeline »
-# brancher() remplace, en mémoire seulement, ultralytics.YOLO et vision.detector.YOLO par RF-DETR. Sans cet appel, le
-# pipeline tourne exactement comme avant (YOLO). Taille : SCOUTIA_RFDETR_TAILLE = medium (défaut) | small | base |
-# large | nano ; poids réentraînés : SCOUTIA_RFDETR_POIDS = chemin .pth.
+# APRÈS LE RETRAIT D'ULTRALYTICS : RF-DETR est le seul détecteur, toujours actif ; brancher() est gardé pour les
+# cellules existantes. Taille : SCOUTIA_RFDETR_TAILLE = medium (défaut) | small | base | large | nano ; poids
+# réentraînés : SCOUTIA_RFDETR_POIDS = chemin .pth. Les classes restent numérotées comme avant (personne 0, ballon 32).
 # NON VALIDÉ : à tester (test_detecteur_libre.py) puis revalider sur les 10 matchs de référence avant tout usage.
 # ════════════════════════════════════════════════════════════════════════════════════════════
 import os
@@ -64,7 +62,8 @@ _TAILLES = {"nano": "RFDETRNano", "small": "RFDETRSmall", "medium": "RFDETRMediu
 
 
 def detecteur_libre_actif():
-    return os.environ.get("SCOUTIA_DETECTEUR", "").strip().lower() == "rfdetr"
+    # Ultralytics retiré : RF-DETR est le SEUL détecteur. SCOUTIA_DETECTEUR n'est plus nécessaire (gardé pour compatibilité).
+    return True
 
 
 def _noms_des_classes(modele):
@@ -220,94 +219,20 @@ class AdaptateurRFDETR:
 
 
 _ADAPTATEUR = None
-_YOLO_ORIGINAL = None
 
 
 def charger_modele(nom):
-    """Remplace `ultralytics.YOLO(nom)` dans detector.py : RF-DETR si SCOUTIA_DETECTEUR=rfdetr (une seule instance,
-    pour les joueurs ET le ballon), sinon le modèle Ultralytics demandé, comme avant. Ultralytics n'est importé
-    QUE dans ce second cas (aucun import d'Ultralytics quand le détecteur libre est actif)."""
+    """Renvoie le modèle RF-DETR (une seule instance, pour les joueurs ET le ballon), quel que soit le nom demandé
+    (« yolo26m.pt » etc. : noms hérités de l'époque Ultralytics, ignorés). Ultralytics a été retiré du projet."""
     global _ADAPTATEUR
-    if detecteur_libre_actif():
-        if _ADAPTATEUR is None:
-            _ADAPTATEUR = AdaptateurRFDETR()
-        return _ADAPTATEUR
-    if _YOLO_ORIGINAL is not None:
-        return _YOLO_ORIGINAL(nom)
-    from ultralytics import YOLO
-    return YOLO(nom)
+    if _ADAPTATEUR is None:
+        _ADAPTATEUR = AdaptateurRFDETR()
+    return _ADAPTATEUR
 
 
 def brancher():
-    """Branche RF-DETR à la place d'Ultralytics YOLO, EN MÉMOIRE (aucun fichier du pipeline modifié).
-    À appeler après os.environ["SCOUTIA_DETECTEUR"] = "rfdetr" et AVANT d'importer / lancer le pipeline.
-    detector.py fait « from ultralytics import YOLO » (joueurs) et « from ultralytics import YOLO as _YOLO » (YOLO26m) :
-    on remplace donc ultralytics.YOLO et, si le module est déjà importé, vision.detector.YOLO."""
-    global _YOLO_ORIGINAL
-    if not detecteur_libre_actif():
-        print("  Détecteur LIBRE : SCOUTIA_DETECTEUR ≠ rfdetr → rien n'est branché, YOLO reste utilisé")
-        return False
-    import sys
-    # 15/11 : avec detector.py du 15/11 (charger_modele), la variable d'environnement suffit, y compris dans les
-    # processus de suivi (ils héritent de l'environnement) : AUCUN import d'Ultralytics, aucun crochet.
-    try:
-        import importlib.util as _iu
-        _spec = _iu.find_spec("vision.detector")
-        _src = open(_spec.origin, encoding="utf-8").read() if _spec and _spec.origin else ""
-    except Exception:
-        _src = ""
-    _limiter_fils()   # 15/11 : posé ici, AVANT le lancement des processus de suivi (ils héritent de l'environnement)
-    if "charger_modele as YOLO" in _src:
-        print("  Détecteur LIBRE actif (detector.py du 15/11) : RF-DETR partout, Ultralytics jamais importé | "
-              f"fils de calcul par processus : OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')} (comme Ultralytics)")
-        return True
-    import ultralytics
-    if _YOLO_ORIGINAL is None:
-        _YOLO_ORIGINAL = ultralytics.YOLO
-    ultralytics.YOLO = charger_modele
-    if "vision.detector" in sys.modules:
-        sys.modules["vision.detector"].YOLO = charger_modele
-    else:
-        import vision.detector as _vd
-        _vd.YOLO = charger_modele
-    _installer_crochet_sous_processus()
-    print("  Détecteur LIBRE branché : ultralytics.YOLO et vision.detector.YOLO → RF-DETR (en mémoire, "
-          "et dans les processus de suivi des mi-temps)")
+    """Conservé pour compatibilité avec les cellules existantes : RF-DETR est désormais toujours utilisé."""
+    _limiter_fils()
+    print("  Détecteur : RF-DETR (Apache 2.0) — Ultralytics retiré du projet | "
+          f"fils de calcul par processus : OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}")
     return True
-
-
-_CROCHET = '''# sitecustomize.py ÉCRIT PAR vision/detecteur_libre.py (ScoutIA, plan B licence) — ne pas versionner.
-# Les mi-temps sont suivies dans des PROCESSUS SÉPARÉS (spawn) : le remplacement en mémoire du processus principal ne
-# les atteint pas. Python importe sitecustomize au démarrage de chaque processus dont le PYTHONPATH contient ce
-# dossier : on y rebranche RF-DETR, puis on exécute l'éventuel sitecustomize d'origine (Kaggle).
-import os, sys
-_ici = os.path.dirname(os.path.abspath(__file__))
-if os.environ.get("SCOUTIA_DETECTEUR", "").strip().lower() == "rfdetr":
-    try:
-        import importlib.util, ultralytics
-        _spec = importlib.util.spec_from_file_location("detecteur_libre_crochet", os.environ["SCOUTIA_DETECTEUR_FICHIER"])
-        _m = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_m)
-        _m._YOLO_ORIGINAL = ultralytics.YOLO
-        ultralytics.YOLO = _m.charger_modele
-        print(f"  [processus {os.getpid()}] Détecteur LIBRE branché (RF-DETR) dans ce processus de suivi", flush=True)
-    except Exception as _e:
-        print(f"  [processus {os.getpid()}] ⚠️ Détecteur LIBRE NON branché ({_e}) → YOLO utilisé", flush=True)
-for _p in sys.path:
-    _f = os.path.join(_p, "sitecustomize.py")
-    if _p and os.path.abspath(_p) != _ici and os.path.isfile(_f):
-        exec(compile(open(_f, encoding="utf-8").read(), _f, "exec"))
-        break
-'''
-
-
-def _installer_crochet_sous_processus():
-    """Écrit un sitecustomize.py dans un dossier dédié et l'ajoute au PYTHONPATH : les processus lancés ensuite
-    (suivi des mi-temps en parallèle) rebranchent RF-DETR au démarrage."""
-    dossier = os.path.join(os.environ.get("TMPDIR", "/tmp"), "scoutia_crochet_detecteur")
-    os.makedirs(dossier, exist_ok=True)
-    with open(os.path.join(dossier, "sitecustomize.py"), "w", encoding="utf-8") as f:
-        f.write(_CROCHET)
-    os.environ["SCOUTIA_DETECTEUR_FICHIER"] = os.path.abspath(__file__)
-    pp = os.environ.get("PYTHONPATH", "")
-    if dossier not in pp.split(os.pathsep):
-        os.environ["PYTHONPATH"] = dossier + (os.pathsep + pp if pp else "")
