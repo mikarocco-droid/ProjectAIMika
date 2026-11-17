@@ -653,6 +653,13 @@ def run_pipeline(
     _os_lm.environ["SCOUTIA_LECTURE_MAILLOTS"] = "1" if mode == "player" else _LECTURE_MAILLOTS_DEFAUT
     if mode == "player":
         print("  [MAILLOTS] mode joueur : lecture des maillots activée automatiquement")
+    # 17/11/2026 : profil de réglages de la recherche des buts (SCOUTIA_PROFIL_KO, désactivé par défaut) — appliqué
+    # ICI, avant tout lancement du suivi, pour que les processus des mi-temps en héritent.
+    try:
+        from analysis.profil_ko import appliquer_profil_ko
+        appliquer_profil_ko()
+    except Exception as _e_profil:
+        print(f"  [PROFIL KO] ⚠️ profil non appliqué ({_e_profil})")
     os.makedirs(output_dir, exist_ok=True)
     progress = make_progress_callback(analysis_id)
 

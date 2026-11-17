@@ -33,18 +33,11 @@ with app.app_context():
     print('Base de donnees OK (create_all)')
 "
 
-# ── Modèle YOLO11m ─────────────────────
+# ── Modèle RF-DETR Medium (Apache 2.0) ─
 python -c "
-import os
-from ultralytics import YOLO
-model_path = 'models/yolo11m.pt'
-if not os.path.exists(model_path):
-    print('Telechargement yolo11m.pt...')
-    model = YOLO('yolo11m.pt')
-    os.makedirs('models', exist_ok=True)
-    print(f'OK -> {model_path}')
-else:
-    print(f'yolo11m.pt deja present')
+import rfdetr
+rfdetr.RFDETRMedium()   # télécharge les poids au premier lancement
+print('RF-DETR Medium prêt')
 "
 
 echo "=============================="

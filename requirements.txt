@@ -11,7 +11,9 @@ python-dotenv>=1.0
 # Vision
 # ─────────────────────────────────────────
 opencv-python>=4.9
-ultralytics>=8.3
+# Détection : RF-DETR (Apache 2.0 pour Nano/Small/Medium/Large) — Ultralytics (AGPL-3.0) retiré.
+# À FIGER sur la version validée (pip show rfdetr sur Kaggle), ex. rfdetr==X.Y.Z
+rfdetr
 
 # ─────────────────────────────────────────
 # IA
