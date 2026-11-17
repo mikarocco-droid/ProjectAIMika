@@ -52,6 +52,11 @@ RUN pip install \
     pytesseract \
     boto3 \
     deep-sort-realtime \
+    torchreid \
+    gdown \
+    librosa \
+    flask-login \
+    stripe \
     runpod \
     celery[redis] \
     redis \

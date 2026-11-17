@@ -1,53 +1,56 @@
-# ─────────────────────────────────────────
-# Web
-# ─────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# ScoutIA — dépendances Python (17/11/2026)
+# Établies en relevant TOUS les imports du code (pipeline, app web, tâches) et ce que les cellules Kaggle installent.
+# Ultralytics (AGPL-3.0) est RETIRÉ : la détection passe par RF-DETR (Apache 2.0, tailles Nano/Small/Medium/Large).
+# Versions : laissées ouvertes sauf celles déjà figées ; à FIGER sur les versions validées avant le déploiement
+# (pip freeze sur l'environnement qui a servi aux tests).
+#
+# À installer À PART (hors pip) :
+#   • système : ffmpeg, tesseract-ocr (apt-get install ffmpeg tesseract-ocr)
+#   • GPU : torch + torchvision compilés pour la version CUDA de la machine, AVANT ce fichier, par ex.
+#       pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ── Web ──────────────────────────────────────────────────────────────────────
 flask>=3.0
 flask-sqlalchemy>=3.1
 flask-login>=0.6
 werkzeug>=3.0
 python-dotenv>=1.0
+boto3                      # stockage des fichiers (app.py)
 
-# ─────────────────────────────────────────
-# Vision
-# ─────────────────────────────────────────
-opencv-python>=4.9
-# Détection : RF-DETR (Apache 2.0 pour Nano/Small/Medium/Large) — Ultralytics (AGPL-3.0) retiré.
-# À FIGER sur la version validée (pip show rfdetr sur Kaggle), ex. rfdetr==X.Y.Z
-rfdetr
+# ── Vision : détection, suivi, ré-identification ─────────────────────────────
+opencv-python>=4.9         # sur serveur sans écran : opencv-python-headless à la place
+rfdetr                     # détecteur joueurs + ballon (Apache 2.0) — À FIGER (pip show rfdetr)
+deep-sort-realtime         # suivi des joueurs (vision/tracker.py)
+torchreid                  # apparence des joueurs, OSNet (analysis/player_reid.py)
+gdown                      # téléchargement des poids OSNet par torchreid au 1er lancement
+pytesseract                # lecture des numéros (vision/ocr.py) — demande tesseract-ocr (système)
 
-# ─────────────────────────────────────────
-# IA
-# ─────────────────────────────────────────
+# ── Audio / vidéo ────────────────────────────────────────────────────────────
+av>=11.0                   # lecture vidéo pour Gemini (ai/gemini_validator.py)
+librosa                    # fin de mi-temps / fin de match par le son (analysis/match_boundaries_v2.py)
+
+# ── IA ───────────────────────────────────────────────────────────────────────
+google-genai>=0.5          # Gemini
 anthropic>=0.25
-google-genai>=0.5
-av>=11.0
 
-# ─────────────────────────────────────────
-# Export
-# ─────────────────────────────────────────
+# ── Export ───────────────────────────────────────────────────────────────────
 fpdf2>=2.7
 
-# ─────────────────────────────────────────
-# Paiement
-# ─────────────────────────────────────────
+# ── Paiement ─────────────────────────────────────────────────────────────────
 stripe>=8.0
 
-# ─────────────────────────────────────────
-# Utils
-# ─────────────────────────────────────────
+# ── Calcul ───────────────────────────────────────────────────────────────────
 numpy>=1.26
 scikit-learn>=1.3
 joblib>=1.3
 psutil>=5.9
 
-# ─────────────────────────────────────────
-# Serveur production
-# ─────────────────────────────────────────
+# ── Serveur de production ────────────────────────────────────────────────────
 gunicorn>=21.0
 
-# ─────────────────────────────────────────
-# Queue asynchrone (Celery + Redis)
-# ─────────────────────────────────────────
+# ── File d'attente asynchrone (Celery + Redis) ───────────────────────────────
 celery[redis]==5.3.6
 redis==5.0.0
 flower==2.0.1

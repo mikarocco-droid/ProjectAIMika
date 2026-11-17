@@ -1,0 +1,7 @@
+# Outils d'analyse HORS production (scripts analysis/candidates_mining.py, goal_candidate_dataset.py,
+# kickoff_group_candidate_dataset.py, aggregate_color_reports.py) — inutiles pour faire tourner le service.
+-r requirements.txt
+pandas
+scipy
+pyarrow
+matplotlib
