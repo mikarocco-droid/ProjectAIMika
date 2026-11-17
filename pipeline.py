@@ -2099,9 +2099,20 @@ def run_pipeline(
                           f"{_fmt_ko(_finmatch_ref - _MARGE_FIN_MATCH_S)} → à_vérifier" if _finmatch_ref
                           else "fin du match non détectée (replay ?), règle sans effet"))
 
+                try:
+                    _debut_match_s = float(_os_finm.environ.get("SCOUTIA_KO_DEBUT_MATCH_S", "") or 0)
+                except ValueError:
+                    _debut_match_s = 0.0
                 for _ki, _koc in enumerate(_ko_candidates):
                     _ko_t_abs = _koc["time"]
                     _ko_t_rel = _ko_t_abs - _kickoff_offset
+                    # 17/11/2026 : SCOUTIA_KO_DEBUT_MATCH_S (désactivé par défaut). Un candidat moins de N s après le
+                    # coup d'envoi du match ne peut être que ce coup d'envoi lui-même (replay du 16/11 : Spa, candidat
+                    # 07:02 pour un coup d'envoi à 06:57 → « but » 06:47).
+                    if _debut_match_s > 0 and _kickoff_offset > 0 and _ko_t_abs < _kickoff_offset + _debut_match_s:
+                        print(f"  [DEBUT MATCH] t={_fmt_ko(_ko_t_abs)} écarté : {_ko_t_abs - _kickoff_offset:+.0f} s après "
+                              f"le coup d'envoi du match ({_fmt_ko(_kickoff_offset)}), c'est ce coup d'envoi")
+                        continue
 
                     # Saut d'un candidat (16/10/2026, replay Raeren : le vrai but de 45:25 était
                     # sauté à cause d'un faux but daté 44:38). Si le résultat KO du candidat est
@@ -2126,6 +2137,28 @@ def run_pipeline(
                     else:
                         _meme_but = any(abs(_ko_t_abs - ct) < 60 for ct in _already_confirmed)
                     if _meme_but:
+                        # 17/11/2026 : SCOUTIA_KO_REDATER=1 (désactivé par défaut). Le candidat sauté voit LE MÊME but
+                        # mais 20 à 40 s PLUS TARD que l'heure retenue : on garde SON heure. Cas du replay « vraies
+                        # détections + episodes » (16/11) : un candidat placé tôt datait le but au moment où le coup
+                        # de pied arrêté se prépare (Spa 39:06 annoncé 38:35 = ballon posé sur le point de penalty ;
+                        # Raeren 50:17 annoncé 49:39 = faute sifflée), puis le candidat bien placé était sauté.
+                        if (_pre_gt is not None and _os_finm.environ.get("SCOUTIA_KO_REDATER", "").strip() == "1"):
+                            _ct_proche = min(_already_confirmed, key=lambda ct: abs(_pre_gt - ct))
+                            if 20 < _pre_gt - _ct_proche <= 40:
+                                for _e_rd in events:
+                                    if (_e_rd.get("type") == "goal" and _e_rd.get("source") == "ko_detection"
+                                            and abs(_e_rd.get("time", 0) + _kickoff_offset - _ct_proche) < 0.5):
+                                        _e_rd["time"] = _pre_gt - _kickoff_offset
+                                        _e_rd["frame"] = int(_pre_gt * fps)
+                                        _e_rd["goal_status_reason"] = (f"heure reprise du candidat {_fmt_ko(_ko_t_abs)} — "
+                                                                       + str(_e_rd.get("goal_status_reason", "")))
+                                        break
+                                _already_confirmed[_already_confirmed.index(_ct_proche)] = _pre_gt
+                                if _ct_proche in _ko_goal_times_abs:
+                                    _ko_goal_times_abs[_ko_goal_times_abs.index(_ct_proche)] = _pre_gt
+                                events.sort(key=lambda e: e.get("time", 0))
+                                print(f"  [REDATAGE] but {_fmt_ko(_ct_proche)} → {_fmt_ko(_pre_gt)} : le candidat "
+                                      f"{_fmt_ko(_ko_t_abs)} voit le même but {_pre_gt - _ct_proche:+.0f} s plus tard")
                         print(f"  [KO_DETECTION] t={int(_ko_t_abs//60):02d}:{int(_ko_t_abs%60):02d} "
                               f"— but déjà confirmé à proximité, skip")
                         continue
