@@ -2113,6 +2113,14 @@ def run_pipeline(
                     _debut_match_s = float(_os_finm.environ.get("SCOUTIA_KO_DEBUT_MATCH_S", "") or 0)
                 except ValueError:
                     _debut_match_s = 0.0
+                # 18/11/2026 : SCOUTIA_KO_REPRISE_S (désactivé par défaut). Le traitement du coup d'envoi de la 2e
+                # mi-temps (écarté si la classification ne voit pas de but) s'applique à TOUS les candidats entre
+                # KO2 - 15 s et KO2 + N s, pas seulement au plus proche (SRU Verviers : candidat 68:02 écarté, mais
+                # candidat 68:18 retenu → faux but 68:03).
+                try:
+                    _reprise_s = float(_os_finm.environ.get("SCOUTIA_KO_REPRISE_S", "") or 0)
+                except ValueError:
+                    _reprise_s = 0.0
                 for _ki, _koc in enumerate(_ko_candidates):
                     _ko_t_abs = _koc["time"]
                     _ko_t_rel = _ko_t_abs - _kickoff_offset
@@ -2235,10 +2243,13 @@ def run_pipeline(
                             _g_status, _g_reason = "à_vérifier", "classification incertaine ou en échec"
                         else:
                             _g_status, _g_reason = "à_vérifier", f"classification : {_cls_out}"
-                        if _ki == _ko2_cand_idx:
+                        _pres_ko2 = (_ki != _ko2_cand_idx and _reprise_s > 0 and _ko2_ref is not None
+                                     and _ko2_ref - 15 <= _ko_t_abs <= _ko2_ref + _reprise_s)
+                        if _ki == _ko2_cand_idx or _pres_ko2:
                             if _cls_fn is not None and _cls is not None and _cls_out not in ("GOAL", "UNKNOWN"):
                                 print(f"  [KO2] t={_fmt_ko(_ko_t_abs)} écarté : coup d'envoi de la 2e mi-temps, "
-                                      f"aucun but vu avant (classification : {_cls_out})")
+                                      f"aucun but vu avant (classification : {_cls_out})"
+                                      + (f" [REPRISE] {_ko_t_abs - _ko2_ref:+.0f} s après la reprise" if _pres_ko2 else ""))
                                 continue
                             _g_status = "à_vérifier"
                             _g_reason = "coïncide avec le coup d'envoi de la 2e mi-temps — " + _g_reason
