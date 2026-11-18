@@ -4924,6 +4924,9 @@ def run_pipeline(
                     "identification_joueurs": _identification_joueurs,
                     "fps":            fps,              # 24/10/2026 : vraie cadence (le PDF supposait 25 i/s)
                     "kickoff_offset": (float(_kickoff_offset or 0) if "_kickoff_offset" in dir() else 0.0),
+                    # 18/11/2026 : bornes détectées → minutes de match pause exclue et durée de jeu dans le rapport
+                    "bornes_mi_temps": ({k: v for k, v in _BORNES_MI_TEMPS.items() if k != "video"}
+                                        if _BORNES_MI_TEMPS.get("video") == video_path else None),
                     "summary":        summary,
                     "stats":          stats,
                     "highlights":     highlights,
