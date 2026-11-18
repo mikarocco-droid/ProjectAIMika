@@ -10,6 +10,8 @@
 #   SCOUTIA_KO_REDATER=1             un candidat voisin qui voit le même but 20 à 40 s plus tard donne son heure
 #                                    (Raeren 50:17, Franchimont 49:51) ;
 #   SCOUTIA_KO_REDATER_PREMIERE=1    si l'escalade n'a pas d'heure, celle de la 1re réponse (Spa 39:06).
+#   SCOUTIA_KO_REPRISE_S=30          tout candidat de KO2 - 15 s à KO2 + 30 s est traité comme la reprise de la 2e MT
+#                                    (SRU Verviers 68:03). Ajouté le 18/11 après test à 0 $ sur 11 matchs.
 # Résultat (replays du 17/11, cache strict) : 44/45 vrais buts à ±25 s (seul manque : Andrimont 84:06, hors du suivi),
 # 43/45 à ±10 s, 3/3 penalties, 10 faux buts (1 « confirmé ») contre 41/45 et 6 faux buts en production le 11/11.
 # Suivi RF-DETR, Franchimont (17/11) : 5/5 à ±10 s, 4 faux buts (0 « confirmé »).
@@ -27,6 +29,7 @@ PROFILS = {
         "SCOUTIA_KO_DEBUT_MATCH_S": "30",
         "SCOUTIA_KO_REDATER": "1",
         "SCOUTIA_KO_REDATER_PREMIERE": "1",
+        "SCOUTIA_KO_REPRISE_S": "30",   # 18/11 : test à 0 $ sur 11 matchs (SRU 68:03 écarté, rien perdu, rien ajouté)
     },
 }
 
