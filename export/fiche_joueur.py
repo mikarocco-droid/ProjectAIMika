@@ -11,8 +11,8 @@ from datetime import datetime
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
-AVERTISSEMENT = ("Ce bilan ne compte que ce qui a été vu avec certitude : lorsque son numéro n'était pas visible, "
-                 "une action ou un but auquel il a participé peut manquer.")
+AVERTISSEMENT = ("Ce bilan ne compte que ce qui a été vu avec certitude : lorsqu'il n'a pas pu être reconnu à l'image "
+                 "(numéro ou maillot pas visible), une action ou un but auquel il a participé peut manquer.")
 
 
 def _txt(s):
@@ -22,7 +22,8 @@ def _txt(s):
 def generer_fiche_joueur(chemin_pdf, numero, couleur, trouve, presence_s=0.0, n_passages=0, n_moments_ballon=0,
                          buts_confirmes=None, buts_possibles=None, match="", lignes_supp=None,
                          titre_buts="Buts confirmés auxquels il a participé",
-                         titre_possibles="Buts possibles, NON confirmés par l'analyse, où il apparaît impliqué"):
+                         titre_possibles="Buts possibles, NON confirmés par l'analyse, où il apparaît impliqué",
+                         source_presence="passages où son numéro est lu"):
     """buts_* : listes de (minute « 54' », raison « 3 touche(s) juste avant »)."""
     pdf = FPDF(format="A4")
     pdf.set_auto_page_break(True, 15)
@@ -42,7 +43,7 @@ def generer_fiche_joueur(chemin_pdf, numero, couleur, trouve, presence_s=0.0, n_
     def _ligne(titre, valeur):
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(255, 255, 255)
-        pdf.cell(70, 8, _txt(titre))
+        pdf.cell(80, 8, _txt(titre))
         pdf.set_font("Helvetica", "", 10)
         pdf.multi_cell(0, 8, _txt(valeur), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
@@ -54,7 +55,7 @@ def generer_fiche_joueur(chemin_pdf, numero, couleur, trouve, presence_s=0.0, n_
                                   "couleur du maillot indiqués. Le résumé du match vous est livré normalement."),
                        align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     else:
-        _ligne("Présence reconnue", f"environ {presence_s / 60:.1f} min ({n_passages} passages où son numéro est lu)")
+        _ligne("Présence reconnue", f"environ {presence_s / 60:.1f} min ({n_passages} {source_presence})")
         _ligne("Moments avec le ballon", str(n_moments_ballon))
         for t_, v_ in (lignes_supp or []):          # 19/11 : lignes propres au gardien (arrêts, tirs adverses…)
             _ligne(t_, v_)
