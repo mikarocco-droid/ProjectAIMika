@@ -21,8 +21,8 @@ def _txt(s):
 
 def generer_fiche_joueur(chemin_pdf, numero, couleur, trouve, presence_s=0.0, n_passages=0, n_moments_ballon=0,
                          buts_confirmes=None, buts_possibles=None, match="", lignes_supp=None,
-                         titre_buts="Buts confirmés auxquels il a participé",
-                         titre_possibles="Buts possibles, NON confirmés par l'analyse, où il apparaît impliqué",
+                         titre_buts="Buts du match (confirmés)",
+                         titre_possibles="Buts possibles du match, NON confirmés par l'analyse",
                          source_presence="passages où son numéro est lu"):
     """buts_* : listes de (minute « 54' », raison « 3 touche(s) juste avant »)."""
     pdf = FPDF(format="A4")
