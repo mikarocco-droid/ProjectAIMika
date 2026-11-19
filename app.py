@@ -433,6 +433,9 @@ class Analysis(db.Model):
     offerte_motif      = db.Column(db.String(200), nullable=True)
     # 18/11/2026 : choix « mon équipe » fait à l'envoi (0 ou 1), pour retrouver l'ordre des noms à la relance
     mon_equipe         = db.Column(db.Integer,     nullable=True)
+    # 19/11/2026 : mode joueur — position (« gardien » → méthode du gardien) et couleur du maillot du gardien
+    position_joueur         = db.Column(db.String(40), nullable=True)
+    couleur_maillot_gardien = db.Column(db.String(20), nullable=True)
 
 
 @login_manager.user_loader
@@ -657,6 +660,7 @@ def upload():
     mode      = request.form.get("mode",      "match")
     player_id        = request.form.get("player_id", "").strip() or None
     player_position  = request.form.get("position_joueur", "").strip() or None
+    couleur_maillot_gardien = request.form.get("couleur_maillot_gardien", "").strip().lower() or None   # 19/11/2026
 
     # Noms équipes saisis par l'utilisateur
     team_name_0       = request.form.get("team_name_0", "").strip() or None
@@ -817,6 +821,8 @@ def upload():
         team_name_0 = team_name_0,
         team_name_1 = team_name_1,
         mon_equipe  = _mon_equipe_envoi,
+        position_joueur         = player_position,
+        couleur_maillot_gardien = couleur_maillot_gardien,
     )
     db.session.add(analysis)
     db.session.commit()
@@ -827,7 +833,8 @@ def upload():
                     player_position               = player_position,
                     kickoff_s_precalcule          = kickoff_s_precalcule,
                     team_colors_gemini_precalcule = team_colors_gemini_precalcule,
-                    use_match_boundary_segments   = use_match_boundary_segments)
+                    use_match_boundary_segments   = use_match_boundary_segments,
+                    couleur_maillot_gardien       = couleur_maillot_gardien)
 
     flash("Video uploadee — analyse en cours...")
     return redirect(url_for("dashboard"))
@@ -927,20 +934,23 @@ def relancer_analyse(id):
     noms = (_noms_equipes_formulaire(a.team_name_0, a.team_name_1, a.mon_equipe)
             if (a.mon_equipe is not None or not (a.team_name_0 or a.team_name_1)) else None)
     _lancer_analyse(a.id, video_locale, a.sport, current_user.plan, a.mode, a.player_id,
-                    r2_key=None if video_locale else a.r2_video_key, team_names=noms or None)
+                    r2_key=None if video_locale else a.r2_video_key, team_names=noms or None,
+                    player_position=a.position_joueur, couleur_maillot_gardien=a.couleur_maillot_gardien)
     flash("Analyse relancée.")
     return redirect(url_for("dashboard"))
 
 
 def _lancer_analyse(analysis_id, video_path, sport, plan, mode="match", player_id=None, r2_key=None,
                     team_names=None, player_position=None, kickoff_s_precalcule=None,
-                    team_colors_gemini_precalcule=None, use_match_boundary_segments=True):
+                    team_colors_gemini_precalcule=None, use_match_boundary_segments=True,
+                    couleur_maillot_gardien=None):
     """24/10/2026 : lance run_analysis() via Celery si la file est joignable, sinon dans un fil d'exécution.
     Dans les deux cas, c'est la MÊME fonction complète qui tourne (statut, résultat, joueur, nettoyage, R2)."""
     params = dict(mode=mode, player_id=player_id, r2_key=r2_key, team_names=team_names,
                   player_position=player_position, kickoff_s_precalcule=kickoff_s_precalcule,
                   team_colors_gemini_precalcule=team_colors_gemini_precalcule,
-                  use_match_boundary_segments=use_match_boundary_segments)
+                  use_match_boundary_segments=use_match_boundary_segments,
+                  couleur_maillot_gardien=couleur_maillot_gardien)
     if CELERY_AVAILABLE:
         try:
             celery_run_analysis.apply_async(
@@ -966,7 +976,8 @@ def run_analysis(
     mode="match", player_id=None, r2_key=None, team_names=None,
     player_position=None, kickoff_s_precalcule=None,
     team_colors_gemini_precalcule=None,
-    use_match_boundary_segments=True
+    use_match_boundary_segments=True,
+    couleur_maillot_gardien=None,
 ):
     with app.app_context():
         a              = db.session.get(Analysis, analysis_id)
@@ -1022,6 +1033,7 @@ def run_analysis(
             kickoff_s_precalcule = kickoff_s_precalcule,
             team_colors_gemini_precalcule = team_colors_gemini_precalcule,
             use_match_boundary_segments = use_match_boundary_segments,
+            couleur_maillot_gardien = couleur_maillot_gardien,
         )
 
         # 24/10/2026 : une analyse INCOMPLÈTE (questions au service d'IA abandonnées : crédit, quota) n'est pas
@@ -1840,7 +1852,7 @@ def too_large(e):
 # ─────────────────────────────────────────
 _COLONNES_AJOUTEES = {
     "analysis": {"celery_task_id": "VARCHAR(200)", "offerte": "BOOLEAN DEFAULT 0", "offerte_motif": "VARCHAR(200)",
-                 "mon_equipe": "INTEGER"},
+                 "mon_equipe": "INTEGER", "position_joueur": "VARCHAR(40)", "couleur_maillot_gardien": "VARCHAR(20)"},
     "user":     {"code_parrain": "VARCHAR(16)", "parrain_id": "INTEGER", "credits_offerts": "INTEGER DEFAULT 0",
                  "recompenses_parrainage": "INTEGER DEFAULT 0", "paiements_credites": "TEXT",
                  "preanalyses_date": "VARCHAR(10)", "preanalyses_n": "INTEGER DEFAULT 0"},

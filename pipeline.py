@@ -566,6 +566,7 @@ def run_pipeline(
     team_names        = None,    # {"team_0": "RSC Stavelot B", "team_1": "FC Liège"}
     user_team_id      = None,    # 0 ou 1 — équipe de l'utilisateur
     player_position   = None,    # "Gardien", "Attaquant", etc. — pour mode player
+    couleur_maillot_gardien = None,   # 19/11/2026 : couleur du maillot du gardien (mode joueur, position Gardien)
     audit_mode        = False,   # Mode collecte données : skip highlights, PDF, commentary, heatmaps
     video_end_s       = None,    # Forcer la fin de la vidéo à ce timestamp (s) — utile pour couper l'après-match
     half_duration_min = 45,      # V5.2 : durée d'une mi-temps choisie par l'utilisateur (min),
@@ -4725,7 +4726,8 @@ def run_pipeline(
         _pid0 = str(player_id or "").split("_")
         _joueur_info = {"demande": True, "numero": _pid0[0] if _pid0 and _pid0[0] else None,
                         "couleur": "_".join(_pid0[1:]) or None, "trouve": False, "nb_actions": 0, "message": None}
-    if mode == "player" and player_id is not None and result_pe_mgr is not None:
+    _JOUEUR_V30 = os.environ.get("SCOUTIA_JOUEUR_V30", "").strip() == "1" and mode == "player"
+    if mode == "player" and player_id is not None and result_pe_mgr is not None and not _JOUEUR_V30:
         try:
             _jersey     = None
             _team_color = None
@@ -4950,6 +4952,8 @@ def run_pipeline(
                 result = {
                     "buts":           _buts_liste,
                     "attribution_equipes": _attribution,
+                    # 19/11/2026 : message « joueur introuvable » (ancienne méthode ; la nouvelle a sa propre fiche)
+                    "joueur":         (_joueur_info if not _JOUEUR_V30 else None),
                     "occasions":      _occasions_pdf,
                     "identification_joueurs": _identification_joueurs,
                     "fps":            fps,              # 24/10/2026 : vraie cadence (le PDF supposait 25 i/s)
@@ -4978,6 +4982,51 @@ def run_pipeline(
             print(f"  OK PDF -> {pdf_path}")
         except Exception as e:
             print(f"  PDF error : {e}")
+
+    # ─────────────────────────────────────────
+    # 13 bis. JOUEUR — méthode validée le 19/11/2026 (analysis/montage_joueur.py), si SCOUTIA_JOUEUR_V30=1
+    # ─────────────────────────────────────────
+    if _JOUEUR_V30 and player_id:
+        try:
+            from analysis.montage_joueur import monter_joueur
+            _pid = str(player_id).split("_", 1)
+            _num = int(_pid[0])
+            _EN_FR = {"red": "rouge", "blue": "bleu", "light_blue": "bleu clair", "light blue": "bleu clair",
+                      "sky_blue": "bleu clair", "white": "blanc", "black": "noir", "yellow": "jaune", "green": "vert",
+                      "orange": "orange", "purple": "violet", "grey": "gris", "gray": "gris"}
+            _coul = (_pid[1] if len(_pid) > 1 else "").strip().lower()
+            _coul = _EN_FR.get(_coul, _coul.replace("_", " "))
+            _gard = str(player_position or "").strip().lower().startswith("gardien")
+            _bmj = _BORNES_MI_TEMPS if _BORNES_MI_TEMPS.get("video") == video_path else {}
+            _bornes_j = ([[float(_bmj["ko1"]), float(_bmj["fin1mt"])], [float(_bmj["ko2"]), float(_bmj["finmatch"])]]
+                         if all(_bmj.get(k) is not None for k in ("ko1", "fin1mt", "ko2", "finmatch")) else None)
+            _buts_j = [{"time_abs": float(b["time_abs"]), "statut": b.get("status") or "?", "equipe": b.get("tenue_equipe")}
+                       for b in (_buts_liste or []) if b.get("time_abs") is not None]
+            _cache_j = os.environ.get("SCOUTIA_CACHE_JOUEUR") or os.path.join(output_dir, "cache")
+            _res_j = monter_joueur(
+                video=video_path, cache_dir=_cache_j, sortie=os.path.join(output_dir, "joueur"),
+                match=str(analysis_id or os.path.splitext(os.path.basename(video_path))[0]), numero=_num, couleur=_coul,
+                bornes=_bornes_j, buts=_buts_j, gardien=_gard, couleur_maillot=couleur_maillot_gardien,
+                entrees=[output_dir, os.environ.get("SCOUTIA_DOSSIER_JOUEUR", "")], rapport_pdf=pdf_path,
+                attribution=_attribution if "_attribution" in dir() else None)
+            print(f"  [JOUEUR v3] {_res_j.get('erreur') or ('trouvé' if _res_j.get('trouve') else 'introuvable')} | "
+                  f"montage {_res_j.get('montage')} | fiche {_res_j.get('fiche')} | journal {_res_j.get('journal')}")
+            _player_reel_path = _res_j.get("montage")
+            _joueur_info = {"demande": True, "numero": str(_num), "couleur": _coul, "gardien": _gard,
+                            "trouve": bool(_res_j.get("trouve") and _res_j.get("montage")),
+                            "nb_actions": int(_res_j.get("moments_ballon") or 0), "presence_s": _res_j.get("presence_s"),
+                            "fiche": _res_j.get("fiche"), "message": _res_j.get("message")}
+            if _res_j.get("erreur") and not _joueur_info["message"]:
+                _joueur_info["message"] = (f"Le résumé du joueur n°{_num} n'a pas pu être produit. Le résumé du match vous "
+                                           f"est livré normalement ; vous pouvez relancer l'analyse.")
+            if _res_j.get("rapport_et_fiche"):
+                pdf_path = _res_j["rapport_et_fiche"]          # rapport du match + fiche du joueur en dernière page
+        except Exception as _e_j:
+            print(f"  [JOUEUR v3] ⚠️ échec : {_e_j}")
+            _player_reel_path = None
+            _joueur_info = {"demande": True, "numero": str(player_id).split("_")[0], "couleur": None, "trouve": False,
+                            "nb_actions": 0, "message": "Le résumé du joueur n'a pas pu être produit. Le résumé du match "
+                                                        "vous est livré normalement ; vous pouvez relancer l'analyse."}
 
     # ─────────────────────────────────────────
     # 14. SAVE JSON

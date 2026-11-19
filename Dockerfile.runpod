@@ -53,6 +53,10 @@ RUN pip install \
     boto3 \
     deep-sort-realtime \
     torchreid \
+    timm \
+    pytorch-lightning \
+    nltk \
+    pypdf \
     gdown \
     librosa \
     flask-login \
@@ -67,6 +71,9 @@ RUN pip install \
 
 # Pré-télécharger les poids RF-DETR Medium (Apache 2.0)
 RUN python3 -c "import rfdetr; rfdetr.RFDETRMedium()" || true
+# Code PARSeq (lecture des numéros du montage joueur), même commit que analysis/montage_joueur_script.py ; les POIDS
+# affinés (parseq_scoutia_maillots_v2.pt) sont à déposer sur le serveur → variable SCOUTIA_PARSEQ_POIDS
+RUN python3 -c "import torch; torch.hub.load('baudm/parseq:1902db043c029a7e03a3818c616c06600af574be', 'parseq', pretrained=True, trust_repo=True)" || true
 
 COPY runpod_worker.py /app/runpod_worker.py
 

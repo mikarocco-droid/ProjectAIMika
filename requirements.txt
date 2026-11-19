@@ -26,6 +26,13 @@ deep-sort-realtime         # suivi des joueurs (vision/tracker.py)
 torchreid                  # apparence des joueurs, OSNet (analysis/player_reid.py)
 gdown                      # téléchargement des poids OSNet par torchreid au 1er lancement
 pytesseract                # lecture des numéros (vision/ocr.py) — demande tesseract-ocr (système)
+# Montage d'un joueur (analysis/montage_joueur.py, 19/11/2026) : lecture des numéros par PARSeq affiné
+#   poids : parseq_scoutia_maillots_v2.pt (hors dépôt) → variable SCOUTIA_PARSEQ_POIDS ; code PARSeq : torch.hub
+#   (baudm/parseq, commit figé dans le script) — demande ffmpeg (système) pour assembler le montage
+timm
+pytorch-lightning
+nltk
+pypdf                      # fiche du joueur jointe au rapport du match
 
 # ── Audio / vidéo ────────────────────────────────────────────────────────────
 av>=11.0                   # lecture vidéo pour Gemini (ai/gemini_validator.py)

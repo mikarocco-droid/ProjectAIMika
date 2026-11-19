@@ -60,7 +60,8 @@ def _update_state(task, step, total, message):
 def run_analysis(self, analysis_id, video_path=None, sport="football", plan="free",
                  mode="match", player_id=None, r2_key=None, team_names=None,
                  player_position=None, kickoff_s_precalcule=None,
-                 team_colors_gemini_precalcule=None, use_match_boundary_segments=True):
+                 team_colors_gemini_precalcule=None, use_match_boundary_segments=True,
+                 couleur_maillot_gardien=None):
     """Lance l'analyse complète d'app.py et renvoie son statut final (lu en base)."""
     task_id = self.request.id
     logger.info(f"[{task_id}] START analyse #{analysis_id} mode={mode} player_id={player_id}")
@@ -79,6 +80,7 @@ def run_analysis(self, analysis_id, video_path=None, sport="football", plan="fre
         kickoff_s_precalcule          = kickoff_s_precalcule,
         team_colors_gemini_precalcule = team_colors_gemini_precalcule,
         use_match_boundary_segments   = use_match_boundary_segments,
+        couleur_maillot_gardien       = couleur_maillot_gardien,
     )
 
     with _flask_app.app_context():
