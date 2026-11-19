@@ -20,7 +20,9 @@ def _txt(s):
 
 
 def generer_fiche_joueur(chemin_pdf, numero, couleur, trouve, presence_s=0.0, n_passages=0, n_moments_ballon=0,
-                         buts_confirmes=None, buts_possibles=None, match=""):
+                         buts_confirmes=None, buts_possibles=None, match="", lignes_supp=None,
+                         titre_buts="Buts confirmés auxquels il a participé",
+                         titre_possibles="Buts possibles, NON confirmés par l'analyse, où il apparaît impliqué"):
     """buts_* : listes de (minute « 54' », raison « 3 touche(s) juste avant »)."""
     pdf = FPDF(format="A4")
     pdf.set_auto_page_break(True, 15)
@@ -54,14 +56,16 @@ def generer_fiche_joueur(chemin_pdf, numero, couleur, trouve, presence_s=0.0, n_
     else:
         _ligne("Présence reconnue", f"environ {presence_s / 60:.1f} min ({n_passages} passages où son numéro est lu)")
         _ligne("Moments avec le ballon", str(n_moments_ballon))
+        for t_, v_ in (lignes_supp or []):          # 19/11 : lignes propres au gardien (arrêts, tirs adverses…)
+            _ligne(t_, v_)
         bc = buts_confirmes or []
-        _ligne("Buts confirmés auxquels il a participé",
+        _ligne(titre_buts,
                ", ".join(f"{m} ({r})" for m, r in bc) if bc else "aucun vu")
         bp = buts_possibles or []
         if bp:
             pdf.set_font("Helvetica", "I", 9)
             pdf.set_text_color(170, 175, 185)
-            pdf.multi_cell(0, 6, _txt("Buts possibles, NON confirmés par l'analyse, où il apparaît impliqué : "
+            pdf.multi_cell(0, 6, _txt(titre_possibles + " : "
                                       + ", ".join(f"{m} ({r})" for m, r in bp) + "."),
                            new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(6)
