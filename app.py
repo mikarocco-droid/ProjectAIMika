@@ -431,6 +431,8 @@ class Analysis(db.Model):
     # 24/10/2026 : geste commercial — analyse offerte (hors quota), avec son motif
     offerte            = db.Column(db.Boolean,     default=False)
     offerte_motif      = db.Column(db.String(200), nullable=True)
+    # 18/11/2026 : choix « mon équipe » fait à l'envoi (0 ou 1), pour retrouver l'ordre des noms à la relance
+    mon_equipe         = db.Column(db.Integer,     nullable=True)
 
 
 @login_manager.user_loader
@@ -701,15 +703,10 @@ def upload():
     except ValueError:
         pass
 
-    team_names = {}
+    _mon_equipe_envoi = user_team_id          # 18/11/2026 : conservé (avant l'inversion ci-dessous) pour la relance
+    team_names = _noms_equipes_formulaire(team_name_0, team_name_1, user_team_id)
     if user_team_id == 1:
-        # L'utilisateur a sélectionné l'équipe B comme la sienne → inverser
-        if team_name_0: team_names["1"] = team_name_0
-        if team_name_1: team_names["0"] = team_name_1
         user_team_id = 0   # après inversion, son équipe est toujours 0
-    else:
-        if team_name_0: team_names["0"] = team_name_0
-        if team_name_1: team_names["1"] = team_name_1
 
     # V5.2 (11/09/2026) : construit team_colors_gemini_precalcule pour
     # pipeline.py (voir analysis/team_color_matching.py) - permet de
@@ -819,6 +816,7 @@ def upload():
         status    = "pending",
         team_name_0 = team_name_0,
         team_name_1 = team_name_1,
+        mon_equipe  = _mon_equipe_envoi,
     )
     db.session.add(analysis)
     db.session.commit()
@@ -886,6 +884,54 @@ def _recompenser_parrain(user_id):
 # ─────────────────────────────────────────
 # LANCEMENT D'UNE ANALYSE (chemin unique)
 # ─────────────────────────────────────────
+import time as _time_lancement
+
+
+def _noms_equipes_formulaire(team_name_0, team_name_1, user_team_id):
+    """18/11/2026 : même règle qu'à l'envoi — si l'utilisateur a choisi l'équipe B comme la sienne, les noms sont
+    inversés (son équipe est toujours l'équipe 0 du pipeline)."""
+    noms = {}
+    if user_team_id == 1:
+        if team_name_0: noms["1"] = team_name_0
+        if team_name_1: noms["0"] = team_name_1
+    else:
+        if team_name_0: noms["0"] = team_name_0
+        if team_name_1: noms["1"] = team_name_1
+    return noms
+
+
+@app.route("/relancer/<int:id>", methods=["POST"])
+@login_required
+def relancer_analyse(id):
+    """18/11/2026 : relance PAR LE CLIENT d'une analyse en erreur (elle ne compte pas dans le quota). La vidéo est
+    conservée en cas d'erreur (supprimée seulement après une analyse réussie) : on la reprend telle quelle."""
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        flash("Analyse introuvable.")
+        return redirect(url_for("dashboard"))
+    if a.status != "error":
+        flash("Cette analyse n'est pas en erreur : rien à relancer.")
+        return redirect(url_for("dashboard"))
+    chemin = os.path.join(config.UPLOAD_FOLDER, a.filename) if a.filename else None
+    video_locale = chemin if (chemin and os.path.exists(chemin)) else None
+    if not video_locale and not (a.r2_video_key and config.R2_ENABLED):
+        flash("La vidéo de cette analyse n'est plus disponible : envoyez-la à nouveau.")
+        return redirect(url_for("dashboard"))
+    if current_user.analyses_left() <= 0:
+        flash("Quota atteint — passez à une formule supérieure.")
+        return redirect(url_for("dashboard"))
+    a.status, a.progress, a.progress_msg = "pending", 0, "Relance demandée…"
+    db.session.commit()
+    # Noms d'équipes repris dans le même ordre qu'à l'envoi (choix « mon équipe » conservé depuis le 18/11/2026 ;
+    # pour une analyse plus ancienne, ce choix est inconnu → noms non repris, le rapport affiche les couleurs).
+    noms = (_noms_equipes_formulaire(a.team_name_0, a.team_name_1, a.mon_equipe)
+            if (a.mon_equipe is not None or not (a.team_name_0 or a.team_name_1)) else None)
+    _lancer_analyse(a.id, video_locale, a.sport, current_user.plan, a.mode, a.player_id,
+                    r2_key=None if video_locale else a.r2_video_key, team_names=noms or None)
+    flash("Analyse relancée.")
+    return redirect(url_for("dashboard"))
+
+
 def _lancer_analyse(analysis_id, video_path, sport, plan, mode="match", player_id=None, r2_key=None,
                     team_names=None, player_position=None, kickoff_s_precalcule=None,
                     team_colors_gemini_precalcule=None, use_match_boundary_segments=True):
@@ -899,11 +945,11 @@ def _lancer_analyse(analysis_id, video_path, sport, plan, mode="match", player_i
         try:
             celery_run_analysis.apply_async(
                 kwargs  = dict(analysis_id=analysis_id, video_path=video_path, sport=sport, plan=plan, **params),
-                task_id = f"analysis_{analysis_id}",
+                task_id = f"analysis_{analysis_id}_{int(_time_lancement.time())}",   # 18/11 : unique (relance)
                 queue   = "pipeline",
             )
             a = db.session.get(Analysis, analysis_id)
-            a.celery_task_id = f"analysis_{analysis_id}"
+            a.celery_task_id = f"analysis_{analysis_id}_{int(_time_lancement.time())}"
             db.session.commit()
             return "celery"
         except Exception as e:
@@ -1020,8 +1066,11 @@ def run_analysis(
         with app.app_context():
             a              = db.session.get(Analysis, analysis_id)
             a.status       = "error"
-            a.progress_msg = str(e)[:200]
+            # 18/11/2026 : message CLAIR pour le client (le détail technique reste dans les journaux du serveur)
+            a.progress_msg = ("L'analyse n'a pas pu aboutir. Elle ne compte pas dans votre quota : "
+                              "vous pouvez la relancer.")
             db.session.commit()
+        print(f"  [ERREUR] analyse #{analysis_id} — détail technique : {str(e)[:500]}")
         # V5.2 (11/09/2026) : trace complete (pas seulement str(e)) - le
         # print precedent n'affichait que le message court, facile a
         # manquer dans le flot des logs de requetes Flask. Le
@@ -1790,7 +1839,8 @@ def too_large(e):
 # SCHÉMA DE LA BASE (24/10/2026)
 # ─────────────────────────────────────────
 _COLONNES_AJOUTEES = {
-    "analysis": {"celery_task_id": "VARCHAR(200)", "offerte": "BOOLEAN DEFAULT 0", "offerte_motif": "VARCHAR(200)"},
+    "analysis": {"celery_task_id": "VARCHAR(200)", "offerte": "BOOLEAN DEFAULT 0", "offerte_motif": "VARCHAR(200)",
+                 "mon_equipe": "INTEGER"},
     "user":     {"code_parrain": "VARCHAR(16)", "parrain_id": "INTEGER", "credits_offerts": "INTEGER DEFAULT 0",
                  "recompenses_parrainage": "INTEGER DEFAULT 0", "paiements_credites": "TEXT",
                  "preanalyses_date": "VARCHAR(10)", "preanalyses_n": "INTEGER DEFAULT 0"},

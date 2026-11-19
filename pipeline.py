@@ -4718,6 +4718,13 @@ def run_pipeline(
     # ── Mode player : reel joueur spécifique ─────────────────────────────────
     # Activé si mode="player" ET player_id fourni (ex: "11" ou "11_bleu")
     _player_reel_path = None
+    # 18/11/2026 : ce que le client doit savoir sur SON joueur (message clair si aucune action trouvée). Le résumé du
+    # match est livré dans tous les cas.
+    _joueur_info = None
+    if mode == "player":
+        _pid0 = str(player_id or "").split("_")
+        _joueur_info = {"demande": True, "numero": _pid0[0] if _pid0 and _pid0[0] else None,
+                        "couleur": "_".join(_pid0[1:]) or None, "trouve": False, "nb_actions": 0, "message": None}
     if mode == "player" and player_id is not None and result_pe_mgr is not None:
         try:
             _jersey     = None
@@ -4757,12 +4764,24 @@ def run_pipeline(
                 )
                 print(f"  [MODE PLAYER] Reel #{_jersey} ({_team_color}) : "
                       f"{len(_player_highlights)} clips → {_player_reel_path}")
+                if _joueur_info is not None:
+                    _joueur_info.update(trouve=True, nb_actions=len(_player_highlights))
             else:
                 print(f"  [MODE PLAYER] Aucun highlight pour #{_jersey} "
                       f"(min_conf={get_owner_confidence_min(sport):.2f})")
 
         except Exception as _epr:
             print(f"  [MODE PLAYER] Reel joueur ignoré : {_epr}")
+            _player_reel_path = None
+            if _joueur_info is not None:
+                _joueur_info.update(trouve=False, nb_actions=0)
+    if _joueur_info is not None and not _joueur_info["trouve"]:
+        _nj = _joueur_info["numero"] or "?"
+        _cj = f" ({_joueur_info['couleur']})" if _joueur_info["couleur"] else ""
+        _joueur_info["message"] = (f"Nous n'avons trouvé aucune action du joueur n°{_nj}{_cj} dans cette vidéo. "
+                                   f"Vérifiez le numéro et la couleur du maillot indiqués. Le résumé du match vous est "
+                                   f"livré normalement.")
+        print(f"  [MODE PLAYER] {_joueur_info['message']}")
 
 
     # ─────────────────────────────────────────
@@ -5038,6 +5057,7 @@ def run_pipeline(
         "context_stats": ctx_stats,
         "player_entities": player_entities,
         "player_reel":     _player_reel_path,
+        "joueur":          _joueur_info,      # 18/11/2026 : None hors mode joueur
         "geometry":        _geom_state,   # BC.4 : anchor + bc4 VP/FP report
     }
 
