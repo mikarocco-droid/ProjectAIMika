@@ -50,6 +50,11 @@
       </div>
       {# Score en temps réel si buts détectés #}
       {# 24/10/2026 : score par équipe affiché SEULEMENT si l'équipe de chaque but est connue (sinon « 0 — 0 » faux) #}
+      {% if result.joueur and result.joueur.demande and not result.joueur.trouve and result.joueur.message %}
+        <div class="notice" style="border:1px solid var(--yellow);border-radius:8px;padding:10px 14px;margin:10px 0;color:var(--yellow)">
+          {{ result.joueur.message }}
+        </div>
+      {% endif %}
       {% if result.teams and result.summary.goals and result.summary.score_par_equipe_disponible %}
         {% set t0 = result.teams.get('0', result.teams.get(0, {})) %}
         {% set t1 = result.teams.get('1', result.teams.get(1, {})) %}

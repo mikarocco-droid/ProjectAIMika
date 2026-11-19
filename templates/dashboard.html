@@ -296,6 +296,10 @@
           </div>
         {% elif a.status == "error" %}
           <span class="status-error">✕ {{ a.progress_msg }}</span>
+          <form method="post" action="/relancer/{{ a.id }}" style="display:inline">
+            {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+            <button type="submit" class="btn-small">Relancer</button>
+          </form>
         {% endif %}
       </div>
     </div>
