@@ -192,7 +192,7 @@ if _be or RELAIS_MANUEL:
     BOUT_EN_BOUT = _jbe.load(open(_be, encoding="utf-8")) if _be else dict(RELAIS_MANUEL)
     if BOUT_EN_BOUT.get("match") != MATCH:
         raise SystemExit(f"❌ le relais est celui de {BOUT_EN_BOUT.get('match')}, pas de {MATCH} — rien n'est lancé")
-    print(f"   relais : {'fichier ' + _be if _be else 'RELAIS_MANUEL (collé dans le script)'}")
+    print(f"   relais : {'fichier ' + _be if _be else ('fourni par le pipeline' if _RELAIS_P else 'RELAIS_MANUEL (collé dans le script)')}")
     MATCH, VIDEO, CACHE = BOUT_EN_BOUT["match"], BOUT_EN_BOUT["video"], BOUT_EN_BOUT["cache"]
     if not os.path.exists(os.path.join(CACHE, "frames_data.pkl")):
         # 08/11 : cellule 2 lancée dans un AUTRE notebook (sortie de la cellule 1 en entrée) : on décompresse le cache neuf

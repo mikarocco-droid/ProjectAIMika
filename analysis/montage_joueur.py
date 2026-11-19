@@ -24,7 +24,7 @@ COULEURS_VALIDES = ["rouge", "bleu", "bleu clair", "blanc", "noir", "jaune", "ve
 
 def monter_joueur(video, cache_dir, sortie, match, numero, couleur, bornes=None, buts=None, gardien=False,
                   couleur_maillot=None, entrees=None, gemini_key=None, parseq_poids=None, rapport_pdf=None,
-                  duree_analyse_min=0.0, attribution=None, delai_max_s=6 * 3600):
+                  duree_analyse_min=0.0, attribution=None, delai_max_s=6 * 3600, afficher=True):
     """Monte le résumé d'un joueur et produit sa fiche. Renvoie un dict (voir resultat_montage_joueur.json) ;
     en cas d'échec technique : {"trouve": False, "erreur": "...", "message": None}."""
     couleur = str(couleur or "").strip().lower()
@@ -54,13 +54,21 @@ def monter_joueur(video, cache_dir, sortie, match, numero, couleur, bornes=None,
     racine = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env = dict(os.environ, PYTHONPATH=racine + os.pathsep + os.environ.get("PYTHONPATH", ""))
     journal = os.path.join(sortie, "journal_montage_joueur.txt")
-    try:
-        with open(journal, "w", encoding="utf-8") as j:
-            p = subprocess.run([sys.executable, "-m", "analysis.montage_joueur", fichier_p], cwd=racine, env=env,
-                               stdout=j, stderr=subprocess.STDOUT, timeout=delai_max_s)
-    except subprocess.TimeoutExpired:
-        return {"trouve": False, "erreur": f"montage du joueur trop long (> {delai_max_s / 3600:.0f} h)", "message": None,
-                "journal": journal}
+    # 19/11 (2) : le journal est écrit dans le fichier ET affiché au fur et à mesure (journaux du serveur, Kaggle)
+    import time as _t_mj
+    t0 = _t_mj.time()
+    with open(journal, "w", encoding="utf-8") as j:
+        p = subprocess.Popen([sys.executable, "-u", "-m", "analysis.montage_joueur", fichier_p], cwd=racine, env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        for ligne in p.stdout:
+            j.write(ligne); j.flush()
+            if afficher:
+                print(ligne, end="", flush=True)
+            if _t_mj.time() - t0 > delai_max_s:
+                p.kill()
+                return {"trouve": False, "erreur": f"montage du joueur trop long (> {delai_max_s / 3600:.0f} h)",
+                        "message": None, "journal": journal}
+        p.wait()
     if os.path.exists(resultat_f):
         res = json.load(open(resultat_f, encoding="utf-8"))
         res["journal"] = journal
