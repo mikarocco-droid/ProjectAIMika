@@ -540,6 +540,13 @@ def generate_pdf(result, output_path, sport="football"):
     pdf.ln(6)
 
     # KPIs — FIX 1 : utilise kpi_* calculés avec fallbacks
+    # 18/11/2026 : joueur demandé mais introuvable → message clair, le résumé du match suit normalement
+    _jinfo = result.get("joueur") or {}
+    if _jinfo.get("demande") and not _jinfo.get("trouve") and _jinfo.get("message"):
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(*ACCENT2)
+        pdf.multi_cell(0, 5, clean(_jinfo["message"]), align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.ln(3)
     pdf.section_title("Résumé du match")
     kpis = [
         ("Buts confirmes" if _buts else "Goals", kpi_goals, ACCENT2),
