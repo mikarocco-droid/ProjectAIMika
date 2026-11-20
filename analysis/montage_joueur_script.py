@@ -1994,6 +1994,68 @@ if GARDIEN:
     print(f"   GARDIEN — ses actions : {len(_gardees)} gardée(s) (près d'un tir, d'un but ou d'un coup de pied arrêté adverse) "
           f"| {len(_retirees)} retirée(s) : " + (", ".join(f"{fmt(a_)} ({r_})" for a_, _, r_ in _retirees) or "aucune"))
     _fus = _gardees
+# ── 20/11 : VÉRIFICATION DES TOUCHES PAR GEMINI (demande de l'utilisateur, n° 6 de SRU : des séquences où le joueur ne
+#    touche pas le ballon). Une « touche » vient du suivi (ballon proche de lui) ; Gemini regarde 3 images autour de
+#    chacune (le joueur encadré) et dit s'il JOUE vraiment le ballon. Les touches non confirmées sortent du montage ;
+#    les buts restent tous. 8 touches par question (≈ 0,005 $ la question, estimation). En cas d'échec de Gemini, la
+#    touche est gardée (on ne retire que ce que Gemini a vu comme « pas de touche »).
+VERIF_TOUCHES = P.get("VERIF_TOUCHES", True)
+if VERIF_TOUCHES and _fus and GEMINI_KEY:
+    from google import genai as _gg_t
+    from google.genai import types as _gt_t
+    _cl_t = _gg_t.Client(api_key=GEMINI_KEY); _jet_t = {"q": 0, "e": 0, "s": 0}
+
+    def _bande_touche(a_, b_):
+        vues = []
+        for t_ in (a_ - 0.8, (a_ + b_) / 2, b_ + 0.8):
+            n_ = int(round((t_ - KO) * FPS))
+            bb_ = _bb_proche(n_)
+            ok_, img_ = image_video(n_) if bb_ is not None else (False, None)
+            if not ok_:
+                vues.append(None); continue
+            x1, y1, x2, y2 = [int(v) for v in bb_]; h_ = max(20, y2 - y1); cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            X1, X2 = max(0, cx - 3 * h_), min(img_.shape[1], cx + 3 * h_); Y1, Y2 = max(0, cy - 2 * h_), min(img_.shape[0], cy + 2 * h_)
+            im_ = img_.copy(); cv2.rectangle(im_, (x1 - 3, y1 - 3), (x2 + 3, y2 + 3), (255, 0, 255), 2)
+            vues.append(cv2.resize(im_[Y1:Y2, X1:X2], (300, 200)))
+        if all(v is None for v in vues):
+            return None
+        base = next(v for v in vues if v is not None)
+        return cv2.hconcat([v if v is not None else np.zeros_like(base) for v in vues])
+
+    _Q_T = ("Football match. Each numbered ROW shows the SAME player (inside the MAGENTA box) at three moments about one "
+            "second apart. For each row: does this player actually TOUCH or PLAY THE BALL (pass, shot, control, dribble, "
+            "header, tackle winning the ball, goalkeeper catch or save) during these moments? Being near the ball is NOT "
+            "enough. Answer ONLY with JSON: {\"touche\": [true/false per row, in order]}")
+    _ok_t, _non_t = [], []
+    for i0 in range(0, len(_fus), 8):
+        lot = [(f_, _bande_touche(f_[0], f_[1])) for f_ in _fus[i0:i0 + 8]]
+        lisibles = [(f_, b_) for f_, b_ in lot if b_ is not None]
+        _ok_t += [f_ for f_, b_ in lot if b_ is None]                 # pas d'image : gardée
+        if not lisibles:
+            continue
+        rangs = []
+        for j_, (_, b_) in enumerate(lisibles, 1):
+            b2 = b_.copy(); cv2.putText(b2, str(j_), (6, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 3); rangs.append(b2)
+        planche_t = cv2.vconcat(rangs)
+        try:
+            r_ = _cl_t.models.generate_content(model=MODELE, contents=[_Q_T, _gt_t.Part.from_bytes(
+                data=cv2.imencode(".jpg", planche_t, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes(), mime_type="image/jpeg")],
+                config={"temperature": 0.0, "thinking_config": {"thinking_level": "low"}})
+            um = getattr(r_, "usage_metadata", None); _jet_t["q"] += 1
+            _jet_t["e"] += int(getattr(um, "prompt_token_count", 0) or 0)
+            _jet_t["s"] += int(getattr(um, "candidates_token_count", 0) or 0) + int(getattr(um, "thoughts_token_count", 0) or 0)
+            txt_ = r_.text or ""; d_, _ = json.JSONDecoder().raw_decode(txt_[txt_.index("{"):])
+            rep_ = list(d_.get("touche") or [])
+            for j_, (f_, _) in enumerate(lisibles):
+                (_ok_t if (j_ >= len(rep_) or bool(rep_[j_])) else _non_t).append(f_)
+        except Exception as ex_:
+            print(f"   ⚠️ vérification des touches : réponse inexploitable ({str(ex_)[:60]}) — touches gardées")
+            _ok_t += [f_ for f_, _ in lisibles]
+    _cout_t = _jet_t["e"] / 1e6 * 0.75 + _jet_t["s"] / 1e6 * 3.75
+    _cout3 = (_cout3 if "_cout3" in dir() else 0.0) + _cout_t      # compté dans le coût du joueur
+    print(f"   VÉRIFICATION DES TOUCHES (Gemini) : {len(_fus)} → {len(_ok_t)} confirmée(s) | retirées (il ne joue pas le "
+          f"ballon) : " + (", ".join(fmt(f_[0]) for f_ in sorted(_non_t)) or "aucune") + f" | {_jet_t['q']} question(s) ≈ {_cout_t:.3f} $")
+    _fus = sorted(_ok_t, key=lambda f_: f_[0])
 _fiche_joueur(True, presence_s=_presence, n_passages=len(retenus), n_moments=len(_fus),
               buts_conf=_FICHE_BUTS_CONF, buts_poss=_FICHE_BUTS_POSS,
               **({"lignes_supp": [("Arrêts repérés par l'analyse", str(len(_ARRETS))),
