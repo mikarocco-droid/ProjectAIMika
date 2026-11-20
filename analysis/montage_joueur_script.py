@@ -1911,6 +1911,12 @@ if BOUT_EN_BOUT and BOUT_EN_BOUT.get("buts"):
         # 08/11 (décision de l'utilisateur) : TOUS les buts du match entrent dans le résumé du joueur, pour ne jamais
         # rater un but où il est buteur ou impliqué ; l'indication « impliqué » n'est plus qu'une information.
         _conf_b = b.get("statut") == "confirmé"
+        # 20/11 : sécurité — un but non confirmé à moins de 30 s APRÈS (ou 15 s avant) un coup d'envoi de mi-temps est ce
+        # coup d'envoi, pas un but (gardien jaune de SRU : la reprise de 68:10 montrée comme « but » 68:03)
+        _ko_mt = [float(a) for a, _ in (BOUT_EN_BOUT.get("bornes") or [])] if isinstance(BOUT_EN_BOUT.get("bornes"), list) else []
+        if not _conf_b and any(k - 15 <= g <= k + 30 for k in _ko_mt):
+            print(f"     but {fmt(g)} ({b.get('statut')}) → PAS dans le résumé : c'est le coup d'envoi de la mi-temps")
+            continue
         # 19/11 (11) : décision de l'utilisateur — TOUS les buts du match (confirmés ET possibles, des deux équipes) entrent
         # dans le résumé du joueur : même avec peu d'actions, il reçoit au moins un résumé du match. La raison indique
         # son lien avec le but (impliqué, son équipe, adversaire) ; les buts possibles restent marqués « non confirmé ».
@@ -1958,7 +1964,9 @@ if GARDIEN:
             if not (_o and _a and _c):
                 continue
             _oc, _ta, _col = _o.group(1), int(_a.group(1)) * 60 + int(_a.group(2)), _c.group(1).strip().lower()
-            if _oc not in ("SAVE", "WIDE", "POST", "BLOCKED") or not _ADV_EN or _col != _ADV_EN:
+            # 20/11 : sans BLOCKED (corner dégagé, tir contré par un défenseur) : le gardien n'y touche pas (avis
+            # de l'utilisateur sur le gardien jaune de SRU : 2 corners de 1re mi-temps sans intervention)
+            if _oc not in ("SAVE", "WIDE", "POST") or not _ADV_EN or _col != _ADV_EN:
                 continue
             if any(abs(_ta - t) <= 10 for t in _vu_t):
                 continue
@@ -1966,7 +1974,7 @@ if GARDIEN:
             (_ARRETS if _oc == "SAVE" else _TIRS_ADV).append((float(_ta), _oc))
     _ARRETS.sort(); _TIRS_ADV.sort()
     print(f"\n   GARDIEN — arrêts repérés par l'analyse du match (tirs « {_ADV_EN} » arrêtés) : {len(_ARRETS)} "
-          f"({', '.join(fmt(t) for t, _ in _ARRETS)}) | autres tirs adverses (à côté, poteau, contrés) : {len(_TIRS_ADV)}")
+          f"({', '.join(fmt(t) for t, _ in _ARRETS)}) | autres tirs adverses (à côté, poteau) : {len(_TIRS_ADV)}")
     TOUCHE_AVANT, TOUCHE_APRES = 8.0, 10.0      # gardien : voir l'action entière (coup franc jusqu'au tir)
     # 19/11 (9) : retirer ses RELANCES (6 mètres, dégagements) — demande de l'utilisateur. Une action du gardien est gardée
     # si elle est près d'un tir adverse ou d'un but (≤ 20 s), ou près d'un coup de pied arrêté ADVERSE dangereux (coup
@@ -1989,7 +1997,7 @@ if GARDIEN:
 _fiche_joueur(True, presence_s=_presence, n_passages=len(retenus), n_moments=len(_fus),
               buts_conf=_FICHE_BUTS_CONF, buts_poss=_FICHE_BUTS_POSS,
               **({"lignes_supp": [("Arrêts repérés par l'analyse", str(len(_ARRETS))),
-                                  ("Autres tirs adverses", f"{len(_TIRS_ADV)} (à côté, poteau ou contrés)")],
+                                  ("Autres tirs adverses", f"{len(_TIRS_ADV)} (à côté ou sur le poteau)")],
                   "source_presence": "passages où il est reconnu : maillot vérifié par Gemini",
                   } if GARDIEN else {}))
 if MONTAGE == "touches" and (_fus or _buts_joueur or _ARRETS):
