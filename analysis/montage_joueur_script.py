@@ -1306,7 +1306,7 @@ if GARDIEN:
     # dont l'arbitre en grande majorité), le plafond de 150 laissait 390 passages non vérifiés → plafond 600 et
     # 12 personnes par question dans ce cas (≈ 0,25 $ au plus, estimation)
     if _risques:
-        MAX_VERIF_GARDIEN, VIGNETTES_PAR_QUESTION = max(MAX_VERIF_GARDIEN, 600), max(VIGNETTES_PAR_QUESTION, 12)
+        MAX_VERIF_GARDIEN, VIGNETTES_PAR_QUESTION = max(MAX_VERIF_GARDIEN, 1000), max(VIGNETTES_PAR_QUESTION, 12)
     _reps = sorted(_groupes.items(), key=lambda kv: -sum(len(_noirs[s]) for s in kv[1]))[:MAX_VERIF_GARDIEN]
     print(f"   passages en « {_c_g} » regroupés par personne suivie : {len(_noirs)} passages → {len(_groupes)} personne(s)-"
           f"période(s) | vérifiées : {len(_reps)} | {VIGNETTES_PAR_QUESTION} par question → "
@@ -1339,8 +1339,21 @@ if GARDIEN:
            f"{{\"gardien\": [true/false per tile, in order], \"qui\": [short description per tile]}}")
 
     _verif = {}
-    for i0 in range(0, len(_reps), VIGNETTES_PAR_QUESTION):
-        lot = [(cle, sids, _tuile(max(sids, key=lambda s: len(_noirs[s])))) for cle, sids in _reps[i0:i0 + VIGNETTES_PAR_QUESTION]]
+    # 20/11 : une piste du suivi reconnue comme l'ARBITRE l'est pour ses autres périodes aussi → pas de nouvelle question
+    # (gardien jaune de SRU : environ 400 passages « arbitre » ; le plafond laissait 315 passages non vérifiés)
+    _tid_arb, _arb_prop = set(), 0
+    _reste = list(_reps)
+    while _reste:
+        _lot_r = []
+        while _reste and len(_lot_r) < VIGNETTES_PAR_QUESTION:
+            cle_, sids_ = _reste.pop(0)
+            if cle_[0] in _tid_arb:
+                for sid_ in sids_:
+                    _verif[sid_] = (False, "arbitre (même piste du suivi)")
+                _arb_prop += len(sids_)
+                continue
+            _lot_r.append((cle_, sids_))
+        lot = [(cle, sids, _tuile(max(sids, key=lambda s: len(_noirs[s])))) for cle, sids in _lot_r]
         lot = [x for x in lot if x[2] is not None]
         if not lot:
             continue
@@ -1363,10 +1376,14 @@ if GARDIEN:
                 dec = (bool(gk[j]) if j < len(gk) else False, str(qui[j] if j < len(qui) else "")[:60])
                 for sid in sids:
                     _verif[sid] = dec
+                if not dec[0] and any(m in dec[1].lower() for m in ("referee", "arbitre")):
+                    _tid_arb.add(cle[0])
         except Exception as ex:
             for cle, sids, _ in lot:
                 for sid in sids:
                     _verif[sid] = (False, f"réponse inexploitable ({str(ex)[:40]})")
+    if _arb_prop:
+        print(f"   arbitre reconnu sur la même piste du suivi : {_arb_prop} passage(s) écartés sans nouvelle question")
     _cout3 = _jet3["e"] / 1e6 * 0.75 + _jet3["s"] / 1e6 * 3.75
     print(f"   VÉRIFICATION GEMINI : {_jet3['q']} question(s) | passages jugés gardien : "
           f"{sum(1 for v in _verif.values() if v[0])} | autre : {sum(1 for v in _verif.values() if not v[0])} | ≈ {_cout3:.3f} $")
