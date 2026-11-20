@@ -1223,12 +1223,15 @@ if GARDIEN:
     # 20/11 : le pré-filtre (« joueur de champ déjà mesuré ») n'est sûr que si la couleur du gardien est bien distincte
     # de celle de son équipe : jaune / rouge / orange se confondent sous les projecteurs → pré-filtre coupé (gardien
     # jaune des rouges : 13:35 et 106:25 manqués). Segments d'1 s acceptés (actions brèves du gardien).
-    _PROCHES = [{"jaune", "orange", "rouge"}, {"bleu", "bleu clair", "violet"}, {"blanc", "gris"}, {"noir", "gris"}]
+    _PROCHES = [{"jaune", "orange", "rouge"}, {"bleu", "bleu clair", "violet"}, {"blanc", "gris"}, {"noir", "gris", "bleu"}]
     _coul_eq_g = COULEUR_EQUIPE.get(EQ, "")
-    _prefiltre_ok = not any(_c_g in f_ and _coul_eq_g in f_ for f_ in _PROCHES)
+    # 20/11 (2) : le gardien NOIR des bleus était moins bien reconnu que le jaune : de nuit, un maillot noir se mesure
+    # souvent « bleu foncé » → écarté d'avance comme joueur bleu. Le pré-filtre est désormais COUPÉ par défaut en mode
+    # gardien (PREFILTRE_GARDIEN=True pour le remettre) : quelques minutes et quelques questions Gemini de plus.
+    _prefiltre_ok = bool(P.get("PREFILTRE_GARDIEN", False)) and not any(_c_g in f_ and _coul_eq_g in f_ for f_ in _PROCHES)
     MIN_DUREE_GARDIEN = 1.0
     if not _prefiltre_ok:
-        print(f"   pré-filtre des joueurs de champ COUPÉ : « {_c_g} » est proche de « {_coul_eq_g} » (couleur de son équipe)")
+        print(f"   pré-filtre des joueurs de champ COUPÉ (gardien « {_c_g} », équipe « {_coul_eq_g} ») : tous les passages sont mesurés")
     # 1) candidats du gardien : seuil de taille propre (40 px), dans le temps de jeu
     #    19/11 (7) : on écarte d'avance les JOUEURS DE CHAMP déjà mesurés (fichier des lectures : couleur de leur
     #    équipe nette sur au moins 2 images sur 3) — sans risque pour le gardien, dont le maillot n'est pas celui de l'équipe.
