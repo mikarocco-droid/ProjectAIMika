@@ -1220,6 +1220,15 @@ if GARDIEN:
         return (float(np.isin(noms, [_c_g]).mean()),
                 max([float(np.isin(noms, list(nom_mesure(c))).mean()) for c in COULEUR_EQUIPE.values()] or [0.0]))
 
+    # 20/11 : le pré-filtre (« joueur de champ déjà mesuré ») n'est sûr que si la couleur du gardien est bien distincte
+    # de celle de son équipe : jaune / rouge / orange se confondent sous les projecteurs → pré-filtre coupé (gardien
+    # jaune des rouges : 13:35 et 106:25 manqués). Segments d'1 s acceptés (actions brèves du gardien).
+    _PROCHES = [{"jaune", "orange", "rouge"}, {"bleu", "bleu clair", "violet"}, {"blanc", "gris"}, {"noir", "gris"}]
+    _coul_eq_g = COULEUR_EQUIPE.get(EQ, "")
+    _prefiltre_ok = not any(_c_g in f_ and _coul_eq_g in f_ for f_ in _PROCHES)
+    MIN_DUREE_GARDIEN = 1.0
+    if not _prefiltre_ok:
+        print(f"   pré-filtre des joueurs de champ COUPÉ : « {_c_g} » est proche de « {_coul_eq_g} » (couleur de son équipe)")
     # 1) candidats du gardien : seuil de taille propre (40 px), dans le temps de jeu
     #    19/11 (7) : on écarte d'avance les JOUEURS DE CHAMP déjà mesurés (fichier des lectures : couleur de leur
     #    équipe nette sur au moins 2 images sur 3) — sans risque pour le gardien, dont le maillot n'est pas celui de l'équipe.
@@ -1228,10 +1237,10 @@ if GARDIEN:
         if _FEN and not any(debut(sid) <= b_ and fin(sid) >= a_ for a_, b_ in _FEN):
             continue
         nums = sorted(v["pos"])
-        if (nums[-1] - nums[0]) / FPS < MIN_DUREE_S:
+        if (nums[-1] - nums[0]) / FPS < MIN_DUREE_GARDIEN:
             continue
         e_l = lectures.get(sid) or {}
-        if e_l.get("parts") and e_l.get("couleur_v") == METHODE_COULEUR:
+        if _prefiltre_ok and e_l.get("parts") and e_l.get("couleur_v") == METHODE_COULEUR:
             nets = sum(1 for p_ in e_l["parts"] if max(p_) >= SEUIL_COULEUR)
             if nets >= max(2, (2 * len(e_l["parts"]) + 2) // 3):
                 _champ += 1
@@ -1314,12 +1323,21 @@ if GARDIEN:
         im2 = img.copy(); cv2.rectangle(im2, (x1 - 3, y1 - 3), (x2 + 3, y2 + 3), (255, 0, 255), 2)
         return cv2.resize(im2[Y1:Y2, X1:X2], (360, 240))
 
-    _Q3 = (f"Football match. Each numbered tile shows ONE person inside a MAGENTA box, with what surrounds him. For each "
-           f"tile, is this person the GOALKEEPER currently playing on the pitch (shirt « {_c_g} »), or someone else: coach, "
-           f"substitute, staff, spectator, ball boy, referee, player of another color? A goalkeeper is ON the pitch, "
-           f"usually near his goal; people behind fences or barriers, or along the touchline outside the field, are NOT "
-           f"the goalkeeper. Answer ONLY with JSON: {{\"gardien\": [true/false per tile, in order], "
-           f"\"qui\": [short description per tile]}}")
+    # 20/11 : on précise QUEL gardien (son équipe, sa couleur) et la couleur de l'AUTRE gardien quand Gemini l'a vue :
+    # au 1er test, le gardien jaune des rouges prenait parfois le gardien NOIR des bleus (but de 73:24, au but des bleus)
+    _FR_EN_Q = {"rouge": "red", "bleu": "blue", "bleu clair": "light blue", "blanc": "white", "noir": "black", "jaune": "yellow",
+                "vert": "green", "orange": "orange", "violet": "purple", "gris": "grey"}
+    _autres_gk = sorted({c for (c, e), k in _gk.items() if c != _c_g})
+    _Q3 = (f"Football match. Each numbered tile shows ONE person inside a MAGENTA box, with what surrounds him. We are "
+           f"looking for ONE specific person: the GOALKEEPER of the team playing in {_FR_EN_Q.get(COULEUR, COULEUR)}, who wears "
+           f"a {_FR_EN_Q.get(_c_g, _c_g)} goalkeeper shirt. For each tile, is this person THAT goalkeeper, on the pitch? "
+           + (f"The OTHER team's goalkeeper wears {', '.join(_FR_EN_Q.get(c, c) for c in _autres_gk)}: answer false for him. "
+              if _autres_gk else "Answer false for the goalkeeper of the other team. ")
+           + (f"The REFEREE also wears {_FR_EN_Q.get(_arb, _arb)}: answer false for him. " if _arb == _c_g else "")
+           + f"Also false for coaches, substitutes, staff, spectators, ball boys, and outfield players; people behind fences "
+           f"or barriers, or along the touchline outside the field, are NOT the goalkeeper. Answer ONLY with JSON: "
+           f"{{\"gardien\": [true/false per tile, in order], \"qui\": [short description per tile]}}")
+
     _verif = {}
     for i0 in range(0, len(_reps), VIGNETTES_PAR_QUESTION):
         lot = [(cle, sids, _tuile(max(sids, key=lambda s: len(_noirs[s])))) for cle, sids in _reps[i0:i0 + VIGNETTES_PAR_QUESTION]]
@@ -1984,6 +2002,7 @@ if GARDIEN:
                and any(m in txt for m in ("penalty", "box", "wall", "area", "surface"))
                and not any(m in txt for m in ("defensive", "goal kick", "goalkeeper", "clearance"))]   # pas SES relances
     _six = [k for k, rt, _ in _ARRETS_JEU if rt == "GOAL_KICK"]
+    GARDIEN_TYPE_GEMINI = P.get("GARDIEN_TYPE_GEMINI", True)   # 20/11 : la règle « relance isolée » retirait de vraies actions
     _gardees, _retirees = [], []
     for a_, b_, ty_ in _fus:
         m_ = (a_ + b_) / 2
@@ -1993,7 +2012,9 @@ if GARDIEN:
             _retirees.append((a_, b_, "6 mètres" if any(abs(m_ - k) <= 40 for k in _six) else "relance / action isolée"))
     print(f"   GARDIEN — ses actions : {len(_gardees)} gardée(s) (près d'un tir, d'un but ou d'un coup de pied arrêté adverse) "
           f"| {len(_retirees)} retirée(s) : " + (", ".join(f"{fmt(a_)} ({r_})" for a_, _, r_ in _retirees) or "aucune"))
-    _fus = _gardees
+    _fus = _gardees if not GARDIEN_TYPE_GEMINI else _fus      # 20/11 : le tri est désormais fait par Gemini (ci-dessous)
+    if GARDIEN_TYPE_GEMINI:
+        print("   (tri des actions du gardien confié à Gemini : arrêt, prise, sortie, passe… gardés ; 6 mètres et dégagements retirés)")
 # ── 20/11 : VÉRIFICATION DES TOUCHES PAR GEMINI (demande de l'utilisateur, n° 6 de SRU : des séquences où le joueur ne
 #    touche pas le ballon). Une « touche » vient du suivi (ballon proche de lui) ; Gemini regarde 3 images autour de
 #    chacune (le joueur encadré) et dit s'il JOUE vraiment le ballon. Les touches non confirmées sortent du montage ;
@@ -2026,6 +2047,12 @@ if VERIF_TOUCHES and _fus and GEMINI_KEY:
             "second apart. For each row: does this player actually TOUCH or PLAY THE BALL (pass, shot, control, dribble, "
             "header, tackle winning the ball, goalkeeper catch or save) during these moments? Being near the ball is NOT "
             "enough. Answer ONLY with JSON: {\"touche\": [true/false per row, in order]}")
+    if GARDIEN:
+        _Q_T = ("Football match. Each numbered ROW shows the SAME GOALKEEPER (inside the MAGENTA box) at three moments about "
+                "one second apart. For each row: does he actually TOUCH or PLAY THE BALL, and what kind of action is it? "
+                "Answer ONLY with JSON: {\"touche\": [true/false per row], \"action\": [one of \"arret\" (save), \"prise\" "
+                "(catch / claims the ball), \"sortie\" (comes out, dives at feet), \"passe\" (pass in open play), "
+                "\"six_metres\" (goal kick), \"degagement\" (long kick / punt from his hands), \"autre\" — per row]}")
     _ok_t, _non_t = [], []
     for i0 in range(0, len(_fus), 8):
         lot = [(f_, _bande_touche(f_[0], f_[1])) for f_ in _fus[i0:i0 + 8]]
@@ -2045,16 +2072,17 @@ if VERIF_TOUCHES and _fus and GEMINI_KEY:
             _jet_t["e"] += int(getattr(um, "prompt_token_count", 0) or 0)
             _jet_t["s"] += int(getattr(um, "candidates_token_count", 0) or 0) + int(getattr(um, "thoughts_token_count", 0) or 0)
             txt_ = r_.text or ""; d_, _ = json.JSONDecoder().raw_decode(txt_[txt_.index("{"):])
-            rep_ = list(d_.get("touche") or [])
+            rep_ = list(d_.get("touche") or []); act_ = list(d_.get("action") or [])
             for j_, (f_, _) in enumerate(lisibles):
-                (_ok_t if (j_ >= len(rep_) or bool(rep_[j_])) else _non_t).append(f_)
+                relance_ = GARDIEN and j_ < len(act_) and str(act_[j_]).lower() in ("six_metres", "degagement")
+                (_ok_t if ((j_ >= len(rep_) or bool(rep_[j_])) and not relance_) else _non_t).append(f_)
         except Exception as ex_:
             print(f"   ⚠️ vérification des touches : réponse inexploitable ({str(ex_)[:60]}) — touches gardées")
             _ok_t += [f_ for f_, _ in lisibles]
     _cout_t = _jet_t["e"] / 1e6 * 0.75 + _jet_t["s"] / 1e6 * 3.75
     _cout3 = (_cout3 if "_cout3" in dir() else 0.0) + _cout_t      # compté dans le coût du joueur
     print(f"   VÉRIFICATION DES TOUCHES (Gemini) : {len(_fus)} → {len(_ok_t)} confirmée(s) | retirées (il ne joue pas le "
-          f"ballon) : " + (", ".join(fmt(f_[0]) for f_ in sorted(_non_t)) or "aucune") + f" | {_jet_t['q']} question(s) ≈ {_cout_t:.3f} $")
+          f"ballon{', ou 6 mètres / dégagement' if GARDIEN else ''}) : " + (", ".join(fmt(f_[0]) for f_ in sorted(_non_t)) or "aucune") + f" | {_jet_t['q']} question(s) ≈ {_cout_t:.3f} $")
     _fus = sorted(_ok_t, key=lambda f_: f_[0])
 _fiche_joueur(True, presence_s=_presence, n_passages=len(retenus), n_moments=len(_fus),
               buts_conf=_FICHE_BUTS_CONF, buts_poss=_FICHE_BUTS_POSS,
