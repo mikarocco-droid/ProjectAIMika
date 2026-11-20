@@ -564,7 +564,11 @@ def fichiers_lectures():
     """Du plus récent au plus ancien : v2.7 à v2.2 ; pour chacun /kaggle/working puis /kaggle/input."""
     out = [FICHIER_LECTURES]
     for v in ("v30",):                              # v3.0 : uniquement les lectures PARSeq
-        out += [f"{SORTIE}/lectures_{v}_{MATCH}.json"] + sorted(_cherche(f"lectures_{v}_{MATCH}.json"))
+        # 20/11 : le fichier porte la version PARSeq (lectures_v30_<match>_v2.json) — l'ancien motif sans suffixe ne le
+        # trouvait jamais en entrée (seule la copie restée dans /kaggle/working servait) → 1 h 50 de relecture inutile
+        _vp = PARSEQ_VERSION or "*"
+        out += [f"{SORTIE}/lectures_{v}_{MATCH}.json"] + sorted(_cherche(f"lectures_{v}_{MATCH}.json")) \
+            + sorted(_cherche(f"lectures_{v}_{MATCH}_{_vp}.json"))
     return [c for c in dict.fromkeys(out) if os.path.exists(c)]
 
 
@@ -1289,6 +1293,11 @@ if GARDIEN:
         while (tid, k) in _groupes and debut(sid) - fin(_groupes[(tid, k)][-1]) > 300:
             k += 1
         _groupes[(tid, k)].append(sid)
+    # 20/11 : quand la couleur du gardien est aussi celle de l'arbitre (SRU, gardien jaune : 540 personnes-périodes,
+    # dont l'arbitre en grande majorité), le plafond de 150 laissait 390 passages non vérifiés → plafond 600 et
+    # 12 personnes par question dans ce cas (≈ 0,25 $ au plus, estimation)
+    if _risques:
+        MAX_VERIF_GARDIEN, VIGNETTES_PAR_QUESTION = max(MAX_VERIF_GARDIEN, 600), max(VIGNETTES_PAR_QUESTION, 12)
     _reps = sorted(_groupes.items(), key=lambda kv: -sum(len(_noirs[s]) for s in kv[1]))[:MAX_VERIF_GARDIEN]
     print(f"   passages en « {_c_g} » regroupés par personne suivie : {len(_noirs)} passages → {len(_groupes)} personne(s)-"
           f"période(s) | vérifiées : {len(_reps)} | {VIGNETTES_PAR_QUESTION} par question → "
@@ -1353,7 +1362,7 @@ if GARDIEN:
     for sid, ims in _noirs.items():
         g = _verif.get(sid)
         if g is None:
-            verdicts[sid] = ([], "maillot noir, non vérifié (plafond)")
+            verdicts[sid] = ([], f"maillot {_c_g}, non vérifié (plafond)")
         elif g[0]:
             verdicts[sid] = ([(min(ims), max(ims))], f"retenu (maillot {_c_g}, gardien selon Gemini)")
         else:
