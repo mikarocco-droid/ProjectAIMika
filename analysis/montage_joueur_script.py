@@ -2010,8 +2010,9 @@ if GARDIEN:
             _gardees.append((a_, b_, ty_))
         else:
             _retirees.append((a_, b_, "6 mètres" if any(abs(m_ - k) <= 40 for k in _six) else "relance / action isolée"))
-    print(f"   GARDIEN — ses actions : {len(_gardees)} gardée(s) (près d'un tir, d'un but ou d'un coup de pied arrêté adverse) "
-          f"| {len(_retirees)} retirée(s) : " + (", ".join(f"{fmt(a_)} ({r_})" for a_, _, r_ in _retirees) or "aucune"))
+    if not GARDIEN_TYPE_GEMINI:
+        print(f"   GARDIEN — ses actions : {len(_gardees)} gardée(s) (près d'un tir, d'un but ou d'un coup de pied arrêté adverse) "
+              f"| {len(_retirees)} retirée(s) : " + (", ".join(f"{fmt(a_)} ({r_})" for a_, _, r_ in _retirees) or "aucune"))
     _fus = _gardees if not GARDIEN_TYPE_GEMINI else _fus      # 20/11 : le tri est désormais fait par Gemini (ci-dessous)
     if GARDIEN_TYPE_GEMINI:
         print("   (tri des actions du gardien confié à Gemini : arrêt, prise, sortie, passe… gardés ; 6 mètres et dégagements retirés)")
@@ -2053,7 +2054,7 @@ if VERIF_TOUCHES and _fus and GEMINI_KEY:
                 "Answer ONLY with JSON: {\"touche\": [true/false per row], \"action\": [one of \"arret\" (save), \"prise\" "
                 "(catch / claims the ball), \"sortie\" (comes out, dives at feet), \"passe\" (pass in open play), "
                 "\"six_metres\" (goal kick), \"degagement\" (long kick / punt from his hands), \"autre\" — per row]}")
-    _ok_t, _non_t = [], []
+    _ok_t, _non_t, _raison_t, _type_t = [], [], {}, {}
     for i0 in range(0, len(_fus), 8):
         lot = [(f_, _bande_touche(f_[0], f_[1])) for f_ in _fus[i0:i0 + 8]]
         lisibles = [(f_, b_) for f_, b_ in lot if b_ is not None]
@@ -2074,15 +2075,22 @@ if VERIF_TOUCHES and _fus and GEMINI_KEY:
             txt_ = r_.text or ""; d_, _ = json.JSONDecoder().raw_decode(txt_[txt_.index("{"):])
             rep_ = list(d_.get("touche") or []); act_ = list(d_.get("action") or [])
             for j_, (f_, _) in enumerate(lisibles):
-                relance_ = GARDIEN and j_ < len(act_) and str(act_[j_]).lower() in ("six_metres", "degagement")
-                (_ok_t if ((j_ >= len(rep_) or bool(rep_[j_])) and not relance_) else _non_t).append(f_)
+                a_t = str(act_[j_]).lower() if j_ < len(act_) else ""
+                relance_ = GARDIEN and a_t in ("six_metres", "degagement")
+                touche_ = j_ >= len(rep_) or bool(rep_[j_])
+                _type_t[f_[0]] = a_t or ("touche" if touche_ else "")
+                if touche_ and not relance_:
+                    _ok_t.append(f_)
+                else:
+                    _non_t.append(f_); _raison_t[f_[0]] = a_t if relance_ else "pas de touche"
         except Exception as ex_:
             print(f"   ⚠️ vérification des touches : réponse inexploitable ({str(ex_)[:60]}) — touches gardées")
             _ok_t += [f_ for f_, _ in lisibles]
     _cout_t = _jet_t["e"] / 1e6 * 0.75 + _jet_t["s"] / 1e6 * 3.75
     _cout3 = (_cout3 if "_cout3" in dir() else 0.0) + _cout_t      # compté dans le coût du joueur
     print(f"   VÉRIFICATION DES TOUCHES (Gemini) : {len(_fus)} → {len(_ok_t)} confirmée(s) | retirées (il ne joue pas le "
-          f"ballon{', ou 6 mètres / dégagement' if GARDIEN else ''}) : " + (", ".join(fmt(f_[0]) for f_ in sorted(_non_t)) or "aucune") + f" | {_jet_t['q']} question(s) ≈ {_cout_t:.3f} $")
+          f"ballon, ou relance du gardien) : " + (", ".join(f"{fmt(f_[0])} ({_raison_t.get(f_[0], '?')})" for f_ in sorted(_non_t)) or "aucune")
+          + (" | gardées : " + ", ".join(f"{fmt(f_[0])} ({_type_t.get(f_[0], '')})" for f_ in sorted(_ok_t)) if GARDIEN else "") + f" | {_jet_t['q']} question(s) ≈ {_cout_t:.3f} $")
     _fus = sorted(_ok_t, key=lambda f_: f_[0])
 _fiche_joueur(True, presence_s=_presence, n_passages=len(retenus), n_moments=len(_fus),
               buts_conf=_FICHE_BUTS_CONF, buts_poss=_FICHE_BUTS_POSS,
