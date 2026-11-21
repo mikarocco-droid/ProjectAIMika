@@ -13,7 +13,9 @@ import tempfile
 
 AVANT_BUT_CONFIRME = 25.0     # s montrées avant un but confirmé (heure fiable à quelques secondes)
 AVANT_BUT_POSSIBLE = 35.0     # s avant un but NON confirmé (heure parfois en retard)
-APRES_BUT = 8.0               # la célébration
+APRES_BUT_CONFIRME = 12.0     # après un but confirmé (le ballon au fond, la célébration)
+APRES_BUT_POSSIBLE = 20.0     # 21/11 : après un but NON confirmé — son heure peut être EN AVANCE (Warsage : but réel
+                              # 111:01 daté 110:52 ; avec 8 s, la séquence s'arrêtait juste avant que le ballon entre)
 AVANT_OCCASION, APRES_OCCASION = 12.0, 6.0
 ECART_FUSION = 3.0            # deux séquences à moins de 3 s l'une de l'autre n'en font qu'une
 
@@ -24,7 +26,8 @@ def fenetres_resume(buts, occasions, duree_video=None):
     for b in buts or []:
         t = float(b["time_abs"])
         conf = str(b.get("statut") or b.get("status") or "").startswith("confirm")
-        f.append([t - (AVANT_BUT_CONFIRME if conf else AVANT_BUT_POSSIBLE), t + APRES_BUT,
+        f.append([t - (AVANT_BUT_CONFIRME if conf else AVANT_BUT_POSSIBLE),
+                  t + (APRES_BUT_CONFIRME if conf else APRES_BUT_POSSIBLE),
                   "but" if conf else "but possible"])
     for o in occasions or []:
         t = float(o["time_abs"])
