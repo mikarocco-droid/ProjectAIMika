@@ -4915,6 +4915,20 @@ def run_pipeline(
                                "label": "Occasion"})   # 25/10/2026 : plus de « But possible » (voir plus bas)
     _occasions_pdf.sort(key=lambda o: o["time"])
 
+    # 21/11/2026 : VIDÉO RÉSUMÉ DU MATCH = tous les buts (confirmés et possibles) + toutes les occasions repérées
+    # (l'ancien reel ne prenait que les buts : Warsage, 5 séquences et aucune occasion). SCOUTIA_RESUME_MATCH=0 pour
+    # garder l'ancien reel.
+    if os.environ.get("SCOUTIA_RESUME_MATCH", "1").strip() != "0" and video_path and os.path.exists(video_path):
+        try:
+            from export.resume_match import monter_resume_match
+            _r_m = monter_resume_match(
+                video_path, [{"time_abs": b["time_abs"], "statut": b.get("status")} for b in _buts_liste],
+                _occasions_pdf, output_dir, duree_video=(total_frames / fps) if fps else None)
+            if _r_m:
+                reel_path = _r_m
+        except Exception as _e_rm:
+            print(f"  [RÉSUMÉ MATCH] ⚠️ non produit : {_e_rm}")
+
     print("Step 12 : AI summary...")
     ai_summary = None
     if audit_mode:
