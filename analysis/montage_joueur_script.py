@@ -1884,6 +1884,7 @@ _FICHE_BUTS_CONF, _FICHE_BUTS_POSS = [], []     # 18/11 : pour la fiche « Bilan
 # suit (heure du but inconnue) : si le coup d'envoi a tardé (changement de joueur…), le but est bien plus tôt
 # (SRU : but réel 89:52, daté 90:53 → la séquence ne montrait que le replacement des joueurs).
 _AVANT_BUT = {}
+_APRES_BUT = {}       # 21/11 : secondes montrées APRÈS l'heure annoncée d'un but (Warsage : but 111:01 daté 110:52)
 # ── 19/11 (9) : HEURES DE BUT VUES par l'analyse du match (réponses Gemini déjà payées, gemini_cache_<match>*.jsonl) :
 #    validation des coups d'envoi (GOAL_TIME), classification des temps forts (OUTCOME GOAL, ACTION_TIME), et coups de
 #    pied arrêtés (RESTART_TYPE). Sert à montrer un but non confirmé à partir de sa VRAIE heure (pas 70 s à l'aveugle).
@@ -1971,6 +1972,7 @@ if BOUT_EN_BOUT and BOUT_EN_BOUT.get("buts"):
             lien = "équipe non identifiée"
         _buts_joueur.append(g)
         _AVANT_BUT[g] = _avant_but(g, _conf_b)       # 19/11 (9) : jusqu'au but vu par l'analyse, sinon 35 s
+        _APRES_BUT[g] = 10.0 if _conf_b else 20.0     # 21/11 : l'heure d'un but non confirmé peut être en avance
         (_FICHE_BUTS_CONF if _conf_b else _FICHE_BUTS_POSS).append((g, lien.replace("impliqué : ", "")))
         print(f"     but {fmt(g)} ({b.get('statut')}) → dans le résumé | {lien}")
 # ── joueur seul : CE QUE L'ON SAIT DE SON MATCH (données disponibles) ──
@@ -2119,7 +2121,7 @@ _fiche_joueur(True, presence_s=_presence, n_passages=len(retenus), n_moments=len
                   "source_presence": "passages où il est reconnu : maillot vérifié par Gemini",
                   } if GARDIEN else {}))
 if MONTAGE == "touches" and (_fus or _buts_joueur or _ARRETS):
-    _FEN = sorted([(a - TOUCHE_AVANT, b + TOUCHE_APRES) for a, b, _ in _fus] + [(g - _AVANT_BUT.get(g, 25.0), g + 5.0) for g in _buts_joueur]
+    _FEN = sorted([(a - TOUCHE_AVANT, b + TOUCHE_APRES) for a, b, _ in _fus] + [(g - _AVANT_BUT.get(g, 25.0), g + _APRES_BUT.get(g, 10.0)) for g in _buts_joueur]
                   + [(t - 12.0, t + 6.0) for t, _ in _ARRETS + _TIRS_ADV])   # 25 s avant : l heure du but du pipeline peut être en retard (jusqu à ~20 s)
     print(f"   montage : {len(_fus)} touche(s) + {len(_buts_joueur)} but(s) avec le joueur")
 elif MONTAGE == "touches":
