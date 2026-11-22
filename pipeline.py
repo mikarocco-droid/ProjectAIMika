@@ -2379,7 +2379,7 @@ def run_pipeline(
                             ("penalty", r"\bpenalty kick\b|\bpenalt(?:y|ies)\b(?!\s+(?:area|box|arc|zone|line))"), ("coup franc", r"free[ -]?kick"),
                             ("poteau / transversale", r"\b(?:post(?!-)|crossbar|woodwork)\b"),
                             ("arrêt du gardien", r"\bsave[sd]?\b|\bsaving\b|\bparr(?:y|ies|ied)\b|tips? (?:it )?over"),
-                            ("tir à côté / au-dessus", r"went wide|goes wide|wide of|over the bar|misses the target|off target"),
+                            ("tir à côté / au-dessus", r"went wide|goes wide|wide of|over the bar|misses the target|off[- ]target|rolls wide|goes over|went over|high over|over the goal|over/wide|wide/out"),   # 21/11 : formulations vues à Warsage
                             ("tir contré", r"\bblock(?:ed|s)\b")]
                 _JG_NEG = _re_jg.compile(r"\bno (corner|shot|save|chance|attempt|penalty)|without (a |any )?(shot|save)|\bno shots?\b", _re_jg.I)
                 _journal_gemini = []
@@ -4921,9 +4921,21 @@ def run_pipeline(
     if os.environ.get("SCOUTIA_RESUME_MATCH", "1").strip() != "0" and video_path and os.path.exists(video_path):
         try:
             from export.resume_match import monter_resume_match
+            # 21/11 : + les tentatives du JOURNAL Gemini (descriptions déjà payées, 0 $) : Warsage 9 → 11 occasions sur
+            # 20 notées par l'utilisateur (poteau 32:57, 43:04, 67:15…). Le journal n'est lu par AUCUNE étape de la
+            # détection des buts : sans effet sur les buts validés. Les « tirs contrés » du journal ne sont pas repris
+            # (souvent des centres dégagés).
+            _occ_res = [{"time_abs": float(o["time_abs"]), "label": o.get("label") or "occasion"} for o in _occasions_pdf]
+            for _j in locals().get("_journal_gemini", []) or []:
+                if _j.get("type") not in ("arrêt du gardien", "tir à côté / au-dessus", "poteau / transversale", "sauvé sur la ligne"):
+                    continue
+                _tj = float(_j["time_abs"])
+                if any(abs(_tj - o["time_abs"]) <= 12 for o in _occ_res) or any(abs(_tj - float(b["time_abs"])) <= 15 for b in _buts_liste):
+                    continue
+                _occ_res.append({"time_abs": _tj, "label": _j["type"]})
             _r_m = monter_resume_match(
                 video_path, [{"time_abs": b["time_abs"], "statut": b.get("status")} for b in _buts_liste],
-                _occasions_pdf, output_dir, duree_video=(total_frames / fps) if fps else None)
+                _occ_res, output_dir, duree_video=(total_frames / fps) if fps else None)
             if _r_m:
                 reel_path = _r_m
         except Exception as _e_rm:
