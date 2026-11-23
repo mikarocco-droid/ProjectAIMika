@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import re
 import uuid
 import json
 import threading
@@ -559,14 +560,98 @@ def results(id):
         return redirect(url_for("dashboard"))
 
     result = json.loads(a.result_json) if a.result_json else {}
+    # 22/11/2026 : séquences du résumé (« Composer mon résumé »), dans l'ordre du match
+    sequences = _sequences_resume(result)
+    perso = result.get("reel_perso") if result.get("reel_perso") and os.path.exists(result.get("reel_perso")) else None
+    if perso:      # cases cochées = celles du dernier résumé composé
+        try:
+            choisis = set(json.load(open(perso + ".json", encoding="utf-8")))
+            for sq in sequences:
+                sq["coche"] = sq["id"] in choisis
+        except Exception:
+            pass
 
     return render_template(
         "results.html",
         analysis    = a,
         result      = result,
+        sequences   = sequences,
+        reel_perso  = bool(perso),
         can_pdf     = current_user.can("pdf"),
         can_montage = current_user.can("montage")
     )
+
+
+# ─────────────────────────────────────────
+# 22/11/2026 — COMPOSER MON RÉSUMÉ : séquences du résumé + « autres moments à voir », assemblées dans l'ordre du match
+# ─────────────────────────────────────────
+def _sequences_resume(result):
+    dos = result.get("sequences_resume")
+    if not dos or not os.path.exists(os.path.join(dos, "sequences.json")):
+        return []
+    try:
+        seqs = json.load(open(os.path.join(dos, "sequences.json"), encoding="utf-8"))
+    except Exception:
+        return []
+    for sq in seqs:
+        sq["coche"] = bool(sq.get("dans_resume"))
+        sq["duree"] = int(round(float(sq["fin"]) - float(sq["debut"])))
+    return sorted(seqs, key=lambda sq: sq["debut"])
+
+
+@app.route("/stream/<int:id>/sequence/<sid>")
+@login_required
+def stream_sequence(id, sid):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id or not re.fullmatch(r"s\d{3}", sid or ""):
+        return "Forbidden", 403
+    result = json.loads(a.result_json) if a.result_json else {}
+    sq = next((x for x in _sequences_resume(result) if x["id"] == sid), None)
+    if not sq:
+        return "Introuvable", 404
+    return send_from_directory(result["sequences_resume"], sq["fichier"])
+
+
+@app.route("/resume/<int:id>/composer", methods=["POST"])
+@login_required
+def composer_resume(id):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        flash("Analyse introuvable")
+        return redirect(url_for("dashboard"))
+    result = json.loads(a.result_json) if a.result_json else {}
+    ids = [x for x in request.form.getlist("seq") if re.fullmatch(r"s\d{3}", x)]
+    if not ids:
+        flash("Choisissez au moins une séquence.")
+        return redirect(url_for("results", id=id) + "#composer")
+    from export.resume_match import recomposer_resume
+    sortie = os.path.join(a.output_dir or os.path.dirname(result["sequences_resume"]), "resume_perso.mp4")
+    out = recomposer_resume(result.get("sequences_resume"), ids, sortie)
+    if not out:
+        flash("Le résumé n'a pas pu être refait. Réessayez.")
+        return redirect(url_for("results", id=id) + "#composer")
+    json.dump(ids, open(out + ".json", "w", encoding="utf-8"))
+    result["reel_perso"] = out
+    a.result_json = json.dumps(result)
+    db.session.commit()
+    flash(f"Votre résumé est prêt ({len(ids)} séquence(s)).")
+    return redirect(url_for("results", id=id) + "#composer")
+
+
+@app.route("/stream/<int:id>/reel_perso")
+@login_required
+def stream_reel_perso(id):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        return "Forbidden", 403
+    result = json.loads(a.result_json) if a.result_json else {}
+    p = result.get("reel_perso")
+    if not p or not os.path.exists(p):
+        return "Introuvable", 404
+    if request.args.get("dl"):
+        return send_from_directory(os.path.dirname(p), os.path.basename(p), as_attachment=True,
+                                   download_name=f"scoutia_mon_resume_{a.filename.rsplit('.', 1)[0]}.mp4")
+    return send_from_directory(os.path.dirname(p), os.path.basename(p))
 
 
 # ─────────────────────────────────────────

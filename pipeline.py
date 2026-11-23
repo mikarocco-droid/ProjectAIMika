@@ -2418,6 +2418,15 @@ def run_pipeline(
                             if _re_jg.search(_motif, _ph, _re_jg.I):
                                 _jg_ajout(_t_m, _type, "description KO", None, _ph.strip(), _kc["time"])
                 _journal_gemini.sort(key=lambda _j: _j["time_abs"])
+                # 22/11 : phrases de Gemini gardées pour les « autres moments à voir » du résumé (0 $, résumé seulement)
+                _textes_gemini = []
+                for _ki, _kc in enumerate(_ko_candidates):
+                    _kind, _r = _ko_results.get(_ki, (None, None))
+                    if _kind == "ok" and _r:
+                        _textes_gemini.append((_kc["time"], str(_r.get("evidence_complete") or _r.get("description") or _r.get("evidence") or "")))
+                for _ki, _cls in sorted(_cls_results.items()):
+                    if _cls:
+                        _textes_gemini.append((_ko_candidates[_ki]["time"], str(_cls.get("evidence") or "")))
                 from collections import Counter as _Cnt_jg
                 print(f"  [JOURNAL GEMINI] {len(_journal_gemini)} observation(s) : "
                       + ", ".join(f"{_k} {_v}" for _k, _v in _Cnt_jg(_j["type"] for _j in _journal_gemini).most_common()))
@@ -4938,9 +4947,14 @@ def run_pipeline(
                 if any(abs(_tj - o["time_abs"]) <= 12 for o in _occ_res) or any(abs(_tj - float(b["time_abs"])) <= 15 for b in _buts_liste):
                     continue
                 _occ_res.append({"time_abs": _tj, "label": _j["type"]})
+            from export.resume_match import autres_moments
+            _aut_res = autres_moments(locals().get("_textes_gemini", []) or [],
+                                      deja=[o["time_abs"] for o in _occ_res], buts=[b["time_abs"] for b in _buts_liste])
+            _bmj_r = _BORNES_MI_TEMPS if _BORNES_MI_TEMPS.get("video") == video_path else {}
             _r_m = monter_resume_match(
                 video_path, [{"time_abs": b["time_abs"], "statut": b.get("status")} for b in _buts_liste],
-                _occ_res, output_dir, duree_video=(total_frames / fps) if fps else None)
+                _occ_res, output_dir, duree_video=(total_frames / fps) if fps else None,
+                autres=_aut_res, bornes={k: _bmj_r.get(k) for k in ("ko1", "fin1mt", "ko2", "finmatch")} if _bmj_r else None)
             if _r_m:
                 reel_path = _r_m
         except Exception as _e_rm:
@@ -5137,6 +5151,8 @@ def run_pipeline(
         "context_stats": ctx_stats,
         "player_entities": player_entities,
         "player_reel":     _player_reel_path,
+        "sequences_resume": (os.path.join(output_dir, "sequences")
+                             if os.path.exists(os.path.join(output_dir, "sequences", "sequences.json")) else None),   # 22/11
         "joueur":          _joueur_info,      # 18/11/2026 : None hors mode joueur
         "geometry":        _geom_state,   # BC.4 : anchor + bc4 VP/FP report
     }
