@@ -257,7 +257,9 @@
   {% endif %}
 
   <!-- Possession -->
-  {% if result.possession %}
+  {# 22/11/2026 : possession MASQUÉE tant qu'elle n'est pas validée (tests de Warsage : la couleur des maillots n'est pas
+     mesurable de nuit). Elle ne réapparaît que si le pipeline la marque validée (result.possession_validee). #}
+  {% if result.possession and result.possession_validee %}
   <div class="result-section">
     <div class="result-section-header">
       <span class="result-section-icon">🎽</span>
