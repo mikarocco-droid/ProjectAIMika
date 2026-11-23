@@ -16,7 +16,7 @@ AVANT_BUT_POSSIBLE = 35.0     # s avant un but NON confirmé (heure parfois en r
 APRES_BUT_CONFIRME = 12.0     # après un but confirmé (le ballon au fond, la célébration)
 APRES_BUT_POSSIBLE = 20.0     # 21/11 : après un but NON confirmé — son heure peut être EN AVANCE (Warsage : but réel
                               # 111:01 daté 110:52 ; avec 8 s, la séquence s'arrêtait juste avant que le ballon entre)
-AVANT_OCCASION, APRES_OCCASION = 12.0, 6.0
+AVANT_OCCASION, APRES_OCCASION = 12.0, 8.0   # 21/11 : 6 → 8 s (heure d'une occasion parfois approximative)
 ECART_FUSION = 3.0            # deux séquences à moins de 3 s l'une de l'autre n'en font qu'une
 
 
