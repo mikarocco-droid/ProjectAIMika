@@ -58,7 +58,7 @@ def monter_resume_match(video, buts, occasions, sortie, nom="resume_match.mp4", 
     for i, (a, b, e) in enumerate(seq):
         m = os.path.join(tmp, f"s{i:03d}.mp4")
         r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{a:.2f}", "-i", video, "-t", f"{b - a:.2f}",
-                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-b:a", "128k",
+                            "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-c:a", "aac", "-b:a", "128k",   # 21/11 : 23 → 18 (qualité)
                             "-pix_fmt", "yuv420p", m], capture_output=True, text=True)
         if r.returncode == 0 and os.path.exists(m):
             morceaux.append(m)
