@@ -4930,6 +4930,11 @@ def run_pipeline(
                 if _j.get("type") not in ("arrêt du gardien", "tir à côté / au-dessus", "poteau / transversale", "sauvé sur la ligne"):
                     continue
                 _tj = float(_j["time_abs"])
+                # 21/11 : une description donne souvent une plage (« 86:40-86:48 ») : la tentative est vers la FIN
+                _hh = [int(a) * 60 + int(b) for a, b in __import__("re").findall(r"(\d{1,3}):(\d{2})", str(_j.get("texte") or ""))]
+                _hh = [h for h in _hh if abs(h - _tj) <= 30]
+                if _hh:
+                    _tj = float(max(_hh))
                 if any(abs(_tj - o["time_abs"]) <= 12 for o in _occ_res) or any(abs(_tj - float(b["time_abs"])) <= 15 for b in _buts_liste):
                     continue
                 _occ_res.append({"time_abs": _tj, "label": _j["type"]})
