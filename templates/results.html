@@ -83,7 +83,7 @@
         <a href="/download/{{ analysis.id }}/pdf" class="btn-primary">⬇ PDF</a>
       {% endif %}
       {% if result.reel %}
-        <a href="/download/{{ analysis.id }}/reel" class="btn-secondary">⬇ Reel</a>
+        <a href="/download/{{ analysis.id }}/reel" class="btn-secondary">⬇ Résumé</a>
       {% endif %}
       <a href="/dashboard" class="btn-secondary">← Dashboard</a>
     </div>
@@ -191,12 +191,12 @@
   </div>
   {% endif %}
 
-  <!-- Reel vidéo -->
+  <!-- Résumé du match (22/11/2026 : résumé de base en haut, puis « Composer mon résumé ») -->
   {% if result.reel %}
   <div class="result-section">
     <div class="result-section-header">
       <span class="result-section-icon">🎬</span>
-      <span class="result-section-title">Highlight Reel</span>
+      <span class="result-section-title">Résumé du match</span>
     </div>
     <div class="result-section-body" style="padding:0">
       <div class="video-container">
@@ -204,6 +204,54 @@
           <source src="/stream/{{ analysis.id }}/reel" type="video/mp4">
         </video>
       </div>
+      <div style="padding:10px 14px">
+        <a href="/download/{{ analysis.id }}/reel" class="btn-secondary">⬇ Télécharger le résumé</a>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if sequences %}
+  <div class="result-section" id="composer">
+    <div class="result-section-header">
+      <span class="result-section-icon">✂️</span>
+      <span class="result-section-title">Voulez-vous composer votre propre résumé ?</span>
+    </div>
+    <div class="result-section-body">
+      {% if reel_perso %}
+      <p style="margin:0 0 8px"><strong>Votre résumé</strong></p>
+      <div class="video-container" style="margin-bottom:10px">
+        <video controls preload="metadata"><source src="/stream/{{ analysis.id }}/reel_perso" type="video/mp4"></video>
+      </div>
+      <a href="/stream/{{ analysis.id }}/reel_perso?dl=1" class="btn-secondary">⬇ Télécharger mon résumé</a>
+      <hr style="border:none;border-top:1px solid var(--border);margin:14px 0">
+      {% endif %}
+      <p style="margin:0 0 10px;color:var(--gray)">Regardez chaque séquence, cochez celles que vous voulez garder, puis
+        cliquez sur « Refaire mon résumé ». Les séquences sont toujours assemblées dans l'ordre du match.</p>
+      <form method="post" action="/resume/{{ analysis.id }}/composer">
+        {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+        {% for titre, dans in [("Séquences du résumé", True), ("D'autres moments à voir", False)] %}
+          {% set liste = sequences | selectattr("dans_resume", "equalto", dans) | list %}
+          {% if liste %}
+          <p style="margin:14px 0 8px"><strong>{{ titre }}</strong> ({{ liste | length }})
+            {% if not dans %}<span style="color:var(--gray)"> — repérés par l'analyse mais pas retenus d'office : à vous de juger</span>{% endif %}</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px">
+            {% for sq in liste %}
+            <label style="display:block;border:1px solid var(--border);border-radius:8px;padding:8px;cursor:pointer">
+              <video controls preload="none" style="width:100%;border-radius:6px;background:#000">
+                <source src="/stream/{{ analysis.id }}/sequence/{{ sq.id }}" type="video/mp4">
+              </video>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+                <input type="checkbox" name="seq" value="{{ sq.id }}" {% if sq.coche %}checked{% endif %}>
+                <span><strong>{{ sq.minute }}</strong> · {{ sq.type }} · {{ sq.duree }} s</span>
+              </div>
+            </label>
+            {% endfor %}
+          </div>
+          {% endif %}
+        {% endfor %}
+        <div style="margin-top:14px"><button type="submit" class="btn-primary">Refaire mon résumé</button></div>
+      </form>
     </div>
   </div>
   {% endif %}
