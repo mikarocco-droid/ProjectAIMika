@@ -2275,7 +2275,19 @@ def extrait_avec_repere(a, b, sortie):
         cap_e.release(); return False, 0.0, 0.0
     H, W = img.shape[:2]
     tmp = sortie + ".brut.mp4"
-    vw = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"mp4v"), fps_v, (W, H))
+    # 21/11 : images envoyées DIRECTEMENT à ffmpeg (x264, CRF 18) — l'ancien fichier intermédiaire « mp4v » d'OpenCV
+    # compressait une première fois en basse qualité avant le x264 (double compression, image dégradée)
+    _ff = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
+                            "-r", f"{fps_v:.5f}", "-i", "-", "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                            "-pix_fmt", "yuv420p", tmp], stdin=subprocess.PIPE)
+
+    class _VW:
+        def write(self, im):
+            _ff.stdin.write(im.tobytes())
+
+        def release(self):
+            _ff.stdin.close(); _ff.wait()
+    vw = _VW()
     t, dernier, t_dernier, n_lu, n_rac, n_cons = a, None, None, 0, 0, 0
     while ok and t <= b:
         x = cadre_a(t)
@@ -2301,7 +2313,7 @@ def extrait_avec_repere(a, b, sortie):
         t += 1.0 / fps_v
     vw.release(); cap_e.release()
     r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-ss", f"{a:.2f}", "-t", f"{b - a:.2f}", "-i", VIDEO,
-                        "-map", "0:v", "-map", "1:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                        "-map", "0:v", "-map", "1:a?", "-c:v", "copy",
                         "-c:a", "aac", "-shortest", "-movflags", "+faststart", sortie], capture_output=True)
     os.remove(tmp)
     return r.returncode == 0 and os.path.exists(sortie), n_lu / fps_v, n_rac / fps_v, n_cons / fps_v
