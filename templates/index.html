@@ -134,6 +134,19 @@
     .stats-band { flex-wrap: wrap; }
     .stat-item { border-right: none; border-bottom: 1px solid var(--border); max-width: 100%; }
   }
+  /* 22/11/2026 : « Compose ton résumé » */
+  .compose-band { max-width: 1100px; margin: 60px auto; padding: 36px 28px; border: 1px solid var(--border, #2a2f3a);
+                  border-radius: 16px; background: rgba(0, 200, 230, 0.05); text-align: center; }
+  .compose-badge { display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 700;
+                   letter-spacing: .05em; text-transform: uppercase; color: #001018; background: var(--cyan, #00c8e6); }
+  .compose-band h2 { margin: 14px 0 8px; }
+  .compose-intro { max-width: 680px; margin: 0 auto 26px; color: var(--gray, #9aa3b2); }
+  .compose-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; text-align: left; }
+  .compose-item { padding: 18px; border-radius: 12px; border: 1px solid var(--border, #2a2f3a); }
+  .compose-item h3 { margin: 10px 0 6px; font-size: 16px; }
+  .compose-item p { margin: 0; color: var(--gray, #9aa3b2); font-size: 14px; line-height: 1.5; }
+  .compose-num { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+                 font-weight: 700; color: #001018; background: var(--cyan, #00c8e6); }
 </style>
 </head>
 <body>
@@ -156,12 +169,12 @@
 <section class="hero">
   <div class="hero-badge">
     <div class="hero-badge-dot"></div>
-    Propulsé par YOLO + Gemini Vision
+    Analyse vidéo par intelligence artificielle
   </div>
   <h1>Ton scout IA<br>personnel</h1>
   <p class="subtitle">
     Upload un match — reçois les buts, les occasions dangereuses, un résumé vidéo
-    et un PDF prêt pour ton coach. Automatiquement.
+    que tu peux composer toi-même, et un PDF prêt pour ton coach.
   </p>
   <div class="hero-btns">
     <a href="/register" class="btn-primary">Analyser mon match →</a>
@@ -211,8 +224,8 @@
       <div class="step-num">3</div>
       <div class="step-title">Reçois tes résultats</div>
       <div class="step-desc">
-        Résumé vidéo, buts et occasions horodatés, possession, PDF prêt à partager.
-        Tout est prêt quand tu reviens.
+        Résumé vidéo, buts et occasions horodatés, PDF prêt à partager. Et si tu veux,
+        tu composes ton propre résumé en choisissant les séquences.
       </div>
     </div>
   </div>
@@ -232,7 +245,36 @@
   <div class="feature">
     <div class="feature-icon">📄</div>
     <h3>PDF prêt pour le coach</h3>
-    <p>Buts, occasions, possession et récit du match, avec les minutes de jeu. À partager en un clic.</p>
+    <p>Score, buts et occasions avec les minutes de jeu. À partager en un clic.</p>
+  </div>
+</section>
+
+<!-- 22/11/2026 : mise en avant de « Compose ton résumé » -->
+<section class="compose-band">
+  <div class="compose-badge">Nouveau</div>
+  <h2>✂️ Compose ton propre résumé</h2>
+  <p class="compose-intro">
+    Le résumé de base est prêt dès la fin de l'analyse. Mais c'est toi qui connais ton match :
+    tu peux le refaire à ta façon, en quelques secondes.
+  </p>
+  <div class="compose-grid">
+    <div class="compose-item">
+      <div class="compose-num">1</div>
+      <h3>Regarde chaque séquence</h3>
+      <p>Chaque but, arrêt ou occasion est une petite vidéo que tu lances d'un clic, avec sa minute de jeu.</p>
+    </div>
+    <div class="compose-item">
+      <div class="compose-num">2</div>
+      <h3>Garde, retire, ajoute</h3>
+      <p>Décoche ce qui ne t'intéresse pas. Et parmi « d'autres moments à voir », repérés par l'IA mais pas retenus
+        d'office, ajoute ceux qui te plaisent.</p>
+    </div>
+    <div class="compose-item">
+      <div class="compose-num">3</div>
+      <h3>Ton résumé, dans l'ordre du match</h3>
+      <p>Un clic sur « Refaire mon résumé » : les séquences choisies sont assemblées dans l'ordre du match, dans la
+        qualité de ta vidéo. Prêt à télécharger et à partager.</p>
+    </div>
   </div>
 </section>
 
