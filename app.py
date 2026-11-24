@@ -343,6 +343,23 @@ PARRAINAGE_FILLEULS_PAR_RECOMPENSE = 3   # 24/10/2026 : 1 analyse offerte par tr
 LIMITE_PREANALYSES_JOUR = 5              # 24/10/2026 : pré-analyses (appels Gemini) par utilisateur et par jour
 
 
+class RetourBut(db.Model):
+    """23/11/2026 : verdict de l'utilisateur sur un but détecté (« c'est un but » / « pas un but », et l'équipe).
+    Sert à mettre à jour SON résultat, et à constituer une vérité pour tester les règles de détection (jamais de
+    changement automatique des règles)."""
+    id              = db.Column(db.Integer, primary_key=True)
+    analysis_id     = db.Column(db.Integer, db.ForeignKey("analysis.id"), nullable=False)
+    user_id         = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    time_abs        = db.Column(db.Float, nullable=False)
+    est_but         = db.Column(db.Boolean, nullable=False)
+    equipe          = db.Column(db.String(1), nullable=True)      # « A », « B » ou vide
+    statut_initial  = db.Column(db.String(30), nullable=True)
+    equipe_initiale = db.Column(db.String(1), nullable=True)
+    # 23/11/2026 : pour un but MANQUÉ, la séquence choisie par l'utilisateur (« s012 · tir contré ») ou « minute 67 »
+    source          = db.Column(db.String(80), nullable=True)
+    cree_le         = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 class User(UserMixin, db.Model):
     id              = db.Column(db.Integer,     primary_key=True)
     email           = db.Column(db.String(150), unique=True, nullable=False)
@@ -571,15 +588,191 @@ def results(id):
         except Exception:
             pass
 
+    try:
+        buts_page, noms_eq, ligne_score, ligne_detail = _buts_page(result, sequences)
+    except Exception as _e_bp:
+        print(f"  [BUTS] page : {_e_bp}")
+        buts_page, noms_eq, ligne_score, ligne_detail = [], {"A": "Équipe A", "B": "Équipe B"}, None, None
+    # 23/11/2026 : étiquette des séquences selon les buts tranchés — « but · équipe » si le but est confirmé (par
+    # l'analyse ou par l'utilisateur), « action (pas un but) » s'il est écarté (décochée par défaut, sauf résumé composé)
+    _par_seq = {}
+    for b in buts_page:
+        if b["sequence"]:
+            _par_seq.setdefault(b["sequence"], []).append(b)
+    for sq in sequences:
+        bs = _par_seq.get(sq["id"]) or []
+        if any(b["statut"] in ("confirme", "par_vous") for b in bs):
+            b0 = next(b for b in bs if b["statut"] in ("confirme", "par_vous"))
+            sq["type"] = "but" + (f" · {noms_eq[b0['equipe']]}" if b0["equipe"] in ("A", "B") else "")
+        elif bs and all(b["statut"] == "ecarte" for b in bs):
+            sq["type"] = "action (pas un but)"
+            if not perso:
+                sq["coche"] = False
+
+    seq_but = {b["sequence"] for b in buts_page if b["sequence"] and b["statut"] != "ecarte"}
+    candidats_but = [sq for sq in sequences if sq["id"] not in seq_but]      # 23/11 : où l'utilisateur peut montrer un but manqué
+
     return render_template(
         "results.html",
         analysis    = a,
         result      = result,
         sequences   = sequences,
+        candidats_but = candidats_but,
         reel_perso  = bool(perso),
+        buts_page   = buts_page,
+        noms_eq     = noms_eq,
+        ligne_score = ligne_score,
+        ligne_detail= ligne_detail,
         can_pdf     = current_user.can("pdf"),
         can_montage = current_user.can("montage")
     )
+
+
+# ─────────────────────────────────────────
+# 23/11/2026 — L'UTILISATEUR CONFIRME LES BUTS : petite vidéo, « c'est un but » / « pas un but », équipe (probable cochée)
+# ─────────────────────────────────────────
+def _buts_effectifs(result):
+    """Buts tels que l'utilisateur les a tranchés : « pas un but » retiré, « c'est un but » confirmé, équipe choisie."""
+    out = []
+    for b in result.get("buts") or []:
+        v = b.get("verdict_utilisateur")
+        if v == "pas_but":
+            continue
+        bb = dict(b)
+        if v == "but":
+            bb["status"] = "confirmé"
+        if b.get("equipe_utilisateur") in ("A", "B"):
+            bb["equipe"] = b["equipe_utilisateur"]
+        out.append(bb)
+    return out
+
+
+def _buts_page(result, sequences):
+    from export.rapport_client import noms_equipes, minute_de_match, resume_buts
+    tenues = ((result.get("attribution_equipes") or {}).get("tenues")) or {}
+    noms = noms_equipes(tenues) if tenues.get("A") and tenues.get("B") else {"A": "Équipe A", "B": "Équipe B"}
+    bm = result.get("bornes_mi_temps") or {}
+    ko1 = bm.get("ko1")
+    buts = []
+    for i, b in enumerate(result.get("buts") or []):
+        t = float(b.get("time_abs") or 0)
+        sq = next((x for x in sequences if x["id"] == b.get("sequence_utilisateur")), None) or \
+            next((x for x in sequences if float(x["debut"]) <= t <= float(x["fin"])), None)
+        if sq is None and b.get("ajoute_par_utilisateur"):      # minute approximative : séquence la plus proche (±45 s)
+            proches = sorted((abs((float(x["debut"]) + float(x["fin"])) / 2 - t), x) for x in sequences)
+            sq = proches[0][1] if proches and proches[0][0] <= 45 else None
+        v = b.get("verdict_utilisateur")
+        buts.append({
+            "i": i, "time_abs": t,
+            "minute": (str(b.get("minute_saisie")).rstrip("'") + "'" if b.get("minute_saisie")
+                       else minute_de_match(t, ko1, bm) if ko1 is not None else f"{int(t) // 60}'"),
+            "ajoute": bool(b.get("ajoute_par_utilisateur")),
+            "video": f"{int(t) // 60:02d}:{int(t) % 60:02d}",
+            "statut": ("par_vous" if v == "but" else "ecarte" if v == "pas_but"
+                       else "confirme" if b.get("status") == "confirmé" else "a_verifier"),
+            "equipe": b.get("equipe_utilisateur") or b.get("equipe"),
+            "equipe_analyse": b.get("equipe"), "niveau": b.get("niveau_equipe"),
+            "sequence": sq["id"] if sq else None,
+        })
+    ligne_score, ligne_detail = resume_buts(_buts_effectifs(result), noms)
+    return buts, noms, ligne_score, ligne_detail
+
+
+@app.route("/buts/<int:id>/<int:i>/verdict", methods=["POST"])
+@login_required
+def verdict_but(id, i):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        flash("Analyse introuvable")
+        return redirect(url_for("dashboard"))
+    result = json.loads(a.result_json) if a.result_json else {}
+    buts = result.get("buts") or []
+    if not (0 <= i < len(buts)):
+        return redirect(url_for("results", id=id) + "#buts")
+    b = buts[i]
+    verdict = request.form.get("verdict")
+    equipe = request.form.get("equipe") if request.form.get("equipe") in ("A", "B") else None
+    if verdict == "annuler":
+        b.pop("verdict_utilisateur", None); b.pop("equipe_utilisateur", None)
+    elif verdict in ("but", "pas_but"):
+        if verdict == "but" and not equipe:
+            flash("Choisissez l'équipe qui a marqué.")
+            return redirect(url_for("results", id=id) + f"#but-{i}")
+        b["verdict_utilisateur"] = verdict
+        b["equipe_utilisateur"] = equipe if verdict == "but" else None
+        db.session.add(RetourBut(analysis_id=a.id, user_id=current_user.id, time_abs=float(b.get("time_abs") or 0),
+                                 est_but=(verdict == "but"), equipe=equipe, statut_initial=b.get("status"),
+                                 equipe_initiale=b.get("equipe")))
+    a.result_json = json.dumps(result)
+    db.session.commit()
+    _regenerer_rapport(a, result)
+    return redirect(url_for("results", id=id) + f"#but-{i}")
+
+
+def _minute_vers_video(texte, bm):
+    """« 67 », « 67' », « 45+2 », « 90+3 » → heure approximative dans la vidéo (milieu de la minute), d'après les bornes."""
+    m = re.fullmatch(r"\s*(\d{1,3})\s*(?:\+\s*(\d{1,2}))?\s*'?\s*", str(texte or ""))
+    if not m:
+        return None
+    base, extra = int(m.group(1)), int(m.group(2) or 0)
+    ko1, ko2 = bm.get("ko1"), bm.get("ko2")
+    if ko1 is None:
+        return float((base + extra) * 60)
+    if base <= 45 or ko2 is None:                     # 1re mi-temps (45+2 = 2e minute du temps additionnel)
+        return float(ko1) + (base + extra - 0.5) * 60
+    return float(ko2) + (base + extra - 45 - 0.5) * 60  # 2e mi-temps (90+3 compris)
+
+
+@app.route("/buts/<int:id>/ajouter", methods=["POST"])
+@login_required
+def ajouter_but(id):
+    """23/11/2026 : l'utilisateur ajoute un but que l'analyse n'a pas trouvé (minute du match + équipe)."""
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        flash("Analyse introuvable")
+        return redirect(url_for("dashboard"))
+    result = json.loads(a.result_json) if a.result_json else {}
+    equipe = request.form.get("equipe") if request.form.get("equipe") in ("A", "B") else None
+    bm = result.get("bornes_mi_temps") or {}
+    sid = request.form.get("sequence") or ""
+    sq = next((x for x in _sequences_resume(result) if x["id"] == sid), None) if re.fullmatch(r"s\d{3}", sid) else None
+    minute_saisie, source = None, None
+    if sq:            # 23/11 : l'utilisateur a MONTRÉ le but dans une séquence (heure de l'action = fin − 8 s)
+        t = float(sq["fin"]) - 8.0
+        source = f"{sq['id']} · {sq.get('type')}"[:80]
+    else:
+        t = _minute_vers_video(request.form.get("minute"), bm)
+        minute_saisie = str(request.form.get("minute") or "").strip()
+        source = f"minute {minute_saisie}"[:80]
+    if t is None or not equipe:
+        flash("Choisissez la séquence du but (ou indiquez sa minute) et l'équipe qui a marqué.")
+        return redirect(url_for("results", id=id) + "#ajouter-but")
+    ko1 = float(bm.get("ko1") or 0)
+    result.setdefault("buts", []).append({
+        "time": t - ko1, "time_abs": t, "status": "confirmé", "equipe": None, "ajoute_par_utilisateur": True,
+        "minute_saisie": minute_saisie, "sequence_utilisateur": sq["id"] if sq else None, "source_ajout": source,
+        "verdict_utilisateur": "but", "equipe_utilisateur": equipe})
+    result["buts"].sort(key=lambda b: float(b.get("time_abs") or 0))
+    db.session.add(RetourBut(analysis_id=a.id, user_id=current_user.id, time_abs=t, est_but=True, equipe=equipe,
+                             statut_initial="manquant", equipe_initiale=None, source=source))
+    a.result_json = json.dumps(result)
+    db.session.commit()
+    _regenerer_rapport(a, result)
+    return redirect(url_for("results", id=id) + "#buts")
+
+
+def _regenerer_rapport(a, result):
+    """Rapport PDF refait avec les buts tranchés par l'utilisateur (en cas d'échec : l'ancien rapport reste)."""
+    try:
+        if not result.get("pdf"):
+            return
+        from export.pdf import generate_pdf
+        r2 = dict(result)
+        r2["buts"] = _buts_effectifs(result)
+        r2["buts_tranches_par_utilisateur"] = True
+        generate_pdf(r2, result["pdf"])
+    except Exception as e:
+        print(f"  [RAPPORT] non régénéré après confirmation : {e}")
 
 
 # ─────────────────────────────────────────
@@ -1938,6 +2131,7 @@ def too_large(e):
 _COLONNES_AJOUTEES = {
     "analysis": {"celery_task_id": "VARCHAR(200)", "offerte": "BOOLEAN DEFAULT 0", "offerte_motif": "VARCHAR(200)",
                  "mon_equipe": "INTEGER", "position_joueur": "VARCHAR(40)", "couleur_maillot_gardien": "VARCHAR(20)"},
+    "retour_but": {"source": "VARCHAR(80)"},
     "user":     {"code_parrain": "VARCHAR(16)", "parrain_id": "INTEGER", "credits_offerts": "INTEGER DEFAULT 0",
                  "recompenses_parrainage": "INTEGER DEFAULT 0", "paiements_credites": "TEXT",
                  "preanalyses_date": "VARCHAR(10)", "preanalyses_n": "INTEGER DEFAULT 0"},
