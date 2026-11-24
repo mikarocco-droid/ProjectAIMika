@@ -1150,15 +1150,85 @@ def generate_pdf(result, output_path, sport="football"):
 
         _full_story = "\n\n".join(_narrative_parts)
 
-        if _full_story:
-            pdf.section_title("Déroulé du match")
-            pdf.card_bg(12, pdf.get_y(), 186, 4)
-            pdf.ln(3)
-            pdf.set_font("Helvetica", "", 8)
+        # 24/11/2026 : CHRONOLOGIE DU MATCH en tableau (remplace le texte « Déroulé du match », jugé superflu) :
+        # coup d'envoi, buts (avec le score qui évolue quand tous les buts sont sûrs), occasions avec l'équipe qui
+        # attaque quand elle est connue, mi-temps, reprise, fin du match.
+        _chrono = []
+        _ko2_abs, _f1_abs, _fin_abs = _bornes.get("ko2"), _bornes.get("fin1mt"), _bornes.get("finmatch")
+        _chrono.append((_ko1_abs, "0'", "repere", None, "Coup d'envoi"))
+        if _f1_abs is not None:
+            _chrono.append((float(_f1_abs), "", "repere", None, "Mi-temps"))
+        if _ko2_abs is not None:
+            _chrono.append((float(_ko2_abs), "46'", "repere", None, "Reprise"))
+        if _fin_abs is not None:
+            _chrono.append((float(_fin_abs), "", "repere", None, "Fin du match"))
+        for b in (_buts or []):
+            ta = float(b.get("time", 0) or 0) + _ko_pdf
+            if b.get("status") == "confirmé":
+                _chrono.append((ta, _minute(b.get("time", 0)), "but", b.get("equipe") if b.get("equipe") in ("A", "B") else None, "But"))
+            else:
+                _chrono.append((ta, _minute(b.get("time", 0)), "revoir", b.get("equipe") if b.get("equipe") in ("A", "B") else None,
+                                "But possible (à revoir)"))
+        for o in (_occ or []):
+            ta = float(o.get("time", 0) or 0) + _ko_pdf
+            _chrono.append((ta, _minute(o.get("time", 0)), "occasion", o.get("equipe") if o.get("equipe") in ("A", "B") else None,
+                            "Occasion"))
+        _chrono.sort(key=lambda x: x[0])
+        _score_sur = bool(_buts) and all(b.get("status") == "confirmé" and b.get("equipe") in ("A", "B") for b in _buts)
+        if len(_chrono) > 1:
+            pdf.add_page()
+            pdf.section_title("Chronologie du match")
+            if not _score_sur and _buts:
+                pdf.set_font("Helvetica", "I", 8)
+                pdf.set_text_color(*GRAY_L)
+                pdf.set_x(12)
+                pdf.multi_cell(186, 4.5, clean("Score non affiché : certains buts restent à revoir ou sans équipe."))
+                pdf.ln(1)
+            if _score_sur:
+                pdf.set_font("Helvetica", "", 8)
+                pdf.set_text_color(*GRAY_L)
+                pdf.set_x(12)
+                pdf.cell(186, 5, clean(f"Score indiqué dans l'ordre : {_noms['A']} - {_noms['B']}"))
+                pdf.ln(6)
+            _cols = [(22, "Minute"), (24, "Score"), (60, "Équipe"), (80, "Action")]
+            pdf.set_x(12)
+            pdf.set_font("Helvetica", "B", 8)
+            pdf.set_fill_color(25, 32, 45)
             pdf.set_text_color(*GRAY_L)
-            pdf.set_x(14)
-            pdf.multi_cell(182, 5, clean(_full_story))
-            pdf.ln(5)
+            for w, t in _cols:
+                pdf.cell(w, 7, clean(t), border=0, fill=True, align="C" if t != "Action" else "L")
+            pdf.ln(7)
+            _sc = {"A": 0, "B": 0}
+            for k, (ta, mn, ty, eq, act) in enumerate(_chrono):
+                if ty == "but" and eq in ("A", "B"):
+                    _sc[eq] += 1
+                score_txt = (f"{_sc['A']} - {_sc['B']}" if _score_sur and (ty == "but" or ty == "repere" and act != "Coup d'envoi"
+                             and act != "Reprise") else ("0 - 0" if _score_sur and act == "Coup d'envoi" else ""))
+                if pdf.get_y() > 270:
+                    pdf.add_page()
+                    pdf.section_title("Chronologie du match (suite)")
+                pdf.set_x(12)
+                pdf.set_fill_color(*((20, 26, 38) if k % 2 else (15, 20, 30)))
+                if ty == "but":
+                    pdf.set_font("Helvetica", "B", 9); pdf.set_text_color(*ACCENT2)
+                elif ty == "repere":
+                    pdf.set_font("Helvetica", "B", 8.5); pdf.set_text_color(0, 200, 230)
+                elif ty == "revoir":
+                    pdf.set_font("Helvetica", "", 8.5); pdf.set_text_color(230, 190, 60)
+                else:
+                    pdf.set_font("Helvetica", "", 8.5); pdf.set_text_color(*GRAY_L)
+                pdf.cell(22, 6.2, clean(mn), fill=True, align="C")
+                pdf.cell(24, 6.2, clean(score_txt), fill=True, align="C")
+                pdf.cell(60, 6.2, clean(_noms[eq] if eq in ("A", "B") else ""), fill=True, align="C")
+                pdf.cell(80, 6.2, clean(act), fill=True, align="L")
+                pdf.ln(6.2)
+            pdf.ln(3)
+            if any(c[2] == "occasion" and c[3] for c in _chrono):
+                pdf.set_font("Helvetica", "I", 7.5)
+                pdf.set_text_color(*GRAY_L)
+                pdf.set_x(12)
+                pdf.multi_cell(186, 4, clean("Occasions : l'équipe indiquée est celle qui attaque, d'après l'analyse "
+                                             "automatique (indicative)."))
 
     # Save
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
