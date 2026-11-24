@@ -454,6 +454,9 @@ class Analysis(db.Model):
     # 19/11/2026 : mode joueur — position (« gardien » → méthode du gardien) et couleur du maillot du gardien
     position_joueur         = db.Column(db.String(40), nullable=True)
     couleur_maillot_gardien = db.Column(db.String(20), nullable=True)
+    # 24/11/2026 : empreinte du CONTENU de la vidéo (taille + 3 morceaux) : la même vidéo envoyée par un autre utilisateur
+    # reçoit les corrections de buts déjà faites
+    empreinte_video         = db.Column(db.String(64), nullable=True, index=True)
 
 
 @login_manager.user_loader
@@ -577,6 +580,16 @@ def results(id):
         return redirect(url_for("dashboard"))
 
     result = json.loads(a.result_json) if a.result_json else {}
+    # 24/11/2026 : corrections d'autres utilisateurs sur la même vidéo, données APRÈS cette analyse
+    try:
+        if _appliquer_verdicts_partages(a, result):
+            a.result_json = json.dumps(result)
+            db.session.commit()
+            _regenerer_rapport(a, result)
+        elif a.empreinte_video and result.get("verdicts_partages_appliques") is not None:
+            a.result_json = json.dumps(result); db.session.commit()
+    except Exception as _e_vp:
+        print(f"  ⚠️  Corrections partagées : {_e_vp}")
     # 22/11/2026 : séquences du résumé (« Composer mon résumé »), dans l'ordre du match
     sequences = _sequences_resume(result)
     perso = result.get("reel_perso") if result.get("reel_perso") and os.path.exists(result.get("reel_perso")) else None
@@ -600,6 +613,11 @@ def results(id):
         if b["sequence"]:
             _par_seq.setdefault(b["sequence"], []).append(b)
     for sq in sequences:
+        # 24/11/2026 : pas de type d'action affiché hors buts (« arrêt », « tir contré »… pas assez fiables : un arrêt
+        # peut être un dégagement en corner d'un défenseur) → « occasion » ou « moment à voir » ; le type reste en interne
+        if not str(sq.get("type") or "").startswith("but"):
+            sq["type_interne"] = sq.get("type")
+            sq["type"] = "occasion" if sq.get("dans_resume") else "moment à voir"
         bs = _par_seq.get(sq["id"]) or []
         if any(b["statut"] in ("confirme", "par_vous") for b in bs):
             b0 = next(b for b in bs if b["statut"] in ("confirme", "par_vous"))
@@ -623,6 +641,8 @@ def results(id):
         noms_eq     = noms_eq,
         ligne_score = ligne_score,
         ligne_detail= ligne_detail,
+        n_buts_confirmes = sum(1 for b in buts_page if b["statut"] in ("confirme", "par_vous")),
+        n_buts_a_verifier = sum(1 for b in buts_page if b["statut"] == "a_verifier"),
         can_pdf     = current_user.can("pdf"),
         can_montage = current_user.can("montage")
     )
@@ -667,6 +687,7 @@ def _buts_page(result, sequences):
             "minute": (str(b.get("minute_saisie")).rstrip("'") + "'" if b.get("minute_saisie")
                        else minute_de_match(t, ko1, bm) if ko1 is not None else f"{int(t) // 60}'"),
             "ajoute": bool(b.get("ajoute_par_utilisateur")),
+            "par_autre": bool(b.get("par_autre")),
             "video": f"{int(t) // 60:02d}:{int(t) % 60:02d}",
             "statut": ("par_vous" if v == "but" else "ecarte" if v == "pas_but"
                        else "confirme" if b.get("status") == "confirmé" else "a_verifier"),
@@ -693,13 +714,14 @@ def verdict_but(id, i):
     verdict = request.form.get("verdict")
     equipe = request.form.get("equipe") if request.form.get("equipe") in ("A", "B") else None
     if verdict == "annuler":
-        b.pop("verdict_utilisateur", None); b.pop("equipe_utilisateur", None)
+        b.pop("verdict_utilisateur", None); b.pop("equipe_utilisateur", None); b.pop("par_autre", None)
     elif verdict in ("but", "pas_but"):
         if verdict == "but" and not equipe:
             flash("Choisissez l'équipe qui a marqué.")
             return redirect(url_for("results", id=id) + f"#but-{i}")
         b["verdict_utilisateur"] = verdict
         b["equipe_utilisateur"] = equipe if verdict == "but" else None
+        b.pop("par_autre", None)
         db.session.add(RetourBut(analysis_id=a.id, user_id=current_user.id, time_abs=float(b.get("time_abs") or 0),
                                  est_but=(verdict == "but"), equipe=equipe, statut_initial=b.get("status"),
                                  equipe_initiale=b.get("equipe")))
@@ -761,6 +783,55 @@ def ajouter_but(id):
     return redirect(url_for("results", id=id) + "#buts")
 
 
+def _maillot(tenue):
+    m = re.search(r"maillot\s+([a-z ]+?)(?:\s*/|$)", str(tenue or "").lower())
+    return m.group(1).strip() if m else None
+
+
+def _appliquer_verdicts_partages(a, result):
+    """24/11/2026 : reporte sur CETTE analyse les verdicts donnés par d'autres utilisateurs sur la même vidéo (même
+    empreinte). Un verdict de l'utilisateur lui-même prime toujours. Équipes reliées par la tenue (A/B peuvent différer
+    d'une analyse à l'autre). Renvoie True si quelque chose a changé."""
+    if not a.empreinte_video:
+        return False
+    autres = Analysis.query.filter(Analysis.empreinte_video == a.empreinte_video, Analysis.id != a.id).all()
+    if not autres:
+        return False
+    deja = set(result.get("verdicts_partages_appliques") or [])
+    tenues_ici = ((result.get("attribution_equipes") or {}).get("tenues")) or {}
+    par_tenue = {str(v).lower(): k for k, v in tenues_ici.items() if v}
+    par_maillot = {_maillot(v): k for k, v in tenues_ici.items() if _maillot(v)}
+    change = False
+    buts = result.setdefault("buts", [])
+    for o in autres:
+        r_o = json.loads(o.result_json) if o.result_json else {}
+        tenues_o = ((r_o.get("attribution_equipes") or {}).get("tenues")) or {}
+        for rb in RetourBut.query.filter_by(analysis_id=o.id).order_by(RetourBut.cree_le).all():
+            if rb.id in deja:
+                continue
+            deja.add(rb.id)
+            t_o = tenues_o.get(rb.equipe) if rb.equipe else None
+            eq = par_tenue.get(str(t_o).lower()) or par_maillot.get(_maillot(t_o)) if t_o else None
+            b = min((x for x in buts if abs(float(x.get("time_abs") or 0) - rb.time_abs) <= 20),
+                    key=lambda x: abs(float(x.get("time_abs") or 0) - rb.time_abs), default=None)
+            if b is not None:
+                if b.get("verdict_utilisateur") and not b.get("par_autre"):
+                    continue                                  # sa propre réponse prime
+                b["verdict_utilisateur"] = "but" if rb.est_but else "pas_but"
+                b["equipe_utilisateur"] = eq if rb.est_but else None
+                b["par_autre"] = True
+                change = True
+            elif rb.est_but and rb.statut_initial == "manquant":
+                ko1 = float((result.get("bornes_mi_temps") or {}).get("ko1") or 0)
+                buts.append({"time": rb.time_abs - ko1, "time_abs": rb.time_abs, "status": "confirmé", "equipe": None,
+                             "ajoute_par_utilisateur": True, "par_autre": True, "verdict_utilisateur": "but",
+                             "equipe_utilisateur": eq, "source_ajout": rb.source})
+                change = True
+    buts.sort(key=lambda x: float(x.get("time_abs") or 0))
+    result["verdicts_partages_appliques"] = sorted(deja)
+    return change
+
+
 def _regenerer_rapport(a, result):
     """Rapport PDF refait avec les buts tranchés par l'utilisateur (en cas d'échec : l'ancien rapport reste)."""
     try:
@@ -769,6 +840,10 @@ def _regenerer_rapport(a, result):
         from export.pdf import generate_pdf
         r2 = dict(result)
         r2["buts"] = _buts_effectifs(result)
+        if r2.get("kickoff_offset") is None:      # 24/11 : analyses plus anciennes (minutes fausses sinon : « 1' »)
+            _b0 = next((b for b in r2["buts"] if b.get("time_abs") is not None and b.get("time") is not None), None)
+            r2["kickoff_offset"] = (float(_b0["time_abs"]) - float(_b0["time"])) if _b0 else \
+                float((r2.get("bornes_mi_temps") or {}).get("ko1") or 0)
         r2["buts_tranches_par_utilisateur"] = True
         generate_pdf(r2, result["pdf"])
     except Exception as e:
@@ -1325,6 +1400,14 @@ def run_analysis(
             raise RuntimeError(f"Analyse incomplète : {_etat_gv['questions_abandonnees']} question(s) au service d'IA "
                                f"n'ont pas abouti (crédit ou quota) — à relancer")
 
+        # 24/11/2026 : empreinte du contenu, avant suppression de la vidéo (corrections partagées entre utilisateurs)
+        _empreinte = None
+        try:
+            from analysis.cache_analyses import empreinte_video
+            _empreinte = empreinte_video(video_path)
+        except Exception as _e_emp:
+            print(f"  ⚠️  Empreinte de la vidéo impossible : {_e_emp}")
+
         # ── Supprime la vidéo brute dès que l'analyse est terminée ──
         delete_raw_video(video_path, r2_key)
 
@@ -1341,7 +1424,16 @@ def run_analysis(
             a.result_json      = json.dumps(result)
             a.output_dir       = output_dir
             a.r2_output_prefix = r2_prefix
+            a.empreinte_video  = _empreinte
             db.session.commit()
+            # 24/11/2026 : corrections de buts déjà faites sur la MÊME vidéo par d'autres utilisateurs
+            try:
+                if _appliquer_verdicts_partages(a, result):
+                    a.result_json = json.dumps(result)
+                    db.session.commit()
+                    _regenerer_rapport(a, result)
+            except Exception as _e_vp:
+                print(f"  ⚠️  Corrections partagées non appliquées : {_e_vp}")
             # 24/10/2026 : parrainage — jamais bloquant pour l'analyse elle-même
             try:
                 _recompenser_parrain(a.user_id)
@@ -2130,7 +2222,8 @@ def too_large(e):
 # ─────────────────────────────────────────
 _COLONNES_AJOUTEES = {
     "analysis": {"celery_task_id": "VARCHAR(200)", "offerte": "BOOLEAN DEFAULT 0", "offerte_motif": "VARCHAR(200)",
-                 "mon_equipe": "INTEGER", "position_joueur": "VARCHAR(40)", "couleur_maillot_gardien": "VARCHAR(20)"},
+                 "mon_equipe": "INTEGER", "position_joueur": "VARCHAR(40)", "couleur_maillot_gardien": "VARCHAR(20)",
+                 "empreinte_video": "VARCHAR(64)"},
     "retour_but": {"source": "VARCHAR(80)"},
     "user":     {"code_parrain": "VARCHAR(16)", "parrain_id": "INTEGER", "credits_offerts": "INTEGER DEFAULT 0",
                  "recompenses_parrainage": "INTEGER DEFAULT 0", "paiements_credites": "TEXT",

@@ -4920,7 +4920,17 @@ def run_pipeline(
         _fen = 60 if _tf_o.get("outcome") == "GOAL" else 15
         if any(abs(_ta - b["time_abs"]) <= _fen for b in _buts_liste):
             continue
-        _occasions_pdf.append({"time": _ta - _ko_occ, "time_abs": _ta,
+        # 24/11/2026 : équipe qui attaque (couleur de la classification reliée aux tenues de l'attribution), si sûre
+        _eq_o = None
+        try:
+            from export.rapport_client import _mots_en
+            _col_o = str(_tf_o.get("team_color") or "").strip().lower()
+            _ten_o = ((_attribution or {}).get("tenues") or {}) if "_attribution" in dir() else {}
+            _cand_o = [k for k in ("A", "B") if _col_o and _ten_o.get(k) and set(_col_o.split()) <= _mots_en(_ten_o[k])[0]]
+            _eq_o = _cand_o[0] if len(_cand_o) == 1 else None
+        except Exception:
+            _eq_o = None
+        _occasions_pdf.append({"time": _ta - _ko_occ, "time_abs": _ta, "equipe": _eq_o,
                                "label": "Occasion"})   # 25/10/2026 : plus de « But possible » (voir plus bas)
     _occasions_pdf.sort(key=lambda o: o["time"])
 
@@ -5113,6 +5123,7 @@ def run_pipeline(
         "attribution_equipes": locals().get("_attribution"),
         "journal_gemini": locals().get("_journal_gemini", []),
         "occasions":     locals().get("_occasions_pdf", []),   # 25/10/2026 : même liste que le PDF
+        "kickoff_offset": (float(_kickoff_offset or 0) if "_kickoff_offset" in dir() else 0.0),   # 24/11 : rapport régénéré
         "identification_joueurs": locals().get("_identification_joueurs", False),
         "summary":       summary,
         "coarse_stats":  coarse_stats,
