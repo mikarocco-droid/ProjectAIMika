@@ -196,6 +196,78 @@ def delete_raw_video(video_path, r2_key=None):
         r2_delete(r2_key)
 
 
+CGU_VERSION = "2026-11-24"      # à changer à chaque modification des conditions (nouvelle acceptation à prévoir)
+RETOURS_CONSERVATION_JOURS = int(os.getenv("RETOURS_CONSERVATION_JOURS", 730))   # confirmations de buts : 2 ans
+
+
+def _supprimer_fichiers_analyse(a):
+    """24/11/2026 : supprime TOUS les fichiers d'une analyse : dossier des résultats, et fichiers du joueur rangés
+    ailleurs (montage, montage composé, fiche, données de la fiche, rapport + fiche, dossier des séquences du joueur)."""
+    try:
+        result = json.loads(a.result_json) if a.result_json else {}
+    except Exception:
+        result = {}
+    if result.get("demo"):          # analyse de démonstration (outils/demo_resultat.py) : on ne touche pas à ses fichiers
+        return
+    j = result.get("joueur") or {}
+    for f in (result.get("player_reel"), j.get("fiche"), j.get("fiche_donnees"), j.get("rapport_et_fiche"),
+              j.get("montage_perso"), (j.get("montage_perso") or "") + ".json" if j.get("montage_perso") else None):
+        if f and os.path.isfile(f):
+            try:
+                os.remove(f)
+            except Exception as e:
+                print(f"  Erreur suppression {f} : {e}")
+    seq_j = j.get("sequences")
+    if seq_j and os.path.isdir(seq_j) and os.path.basename(seq_j.rstrip("/")).startswith("clips_"):
+        shutil.rmtree(seq_j, ignore_errors=True)
+    out_dir = a.output_dir or os.path.join(config.OUTPUT_FOLDER, str(a.id))
+    if out_dir and os.path.isdir(out_dir):
+        shutil.rmtree(out_dir, ignore_errors=True)
+    if config.R2_ENABLED and a.r2_output_prefix:
+        _r2_delete_prefix(a.r2_output_prefix)
+
+
+def _supprimer_compte(user):
+    """24/11/2026 : suppression complète d'un compte (droit à l'effacement) : fichiers, analyses, confirmations."""
+    for a in Analysis.query.filter_by(user_id=user.id).all():
+        _supprimer_fichiers_analyse(a)
+        RetourBut.query.filter_by(analysis_id=a.id).delete()
+        RetourRoleJoueur.query.filter_by(analysis_id=a.id).delete()
+    RetourBut.query.filter_by(user_id=user.id).delete()
+    RetourRoleJoueur.query.filter_by(user_id=user.id).delete()
+    Analysis.query.filter_by(user_id=user.id).delete()
+    db.session.delete(user)
+    db.session.commit()
+
+
+@app.route("/cgu")
+def cgu():
+    return render_template("cgu.html", version=CGU_VERSION)
+
+
+@app.route("/confidentialite")
+def confidentialite():
+    return render_template("confidentialite.html", version=CGU_VERSION,
+                           retention=config.FILE_RETENTION_DAYS, retours_jours=RETOURS_CONSERVATION_JOURS)
+
+
+@app.route("/compte/supprimer", methods=["POST"])
+@login_required
+def supprimer_mon_compte():
+    if request.form.get("confirmation", "").strip().upper() != "SUPPRIMER":
+        flash("Tapez SUPPRIMER pour confirmer la suppression de votre compte.")
+        return redirect(url_for("confidentialite") + "#droits")
+    u = db.session.get(User, current_user.id)
+    if u and u.stripe_sub:
+        flash("Résiliez d'abord votre abonnement (tableau de bord → gérer l'abonnement), puis supprimez votre compte.")
+        return redirect(url_for("confidentialite") + "#droits")
+    logout_user()
+    if u:
+        _supprimer_compte(u)
+    flash("Votre compte et toutes vos données ont été supprimés.")
+    return redirect(url_for("index"))
+
+
 def cleanup_expired_outputs():
     """
     Supprime les dossiers outputs des analyses expirées selon le plan de l'utilisateur.
@@ -215,21 +287,10 @@ def cleanup_expired_outputs():
             retention_days  = config.FILE_RETENTION_DAYS.get(plan, 7)
             expires_at      = a.created_at + timedelta(days=retention_days)
 
-            if now > expires_at:
-                # Supprime le dossier output local
-                out_dir = a.output_dir or os.path.join(
-                    config.OUTPUT_FOLDER, str(a.id)
-                )
-                if out_dir and os.path.isdir(out_dir):
-                    try:
-                        shutil.rmtree(out_dir)
-                        print(f"  Outputs expirés supprimés : analyse #{a.id}")
-                    except Exception as e:
-                        print(f"  Erreur suppression outputs #{a.id}: {e}")
-
-                # Supprime les outputs R2 si configuré
-                if config.R2_ENABLED and a.r2_output_prefix:
-                    _r2_delete_prefix(a.r2_output_prefix)
+            if now > expires_at and (a.output_dir or a.r2_output_prefix):
+                # 24/11/2026 : tous les fichiers de l'analyse, y compris ceux du joueur rangés hors du dossier résultats
+                _supprimer_fichiers_analyse(a)
+                print(f"  Outputs expirés supprimés : analyse #{a.id}")
 
                 # Met à jour le statut
                 a.output_dir       = None
@@ -239,6 +300,13 @@ def cleanup_expired_outputs():
 
         if deleted:
             print(f"  Nettoyage : {deleted} analyse(s) expirée(s) purgées")
+        # 24/11/2026 : confirmations de buts et rôles de joueur conservés RETOURS_CONSERVATION_JOURS jours au plus
+        limite = now - timedelta(days=RETOURS_CONSERVATION_JOURS)
+        n_r = RetourBut.query.filter(RetourBut.cree_le < limite).delete()
+        n_r += RetourRoleJoueur.query.filter(RetourRoleJoueur.cree_le < limite).delete()
+        if n_r:
+            db.session.commit()
+            print(f"  Nettoyage : {n_r} confirmation(s) de plus de {RETOURS_CONSERVATION_JOURS} jours supprimée(s)")
 
 
 def _r2_delete_prefix(prefix):
@@ -388,6 +456,9 @@ class User(UserMixin, db.Model):
     paiements_credites     = db.Column(db.Text,        nullable=True)   # paiements Unique déjà crédités
     preanalyses_date       = db.Column(db.String(10),  nullable=True)   # jour (AAAA-MM-JJ) du compteur ci-dessous
     preanalyses_n          = db.Column(db.Integer,     default=0)       # pré-analyses faites ce jour-là
+    # 24/11/2026 : acceptation des conditions d'utilisation et de la politique de confidentialité
+    cgu_acceptees_le       = db.Column(db.DateTime,    nullable=True)
+    cgu_version            = db.Column(db.String(20),  nullable=True)
 
     def can(self, feature):
         return config.PLANS.get(self.plan, {}).get(feature, False)
@@ -500,10 +571,17 @@ def register():
             flash("Email deja utilise")
             return redirect(url_for("register"))
 
+        # 24/11/2026 : accord explicite (CGU + confidentialité, droit d'envoyer les images du match)
+        if request.form.get("accepte_cgu") != "1":
+            flash("Merci d'accepter les conditions d'utilisation et la politique de confidentialité.")
+            return redirect(url_for("register"))
+
         user = User(
             email    = email,
             password = generate_password_hash(pwd),
-            plan     = "free"
+            plan     = "free",
+            cgu_acceptees_le = datetime.utcnow(),
+            cgu_version      = CGU_VERSION,
         )
         _code_ref = (session.pop("ref_parrain", None) or request.form.get("ref") or "").strip()
         if _code_ref:
@@ -2358,10 +2436,9 @@ def admin_delete_user(id):
         flash("Impossible de supprimer votre propre compte")
         return redirect(url_for("admin"))
 
-    Analysis.query.filter_by(user_id=user.id).delete()
-    db.session.delete(user)
-    db.session.commit()
-    flash(f"Utilisateur {user.email} supprime")
+    _email = user.email
+    _supprimer_compte(user)          # 24/11/2026 : fichiers et confirmations compris
+    flash(f"Utilisateur {_email} supprime")
     return redirect(url_for("admin"))
 
 
@@ -2424,7 +2501,8 @@ _COLONNES_AJOUTEES = {
     "retour_but": {"source": "VARCHAR(80)"},
     "user":     {"code_parrain": "VARCHAR(16)", "parrain_id": "INTEGER", "credits_offerts": "INTEGER DEFAULT 0",
                  "recompenses_parrainage": "INTEGER DEFAULT 0", "paiements_credites": "TEXT",
-                 "preanalyses_date": "VARCHAR(10)", "preanalyses_n": "INTEGER DEFAULT 0"},
+                 "preanalyses_date": "VARCHAR(10)", "preanalyses_n": "INTEGER DEFAULT 0",
+                 "cgu_acceptees_le": "DATETIME", "cgu_version": "VARCHAR(20)"},
 }
 
 
