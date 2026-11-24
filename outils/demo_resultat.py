@@ -34,11 +34,20 @@ def main():
         raise SystemExit("❌ il faut resume_<match>.mp4 et sequences/sequences.json dans le dossier")
     be = next(iter(glob.glob(os.path.join(dos, "bout_en_bout_*.json"))), None)
     relais = json.load(open(be, encoding="utf-8")) if be else {}
-    ko1 = float((relais.get("bornes") or [[0, 0]])[0][0])
+    bn = relais.get("bornes") or [[0, 0]]
+    ko1 = float(bn[0][0])
+    # 23/11 : équipes (A/B) reconstituées à partir des tenues du relais, comme le rapport
+    tenues_l = sorted({b.get("equipe") for b in relais.get("buts", []) if b.get("equipe")})
+    tenues = {"A": tenues_l[0], "B": tenues_l[1]} if len(tenues_l) == 2 else {}
+    inv = {v: k for k, v in tenues.items()}
     buts = [{"time_abs": b["time_abs"], "time": float(b["time_abs"]) - ko1, "status": b.get("statut"),
-             "equipe": b.get("equipe")} for b in relais.get("buts", [])]
+             "equipe": inv.get(b.get("equipe")), "tenue_equipe": b.get("equipe"), "niveau_equipe": b.get("niveau_equipe")}
+            for b in relais.get("buts", [])]
     pdf = next(iter(glob.glob(os.path.join(dos, "rapport_*.pdf"))), None)
     result = {"reel": reel, "sequences_resume": seq, "pdf": pdf, "demo": True,
+              "attribution_equipes": {"tenues": tenues} if tenues else None,
+              "bornes_mi_temps": ({"ko1": bn[0][0], "fin1mt": bn[0][1], "ko2": bn[1][0], "finmatch": bn[1][1]}
+                                  if len(bn) >= 2 else None),
               "summary": {"goals": len(buts), "goals_confirmes": sum(1 for b in buts if str(b["status"]).startswith("confirm")),
                           "shots": 0},
               "buts": buts}
