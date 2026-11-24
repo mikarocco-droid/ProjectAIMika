@@ -844,6 +844,24 @@ def _regenerer_rapport(a, result):
             _b0 = next((b for b in r2["buts"] if b.get("time_abs") is not None and b.get("time") is not None), None)
             r2["kickoff_offset"] = (float(_b0["time_abs"]) - float(_b0["time"])) if _b0 else \
                 float((r2.get("bornes_mi_temps") or {}).get("ko1") or 0)
+        # 24/11/2026 : occasions du rapport = séquences du résumé ACTUEL (composé par l'utilisateur s'il l'a fait)
+        try:
+            from export.resume_match import occasions_depuis_sequences
+            dos = result.get("sequences_resume")
+            if dos and os.path.exists(os.path.join(dos, "sequences.json")):
+                perso = result.get("reel_perso")
+                if perso and os.path.exists(perso + ".json"):
+                    ids = json.load(open(perso + ".json", encoding="utf-8"))
+                else:
+                    ids = [x["id"] for x in json.load(open(os.path.join(dos, "sequences.json"), encoding="utf-8"))
+                           if x.get("dans_resume")]
+                ko = (float(r2["kickoff_offset"]) if r2.get("kickoff_offset") is not None else
+                      float((r2.get("bornes_mi_temps") or {}).get("ko1") or 0))
+                occ = occasions_depuis_sequences(dos, ids, result.get("occasions_toutes") or result.get("occasions") or [], ko=ko)
+                if occ is not None:
+                    r2["occasions"] = occ
+        except Exception as e:
+            print(f"  [RAPPORT] occasions du résumé non reprises : {e}")
         r2["buts_tranches_par_utilisateur"] = True
         generate_pdf(r2, result["pdf"])
     except Exception as e:
@@ -902,6 +920,7 @@ def composer_resume(id):
     result["reel_perso"] = out
     a.result_json = json.dumps(result)
     db.session.commit()
+    _regenerer_rapport(a, result)      # 24/11/2026 : le rapport suit le résumé composé
     flash(f"Votre résumé est prêt ({len(ids)} séquence(s)).")
     return redirect(url_for("results", id=id) + "#composer")
 

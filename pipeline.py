@@ -4967,6 +4967,19 @@ def run_pipeline(
                 autres=_aut_res, bornes={k: _bmj_r.get(k) for k in ("ko1", "fin1mt", "ko2", "finmatch")} if _bmj_r else None)
             if _r_m:
                 reel_path = _r_m
+                # 24/11/2026 : les occasions du RAPPORT sont celles du résumé de base (chronologie cohérente avec la vidéo)
+                try:
+                    import json as _json_rs
+                    from export.resume_match import occasions_depuis_sequences
+                    _dos_rs = os.path.join(output_dir, "sequences")
+                    _seqs_rs = _json_rs.load(open(os.path.join(_dos_rs, "sequences.json"), encoding="utf-8"))
+                    _occ_rs = occasions_depuis_sequences(_dos_rs, [x["id"] for x in _seqs_rs if x.get("dans_resume")],
+                                                         _occasions_pdf, ko=_ko_occ)
+                    if _occ_rs is not None:
+                        _occasions_toutes = list(_occasions_pdf)      # liste complète gardée (équipes des occasions)
+                        _occasions_pdf = _occ_rs
+                except Exception as _e_ors:
+                    print(f"  [RÉSUMÉ MATCH] occasions du rapport non alignées sur le résumé : {_e_ors}")
         except Exception as _e_rm:
             print(f"  [RÉSUMÉ MATCH] ⚠️ non produit : {_e_rm}")
 
@@ -5123,6 +5136,7 @@ def run_pipeline(
         "attribution_equipes": locals().get("_attribution"),
         "journal_gemini": locals().get("_journal_gemini", []),
         "occasions":     locals().get("_occasions_pdf", []),   # 25/10/2026 : même liste que le PDF
+        "occasions_toutes": locals().get("_occasions_toutes") or locals().get("_occasions_pdf", []),   # 24/11
         "kickoff_offset": (float(_kickoff_offset or 0) if "_kickoff_offset" in dir() else 0.0),   # 24/11 : rapport régénéré
         "identification_joueurs": locals().get("_identification_joueurs", False),
         "summary":       summary,
