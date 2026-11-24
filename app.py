@@ -197,7 +197,18 @@ def delete_raw_video(video_path, r2_key=None):
 
 
 CGU_VERSION = "2026-11-24"      # à changer à chaque modification des conditions (nouvelle acceptation à prévoir)
-RETOURS_CONSERVATION_JOURS = int(os.getenv("RETOURS_CONSERVATION_JOURS", 730))   # confirmations de buts : 2 ans
+# 24/11/2026 : confirmations de buts et rôles de joueur gardés jusqu'à 12 MOIS APRÈS LA FIN DE LA SAISON du match
+# (saison du 1er juillet au 30 juin ; date de l'analyse prise comme date du match). Réglable.
+SAISON_DEBUT_MOIS = int(os.getenv("SAISON_DEBUT_MOIS", 7))
+RETOURS_MOIS_APRES_SAISON = int(os.getenv("RETOURS_MOIS_APRES_SAISON", 12))
+
+
+def _fin_conservation_retour(d):
+    """Date après laquelle une confirmation faite le jour d (match de cette saison) est supprimée."""
+    fin_saison_annee = d.year + (1 if d.month >= SAISON_DEBUT_MOIS else 0)
+    fin_saison = datetime(fin_saison_annee, SAISON_DEBUT_MOIS, 1)          # 1er juillet suivant (= lendemain du 30 juin)
+    m = fin_saison.month - 1 + RETOURS_MOIS_APRES_SAISON
+    return datetime(fin_saison.year + m // 12, m % 12 + 1, 1)
 
 
 def _supprimer_fichiers_analyse(a):
@@ -248,7 +259,7 @@ def cgu():
 @app.route("/confidentialite")
 def confidentialite():
     return render_template("confidentialite.html", version=CGU_VERSION,
-                           retention=config.FILE_RETENTION_DAYS, retours_jours=RETOURS_CONSERVATION_JOURS)
+                           retention=config.FILE_RETENTION_DAYS, retours_mois=RETOURS_MOIS_APRES_SAISON)
 
 
 @app.route("/compte/supprimer", methods=["POST"])
@@ -300,13 +311,17 @@ def cleanup_expired_outputs():
 
         if deleted:
             print(f"  Nettoyage : {deleted} analyse(s) expirée(s) purgées")
-        # 24/11/2026 : confirmations de buts et rôles de joueur conservés RETOURS_CONSERVATION_JOURS jours au plus
-        limite = now - timedelta(days=RETOURS_CONSERVATION_JOURS)
-        n_r = RetourBut.query.filter(RetourBut.cree_le < limite).delete()
-        n_r += RetourRoleJoueur.query.filter(RetourRoleJoueur.cree_le < limite).delete()
+        # 24/11/2026 : confirmations de buts et rôles de joueur supprimés 12 mois après la fin de la saison du match
+        n_r = 0
+        for _M in (RetourBut, RetourRoleJoueur):
+            for _r in _M.query.all():
+                if _r.cree_le and now >= _fin_conservation_retour(_r.cree_le):
+                    db.session.delete(_r)
+                    n_r += 1
         if n_r:
             db.session.commit()
-            print(f"  Nettoyage : {n_r} confirmation(s) de plus de {RETOURS_CONSERVATION_JOURS} jours supprimée(s)")
+            print(f"  Nettoyage : {n_r} confirmation(s) de saisons terminées depuis plus de "
+                  f"{RETOURS_MOIS_APRES_SAISON} mois supprimée(s)")
 
 
 def _r2_delete_prefix(prefix):
