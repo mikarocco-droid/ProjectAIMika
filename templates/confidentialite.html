@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Confidentialité — ScoutIA</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<style>
+  .legal { max-width: 820px; margin: 0 auto; padding: 3rem 1.5rem 4rem; line-height: 1.7; }
+  .legal h1 { font-family: var(--font-head); color: var(--white); margin-bottom: .3rem; }
+  .legal .maj { color: var(--gray-dim); font-size: .85rem; margin-bottom: 2rem; }
+  .legal h2 { font-family: var(--font-head); color: var(--cyan); font-size: 1.1rem; margin: 2rem 0 .6rem; }
+  .legal p, .legal li, .legal td, .legal th { color: var(--gray); font-size: .93rem; }
+  .legal ul { padding-left: 1.2rem; }
+  .legal table { width: 100%; border-collapse: collapse; margin: .5rem 0 1rem; }
+  .legal th, .legal td { border-bottom: 1px solid var(--border); padding: .5rem .4rem; text-align: left; vertical-align: top; }
+  .legal th { color: var(--white); }
+  .legal .a-completer { color: var(--yellow); }
+  .danger-box { border: 1px solid var(--red); border-radius: 10px; padding: 1rem; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<nav>
+  <div class="nav-inner">
+    <a href="/" class="logo">⚡ ScoutIA</a>
+    <div class="nav-links"><a href="/pricing">Tarifs</a><a href="/cgu">Conditions</a></div>
+  </div>
+</nav>
+
+<div class="legal">
+  <h1>Politique de confidentialité</h1>
+  <div class="maj">Version du {{ version }}</div>
+
+  {% with messages = get_flashed_messages() %}{% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}{% endwith %}
+
+  <h2>1. Responsable du traitement</h2>
+  <p>Michaël Ziant (ScoutIA), <span class="a-completer">[adresse]</span>. Pour toute question sur vos données :
+    <span class="a-completer">[adresse e-mail de contact]</span>.</p>
+
+  <h2>2. Les données traitées, pourquoi, et combien de temps</h2>
+  <table>
+    <tr><th>Données</th><th>Pourquoi</th><th>Durée de conservation</th></tr>
+    <tr><td>Compte : e-mail, mot de passe (chiffré), formule, date d'acceptation des conditions</td>
+        <td>Fournir le service (contrat)</td><td>Jusqu'à la suppression du compte</td></tr>
+    <tr><td>Paiement : identifiants client et abonnement Stripe (jamais la carte)</td>
+        <td>Facturation (contrat, obligations comptables)</td><td>Durée légale de conservation comptable</td></tr>
+    <tr><td>Vidéo du match envoyée</td><td>Réaliser l'analyse (contrat)</td>
+        <td><strong>Supprimée dès la fin de l'analyse</strong></td></tr>
+    <tr><td>Résultats : résumé vidéo, séquences, rapport, montage et fiche d'un joueur</td><td>Vous les rendre (contrat)</td>
+        <td>{{ retention.get('free', 7) }} jours (Gratuit), {{ retention.get('unique', 30) }} jours (Unique),
+            {{ retention.get('starter', 30) }} jours (Starter), {{ retention.get('pro', 90) }} jours (Pro), puis suppression automatique</td></tr>
+    <tr><td>Empreinte technique de la vidéo (calculée sur le fichier, elle ne contient aucune image)</td>
+        <td>Reconnaître le même match envoyé par un autre utilisateur</td><td>Comme l'analyse</td></tr>
+    <tr><td>Confirmations, corrections et ajouts de buts ; rôle d'un joueur (buteur, passeur)</td>
+        <td>Mettre à jour vos résultats ; les partager avec les utilisateurs du même match ; mesurer et améliorer la
+            détection (intérêt légitime)</td><td>{{ (retours_jours / 365) | round | int }} ans au plus, ou jusqu'à la suppression du compte</td></tr>
+    <tr><td>Journaux techniques (erreurs, durée d'analyse)</td><td>Faire fonctionner et sécuriser le service</td>
+        <td>Courte durée, le temps de corriger les problèmes</td></tr>
+  </table>
+
+  <h2>3. Images de personnes, et de mineurs</h2>
+  <p>Les vidéos montrent des joueurs, souvent mineurs, des arbitres et des spectateurs. ScoutIA ne cherche pas à identifier
+    les personnes par leur visage : un joueur est suivi uniquement à partir du <strong>numéro et de la couleur de
+    maillot</strong> donnés par l'utilisateur. Il appartient à l'utilisateur de n'envoyer que des vidéos qu'il a le droit
+    d'utiliser (voir les <a href="/cgu">conditions d'utilisation</a>).</p>
+
+  <h2>4. Qui reçoit vos données (sous-traitants)</h2>
+  <ul>
+    <li><strong>Google (Gemini)</strong> : des images extraites du match lui sont envoyées pour vérifier les buts, les
+      équipes et les actions. Elles ne sont utilisées que pour répondre à nos demandes.</li>
+    <li><strong>Stripe</strong> : paiement des formules.</li>
+    <li><strong>Cloudflare (stockage R2)</strong>, si l'envoi de la vidéo passe par ce stockage.</li>
+    <li><strong>Hébergeur du serveur</strong> : <span class="a-completer">[nom de l'hébergeur et pays]</span>.</li>
+  </ul>
+  <p>Certains de ces prestataires peuvent traiter des données en dehors de l'Union européenne. Ces transferts sont encadrés
+    par les garanties prévues par le RGPD (notamment les clauses contractuelles types de la Commission européenne).
+    Vos données ne sont ni vendues ni utilisées à des fins publicitaires.</p>
+
+  <h2>5. Cookies</h2>
+  <p>ScoutIA n'utilise qu'un cookie de session, nécessaire pour rester connecté. Aucun cookie publicitaire ni de mesure
+    d'audience.</p>
+
+  <h2 id="droits">6. Vos droits</h2>
+  <p>Vous pouvez demander l'accès à vos données, leur correction, leur effacement, leur portabilité, ou vous opposer à leur
+    utilisation pour améliorer la détection, en écrivant à <span class="a-completer">[adresse e-mail de contact]</span>.
+    Vous pouvez aussi introduire une réclamation auprès de l'Autorité de protection des données
+    (<a href="https://www.autoriteprotectiondonnees.be" rel="noopener">autoriteprotectiondonnees.be</a>).</p>
+  {% if current_user.is_authenticated %}
+  <div class="danger-box">
+    <p style="margin-top:0"><strong>Supprimer mon compte et toutes mes données</strong> : analyses, résultats, montages,
+      confirmations de buts. C'est définitif. Si vous avez un abonnement, résiliez-le d'abord.</p>
+    <form method="post" action="/compte/supprimer" onsubmit="return confirm('Supprimer définitivement votre compte ?')">
+      {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+      <label>Tapez <strong>SUPPRIMER</strong> : <input type="text" name="confirmation" size="12" required></label>
+      <button type="submit" class="btn-secondary" style="border-color:var(--red);color:var(--red)">Supprimer mon compte</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+<footer><p>© 2026 ScoutIA — <a href="/cgu">Conditions d'utilisation</a> · <a href="/confidentialite">Confidentialité</a></p></footer>
+</body>
+</html>

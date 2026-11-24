@@ -32,6 +32,15 @@
         <label>Mot de passe</label>
         <input type="password" name="password" required minlength="8" placeholder="8 caractères minimum">
       </div>
+      <!-- 24/11/2026 : accord obligatoire -->
+      <div class="form-group" style="font-size:.82rem;color:var(--gray);line-height:1.5">
+        <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer">
+          <input type="checkbox" name="accepte_cgu" value="1" required style="margin-top:3px">
+          <span>J'ai 18 ans ou plus. J'accepte les <a href="/cgu" target="_blank">conditions d'utilisation</a> et la
+            <a href="/confidentialite" target="_blank">politique de confidentialité</a>, et je n'enverrai que des vidéos
+            que j'ai le droit d'utiliser (personnes filmées informées, accord des parents pour les joueurs mineurs).</span>
+        </label>
+      </div>
       <button type="submit" class="btn-primary" style="width:100%;margin-top:0.5rem">
         Créer mon compte →
       </button>
@@ -41,5 +50,6 @@
     </p>
   </div>
 </div>
+<footer><p><a href="/cgu">Conditions d'utilisation</a> · <a href="/confidentialite">Confidentialité</a></p></footer>
 </body>
 </html>

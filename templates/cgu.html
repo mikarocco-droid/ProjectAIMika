@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conditions d'utilisation — ScoutIA</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<style>
+  .legal { max-width: 820px; margin: 0 auto; padding: 3rem 1.5rem 4rem; line-height: 1.7; }
+  .legal h1 { font-family: var(--font-head); color: var(--white); margin-bottom: .3rem; }
+  .legal .maj { color: var(--gray-dim); font-size: .85rem; margin-bottom: 2rem; }
+  .legal h2 { font-family: var(--font-head); color: var(--cyan); font-size: 1.1rem; margin: 2rem 0 .6rem; }
+  .legal p, .legal li { color: var(--gray); font-size: .93rem; }
+  .legal ul { padding-left: 1.2rem; }
+  .legal .a-completer { color: var(--yellow); }
+</style>
+</head>
+<body>
+<nav>
+  <div class="nav-inner">
+    <a href="/" class="logo">⚡ ScoutIA</a>
+    <div class="nav-links"><a href="/pricing">Tarifs</a><a href="/confidentialite">Confidentialité</a></div>
+  </div>
+</nav>
+
+<div class="legal">
+  <h1>Conditions générales d'utilisation</h1>
+  <div class="maj">Version du {{ version }}</div>
+
+  <h2>1. Qui fournit le service</h2>
+  <p>ScoutIA est édité par Michaël Ziant, <span class="a-completer">[adresse]</span>, <span class="a-completer">[numéro
+    d'entreprise BCE, si applicable]</span>. Contact : <span class="a-completer">[adresse e-mail de contact]</span>.</p>
+
+  <h2>2. Le service</h2>
+  <p>ScoutIA analyse des vidéos de matchs de football envoyées par l'utilisateur. Il produit notamment : la liste des buts
+    détectés avec leur minute de jeu, un résumé vidéo que l'utilisateur peut recomposer, un rapport PDF et, sur demande, le
+    montage et la fiche d'un joueur choisi.</p>
+  <p>Les résultats sont produits <strong>automatiquement</strong> par des programmes d'analyse et d'intelligence artificielle.
+    Ce sont des estimations : un but peut être manqué, mal daté ou détecté à tort, un joueur peut ne pas être reconnu. C'est
+    pourquoi certains buts sont marqués « à vérifier » et peuvent être confirmés, écartés ou ajoutés par l'utilisateur.
+    ScoutIA ne garantit pas l'exactitude ni l'exhaustivité des résultats.</p>
+
+  <h2>3. Compte</h2>
+  <ul>
+    <li>Le service est réservé aux personnes <strong>majeures</strong> (18 ans ou plus).</li>
+    <li>L'utilisateur fournit une adresse e-mail valide et garde son mot de passe confidentiel. Il est responsable de
+      l'utilisation de son compte.</li>
+    <li>L'utilisateur peut supprimer son compte à tout moment depuis la page
+      <a href="/confidentialite#droits">Confidentialité</a>.</li>
+  </ul>
+
+  <h2>4. Les vidéos envoyées : ce que l'utilisateur garantit</h2>
+  <p>L'utilisateur n'envoie que des vidéos qu'il a le droit d'utiliser et de faire analyser. En particulier :</p>
+  <ul>
+    <li>il est l'auteur de la vidéo, ou il a l'autorisation de son auteur ou du club ;</li>
+    <li>les personnes filmées (joueurs, arbitres, spectateurs) ont été informées que le match était filmé, et, pour les
+      <strong>joueurs mineurs</strong>, leurs parents ou représentants légaux, conformément aux règles du club ou de la
+      compétition ;</li>
+    <li>il n'utilise pas les résultats (montages, fiches de joueurs) d'une manière qui porte atteinte aux droits des
+      personnes filmées, notamment à leur droit à l'image, ni pour les dénigrer.</li>
+  </ul>
+  <p>L'utilisateur reste propriétaire de ses vidéos. Il autorise ScoutIA à les traiter uniquement pour fournir le service.</p>
+
+  <h2>5. Confirmations de buts partagées</h2>
+  <p>Les confirmations, corrections et ajouts de buts faits par un utilisateur sont rattachés au match. Si la même vidéo est
+    envoyée par un autre utilisateur, celui-ci voit les buts déjà confirmés, avec la mention « par un autre utilisateur ».
+    Aucune donnée d'identification (e-mail, nom) n'est montrée. Ces confirmations servent aussi à mesurer et améliorer la
+    qualité de la détection.</p>
+
+  <h2>6. Prix, paiement et quota</h2>
+  <ul>
+    <li>Les formules et leurs prix sont indiqués sur la page <a href="/pricing">Tarifs</a>. Le paiement est traité par
+      Stripe ; ScoutIA n'a jamais accès aux données de la carte bancaire.</li>
+    <li>Les abonnements se renouvellent chaque mois et peuvent être résiliés à tout moment ; l'accès reste ouvert jusqu'à la
+      fin de la période payée. Les vidéos non utilisées d'un mois ne sont pas reportées.</li>
+    <li>Une analyse en erreur ne compte pas dans le quota.</li>
+    <li><strong>Droit de rétractation :</strong> le consommateur dispose en principe de 14 jours pour se rétracter. En
+      lançant une analyse, l'utilisateur demande que le service commence immédiatement et reconnaît perdre son droit de
+      rétractation pour cette analyse une fois celle-ci réalisée.</li>
+  </ul>
+
+  <h2>7. Utilisations interdites</h2>
+  <ul>
+    <li>envoyer des vidéos sans rapport avec un match de football, ou des contenus illicites ;</li>
+    <li>tenter de contourner les quotas, de perturber le service ou d'accéder aux données d'autres utilisateurs ;</li>
+    <li>fausser volontairement les confirmations de buts.</li>
+  </ul>
+  <p>En cas de manquement, ScoutIA peut suspendre ou supprimer le compte.</p>
+
+  <h2>8. Disponibilité et responsabilité</h2>
+  <p>ScoutIA fait de son mieux pour que le service fonctionne, sans garantir qu'il soit disponible en permanence ni sans
+    erreur. Les résultats ne remplacent pas le regard d'un entraîneur ou d'un arbitre. Dans les limites permises par la loi,
+    la responsabilité de ScoutIA est limitée au montant payé par l'utilisateur pour l'analyse concernée.</p>
+
+  <h2>9. Conservation des résultats</h2>
+  <p>La vidéo d'origine est supprimée à la fin de l'analyse. Les résultats sont conservés pendant une durée qui dépend de
+    la formule, puis supprimés automatiquement : voir la <a href="/confidentialite">politique de confidentialité</a>.
+    L'utilisateur qui veut les garder doit les télécharger avant.</p>
+
+  <h2>10. Modifications</h2>
+  <p>Ces conditions peuvent évoluer. En cas de changement important, l'utilisateur en est informé et doit les accepter à
+    nouveau pour continuer à utiliser le service.</p>
+
+  <h2>11. Droit applicable</h2>
+  <p>Ces conditions sont soumises au droit belge. En cas de litige, une solution amiable sera recherchée d'abord ; à
+    défaut, les tribunaux compétents sont ceux prévus par la loi, en tenant compte des droits du consommateur.</p>
+</div>
+
+<footer><p>© 2026 ScoutIA — <a href="/cgu">Conditions d'utilisation</a> · <a href="/confidentialite">Confidentialité</a></p></footer>
+</body>
+</html>
