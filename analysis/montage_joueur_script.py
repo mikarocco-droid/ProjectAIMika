@@ -1880,6 +1880,7 @@ with open(f"{SORTIE}/touches_v31_{MATCH}_{NUMERO}_{COULEUR.replace(' ', '_')}.cs
 # (dans l'action : buteur de la tête, défenseur sur le tireur…). Simplement visible 20 s avant ne suffit plus.
 _buts_joueur = []
 _FICHE_BUTS_CONF, _FICHE_BUTS_POSS = [], []     # 18/11 : pour la fiche « Bilan du joueur »
+_CHRONO_BUTS = []      # 24/11 : (heure, confirmé, impliqué) pour la chronologie de la fiche
 # 19/11 : secondes montrées AVANT l'heure d'un but. Un but non confirmé est souvent daté d'après le coup d'envoi qui
 # suit (heure du but inconnue) : si le coup d'envoi a tardé (changement de joueur…), le but est bien plus tôt
 # (SRU : but réel 89:52, daté 90:53 → la séquence ne montrait que le replacement des joueurs).
@@ -1974,6 +1975,7 @@ if BOUT_EN_BOUT and BOUT_EN_BOUT.get("buts"):
         _AVANT_BUT[g] = _avant_but(g, _conf_b)       # 19/11 (9) : jusqu'au but vu par l'analyse, sinon 35 s
         _APRES_BUT[g] = 10.0 if _conf_b else 20.0     # 21/11 : l'heure d'un but non confirmé peut être en avance
         (_FICHE_BUTS_CONF if _conf_b else _FICHE_BUTS_POSS).append((g, lien.replace("impliqué : ", "")))
+        _CHRONO_BUTS.append((g, _conf_b, bool(garde)))
         print(f"     but {fmt(g)} ({b.get('statut')}) → dans le résumé | {lien}")
 # ── joueur seul : CE QUE L'ON SAIT DE SON MATCH (données disponibles) ──
 _types = collections.Counter(ty for _, ty in TOUCHES)
@@ -2114,8 +2116,15 @@ if VERIF_TOUCHES and _fus and GEMINI_KEY:
           f"ballon, ou relance du gardien) : " + (", ".join(f"{fmt(f_[0])} ({_raison_t.get(f_[0], '?')})" for f_ in sorted(_non_t)) or "aucune")
           + (" | gardées : " + ", ".join(f"{fmt(f_[0])} ({_type_t.get(f_[0], '')})" for f_ in sorted(_ok_t)) if GARDIEN else "") + f" | {_jet_t['q']} question(s) ≈ {_cout_t:.3f} $")
     _fus = sorted(_ok_t, key=lambda f_: f_[0])
+# 24/11/2026 : chronologie de la fiche (frise + tableau) : buts du match, ses actions, ses arrêts (gardien)
+_chrono_f = ([{"t_abs": g, "type": "but_implique" if imp else "but", "conf": cf} for g, cf, imp in _CHRONO_BUTS]
+             + [{"t_abs": (a_ + b_) / 2, "type": "moment"} for a_, b_, _ in _fus]
+             + [{"t_abs": t, "type": "arret"} for t, _ in (_ARRETS if GARDIEN else [])])
+_bn_f = (BOUT_EN_BOUT or {}).get("bornes") or []
+_bornes_f = ({"ko1": float(_bn_f[0][0]), "fin1mt": float(_bn_f[0][1]), "ko2": float(_bn_f[1][0]), "finmatch": float(_bn_f[1][1])}
+             if isinstance(_bn_f, list) and len(_bn_f) >= 2 else {"ko1": float(KO)})
 _fiche_joueur(True, presence_s=_presence, n_passages=len(retenus), n_moments=len(_fus),
-              buts_conf=_FICHE_BUTS_CONF, buts_poss=_FICHE_BUTS_POSS,
+              buts_conf=_FICHE_BUTS_CONF, buts_poss=_FICHE_BUTS_POSS, chronologie=_chrono_f, bornes=_bornes_f,
               **({"lignes_supp": [("Arrêts repérés par l'analyse", str(len(_ARRETS))),
                                   ("Autres tirs adverses", f"{len(_TIRS_ADV)} (à côté ou sur le poteau)")],
                   "source_presence": "passages où il est reconnu : maillot vérifié par Gemini",
