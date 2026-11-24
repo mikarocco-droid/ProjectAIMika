@@ -39,7 +39,13 @@
       <div class="results-meta">
         {{ analysis.sport }} · {{ analysis.created_at.strftime('%d/%m/%Y %H:%M') }}
         {% if result.summary.duration %} · {{ result.summary.duration }}{% endif %}
-        {% if result.summary.goals_confirmes is defined %}
+        {% if buts_page %}
+          {# 24/11/2026 : compteurs à jour des réponses des utilisateurs #}
+          · <span style="color:var(--red);font-weight:700">{{ n_buts_confirmes }} but{{ 's' if n_buts_confirmes > 1 else '' }} confirmé{{ 's' if n_buts_confirmes > 1 else '' }}</span>
+          {% if n_buts_a_verifier %}
+            · <span style="color:var(--yellow);font-weight:700">{{ n_buts_a_verifier }} à vérifier</span>
+          {% endif %}
+        {% elif result.summary.goals_confirmes is defined %}
           · <span style="color:var(--red);font-weight:700">{{ result.summary.goals_confirmes }} but{{ 's' if result.summary.goals_confirmes > 1 else '' }} confirmé{{ 's' if result.summary.goals_confirmes > 1 else '' }}</span>
           {% if result.summary.goals_a_verifier %}
             · <span style="color:var(--yellow);font-weight:700">{{ result.summary.goals_a_verifier }} à vérifier</span>
@@ -93,8 +99,13 @@
   <div class="kpi-row">
     <div class="kpi-card">
       {% if result.summary.goals_confirmes is defined %}
+      {% if buts_page %}
+      <div class="kpi-value">{{ n_buts_confirmes }}</div>
+      <div class="kpi-label">Buts confirmés{% if n_buts_a_verifier %} (+{{ n_buts_a_verifier }} à vérifier){% endif %}</div>
+      {% else %}
       <div class="kpi-value">{{ result.summary.goals_confirmes }}</div>
       <div class="kpi-label">Buts confirmés{% if result.summary.goals_a_verifier %} (+{{ result.summary.goals_a_verifier }} à vérifier){% endif %}</div>
+      {% endif %}
       {% else %}
       <div class="kpi-value">{{ result.summary.goals }}</div>
       <div class="kpi-label">Buts</div>
@@ -136,6 +147,84 @@
   </div>
   {% endif %}
 
+  <!-- 24/11/2026 : MODE JOUEUR — son montage, sa fiche, et son rôle dans les buts (buteur / passe décisive) -->
+  {% if joueur %}
+  <div class="result-section" id="joueur">
+    <div class="result-section-header">
+      <span class="result-section-icon">🎯</span>
+      <span class="result-section-title">Le match du n°{{ joueur.numero }}{% if joueur.couleur %} ({{ joueur.couleur }}){% endif %}{% if joueur.gardien %} — gardien{% endif %}</span>
+    </div>
+    <div class="result-section-body">
+      {% if result.player_reel %}
+      <div class="video-container" style="margin-bottom:10px">
+        <video controls preload="metadata"><source src="/stream/{{ analysis.id }}/joueur" type="video/mp4"></video>
+      </div>
+      {% endif %}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        {% if result.player_reel %}<a href="/stream/{{ analysis.id }}/joueur?dl=1" class="btn-secondary">⬇ Son montage</a>{% endif %}
+        {% if joueur.fiche %}<a href="/download/{{ analysis.id }}/fiche" class="btn-secondary">⬇ Sa fiche (PDF)</a>{% endif %}
+      </div>
+      {# 24/11/2026 : COMPOSER SON MONTAGE — ses séquences + ses touches écartées (« moments à voir ») #}
+      {% if sequences_joueur %}
+      <details style="margin:6px 0 16px">
+        <summary style="cursor:pointer;color:var(--cyan)">✂️ Composer son montage (choisir ses ballons)</summary>
+        {% if joueur.montage_perso %}
+        <p style="margin:10px 0 6px"><strong>Votre montage</strong></p>
+        <div class="video-container" style="margin-bottom:8px">
+          <video controls preload="metadata"><source src="/stream/{{ analysis.id }}/joueur_perso" type="video/mp4"></video>
+        </div>
+        <a href="/stream/{{ analysis.id }}/joueur_perso?dl=1" class="btn-secondary">⬇ Télécharger mon montage</a>
+        {% endif %}
+        <p style="margin:10px 0 8px;color:var(--gray)">Cochez les séquences à garder. Les « moments à voir » sont des ballons
+          que l'analyse a écartés (doute sur la touche) : à vous de juger. Le montage est assemblé dans l'ordre du match.</p>
+        <form method="post" action="/joueur/{{ analysis.id }}/composer">
+          {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+          {% for titre, dans in [("Séquences de son montage", True), ("Moments à voir", False)] %}
+            {% set liste = sequences_joueur | selectattr("dans_resume", "equalto", dans) | list %}
+            {% if liste %}
+            <p style="margin:12px 0 8px"><strong>{{ titre }}</strong> ({{ liste | length }})</p>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">
+              {% for x in liste %}
+              <label style="display:block;border:1px solid var(--border);border-radius:8px;padding:6px;cursor:pointer">
+                <video controls preload="none" style="width:100%;border-radius:6px;background:#000">
+                  <source src="/stream/{{ analysis.id }}/joueur_sequence/{{ x.id }}" type="video/mp4">
+                </video>
+                <div style="margin-top:4px"><input type="checkbox" name="seqj" value="{{ x.id }}" {% if x.coche %}checked{% endif %}>
+                  <strong>{{ x.minute }}</strong> · {{ x.type }} · {{ x.duree }} s</div>
+              </label>
+              {% endfor %}
+            </div>
+            {% endif %}
+          {% endfor %}
+          <div style="margin-top:12px"><button type="submit" class="btn-primary">Refaire son montage</button></div>
+        </form>
+      </details>
+      {% endif %}
+
+      {% if buts_joueur %}
+      <p style="margin:0 0 6px"><strong>Son rôle dans les buts</strong></p>
+      <p style="margin:0 0 10px;color:var(--gray);font-size:.9rem">L'analyse voit s'il était impliqué juste avant un but, mais pas
+        toujours qui a marqué ou donné la dernière passe. Indiquez-le : sa fiche sera mise à jour.</p>
+      <form method="post" action="/joueur/{{ analysis.id }}/roles">
+        {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+        {% for b in buts_joueur %}
+        <div class="highlight-item" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span class="hl-time">{{ b.minute }}</span>
+          <span class="hl-player">{% if b.equipe in ('A', 'B') %}{{ noms_eq[b.equipe] }}{% else %}équipe ?{% endif %}</span>
+          {% if b.statut == 'a_verifier' %}<span class="hl-badge other">but à vérifier</span>{% endif %}
+          {% if b.implique %}<span class="hl-badge" style="background:rgba(170,110,255,.2);color:#b58cff">impliqué selon l'analyse</span>{% endif %}
+          {% for val, lib in [("buteur", "Il a marqué"), ("passeur", "Passe décisive"), ("aucun", "Ni l'un ni l'autre")] %}
+            <label style="cursor:pointer"><input type="radio" name="role_{{ b.i }}" value="{{ val }}" {% if b.role == val %}checked{% endif %}> {{ lib }}</label>
+          {% endfor %}
+        </div>
+        {% endfor %}
+        <div style="margin-top:10px"><button type="submit" class="btn-primary">Enregistrer et mettre à jour sa fiche</button></div>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Buts, avec leur statut — 23/11/2026 : l'utilisateur confirme les buts « à vérifier » (vidéo, oui/non, équipe) -->
   {% if buts_page %}
   <div class="result-section" id="buts">
@@ -160,8 +249,8 @@
           <span class="hl-time">{{ b.minute }}</span>
           <span class="hl-xg">vidéo {{ b.video }}</span>
           {% if b.statut == 'confirme' %}<span class="hl-badge goal">but confirmé</span>
-          {% elif b.statut == 'par_vous' %}<span class="hl-badge goal">{% if b.ajoute %}but ajouté par vous{% else %}but confirmé par vous{% endif %}</span>
-          {% elif b.statut == 'ecarte' %}<span class="hl-badge other">pas un but (selon vous)</span>
+          {% elif b.statut == 'par_vous' %}<span class="hl-badge goal">{% if b.ajoute %}but ajouté{% else %}but confirmé{% endif %} par {% if b.par_autre %}un autre utilisateur{% else %}vous{% endif %}</span>
+          {% elif b.statut == 'ecarte' %}<span class="hl-badge other">pas un but (selon {% if b.par_autre %}un autre utilisateur{% else %}vous{% endif %})</span>
           {% else %}<span class="hl-badge other">à vérifier</span>{% endif %}
           {% if b.equipe in ('A', 'B') and b.statut != 'ecarte' %}
             <span class="hl-player">{{ noms_eq[b.equipe] }}{% if b.statut in ('a_verifier', 'confirme') and b.niveau == 'probable' %} (probable){% endif %}</span>
