@@ -26,6 +26,8 @@ def main():
     ap.add_argument("--dossier", required=True)
     ap.add_argument("--email", required=True, help="compte de l'application qui verra l'analyse")
     ap.add_argument("--titre", default="Match de démonstration")
+    ap.add_argument("--joueur", default=None, help="(facultatif) dossier joueur_* d'un montage : montage, fiche, "
+                                                   "fiche_donnees_*.json, resultat_montage_joueur.json")
     a = ap.parse_args()
     dos = os.path.abspath(a.dossier)
     reel = next(iter(sorted(glob.glob(os.path.join(dos, "resume_*.mp4")))), None)
@@ -51,6 +53,18 @@ def main():
               "summary": {"goals": len(buts), "goals_confirmes": sum(1 for b in buts if str(b["status"]).startswith("confirm")),
                           "shots": 0},
               "buts": buts}
+    if a.joueur:      # 24/11/2026 : section « joueur » de la page (montage, fiche, rôle dans les buts)
+        dj = os.path.abspath(a.joueur)
+        rj = json.load(open(os.path.join(dj, "resultat_montage_joueur.json"), encoding="utf-8"))
+        loc = lambda p: os.path.join(dj, os.path.basename(p)) if p and os.path.exists(os.path.join(dj, os.path.basename(p))) else None
+        result["player_reel"] = loc(rj.get("montage"))
+        result["joueur"] = {"demande": True, "trouve": bool(rj.get("trouve")), "numero": str(rj.get("numero") or ""),
+                            "couleur": None, "gardien": bool(rj.get("gardien")), "fiche": loc(rj.get("fiche")),
+                            "fiche_donnees": loc(rj.get("fiche_donnees")), "buts_impliques": rj.get("buts_impliques") or [],
+                            # séquences : dossier clips_* copié dans le dossier joueur (avec sequences.json)
+                            "sequences": next((os.path.dirname(f) for f in glob.glob(os.path.join(dj, "**", "sequences.json"),
+                                                                                   recursive=True)), None),
+                            "message": rj.get("message")}
     with app.app_context():
         u = User.query.filter_by(email=a.email).first()
         if not u:
