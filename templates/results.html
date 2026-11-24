@@ -136,34 +136,60 @@
   </div>
   {% endif %}
 
-  <!-- Buts, avec leur statut (24/10/2026) -->
-  {% if result.buts %}
-  <div class="result-section">
+  <!-- Buts, avec leur statut — 23/11/2026 : l'utilisateur confirme les buts « à vérifier » (vidéo, oui/non, équipe) -->
+  {% if buts_page %}
+  <div class="result-section" id="buts">
     <div class="result-section-header">
       <span class="result-section-icon">⚽</span>
-      <span class="result-section-title">Buts ({{ result.buts | length }})</span>
+      <span class="result-section-title">Buts ({{ buts_page | selectattr("statut", "ne", "ecarte") | list | length }})</span>
     </div>
     <div class="result-section-body">
-      <div class="highlights-grid">
-        {% for b in result.buts %}
-        <div class="highlight-item">
-          <span class="hl-num">{{ loop.index }}</span>
-          <span class="hl-time">{{ "%02d'%02d" | format((b.time / 60) | int, (b.time % 60) | int) }}</span>
-          {% if b.time_abs is defined %}<span class="hl-xg">vidéo {{ "%02d:%02d" | format((b.time_abs / 60) | int, (b.time_abs % 60) | int) }}</span>{% endif %}
-          {% if b.status == 'confirmé' %}
-            <span class="hl-badge goal">but confirmé</span>
-          {% else %}
-            <span class="hl-badge other">à vérifier</span>
-          {% endif %}
-          {% if b.team_color %}<span class="hl-player">{{ b.team_color }}</span>{% endif %}
-        </div>
-        {% endfor %}
-      </div>
-      {% if result.summary.goals_a_verifier %}
-      <p style="font-size:0.8rem;color:var(--gray);margin-top:0.75rem">
-        « À vérifier » : action détectée comme un but probable, sans confirmation complète. Un coup d'œil sur la vidéo permet de trancher.
-      </p>
+      {% if ligne_score %}
+        <p style="margin:0 0 12px;font-weight:700;font-size:1.05rem">{{ ligne_score }}</p>
+      {% elif ligne_detail %}
+        <p style="margin:0 0 12px;color:var(--gray)">{{ ligne_detail }}</p>
       {% endif %}
+      {% if buts_page | selectattr("statut", "equalto", "a_verifier") | list %}
+        <p style="margin:0 0 12px;color:var(--yellow)">Certains buts sont « à vérifier » : regardez la vidéo et dites-nous si
+          c'est un but, et pour quelle équipe. Le score s'affichera quand tout sera tranché.</p>
+      {% endif %}
+      {% for b in buts_page %}
+      <div class="highlight-item" id="but-{{ b.i }}" style="display:block;{% if b.statut == 'ecarte' %}opacity:.55{% endif %}">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span class="hl-num">{{ loop.index }}</span>
+          <span class="hl-time">{{ b.minute }}</span>
+          <span class="hl-xg">vidéo {{ b.video }}</span>
+          {% if b.statut == 'confirme' %}<span class="hl-badge goal">but confirmé</span>
+          {% elif b.statut == 'par_vous' %}<span class="hl-badge goal">but confirmé par vous</span>
+          {% elif b.statut == 'ecarte' %}<span class="hl-badge other">pas un but (selon vous)</span>
+          {% else %}<span class="hl-badge other">à vérifier</span>{% endif %}
+          {% if b.equipe in ('A', 'B') and b.statut != 'ecarte' %}
+            <span class="hl-player">{{ noms_eq[b.equipe] }}{% if b.statut in ('a_verifier', 'confirme') and b.niveau == 'probable' %} (probable){% endif %}</span>
+          {% endif %}
+        </div>
+        {# 23/11/2026 : les buts confirmés par l'analyse peuvent aussi être corrigés (équipe, ou « pas un but ») #}
+        {% if b.statut in ('a_verifier', 'par_vous', 'ecarte', 'confirme') %}
+        <details style="margin-top:8px" {% if b.statut == 'a_verifier' %}open{% endif %}>
+          <summary style="cursor:pointer;color:var(--cyan)">{% if b.statut == 'a_verifier' %}Vérifier ce but{% elif b.statut == 'confirme' %}Corriger ce but (équipe, ou ce n'est pas un but){% else %}Modifier ma réponse{% endif %}</summary>
+          {% if b.sequence %}
+          <video controls preload="none" style="width:100%;max-width:560px;margin-top:8px;border-radius:6px;background:#000">
+            <source src="/stream/{{ analysis.id }}/sequence/{{ b.sequence }}" type="video/mp4">
+          </video>
+          {% endif %}
+          <form method="post" action="/buts/{{ analysis.id }}/{{ b.i }}/verdict" style="margin-top:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+            <span>Équipe :</span>
+            {% for k in ('A', 'B') %}
+              <label style="cursor:pointer"><input type="radio" name="equipe" value="{{ k }}" {% if b.equipe == k %}checked{% endif %}> {{ noms_eq[k] }}</label>
+            {% endfor %}
+            <button type="submit" name="verdict" value="but" class="btn-primary">✅ C'est un but</button>
+            <button type="submit" name="verdict" value="pas_but" class="btn-secondary">❌ Pas un but</button>
+            {% if b.statut in ('par_vous', 'ecarte') %}<button type="submit" name="verdict" value="annuler" class="btn-secondary">Annuler ma réponse</button>{% endif %}
+          </form>
+        </details>
+        {% endif %}
+      </div>
+      {% endfor %}
     </div>
   </div>
   {% endif %}
