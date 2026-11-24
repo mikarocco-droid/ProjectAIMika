@@ -207,3 +207,22 @@ def recomposer_resume(dossier_sequences, ids_coches, sortie_mp4):
     if not fichiers:
         return None
     return _assembler(fichiers, sortie_mp4)
+
+
+def occasions_depuis_sequences(dossier_sequences, ids, occasions_ref=(), ko=0.0):
+    """24/11/2026 : occasions du RAPPORT = séquences retenues dans le résumé (de base, ou composé par l'utilisateur),
+    sans les buts. Heure de l'action = fin − 8 s ; équipe reprise de l'occasion d'origine la plus proche (±12 s)."""
+    try:
+        seqs = json.load(open(os.path.join(dossier_sequences, "sequences.json"), encoding="utf-8"))
+    except Exception:
+        return None
+    voulus = set(ids or [])
+    out = []
+    for s_ in sorted(seqs, key=lambda x: x["debut"]):
+        if s_["id"] not in voulus or str(s_.get("type") or "").startswith("but"):
+            continue
+        t = float(s_["fin"]) - APRES_OCCASION
+        ref = min((o for o in occasions_ref or [] if abs(float(o.get("time_abs") or 0) - t) <= 12),
+                  key=lambda o: abs(float(o.get("time_abs") or 0) - t), default=None)
+        out.append({"time_abs": t, "time": t - float(ko or 0), "equipe": (ref or {}).get("equipe"), "label": "Occasion"})
+    return out

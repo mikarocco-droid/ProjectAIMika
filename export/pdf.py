@@ -33,6 +33,7 @@ BG_MID    = (30,  40,  54)
 ACCENT    = (0,   200, 230)
 ACCENT2   = (255, 77,  77)
 ACCENT3   = (255, 200, 0)
+JAUNE_VERIF = (230, 190, 60)     # 24/11/2026 : « à vérifier » (frise et tableau)
 ACCENT4   = (80,  200, 120)
 ACCENT5   = (180, 100, 255)
 WHITE     = (255, 255, 255)
@@ -427,6 +428,9 @@ class ScoutPDF(FPDF):
 AFFICHER_STATS_NON_VALIDEES = False
 
 
+_SANS_LISTE_TEMPS_FORTS = True     # 24/11/2026 : liste des temps forts retirée (le tableau chronologique la remplace)
+
+
 def generate_pdf(result, output_path, sport="football"):
 
     if not FPDF_AVAILABLE:
@@ -557,7 +561,7 @@ def generate_pdf(result, output_path, sport="football"):
     ]
     if not AFFICHER_STATS_NON_VALIDEES:
         kpis = [("Buts confirmés" if _buts else "Buts", kpi_goals, ACCENT2),
-                ("Actions à revoir", kpi_a_verifier, GRAY_L),
+                ("Buts à vérifier", kpi_a_verifier, GRAY_L),
                 ("Occasions",  len(_occ),      ACCENT)]
         if _ident:
             kpis.append(("Joueurs", kpi_players, GRAY_L))
@@ -913,9 +917,23 @@ def generate_pdf(result, output_path, sport="football"):
     # ════════════════════════
     # PAGE 4 — HIGHLIGHTS
     # ════════════════════════
+    # 24/11/2026 : page « Temps forts » construite à partir des BUTS (tels que tranchés) et des OCCASIONS du résumé,
+    # pour rester cohérente avec la chronologie et la vidéo (avant : temps forts du pipeline, faux buts compris)
+    if _buts or _occ:
+        highlights = sorted(
+            [{"main_type": "goal", "event_time": float(b.get("time", 0) or 0), "time_start": max(0.0, float(b.get("time", 0) or 0) - 10)}
+             for b in (_buts or [])]
+            + [{"main_type": "occasion", "event_time": float(o.get("time", 0) or 0),
+                "time_start": max(0.0, float(o.get("time", 0) or 0) - 10),
+                "reason": _noms[o["equipe"]] if o.get("equipe") in ("A", "B") else ""} for o in (_occ or [])],
+            key=lambda h: h["event_time"])
+    _page_chrono = False
     if highlights:
+        # 24/11/2026 : plus de page « Temps forts » séparée — la FRISE ouvre la page « Chronologie du match », la liste
+        # (doublon du tableau) est retirée
         pdf.add_page()
-        pdf.section_title("Temps forts")
+        pdf.section_title("Chronologie du match")
+        _page_chrono = True
 
         try:
             dur_str = str(summary.get("duration", "15:00"))
@@ -940,22 +958,35 @@ def generate_pdf(result, output_path, sport="football"):
         tl_x, tl_y, tl_w = 12, pdf.get_y(), 186
         pdf.set_font("Helvetica", "", 5)
         _tl_items = []
-        for h in highlights[:15]:
+        # 24/11/2026 : mêmes couleurs que le tableau chronologique — but rouge, à vérifier jaune, occasion gris,
+        # repères (début, mi-temps, fin) bleu ; tous les éléments du résumé (plus de limite à 15)
+        # position = TEMPS DE JEU réellement écoulé (pause exclue) : le temps additionnel de la 1re mi-temps reste avant
+        # la mi-temps (avant : « 45+2' » placé après un but de la 46e minute)
+        _k1, _f1, _k2, _fm = (_bornes.get("ko1"), _bornes.get("fin1mt"), _bornes.get("ko2"), _bornes.get("finmatch"))
+        _complet = None not in (_k1, _f1, _k2, _fm)
+        def _joue(t_abs):
+            if not _complet:
+                return max(0.0, t_abs - _ko1_abs)
+            return max(0.0, min(t_abs, _f1) - _k1) + (max(0.0, min(t_abs, _fm) - _k2) if t_abs >= _k2 else 0.0)
+        _tot_s = (_f1 - _k1) + (_fm - _k2) if _complet else max(dur_s, 1)
+        def _pct_abs(t_abs):
+            return min(max(_joue(t_abs) / max(_tot_s, 1), 0.0), 0.995)
+        _reperes = [(_ko1_abs, "Début")]
+        if _complet:
+            _reperes += [(float(_f1), "MT"), (float(_fm), "Fin")]
+        for _ta_r, _lb_r in _reperes:
+            _tl_items.append((tl_x + 5 + round((tl_w - 10) * _pct_abs(_ta_r), 1), ACCENT, _lb_r, pdf.get_string_width(_lb_r) + 1.0))
+        for h in highlights:
             # FIX 2 — utiliser get_event_time pour le bon timestamp
             _ev_time = _temps_match(h)
             htype = h.get("main_type", "shot")
-            color = ACCENT2 if htype in ("goal", "score") else ACCENT
+            color = ACCENT2 if htype in ("goal", "score") else GRAY_L
             if htype in ("goal", "score") and _buts and _statut_but(_ev_time) != "confirmé":
-                color = GRAY_L
+                color = JAUNE_VERIF
             _lbl  = _minute(_ev_time)
             # 18/11/2026 : position sur l'échelle du TEMPS DE JEU (pause exclue) quand les bornes sont connues
-            _dj = duree_de_jeu(_bornes)
-            if _dj:
-                _mn = sum(int(x) for x in _lbl.rstrip("'").split("+"))
-                pct = min(max(_mn - 0.5, 0) / max(int(_dj.split()[0]), 1), 0.98)
-            else:
-                pct = min(_ev_time / max(dur_s, 1), 0.98)
-            mx    = tl_x + 5 + int((tl_w - 10) * pct)
+            pct = _pct_abs(float(_ev_time) + _ko_pdf)
+            mx    = tl_x + 5 + round((tl_w - 10) * pct, 1)
             _tl_items.append((mx, color, _lbl, pdf.get_string_width(_lbl) + 1.0))
         _tl_items.sort(key=lambda it: it[0])
         _fin_ligne, _rangs = [], []        # bord droit de la dernière étiquette de chaque ligne
@@ -976,7 +1007,10 @@ def generate_pdf(result, output_path, sport="football"):
         pdf.rect(tl_x + 5, tl_y + 10, tl_w - 10, 1.5, "F")
         for mx, _c, _lbl, _w, _g, _r in _rangs:
             pdf.set_fill_color(*_c)
-            pdf.rect(mx - 2, tl_y + 7, 4, 6, "F")
+            if _c == ACCENT:                       # repère : trait fin et plus haut
+                pdf.rect(mx - 0.4, tl_y + 5.5, 0.8, 9, "F")
+            else:                                  # 24/11 : 4 → 1,6 mm de large (deux buts proches restent distincts)
+                pdf.rect(mx - 0.8, tl_y + 7, 1.6, 6, "F")
             pdf.set_font("Helvetica", "", 5)
             pdf.set_text_color(*GRAY_L)
             pdf.set_xy(_g, tl_y + 13.5 + 3.5 * _r)        # sous les repères (avant : à moitié cachées)
@@ -987,16 +1021,22 @@ def generate_pdf(result, output_path, sport="football"):
         pdf.set_text_color(*ACCENT2)
         pdf.set_xy(tl_x + 5, tl_y + 2)
         pdf.cell(20, 4, "BUT", align="L")
-        pdf.set_text_color(*GRAY_L)
+        pdf.set_text_color(*JAUNE_VERIF)
         pdf.set_xy(tl_x + 20, tl_y + 2)
-        pdf.cell(24, 4, clean("À REVOIR"), align="L")
-        pdf.set_text_color(*ACCENT)
+        pdf.cell(24, 4, clean("À VÉRIFIER"), align="L")
+        pdf.set_text_color(*GRAY_L)
         pdf.set_xy(tl_x + 44, tl_y + 2)
         pdf.cell(20, 4, "OCCASION", align="L")
+        pdf.set_text_color(*ACCENT)
+        pdf.set_xy(tl_x + 66, tl_y + 2)
+        pdf.cell(50, 4, clean("DÉBUT / MI-TEMPS / FIN"), align="L")
         pdf.set_y(tl_y + _tl_h + 4)
 
         # Cartes highlights — FIX 2 : afficher event_time pas time_start
-        for i, h in enumerate(highlights[:15]):
+        for i, h in enumerate([] if _SANS_LISTE_TEMPS_FORTS else highlights[:30]):
+            if pdf.get_y() > 265:                         # 24/11 : suite sur une nouvelle page
+                pdf.add_page()
+                pdf.section_title("Temps forts (suite)")
             yh      = pdf.get_y()
             t_start = h.get("time_start", 0)
             htype   = h.get("main_type",  "action")
@@ -1031,9 +1071,9 @@ def generate_pdf(result, output_path, sport="football"):
             pdf.set_font("Helvetica", "B", 5.5)
             pdf.set_text_color(*HEADER_BG if is_goal else BG_DARK)
             pdf.set_xy(27, yh + 4)
-            _badge = {"goal": "BUT", "score": "BUT", "shot": "TIR", "save": "ARRÊT"}.get(htype, "ACTION")
+            _badge = {"goal": "BUT", "score": "BUT", "shot": "TIR", "save": "ARRÊT", "occasion": "OCCASION"}.get(htype, "ACTION")
             if is_goal and _buts:
-                _badge = "À REVOIR" if _revoir else "BUT"
+                _badge = "À VÉRIFIER" if _revoir else "BUT"
             pdf.cell(16, 5, clean(_badge), align="C")
 
             # Timestamp — FIX 2 : _display_time au lieu de t_start
@@ -1074,7 +1114,8 @@ def generate_pdf(result, output_path, sport="football"):
     # PAGE 5 — STORY
     # ════════════════════════
     if story or commentary or _buts or _occ:
-        pdf.add_page()
+        if not _page_chrono:          # 24/11 : le tableau suit la frise sur la même page
+            pdf.add_page()
 
         # FIX 3 — fusionner commentary dans match story
         # Construire un résumé narratif enrichi avec les moments clés horodatés
@@ -1168,7 +1209,7 @@ def generate_pdf(result, output_path, sport="football"):
                 _chrono.append((ta, _minute(b.get("time", 0)), "but", b.get("equipe") if b.get("equipe") in ("A", "B") else None, "But"))
             else:
                 _chrono.append((ta, _minute(b.get("time", 0)), "revoir", b.get("equipe") if b.get("equipe") in ("A", "B") else None,
-                                "But possible (à revoir)"))
+                                "But possible (à vérifier)"))
         for o in (_occ or []):
             ta = float(o.get("time", 0) or 0) + _ko_pdf
             _chrono.append((ta, _minute(o.get("time", 0)), "occasion", o.get("equipe") if o.get("equipe") in ("A", "B") else None,
@@ -1176,13 +1217,14 @@ def generate_pdf(result, output_path, sport="football"):
         _chrono.sort(key=lambda x: x[0])
         _score_sur = bool(_buts) and all(b.get("status") == "confirmé" and b.get("equipe") in ("A", "B") for b in _buts)
         if len(_chrono) > 1:
-            pdf.add_page()
-            pdf.section_title("Chronologie du match")
+            if not _page_chrono:
+                pdf.add_page()
+                pdf.section_title("Chronologie du match")
             if not _score_sur and _buts:
                 pdf.set_font("Helvetica", "I", 8)
                 pdf.set_text_color(*GRAY_L)
                 pdf.set_x(12)
-                pdf.multi_cell(186, 4.5, clean("Score non affiché : certains buts restent à revoir ou sans équipe."))
+                pdf.multi_cell(186, 4.5, clean("Score non affiché : certains buts restent à vérifier ou sans équipe."))
                 pdf.ln(1)
             if _score_sur:
                 pdf.set_font("Helvetica", "", 8)
@@ -1214,7 +1256,7 @@ def generate_pdf(result, output_path, sport="football"):
                 elif ty == "repere":
                     pdf.set_font("Helvetica", "B", 8.5); pdf.set_text_color(0, 200, 230)
                 elif ty == "revoir":
-                    pdf.set_font("Helvetica", "", 8.5); pdf.set_text_color(230, 190, 60)
+                    pdf.set_font("Helvetica", "", 8.5); pdf.set_text_color(*JAUNE_VERIF)
                 else:
                     pdf.set_font("Helvetica", "", 8.5); pdf.set_text_color(*GRAY_L)
                 pdf.cell(22, 6.2, clean(mn), fill=True, align="C")

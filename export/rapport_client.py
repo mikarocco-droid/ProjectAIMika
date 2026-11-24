@@ -1,8 +1,8 @@
 # export/rapport_client.py
 # 18/11/2026 — RÈGLES D'AFFICHAGE DU RAPPORT CLIENT (option B : rapport automatique PRUDENT), utilisées par export/pdf.py.
 #   • « Confirmé » n'a qu'UN sens : un but dont la détection est confirmée. Les autres buts détectés sont des
-#     « actions à revoir », jamais affichés comme des buts.
-#   • Score affiché SEULEMENT s'il est sûr : aucun but « à revoir » et tous les buts confirmés ont une équipe.
+#     « buts à vérifier » (24/11 : « à revoir » prêtait à confusion), jamais comptés comme des buts.
+#   • Score affiché SEULEMENT s'il est sûr : aucun but « à vérifier » et tous les buts confirmés ont une équipe.
 #     Sinon : nombre de buts confirmés par équipe, sans le présenter comme un score.
 #   • Équipes : noms donnés au paramétrage du match (SCOUTIA_EQUIPES), reliés aux tenues détectées par leur couleur ;
 #     sinon, couleurs en français (« Rouge et blanc », « Bleu »).
@@ -131,10 +131,12 @@ def resume_buts(buts, noms):
         else:
             sans_eq += 1
     if not a_revoir and not sans_eq:
-        return f"Score : {noms['A']}  {par_eq['A']} - {par_eq['B']}  {noms['B']}", "Tous les buts détectés sont confirmés."
+        n_u = sum(1 for b in conf if b.get("verdict_utilisateur") == "but")      # 24/11 : vérifiés par un utilisateur
+        return (f"Score : {noms['A']}  {par_eq['A']} - {par_eq['B']}  {noms['B']}",
+                "Tous les buts sont confirmés" + (f" (dont {n_u} vérifié(s) sur la vidéo par un utilisateur)." if n_u else "."))
     det = f"Buts confirmés : {noms['A']} {par_eq['A']}, {noms['B']} {par_eq['B']}"
     if sans_eq:
         det += f", équipe non identifiée {sans_eq}"
     if a_revoir:
-        det += f"  |  {len(a_revoir)} action(s) à revoir"
+        det += f"  |  {len(a_revoir)} but(s) à vérifier"
     return None, det + "  |  score non affiché tant que tout n'est pas confirmé"
