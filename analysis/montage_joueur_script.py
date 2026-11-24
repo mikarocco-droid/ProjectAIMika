@@ -151,12 +151,17 @@ def _fiche_joueur(trouve, presence_s=0.0, n_passages=0, n_moments=0, buts_conf=(
         _mn = lambda g: minute_de_match(g, _ko1, _bn)
         _raison = lambda r: (r or "").replace("touche(s) dans les 15 s avant", "touche(s) juste avant") \
                                      .replace("reconnu ≈", "présent").replace("dans les 8 s avant", "juste avant")
-        _fp = generer_fiche_joueur(f"{SORTIE}/fiche_joueur_{MATCH}_{NUMERO}.pdf", NUMERO,
-                                   (f"gardien, équipe {COULEUR}" if GARDIEN else COULEUR), trouve,
-                                   presence_s=presence_s, n_passages=n_passages, n_moments_ballon=n_moments,
-                                   buts_confirmes=[(_mn(g), _raison(r) or "présent") for g, r in buts_conf],
-                                   buts_possibles=[(_mn(g), _raison(r)) for g, r in buts_poss], match=MATCH,
-                                   **opt_fiche)
+        _args_f = dict(chemin_pdf=f"{SORTIE}/fiche_joueur_{MATCH}_{NUMERO}.pdf", numero=NUMERO,
+                       couleur=(f"gardien, équipe {COULEUR}" if GARDIEN else COULEUR), trouve=trouve,
+                       presence_s=presence_s, n_passages=n_passages, n_moments_ballon=n_moments,
+                       buts_confirmes=[(_mn(g), _raison(r) or "présent") for g, r in buts_conf],
+                       buts_possibles=[(_mn(g), _raison(r)) for g, r in buts_poss], match=MATCH, **opt_fiche)
+        _fp = generer_fiche_joueur(**_args_f)
+        # 24/11/2026 : données de la fiche gardées → l'application la refait quand l'utilisateur indique buteur / passeur
+        try:
+            json.dump(_args_f, open(f"{SORTIE}/fiche_donnees_{MATCH}_{NUMERO}.json", "w", encoding="utf-8"), ensure_ascii=False)
+        except Exception as _e_fd:
+            print(f"   ⚠️ données de la fiche non enregistrées : {_e_fd}")
         print(f"   FICHE JOUEUR : {_fp}")
         _rap = ([P["RAPPORT_PDF"]] if P.get("RAPPORT_PDF") and os.path.exists(P["RAPPORT_PDF"]) else []) or \
             sorted(_g_f.glob(f"{SORTIE}/rapport_{MATCH}*.pdf") + _g_f.glob(f"{SORTIE}/apercu_{MATCH}.pdf")
@@ -1881,6 +1886,7 @@ with open(f"{SORTIE}/touches_v31_{MATCH}_{NUMERO}_{COULEUR.replace(' ', '_')}.cs
 _buts_joueur = []
 _FICHE_BUTS_CONF, _FICHE_BUTS_POSS = [], []     # 18/11 : pour la fiche « Bilan du joueur »
 _CHRONO_BUTS = []      # 24/11 : (heure, confirmé, impliqué) pour la chronologie de la fiche
+_TOUCHES_ECARTEES = []  # 24/11 : touches écartées (vérification Gemini, 6 mètres…) → « moments à voir » du montage
 # 19/11 : secondes montrées AVANT l'heure d'un but. Un but non confirmé est souvent daté d'après le coup d'envoi qui
 # suit (heure du but inconnue) : si le coup d'envoi a tardé (changement de joueur…), le but est bien plus tôt
 # (SRU : but réel 89:52, daté 90:53 → la séquence ne montrait que le replacement des joueurs).
@@ -2034,6 +2040,7 @@ if GARDIEN:
             _gardees.append((a_, b_, ty_))
         else:
             _retirees.append((a_, b_, "6 mètres" if any(abs(m_ - k) <= 40 for k in _six) else "relance / action isolée"))
+            _TOUCHES_ECARTEES.append((a_, b_))
     if not GARDIEN_TYPE_GEMINI:
         print(f"   GARDIEN — ses actions : {len(_gardees)} gardée(s) (près d'un tir, d'un but ou d'un coup de pied arrêté adverse) "
               f"| {len(_retirees)} retirée(s) : " + (", ".join(f"{fmt(a_)} ({r_})" for a_, _, r_ in _retirees) or "aucune"))
@@ -2116,6 +2123,7 @@ if VERIF_TOUCHES and _fus and GEMINI_KEY:
           f"ballon, ou relance du gardien) : " + (", ".join(f"{fmt(f_[0])} ({_raison_t.get(f_[0], '?')})" for f_ in sorted(_non_t)) or "aucune")
           + (" | gardées : " + ", ".join(f"{fmt(f_[0])} ({_type_t.get(f_[0], '')})" for f_ in sorted(_ok_t)) if GARDIEN else "") + f" | {_jet_t['q']} question(s) ≈ {_cout_t:.3f} $")
     _fus = sorted(_ok_t, key=lambda f_: f_[0])
+    _TOUCHES_ECARTEES += [(f_[0], f_[1]) for f_ in _non_t]      # 24/11 : proposées dans « Composer son montage »
 # 24/11/2026 : chronologie de la fiche (frise + tableau) : buts du match, ses actions, ses arrêts (gardien)
 _chrono_f = ([{"t_abs": g, "type": "but_implique" if imp else "but", "conf": cf} for g, cf, imp in _CHRONO_BUTS]
              + [{"t_abs": (a_ + b_) / 2, "type": "moment"} for a_, b_, _ in _fus]
@@ -2394,6 +2402,43 @@ for i, (a0, b0) in enumerate(sequences, 1):
                    round(s_cons, 1)])
     print(f"     séquence {i:2d} : vidéo {fmt(a)} → {fmt(b)} ({b - a:.0f} s, repère lu {s_lu:.0f} s, raccord {s_rac:.0f} s"
           + (f", consensus {s_cons:.0f} s" if CONSENSUS_TEMPORAL else "") + ")")
+# 24/11/2026 : « COMPOSER SON MONTAGE » — chaque séquence du montage + les touches écartées (« moments à voir »,
+# avec le même repère), décrites dans sequences.json (même format que le résumé du match). Le montage de base est
+# inchangé ; l'application assemble les séquences cochées dans l'ordre du match, sans réencoder.
+_SEQ_J = []
+try:
+    from export.rapport_client import minute_de_match as _mdm_j
+except Exception:
+    _mdm_j = None
+_mn_j = lambda t: (_mdm_j(t, _bornes_f.get("ko1", KO), _bornes_f) if _mdm_j else f"{int(max(0, t - KO) // 60)}'")
+for i, (a0, b0) in enumerate(sequences, 1):
+    a, b = max(0.0, a0 - MARGE_AVANT), b0 + MARGE_APRES
+    if os.path.exists(f"{dossier_clips}/seq_{i:02d}.mp4"):
+        _g_in = [g for g in _buts_joueur if a0 <= g <= b0]
+        _SEQ_J.append({"fichier": f"seq_{i:02d}.mp4", "debut": round(a, 1), "fin": round(b, 1),
+                       "minute": _mn_j(_g_in[0] if _g_in else (a0 + b0) / 2), "type": "but" if _g_in else "action",
+                       "dans_resume": True})
+_aut_j = []
+for a_, b_ in sorted(_TOUCHES_ECARTEES):
+    a, b = max(0.0, a_ - TOUCHE_AVANT - MARGE_AVANT), b_ + TOUCHE_APRES + MARGE_APRES
+    if any(a <= x["fin"] and b >= x["debut"] for x in _SEQ_J):
+        continue                                   # déjà dans une séquence du montage
+    if _aut_j and a <= _aut_j[-1][1]:
+        _aut_j[-1][1] = max(_aut_j[-1][1], b)
+    else:
+        _aut_j.append([a, b])
+for k, (a, b) in enumerate(_aut_j, 1):
+    clip = f"{dossier_clips}/autre_{k:02d}.mp4"
+    ok_c = extrait_avec_repere(a, b, clip)[0]
+    if ok_c:
+        _SEQ_J.append({"fichier": f"autre_{k:02d}.mp4", "debut": round(a, 1), "fin": round(b, 1),
+                       "minute": _mn_j((a + b) / 2), "type": "moment à voir", "dans_resume": False})
+_SEQ_J.sort(key=lambda x: x["debut"])
+for k, x in enumerate(_SEQ_J):
+    x["id"] = f"s{k:03d}"
+json.dump(_SEQ_J, open(f"{dossier_clips}/sequences.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+print(f"   COMPOSER SON MONTAGE : {sum(1 for x in _SEQ_J if x['dans_resume'])} séquence(s) du montage + "
+      f"{sum(1 for x in _SEQ_J if not x['dans_resume'])} moment(s) à voir → {dossier_clips}/sequences.json")
 for c in _caps:
     c.release()
 suffixe = "_essai" if MODE == "essai" else ""
@@ -2502,6 +2547,9 @@ _mont_p = f"{SORTIE}/montage_v30_{MATCH}_{NUMERO}_{COULEUR}.mp4"
 _ecrire_resultat(trouve=True, montage=_mont_p if os.path.exists(_mont_p) else None,
                  fiche=f"{SORTIE}/fiche_joueur_{MATCH}_{NUMERO}.pdf" if os.path.exists(f"{SORTIE}/fiche_joueur_{MATCH}_{NUMERO}.pdf") else None,
                  rapport_et_fiche=f"{SORTIE}/rapport_{MATCH}_joueur{NUMERO}.pdf" if os.path.exists(f"{SORTIE}/rapport_{MATCH}_joueur{NUMERO}.pdf") else None,
+                 fiche_donnees=f"{SORTIE}/fiche_donnees_{MATCH}_{NUMERO}.json" if os.path.exists(f"{SORTIE}/fiche_donnees_{MATCH}_{NUMERO}.json") else None,
+                 sequences_joueur=dossier_clips if os.path.exists(f"{dossier_clips}/sequences.json") else None,
+                 buts_impliques=[round(g, 1) for g, _cf, imp in _CHRONO_BUTS if imp],
                  gardien=bool(GARDIEN), presence_s=round(float(_presence), 1), passages=len(retenus), moments_ballon=len(_fus),
                  buts_confirmes=[round(g, 1) for g, _ in _FICHE_BUTS_CONF], buts_possibles=[round(g, 1) for g, _ in _FICHE_BUTS_POSS],
                  arrets=[t for t, _ in _ARRETS], tirs_adverses=[t for t, _ in _TIRS_ADV],
