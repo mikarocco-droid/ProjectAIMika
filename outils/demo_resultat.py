@@ -55,7 +55,14 @@ def main():
               "buts": buts}
     if a.joueur:      # 24/11/2026 : section « joueur » de la page (montage, fiche, rôle dans les buts)
         dj = os.path.abspath(a.joueur)
-        rj = json.load(open(os.path.join(dj, "resultat_montage_joueur.json"), encoding="utf-8"))
+        # 24/11 : le fichier peut être dans un sous-dossier (archive dézippée dans un dossier du même nom)
+        _rj = sorted(glob.glob(os.path.join(dj, "**", "resultat_montage_joueur.json"), recursive=True), key=len)
+        if not _rj:
+            raise SystemExit(f"❌ resultat_montage_joueur.json introuvable dans {dj} : le montage du joueur est-il terminé, "
+                             f"et l'archive bien dézippée ?")
+        dj = os.path.dirname(_rj[0])
+        print(f"   dossier du joueur : {dj}")
+        rj = json.load(open(_rj[0], encoding="utf-8"))
         loc = lambda p: os.path.join(dj, os.path.basename(p)) if p and os.path.exists(os.path.join(dj, os.path.basename(p))) else None
         result["player_reel"] = loc(rj.get("montage"))
         result["joueur"] = {"demande": True, "trouve": bool(rj.get("trouve")), "numero": str(rj.get("numero") or ""),
