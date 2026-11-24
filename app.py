@@ -360,6 +360,18 @@ class RetourBut(db.Model):
     cree_le         = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class RetourRoleJoueur(db.Model):
+    """24/11/2026 : rôle du joueur suivi dans un but, donné par l'utilisateur (« buteur », « passeur », « aucun »)."""
+    id          = db.Column(db.Integer, primary_key=True)
+    analysis_id = db.Column(db.Integer, db.ForeignKey("analysis.id"), nullable=False)
+    user_id     = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    numero      = db.Column(db.String(8), nullable=True)
+    time_abs    = db.Column(db.Float, nullable=False)
+    role        = db.Column(db.String(10), nullable=False)
+    implique    = db.Column(db.Boolean, nullable=True)        # ce que l'analyse avait vu (implication)
+    cree_le     = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 class User(UserMixin, db.Model):
     id              = db.Column(db.Integer,     primary_key=True)
     email           = db.Column(db.String(150), unique=True, nullable=False)
@@ -642,6 +654,11 @@ def results(id):
         ligne_score = ligne_score,
         ligne_detail= ligne_detail,
         n_buts_confirmes = sum(1 for b in buts_page if b["statut"] in ("confirme", "par_vous")),
+        joueur      = _joueur_ok(result),
+        sequences_joueur = _sequences_joueur(result),
+        buts_joueur = [dict(b, role=(result.get("buts") or [])[b["i"]].get("role_joueur"),
+                            implique=any(abs(b["time_abs"] - float(x)) <= 5 for x in ((_joueur_ok(result) or {}).get("buts_impliques") or [])))
+                       for b in buts_page if b["statut"] != "ecarte"],
         n_buts_a_verifier = sum(1 for b in buts_page if b["statut"] == "a_verifier"),
         can_pdf     = current_user.can("pdf"),
         can_montage = current_user.can("montage")
@@ -728,6 +745,7 @@ def verdict_but(id, i):
     a.result_json = json.dumps(result)
     db.session.commit()
     _regenerer_rapport(a, result)
+    _regenerer_fiche(a, result)
     return redirect(url_for("results", id=id) + f"#but-{i}")
 
 
@@ -780,6 +798,7 @@ def ajouter_but(id):
     a.result_json = json.dumps(result)
     db.session.commit()
     _regenerer_rapport(a, result)
+    _regenerer_fiche(a, result)
     return redirect(url_for("results", id=id) + "#buts")
 
 
@@ -830,6 +849,165 @@ def _appliquer_verdicts_partages(a, result):
     buts.sort(key=lambda x: float(x.get("time_abs") or 0))
     result["verdicts_partages_appliques"] = sorted(deja)
     return change
+
+
+def _joueur_ok(result):
+    j = result.get("joueur") or {}
+    return j if j.get("demande") and j.get("trouve") else None
+
+
+def _regenerer_fiche(a, result):
+    """24/11/2026 : fiche du joueur refaite avec les buts tels que tranchés et le rôle du joueur (buteur / passeur)."""
+    j = _joueur_ok(result)
+    if not j or not j.get("fiche_donnees") or not os.path.exists(j["fiche_donnees"]):
+        return
+    try:
+        from export.fiche_joueur import generer_fiche_joueur, joindre_au_rapport
+        d = json.load(open(j["fiche_donnees"], encoding="utf-8"))
+        imp = [float(x) for x in j.get("buts_impliques") or []]
+        autres = [x for x in (d.get("chronologie") or []) if x.get("type") not in ("but", "but_implique")]
+        buts_ch = []
+        for b in _buts_effectifs(result):
+            t = float(b.get("time_abs") or 0)
+            role = b.get("role_joueur") if b.get("role_joueur") in ("buteur", "passeur") else None
+            buts_ch.append({"t_abs": t, "conf": b.get("status") == "confirmé", "role": role,
+                            "type": "but_implique" if any(abs(t - x) <= 5 for x in imp) else "but"})
+        d["chronologie"] = autres + buts_ch
+        d["chemin_pdf"] = j.get("fiche") or d["chemin_pdf"]      # chemin local (les données viennent parfois de Kaggle)
+        generer_fiche_joueur(**d)
+        if j.get("rapport_et_fiche") and result.get("pdf") and os.path.exists(result["pdf"]):
+            joindre_au_rapport(result["pdf"], d["chemin_pdf"], j["rapport_et_fiche"])
+    except Exception as e:
+        print(f"  [FICHE JOUEUR] non régénérée : {e}")
+
+
+@app.route("/joueur/<int:id>/roles", methods=["POST"])
+@login_required
+def roles_joueur(id):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        flash("Analyse introuvable")
+        return redirect(url_for("dashboard"))
+    result = json.loads(a.result_json) if a.result_json else {}
+    j = _joueur_ok(result)
+    if not j:
+        return redirect(url_for("results", id=id))
+    imp = [float(x) for x in j.get("buts_impliques") or []]
+    for i, b in enumerate(result.get("buts") or []):
+        r = request.form.get(f"role_{i}")
+        if r not in ("buteur", "passeur", "aucun") or r == b.get("role_joueur"):
+            continue
+        b["role_joueur"] = r
+        t = float(b.get("time_abs") or 0)
+        db.session.add(RetourRoleJoueur(analysis_id=a.id, user_id=current_user.id, numero=str(j.get("numero") or ""),
+                                        time_abs=t, role=r, implique=any(abs(t - x) <= 5 for x in imp)))
+    a.result_json = json.dumps(result)
+    db.session.commit()
+    _regenerer_fiche(a, result)
+    flash("Rôle du joueur enregistré : sa fiche est mise à jour.")
+    return redirect(url_for("results", id=id) + "#joueur")
+
+
+def _sequences_joueur(result):
+    """24/11/2026 : séquences du montage du joueur (« Composer son montage »)."""
+    j = _joueur_ok(result) or {}
+    d = j.get("sequences")
+    if not d or not os.path.exists(os.path.join(d, "sequences.json")):
+        return []
+    try:
+        seqs = json.load(open(os.path.join(d, "sequences.json"), encoding="utf-8"))
+    except Exception:
+        return []
+    choisis = None
+    p = j.get("montage_perso")
+    if p and os.path.exists(p + ".json"):
+        choisis = set(json.load(open(p + ".json", encoding="utf-8")))
+    for x in seqs:
+        x["coche"] = (x["id"] in choisis) if choisis is not None else bool(x.get("dans_resume"))
+        x["duree"] = int(round(float(x["fin"]) - float(x["debut"])))
+    return sorted(seqs, key=lambda x: x["debut"])
+
+
+@app.route("/stream/<int:id>/joueur_sequence/<sid>")
+@login_required
+def stream_joueur_sequence(id, sid):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id or not re.fullmatch(r"s\d{3}", sid or ""):
+        return "Forbidden", 403
+    result = json.loads(a.result_json) if a.result_json else {}
+    x = next((q for q in _sequences_joueur(result) if q["id"] == sid), None)
+    if not x:
+        return "Introuvable", 404
+    return send_from_directory(result["joueur"]["sequences"], x["fichier"])
+
+
+@app.route("/joueur/<int:id>/composer", methods=["POST"])
+@login_required
+def composer_joueur(id):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        flash("Analyse introuvable")
+        return redirect(url_for("dashboard"))
+    result = json.loads(a.result_json) if a.result_json else {}
+    j = _joueur_ok(result)
+    ids = [x for x in request.form.getlist("seqj") if re.fullmatch(r"s\d{3}", x)]
+    if not j or not j.get("sequences") or not ids:
+        flash("Choisissez au moins une séquence.")
+        return redirect(url_for("results", id=id) + "#joueur")
+    from export.resume_match import recomposer_resume
+    out = recomposer_resume(j["sequences"], ids, os.path.join(j["sequences"], "montage_perso.mp4"))
+    if not out:
+        flash("Le montage n'a pas pu être refait. Réessayez.")
+        return redirect(url_for("results", id=id) + "#joueur")
+    json.dump(ids, open(out + ".json", "w", encoding="utf-8"))
+    result["joueur"]["montage_perso"] = out
+    a.result_json = json.dumps(result)
+    db.session.commit()
+    return redirect(url_for("results", id=id) + "#joueur")
+
+
+@app.route("/stream/<int:id>/joueur_perso")
+@login_required
+def stream_joueur_perso(id):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        return "Forbidden", 403
+    p = ((json.loads(a.result_json) if a.result_json else {}).get("joueur") or {}).get("montage_perso")
+    if not p or not os.path.exists(p):
+        return "Introuvable", 404
+    if request.args.get("dl"):
+        return send_from_directory(os.path.dirname(p), os.path.basename(p), as_attachment=True,
+                                   download_name="scoutia_mon_montage_joueur.mp4")
+    return send_from_directory(os.path.dirname(p), os.path.basename(p))
+
+
+@app.route("/stream/<int:id>/joueur")
+@login_required
+def stream_joueur(id):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        return "Forbidden", 403
+    result = json.loads(a.result_json) if a.result_json else {}
+    p = result.get("player_reel")
+    if not p or not os.path.exists(p):
+        return "Introuvable", 404
+    if request.args.get("dl"):
+        return send_from_directory(os.path.dirname(p), os.path.basename(p), as_attachment=True)
+    return send_from_directory(os.path.dirname(p), os.path.basename(p))
+
+
+@app.route("/download/<int:id>/fiche")
+@login_required
+def download_fiche(id):
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        return "Forbidden", 403
+    j = _joueur_ok(json.loads(a.result_json) if a.result_json else {}) or {}
+    p = j.get("fiche")
+    if not p or not os.path.exists(p):
+        return "Introuvable", 404
+    return send_from_directory(os.path.dirname(p), os.path.basename(p), as_attachment=True,
+                               download_name=f"scoutia_fiche_joueur_{j.get('numero', '')}.pdf")
 
 
 def _regenerer_rapport(a, result):

@@ -5083,7 +5083,11 @@ def run_pipeline(
             _joueur_info = {"demande": True, "numero": str(_num), "couleur": _coul, "gardien": _gard,
                             "trouve": bool(_res_j.get("trouve") and _res_j.get("montage")),
                             "nb_actions": int(_res_j.get("moments_ballon") or 0), "presence_s": _res_j.get("presence_s"),
-                            "fiche": _res_j.get("fiche"), "message": _res_j.get("message")}
+                            "fiche": _res_j.get("fiche"), "message": _res_j.get("message"),
+                            # 24/11/2026 : pour la page du joueur (buteur / passe décisive) et la fiche refaite
+                            "fiche_donnees": _res_j.get("fiche_donnees"), "rapport_et_fiche": _res_j.get("rapport_et_fiche"),
+                            "buts_impliques": _res_j.get("buts_impliques") or [], "moments": _res_j.get("moments_ballon"),
+                            "sequences": _res_j.get("sequences_joueur")}      # 24/11 : « Composer son montage »
             if _res_j.get("erreur") and not _joueur_info["message"]:
                 _joueur_info["message"] = (f"Le résumé du joueur n°{_num} n'a pas pu être produit. Le résumé du match vous "
                                            f"est livré normalement ; vous pouvez relancer l'analyse.")
