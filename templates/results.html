@@ -244,13 +244,15 @@
       <span class="result-section-title">Le match du n°{{ joueur.numero }}{% if joueur.couleur %} ({{ joueur.couleur }}){% endif %}{% if joueur.gardien %} — gardien{% endif %}</span>
     </div>
     <div class="result-section-body">
-      {% if result.player_reel %}
+      {# 25/11/2026 : le montage affiché est le plus récent (refait après vos réponses sur les buts, ou composé par vous) #}
+      {% set src_m = ("/stream/" ~ analysis.id ~ "/joueur_perso") if joueur.montage_perso else ("/stream/" ~ analysis.id ~ "/joueur") %}
+      {% if result.player_reel or joueur.montage_perso %}
       <div class="video-container" style="margin-bottom:10px">
-        <video controls preload="metadata"><source src="/stream/{{ analysis.id }}/joueur" type="video/mp4"></video>
+        <video controls preload="metadata"><source src="{{ src_m }}" type="video/mp4"></video>
       </div>
       {% endif %}
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
-        {% if result.player_reel %}<a href="/stream/{{ analysis.id }}/joueur?dl=1" class="btn-secondary">⬇ Son montage</a>{% endif %}
+        {% if result.player_reel or joueur.montage_perso %}<a href="{{ src_m }}?dl=1" class="btn-secondary">⬇ Son montage</a>{% endif %}
         {% if joueur.fiche %}<a href="/download/{{ analysis.id }}/fiche" class="btn-secondary">⬇ Sa fiche (PDF)</a>{% endif %}
       </div>
       {# 25/11/2026 : seulement les buts CONFIRMÉS (par l'analyse ou par l'utilisateur, section « Buts » au-dessus) #}
@@ -282,7 +284,7 @@
       {% if sequences_joueur %}
       <details style="margin:18px 0 6px" open>
         <summary style="cursor:pointer;color:var(--cyan)">✂️ Composer le montage du n°{{ joueur.numero }} (ses séquences à lui)</summary>
-        {% if joueur.montage_perso %}
+        {% if joueur.montage_perso and joueur.montage_perso_manuel %}
         <p style="margin:10px 0 6px"><strong>Votre montage</strong></p>
         <div class="video-container" style="margin-bottom:8px">
           <video controls preload="metadata"><source src="/stream/{{ analysis.id }}/joueur_perso" type="video/mp4"></video>
