@@ -24,6 +24,11 @@ APRES_BUT_POSSIBLE = 20.0     # 21/11 : après un but NON confirmé — son heur
 AVANT_OCCASION, APRES_OCCASION = 12.0, 8.0   # 21/11 : 6 → 8 s (heure d'une occasion parfois approximative)
 ECART_FUSION = 3.0            # deux séquences à moins de 3 s l'une de l'autre n'en font qu'une
 MAX_AUTRES = 40               # au plus 40 « autres moments » proposés
+# 23/11 : durée MAXIMALE du résumé de base (Baelen : 44 séquences, 21 min). Les buts entrent toujours ; puis les occasions
+# par ordre de priorité de leur type ; celles qui ne tiennent pas passent dans les « autres moments » (décochées) :
+# rien n'est perdu, l'utilisateur peut les rajouter. SCOUTIA_RESUME_MAX_MIN=0 → pas de limite.
+RESUME_MAX_MIN = float(os.environ.get("SCOUTIA_RESUME_MAX_MIN", "12"))
+_PRIORITE = {"poteau": 0, "sauvé sur la ligne": 0, "arrêt": 1, "tir à côté": 2, "occasion": 3, "tir contré": 4}
 
 # Mots des descriptions de Gemini qui signalent un moment à proposer (en plus du résumé de base)
 _AUTRES_MOTS = [("ballon contré", r"\bblock(?:ed|s)\b|\bdeflect"),
@@ -32,6 +37,19 @@ _AUTRES_MOTS = [("ballon contré", r"\bblock(?:ed|s)\b|\bdeflect"),
 _AUTRES_NEG = re.compile(r"\bno (shot|save|chance|attempt)|without (a |any )?shot|no dangerous|harmless", re.I)
 _LIBELLES = {"SAVE": "arrêt", "WIDE": "tir à côté", "WOODWORK": "poteau", "POST": "poteau", "BLOCKED": "tir contré",
              "LINE_CLEARANCE": "sauvé sur la ligne", "Occasion": "occasion"}
+
+
+def _ffmpeg():
+    """Chemin de ffmpeg : celui du système, sinon celui fourni par le paquet Python imageio-ffmpeg (pratique sous Windows,
+    sans droits d'administrateur : python -m pip install imageio-ffmpeg). None si aucun."""
+    p = shutil.which("ffmpeg")
+    if p:
+        return p
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
 
 
 def autres_moments(textes, deja=(), buts=()):
@@ -90,10 +108,10 @@ def fenetres_resume(buts, occasions, duree_video=None):
 
 def _decouper(video, a, b, m, copie):
     if copie:      # qualité identique à l'origine (aucune recompression) ; départ sur l'image-clé précédente
-        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{a:.2f}", "-i", video, "-t", f"{b - a:.2f}",
+        cmd = [_ffmpeg() or "ffmpeg", "-y", "-loglevel", "error", "-ss", f"{a:.2f}", "-i", video, "-t", f"{b - a:.2f}",
                "-c", "copy", "-avoid_negative_ts", "make_zero", m]
     else:
-        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{a:.2f}", "-i", video, "-t", f"{b - a:.2f}",
+        cmd = [_ffmpeg() or "ffmpeg", "-y", "-loglevel", "error", "-ss", f"{a:.2f}", "-i", video, "-t", f"{b - a:.2f}",
                "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-c:a", "aac", "-b:a", "128k", "-pix_fmt", "yuv420p", m]
     r = subprocess.run(cmd, capture_output=True, text=True)
     return r.returncode == 0 and os.path.exists(m), (r.stderr or "")[:80]
@@ -104,7 +122,7 @@ def _assembler(fichiers, sortie_mp4):
     liste = os.path.join(tmp, "liste.txt")
     with open(liste, "w") as fl:
         fl.writelines(f"file '{os.path.abspath(m)}'\n" for m in fichiers)
-    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", liste, "-c", "copy",
+    r = subprocess.run([_ffmpeg() or "ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", liste, "-c", "copy",
                         "-movflags", "+faststart", sortie_mp4], capture_output=True, text=True)
     shutil.rmtree(tmp, ignore_errors=True)
     return sortie_mp4 if r.returncode == 0 and os.path.exists(sortie_mp4) else None
@@ -115,10 +133,22 @@ def monter_resume_match(video, buts, occasions, sortie, nom="resume_match.mp4", 
     """Résumé de base + toutes les séquences (dont « autres moments », décochés) dans sortie/sequences/."""
     if copie is None:
         copie = os.environ.get("SCOUTIA_RESUME_COPIE", "1").strip() != "0"
-    if not shutil.which("ffmpeg"):
+    if not _ffmpeg():
         print("  [RÉSUMÉ MATCH] ffmpeg absent : résumé non produit")
         return None
     base = fenetres_resume(buts, occasions, duree_video)
+    trop = []
+    if RESUME_MAX_MIN > 0 and sum(b - a for a, b, _ in base) > RESUME_MAX_MIN * 60:
+        garde_ = [x for x in base if x[2].startswith("but")]
+        reste_ = sorted((x for x in base if not x[2].startswith("but")), key=lambda x: (_PRIORITE.get(x[2], 3), x[0]))
+        tot = sum(b - a for a, b, _ in garde_)
+        for x in reste_:
+            if tot + (x[1] - x[0]) <= RESUME_MAX_MIN * 60:
+                garde_.append(x); tot += x[1] - x[0]
+            else:
+                trop.append(x)
+        base = sorted(garde_)
+        print(f"  [RÉSUMÉ MATCH] limité à {RESUME_MAX_MIN:.0f} min : {len(trop)} occasion(s) déplacée(s) dans les « autres moments »")
     # autres moments : jamais à cheval sur une séquence du résumé de base (séquences disjointes → recomposition simple)
     aut = []
     for o in autres or []:
@@ -129,7 +159,7 @@ def monter_resume_match(video, buts, occasions, sortie, nom="resume_match.mp4", 
         if any(a <= fb + ECART_FUSION and b >= fa - ECART_FUSION for fa, fb, _ in base):
             continue
         aut.append([a, b, str(o.get("label") or "moment")])
-    aut = _fusion(aut)
+    aut = _fusion(aut + [list(x) for x in trop])
     if not base and not aut:
         print("  [RÉSUMÉ MATCH] aucune séquence (ni but ni occasion)")
         return None
