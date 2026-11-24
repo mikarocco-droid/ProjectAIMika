@@ -35,8 +35,8 @@
       </div>
       <ul class="plan-features">
         <li>1 vidéo</li>
-        <li>Highlights automatiques</li>
-        <li>Rapport scout PDF</li>
+        <li>Résumé vidéo à composer</li>
+        <li>Rapport PDF du match</li>
         <li style="opacity:.4">Support</li>
       </ul>
       {% if current_user.is_authenticated %}
@@ -59,8 +59,8 @@
       </div>
       <ul class="plan-features">
         <li>1 vidéo analysée</li>
-        <li>Highlights automatiques</li>
-        <li>Rapport scout PDF</li>
+        <li>Résumé vidéo à composer</li>
+        <li>Rapport PDF du match</li>
         <li>Paiement unique</li>
       </ul>
       {% if current_user.is_authenticated %}
@@ -83,8 +83,8 @@
       </div>
       <ul class="plan-features">
         <li>20 vidéos / mois</li>
-        <li>Highlights automatiques</li>
-        <li>Rapport scout PDF</li>
+        <li>Résumé vidéo à composer</li>
+        <li>Rapport PDF du match</li>
         <li>Support email</li>
       </ul>
       {% if current_user.is_authenticated %}
@@ -110,8 +110,8 @@
       </div>
       <ul class="plan-features">
         <li>100 vidéos / mois</li>
-        <li>Highlights automatiques</li>
-        <li>Rapport scout PDF</li>
+        <li>Résumé vidéo à composer</li>
+        <li>Rapport PDF du match</li>
         <li>Support prioritaire</li>
       </ul>
       {% if current_user.is_authenticated %}
@@ -135,27 +135,27 @@
 
     <div class="faq-item">
       <div class="faq-q">C'est quoi exactement une "analyse" ?</div>
-      <div class="faq-a">Tu uploades une vidéo de match, et ScoutIA repère automatiquement les buts et les occasions dangereuses (tirs, arrêts du gardien, poteaux). Tu reçois un résumé vidéo des moments clés, la liste des buts et des occasions avec leur minute de jeu, la possession par équipe et un rapport PDF. Chaque but est marqué « confirmé » ou « à vérifier ».</div>
+      <div class="faq-a">Tu uploades une vidéo de match, et ScoutIA repère automatiquement les buts et les occasions dangereuses (tirs, arrêts du gardien, poteaux). Tu reçois un résumé vidéo des moments clés (que tu peux recomposer toi-même), la liste des buts avec leur minute de jeu et un rapport PDF avec la chronologie du match. Chaque but est marqué « confirmé » ou « à vérifier » ; tu peux confirmer un but, en écarter un ou en ajouter un oublié, et le score se complète. En option, le montage et la fiche d'un joueur choisi.</div>
     </div>
 
     <div class="faq-item">
       <div class="faq-q">Quels formats vidéo sont acceptés ?</div>
-      <div class="faq-a">MP4, AVI, MOV, MKV — jusqu'à 10 GB par vidéo. Une caméra de smartphone suffit si l'angle couvre bien le terrain.</div>
+      <div class="faq-a">MP4, AVI, MOV, MKV — jusqu'à 10 GB par vidéo. ScoutIA est mis au point sur des vidéos de caméras automatiques (type Veo) qui couvrent tout le terrain. Avec une autre caméra, il fonctionne si l'angle couvre bien le terrain, mais les résultats peuvent être moins bons.</div>
     </div>
 
     <div class="faq-item">
       <div class="faq-q">Combien de temps dure une analyse ?</div>
-      <div class="faq-a">Environ 20-30 min pour un match court (15 min de vidéo), 1h à 2h pour un match complet (90 min). Tu peux fermer l'onglet — une notification t'attend quand c'est prêt.</div>
+      <div class="faq-a">Environ 2 h pour un match complet, un peu plus si tu demandes le montage d'un joueur. Tu peux fermer l'onglet — une notification t'attend quand c'est prêt.</div>
     </div>
 
     <div class="faq-item">
       <div class="faq-q">La qualité vidéo doit être parfaite ?</div>
-      <div class="faq-a">Non. ScoutIA fonctionne avec des vidéos filmées depuis les tribunes ou sur trépied. L'important est d'avoir une vue d'ensemble du terrain. Les vidéos très floues ou très zoomées donnent de moins bons résultats.</div>
+      <div class="faq-a">Non. L'important est d'avoir une vue d'ensemble du terrain. Le résumé vidéo garde la qualité de ta vidéo. Les matchs de nuit, les vidéos floues ou très zoomées donnent de moins bons résultats : plus de buts « à vérifier », et des numéros de joueurs plus difficiles à lire.</div>
     </div>
 
     <div class="faq-item">
       <div class="faq-q">Que signifie un but « à vérifier » ?</div>
-      <div class="faq-a">ScoutIA a vu une action qui ressemble fortement à un but (célébration, reprise du jeu au centre), sans pouvoir le confirmer avec certitude. Un coup d'œil sur la vidéo, à la minute indiquée, permet de trancher. Nous préférons te le signaler honnêtement plutôt que d'annoncer un but incertain comme acquis.</div>
+      <div class="faq-a">ScoutIA a vu une action qui ressemble fortement à un but (célébration, reprise du jeu au centre), sans pouvoir le confirmer avec certitude. Sur la page de résultats, tu regardes sa séquence et tu cliques « C'est un but » (avec l'équipe) ou « Pas un but » : le score et le PDF se mettent à jour. Nous préférons te le signaler honnêtement plutôt que d'annoncer un but incertain comme acquis.</div>
     </div>
 
     <div class="faq-item">
@@ -165,7 +165,7 @@
 
     <div class="faq-item">
       <div class="faq-q">Les données des joueurs sont-elles sécurisées ?</div>
-      <div class="faq-a">Oui. La vidéo d'origine est supprimée dès la fin de l'analyse. Les résultats (résumé vidéo, rapport) sont conservés pendant une durée limitée selon ta formule, puis supprimés automatiquement. Rien n'est jamais partagé avec des tiers.</div>
+      <div class="faq-a">La vidéo d'origine est supprimée dès la fin de l'analyse. Les résultats (résumé vidéo, séquences, rapport) sont conservés pendant une durée limitée selon ta formule, puis supprimés automatiquement. Pour l'analyse, des images du match sont envoyées au service d'intelligence artificielle de Google (Gemini), qui agit comme sous-traitant. Les confirmations de buts sont rattachées au match : si la même vidéo est envoyée par un autre utilisateur, il voit les buts déjà confirmés. Rien n'est vendu ni utilisé à des fins publicitaires.</div>
     </div>
 
     <div class="faq-item">
