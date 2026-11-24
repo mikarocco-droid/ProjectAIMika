@@ -160,7 +160,7 @@
           <span class="hl-time">{{ b.minute }}</span>
           <span class="hl-xg">vidéo {{ b.video }}</span>
           {% if b.statut == 'confirme' %}<span class="hl-badge goal">but confirmé</span>
-          {% elif b.statut == 'par_vous' %}<span class="hl-badge goal">but confirmé par vous</span>
+          {% elif b.statut == 'par_vous' %}<span class="hl-badge goal">{% if b.ajoute %}but ajouté par vous{% else %}but confirmé par vous{% endif %}</span>
           {% elif b.statut == 'ecarte' %}<span class="hl-badge other">pas un but (selon vous)</span>
           {% else %}<span class="hl-badge other">à vérifier</span>{% endif %}
           {% if b.equipe in ('A', 'B') and b.statut != 'ecarte' %}
@@ -190,6 +190,37 @@
         {% endif %}
       </div>
       {% endfor %}
+
+      <!-- 23/11/2026 : ajouter un but que l'analyse n'a pas trouvé — l'utilisateur MONTRE la séquence du but -->
+      <details id="ajouter-but" style="margin-top:14px">
+        <summary style="cursor:pointer;color:var(--cyan)">➕ Un but manque ? Montrez-le nous</summary>
+        <form method="post" action="/buts/{{ analysis.id }}/ajouter" style="margin-top:8px">
+          {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+          {% if candidats_but %}
+          <p style="margin:0 0 8px;color:var(--gray)">Regardez les séquences ci-dessous et cochez celle où le but est marqué.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;max-height:520px;overflow-y:auto">
+            {% for sq in candidats_but %}
+            <label style="display:block;border:1px solid var(--border);border-radius:8px;padding:6px;cursor:pointer">
+              <video controls preload="none" style="width:100%;border-radius:6px;background:#000">
+                <source src="/stream/{{ analysis.id }}/sequence/{{ sq.id }}" type="video/mp4">
+              </video>
+              <div style="margin-top:4px"><input type="radio" name="sequence" value="{{ sq.id }}">
+                <strong>{{ sq.minute }}</strong> · {{ sq.type }}</div>
+            </label>
+            {% endfor %}
+          </div>
+          <p style="margin:10px 0 4px;color:var(--gray)">Le but n'est dans aucune séquence ? Indiquez sa minute :</p>
+          {% endif %}
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <label>Minute du match : <input type="text" name="minute" placeholder="ex. 67 ou 45+2" size="8"></label>
+            <span>Équipe :</span>
+            {% for k in ('A', 'B') %}
+              <label style="cursor:pointer"><input type="radio" name="equipe" value="{{ k }}" required> {{ noms_eq[k] }}</label>
+            {% endfor %}
+            <button type="submit" class="btn-primary">Ajouter ce but</button>
+          </div>
+        </form>
+      </details>
     </div>
   </div>
   {% endif %}
