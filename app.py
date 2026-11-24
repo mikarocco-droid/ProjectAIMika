@@ -839,6 +839,7 @@ def verdict_but(id, i):
     db.session.commit()
     _regenerer_rapport(a, result)
     _regenerer_fiche(a, result)
+    _maj_montage_joueur(a, result)
     return redirect(url_for("results", id=id) + f"#but-{i}")
 
 
@@ -892,6 +893,7 @@ def ajouter_but(id):
     db.session.commit()
     _regenerer_rapport(a, result)
     _regenerer_fiche(a, result)
+    _maj_montage_joueur(a, result)
     return redirect(url_for("results", id=id) + "#buts")
 
 
@@ -1013,12 +1015,48 @@ def _sequences_joueur(result):
         return []
     choisis = None
     p = j.get("montage_perso")
-    if p and os.path.exists(p + ".json"):
+    if j.get("montage_perso_manuel") and p and os.path.exists(p + ".json"):
         choisis = set(json.load(open(p + ".json", encoding="utf-8")))
+    # 25/11/2026 : les séquences de buts suivent les buts TRANCHÉS du match (comme le résumé du match)
+    buts = []
+    for b in result.get("buts") or []:
+        v = b.get("verdict_utilisateur")
+        st = "ecarte" if v == "pas_but" else "valide" if (v == "but" or b.get("status") == "confirmé") else "a_verifier"
+        buts.append((float(b.get("time_abs") or 0), st))
     for x in seqs:
-        x["coche"] = (x["id"] in choisis) if choisis is not None else bool(x.get("dans_resume"))
+        dedans = [st for t, st in buts if float(x["debut"]) <= t <= float(x["fin"])]
+        base = bool(x.get("dans_resume"))
+        if "valide" in dedans:
+            x["type"] = "but"
+        elif dedans and all(st == "ecarte" for st in dedans):
+            x["type"] = "action (pas un but)"
+            base = False
+        elif dedans:
+            x["type"] = "but possible"
+        x["coche"] = (x["id"] in choisis) if choisis is not None else base
         x["duree"] = int(round(float(x["fin"]) - float(x["debut"])))
     return sorted(seqs, key=lambda x: x["debut"])
+
+
+def _maj_montage_joueur(a, result):
+    """25/11/2026 : après une réponse sur un but, le montage du joueur est refait sans les buts écartés (sauf si
+    l'utilisateur a composé son montage lui-même : ses choix priment)."""
+    j = _joueur_ok(result)
+    if not j or not j.get("sequences") or j.get("montage_perso_manuel"):
+        return
+    try:
+        from export.resume_match import recomposer_resume
+        ids = [x["id"] for x in _sequences_joueur(result) if x["coche"]]
+        if not ids:
+            return
+        out = recomposer_resume(j["sequences"], ids, os.path.join(j["sequences"], "montage_perso.mp4"))
+        if out:
+            json.dump(ids, open(out + ".json", "w", encoding="utf-8"))
+            result["joueur"]["montage_perso"] = out
+            a.result_json = json.dumps(result)
+            db.session.commit()
+    except Exception as e:
+        print(f"  [MONTAGE JOUEUR] non refait après la réponse : {e}")
 
 
 @app.route("/stream/<int:id>/joueur_sequence/<sid>")
@@ -1054,6 +1092,7 @@ def composer_joueur(id):
         return redirect(url_for("results", id=id) + "#joueur")
     json.dump(ids, open(out + ".json", "w", encoding="utf-8"))
     result["joueur"]["montage_perso"] = out
+    result["joueur"]["montage_perso_manuel"] = True
     a.result_json = json.dumps(result)
     db.session.commit()
     return redirect(url_for("results", id=id) + "#joueur")
