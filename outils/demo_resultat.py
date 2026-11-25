@@ -32,6 +32,13 @@ def main():
     dos = os.path.abspath(a.dossier)
     reel = next(iter(sorted(glob.glob(os.path.join(dos, "resume_*.mp4")))), None)
     seq = os.path.join(dos, "sequences")
+    # 25/11/2026 : résumé absent → refait ICI à partir des séquences (celles du résumé de base), sans Kaggle
+    if not reel and os.path.exists(os.path.join(seq, "sequences.json")):
+        from export.resume_match import recomposer_resume
+        ids = [x["id"] for x in json.load(open(os.path.join(seq, "sequences.json"), encoding="utf-8")) if x.get("dans_resume")]
+        print(f"   résumé absent : reconstruction à partir de {len(ids)} séquence(s)…")
+        reel = recomposer_resume(seq, ids, os.path.join(dos, "resume_reconstruit.mp4"))
+        print(f"   résumé reconstruit : {reel}" if reel else "   ❌ reconstruction impossible (ffmpeg ?)")
     if not reel or not os.path.exists(os.path.join(seq, "sequences.json")):
         raise SystemExit("❌ il faut resume_<match>.mp4 et sequences/sequences.json dans le dossier")
     be = next(iter(glob.glob(os.path.join(dos, "bout_en_bout_*.json"))), None)
