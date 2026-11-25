@@ -2170,6 +2170,28 @@ def run_pipeline(
                             if _gt_rd is not None:
                                 print(f"  [REDATAGE] candidat {_fmt_ko(_ko_t_abs)} : escalade sans heure, heure de la 1re "
                                       f"réponse reprise ({_fmt_ko(_gt_rd)})")
+                        # 25/11/2026 : GARDE — ne pas redater quand le candidat tardif date en fait la CÉLÉBRATION ou le
+                        # retour des joueurs (Stavelot B – Honsfeld B : but juste 02:20 déplacé à 02:46, « players are
+                        # celebrating/jogging back » à 02:46). La règle reste pour les heures de tir / ballon au fond
+                        # (Spa 39:06, Raeren 50:17). SCOUTIA_KO_REDATER_GARDE=0 → ancienne règle.
+                        if (_gt_rd is not None and _pre_r is not None
+                                and _os_finm.environ.get("SCOUTIA_KO_REDATER_GARDE", "1").strip() != "0"):
+                            import re as _re_rd
+                            _ev_rd = str(_pre_r.get("evidence_complete") or _pre_r.get("evidence") or "")
+                            _h_rd = f"{int(_gt_rd // 60):02d}:{int(_gt_rd % 60):02d}"
+                            _phr_rd = [ph for ph in _re_rd.split(r"(?<=[.;])\s+", _ev_rd) if _h_rd in ph]
+                            _celeb = _re_rd.compile(r"celebrat|jog(?:s|ging)? back|walk(?:s|ing)? back|run(?:s|ning)? back|"
+                                                    r"head(?:s|ing)? back|return(?:s|ing)? to (?:their|the)", _re_rd.I)
+                            # le moment du BUT lui-même (tir, ballon au fond, action ou attaque au but) : redatage permis
+                            _tir = _re_rd.compile(r"\bshot|\bshoots|scores?\b|scored|into the (?:back of the )?net|"
+                                                  r"ball (?:is )?in(?:side)? the (?:net|goal)|cross(?:es|ed)? the (?:goal ?)?line|"
+                                                  r"beats? the (?:goal)?keeper|header|attack(?:s|ed|ing)?\b[^.;]{0,30}goal|"
+                                                  r"(?:action|play|chance) (?:at|around|near|in front of) the goal|"
+                                                  r"goalkeeper (?:div|beaten|reacts)", _re_rd.I)
+                            if _phr_rd and any(_celeb.search(ph) for ph in _phr_rd) and not any(_tir.search(ph) for ph in _phr_rd):
+                                print(f"  [REDATAGE] refusé : à {_h_rd}, le candidat {_fmt_ko(_ko_t_abs)} décrit la célébration "
+                                      f"ou le retour des joueurs, pas le but — heure retenue gardée")
+                                _gt_rd = None
                         if (_gt_rd is not None and _os_finm.environ.get("SCOUTIA_KO_REDATER", "").strip() == "1"):
                             _pre_gt = _gt_rd
                             _ct_proche = min(_already_confirmed, key=lambda ct: abs(_pre_gt - ct))
