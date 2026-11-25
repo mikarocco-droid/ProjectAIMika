@@ -246,6 +246,8 @@ def _supprimer_compte(user):
         RetourRoleJoueur.query.filter_by(analysis_id=a.id).delete()
     RetourBut.query.filter_by(user_id=user.id).delete()
     RetourRoleJoueur.query.filter_by(user_id=user.id).delete()
+    LotJeton.query.filter_by(user_id=user.id).delete()
+    MouvementJeton.query.filter_by(user_id=user.id).delete()
     Analysis.query.filter_by(user_id=user.id).delete()
     db.session.delete(user)
     db.session.commit()
@@ -271,6 +273,10 @@ def supprimer_mon_compte():
     u = db.session.get(User, current_user.id)
     if u and u.stripe_sub:
         flash("Résiliez d'abord votre abonnement (tableau de bord → gérer l'abonnement), puis supprimez votre compte.")
+        return redirect(url_for("confidentialite") + "#droits")
+    if u and u.solde_jetons(essai_compris=False) and request.form.get("perte_jetons") != "1":
+        flash(f"Il vous reste {u.solde_jetons(essai_compris=False)} jetons achetés : ils seront perdus. Cochez la case "
+              f"de confirmation pour supprimer quand même votre compte.")
         return redirect(url_for("confidentialite") + "#droits")
     logout_user()
     if u:
@@ -311,6 +317,12 @@ def cleanup_expired_outputs():
 
         if deleted:
             print(f"  Nettoyage : {deleted} analyse(s) expirée(s) purgées")
+        try:
+            n_exp = expirer_jetons()                                    # 25/11/2026
+            if n_exp:
+                print(f"  Nettoyage : {n_exp} jeton(s) expiré(s)")
+        except Exception as _e_exp:
+            print(f"  ⚠️  Expiration des jetons : {_e_exp}")
         # 24/11/2026 : confirmations de buts et rôles de joueur supprimés 12 mois après la fin de la saison du match
         n_r = 0
         for _M in (RetourBut, RetourRoleJoueur):
@@ -426,6 +438,32 @@ PARRAINAGE_FILLEULS_PAR_RECOMPENSE = 3   # 24/10/2026 : 1 analyse offerte par tr
 LIMITE_PREANALYSES_JOUR = 5              # 24/10/2026 : pré-analyses (appels Gemini) par utilisateur et par jour
 
 
+class LotJeton(db.Model):
+    """25/11/2026 : un lot de jetons (achat, bonus, essai, parrainage, geste commercial), avec sa date d'expiration.
+    Le solde = jetons restants des lots non expirés. Les jetons d'ESSAI ne paient qu'un « match sous 48 h »."""
+    id        = db.Column(db.Integer, primary_key=True)
+    user_id   = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    initial   = db.Column(db.Integer, nullable=False)
+    restants  = db.Column(db.Integer, nullable=False)
+    origine   = db.Column(db.String(20), nullable=False)      # achat, bonus, essai, parrainage, offert
+    essai     = db.Column(db.Boolean, default=False)
+    expire_le = db.Column(db.DateTime, nullable=False)
+    ref       = db.Column(db.String(120), nullable=True)      # session Stripe, motif…
+    cree_le   = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class MouvementJeton(db.Model):
+    """25/11/2026 : historique visible par l'utilisateur (achats, bonus, analyses, remboursements, expirations)."""
+    id          = db.Column(db.Integer, primary_key=True)
+    user_id     = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    quantite    = db.Column(db.Integer, nullable=False)        # + crédit, − débit
+    type        = db.Column(db.String(20), nullable=False)
+    libelle     = db.Column(db.String(200), nullable=True)
+    analysis_id = db.Column(db.Integer, nullable=True)
+    ref         = db.Column(db.String(120), nullable=True, index=True)
+    cree_le     = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 class RetourBut(db.Model):
     """23/11/2026 : verdict de l'utilisateur sur un but détecté (« c'est un but » / « pas un but », et l'équipe).
     Sert à mettre à jour SON résultat, et à constituer une vérité pour tester les règles de détection (jamais de
@@ -474,6 +512,17 @@ class User(UserMixin, db.Model):
     # 24/11/2026 : acceptation des conditions d'utilisation et de la politique de confidentialité
     cgu_acceptees_le       = db.Column(db.DateTime,    nullable=True)
     cgu_version            = db.Column(db.String(20),  nullable=True)
+
+    # 25/11/2026 : JETONS
+    def solde_jetons(self, essai_compris=True):
+        q = LotJeton.query.filter(LotJeton.user_id == self.id, LotJeton.restants > 0,
+                                  LotJeton.expire_le > datetime.utcnow())
+        if not essai_compris:
+            q = q.filter(db.or_(LotJeton.essai.is_(None), LotJeton.essai == False))  # noqa: E712
+        return sum(l.restants for l in q.all())
+
+    def jetons_essai(self):
+        return self.solde_jetons() - self.solde_jetons(essai_compris=False)
 
     def can(self, feature):
         return config.PLANS.get(self.plan, {}).get(feature, False)
@@ -552,6 +601,9 @@ class Analysis(db.Model):
     # 19/11/2026 : mode joueur — position (« gardien » → méthode du gardien) et couleur du maillot du gardien
     position_joueur         = db.Column(db.String(40), nullable=True)
     couleur_maillot_gardien = db.Column(db.String(20), nullable=True)
+    # 25/11/2026 : vitesse choisie (« rapide » ≈ 2 h, « 48h » économique) et jetons débités ([[lot, n], …])
+    vitesse                 = db.Column(db.String(10), nullable=True)
+    jetons_debites          = db.Column(db.Text, nullable=True)
     # 24/11/2026 : empreinte du CONTENU de la vidéo (taille + 3 morceaux) : la même vidéo envoyée par un autre utilisateur
     # reçoit les corrections de buts déjà faites
     empreinte_video         = db.Column(db.String(64), nullable=True, index=True)
@@ -605,6 +657,12 @@ def register():
                 user.parrain_id = _parrain.id
         db.session.add(user)
         db.session.commit()
+        # 25/11/2026 : jetons d'essai (réservés au « match sous 48 h »)
+        try:
+            crediter_jetons(user, config.JETONS_ESSAI, "essai",
+                            f"{config.JETONS_ESSAI} jetons offerts à l'inscription (un match sous 48 h)", essai=True)
+        except Exception as _e_ess:
+            print(f"  ⚠️  Jetons d'essai non crédités : {_e_ess}")
 
         login_user(user)
         flash("Compte cree avec succes !")
@@ -646,7 +704,11 @@ def index():
 
 @app.route("/pricing")
 def pricing():
-    return render_template("pricing.html", plans=config.PLANS)
+    # 25/11/2026 : jetons (paquets, coût de chaque offre)
+    return render_template("pricing.html", plans=config.PLANS, paquets=config.PAQUETS_JETONS,
+                           cout={f"{m}_{v}": n for (m, v), n in config.COUT_JETONS.items()},
+                           prix_jeton=config.JETON_PRIX_EUR, jetons_essai=config.JETONS_ESSAI,
+                           jetons_parrainage=config.JETONS_PARRAINAGE, validite=config.JETONS_VALIDITE_MOIS)
 
 
 @app.route("/dashboard")
@@ -667,6 +729,13 @@ def dashboard():
         used          = used,
         plan          = plan,
         analyses_left = current_user.analyses_left(),
+        # 25/11/2026 : jetons
+        solde_jetons  = current_user.solde_jetons(),
+        jetons_essai  = current_user.jetons_essai(),
+        cout_jetons   = {f"{m}_{v}": n for (m, v), n in config.COUT_JETONS.items()},
+        mouvements    = (MouvementJeton.query.filter_by(user_id=current_user.id)
+                         .order_by(MouvementJeton.cree_le.desc()).limit(30).all()),
+        jetons_parrainage = config.JETONS_PARRAINAGE,
         # 24/10/2026 : parrainage
         lien_parrainage   = url_for("register", ref=current_user.code_parrainage(), _external=True),
         filleuls_valides  = current_user.filleuls_valides(),
@@ -1312,8 +1381,8 @@ def get_upload_url():
     if not config.R2_ENABLED:
         return jsonify({"error": "R2 non configuré"}), 400
 
-    if current_user.analyses_left() <= 0:
-        return jsonify({"error": "quota_exceeded"}), 403
+    if current_user.solde_jetons() < min(config.COUT_JETONS.values()):          # 25/11/2026 : jetons
+        return jsonify({"error": "quota_exceeded", "message": "Solde de jetons insuffisant."}), 403
 
     filename     = request.json.get("filename", "video.mp4")
     content_type = request.json.get("content_type", "video/mp4")
@@ -1332,8 +1401,15 @@ def get_upload_url():
     if not presigned_url:
         return jsonify({"error": "impossible de générer l'URL"}), 500
 
+    vitesse = request.json.get("vitesse", "rapide")
+    vitesse = vitesse if vitesse in VITESSES else "rapide"
+    _msg_j = verifier_jetons(current_user, mode, vitesse)                     # 25/11/2026
+    if _msg_j:
+        return jsonify({"error": "quota_exceeded", "message": _msg_j}), 403
+
     # Crée l'analyse en BDD dès maintenant (status=pending)
     analysis = Analysis(
+        vitesse      = vitesse,
         user_id      = current_user.id,
         filename     = safe_filename,
         sport        = sport,
@@ -1368,6 +1444,12 @@ def upload_complete(id):
     if a.status != "pending":
         return jsonify({"error": "déjà lancé"}), 400
 
+    _msg_j = debiter_jetons(current_user, a, a.mode, a.vitesse or "rapide")    # 25/11/2026 : débit à l'envoi complet
+    if _msg_j:
+        a.status, a.progress_msg = "error", _msg_j
+        db.session.commit()
+        return jsonify({"error": "quota_exceeded", "message": _msg_j}), 403
+
     # 24/10/2026 : même chemin que l'envoi direct (Celery si joignable) — avant : fil d'exécution DANS le serveur web
     _lancer_analyse(a.id, None, a.sport, current_user.plan, a.mode, a.player_id, r2_key=a.r2_video_key)
 
@@ -1380,8 +1462,8 @@ def upload_complete(id):
 @app.route("/upload", methods=["POST"])
 @login_required
 def upload():
-    if current_user.analyses_left() <= 0:
-        flash(f"Quota atteint pour votre plan {current_user.plan} — passez a Pro")
+    if current_user.solde_jetons() < min(config.COUT_JETONS.values()):          # 25/11/2026 : jetons
+        flash("Solde de jetons insuffisant — rechargez votre compte.")
         return redirect(url_for("pricing"))
 
     f         = request.files.get("video")
@@ -1540,6 +1622,14 @@ def upload():
     if mode not in ["match", "player"]:
         mode = "match"
 
+    # 25/11/2026 : vitesse choisie et jetons (vérifiés AVANT de créer l'analyse, débités juste après)
+    vitesse = request.form.get("vitesse", "rapide")
+    vitesse = vitesse if vitesse in VITESSES else "rapide"
+    _msg_j = verifier_jetons(current_user, mode, vitesse)
+    if _msg_j:
+        flash(_msg_j)
+        return redirect(url_for("dashboard"))
+
     analysis = Analysis(
         user_id   = current_user.id,
         filename  = filename,
@@ -1555,6 +1645,12 @@ def upload():
     )
     db.session.add(analysis)
     db.session.commit()
+    _msg_j = debiter_jetons(current_user, analysis, mode, vitesse)
+    if _msg_j:
+        analysis.status, analysis.progress_msg = "error", _msg_j
+        db.session.commit()
+        flash(_msg_j)
+        return redirect(url_for("dashboard"))
 
     # 24/10/2026 : chemin unique (Celery si joignable, sinon fil d'exécution), TOUS les paramètres transmis
     _lancer_analyse(analysis.id, path, sport, current_user.plan, mode, player_id,
@@ -1581,6 +1677,119 @@ def _mode_et_joueur(mode, player_id, numero, team_side, couleur_0=None, couleur_
             couleur = str(couleur or "").strip().lower().replace(" ", "_")
             player_id = f"{int(num)}_{couleur}" if couleur else str(int(num))
     return mode, player_id
+
+
+# ─────────────────────────────────────────
+# 25/11/2026 — JETONS : crédit, débit, remboursement, expiration
+# ─────────────────────────────────────────
+VITESSES = ("rapide", "48h")
+
+
+def _expiration_jetons():
+    d = datetime.utcnow()
+    m = d.month - 1 + config.JETONS_VALIDITE_MOIS
+    return d.replace(year=d.year + m // 12, month=m % 12 + 1, day=min(d.day, 28))
+
+
+def cout_jetons(mode, vitesse):
+    return config.COUT_JETONS.get(("player" if mode == "player" else "match", vitesse if vitesse in VITESSES else "rapide"))
+
+
+def crediter_jetons(user, n, origine, libelle, ref=None, essai=False):
+    if n <= 0:
+        return None
+    lot = LotJeton(user_id=user.id, initial=n, restants=n, origine=origine, essai=essai,
+                   expire_le=_expiration_jetons(), ref=ref)
+    db.session.add(lot)
+    db.session.add(MouvementJeton(user_id=user.id, quantite=n, type=origine, libelle=libelle, ref=ref))
+    db.session.commit()
+    return lot
+
+
+def verifier_jetons(user, mode, vitesse):
+    """None si l'utilisateur peut payer cette analyse, sinon le message à afficher."""
+    cout = cout_jetons(mode, vitesse)
+    utilisables = user.solde_jetons(essai_compris=(mode != "player" and vitesse == "48h"))
+    if utilisables >= cout:
+        return None
+    if user.jetons_essai() and (mode == "player" or vitesse != "48h"):
+        return (f"Vos {user.jetons_essai()} jetons offerts à l'inscription ne servent qu'à un « match sous 48 h » "
+                f"(mode économique). Pour cette analyse ({cout} jetons), achetez des jetons.")
+    return f"Solde insuffisant : cette analyse coûte {cout} jetons, il vous en reste {utilisables}."
+
+
+def debiter_jetons(user, analysis, mode, vitesse):
+    """Débite le coût de l'analyse (lots qui expirent le plus tôt d'abord ; jetons d'essai d'abord quand ils sont
+    utilisables). Renvoie None si c'est fait, sinon le message d'erreur (rien n'est débité)."""
+    msg = verifier_jetons(user, mode, vitesse)
+    if msg:
+        return msg
+    cout, reste, detail = cout_jetons(mode, vitesse), cout_jetons(mode, vitesse), []
+    essai_ok = mode != "player" and vitesse == "48h"
+    lots = (LotJeton.query.filter(LotJeton.user_id == user.id, LotJeton.restants > 0,
+                                  LotJeton.expire_le > datetime.utcnow()).all())
+    lots = [l for l in lots if essai_ok or not l.essai]
+    lots.sort(key=lambda l: (0 if l.essai else 1, l.expire_le))
+    for l in lots:
+        if reste <= 0:
+            break
+        pris = min(l.restants, reste)
+        l.restants -= pris
+        reste -= pris
+        detail.append([l.id, pris])
+    analysis.vitesse = vitesse
+    analysis.jetons_debites = json.dumps(detail)
+    db.session.add(MouvementJeton(user_id=user.id, quantite=-cout, type="analyse", analysis_id=analysis.id,
+                                  libelle=f"{'Joueur' if mode == 'player' else 'Match'} "
+                                          f"{'rapide' if vitesse == 'rapide' else 'sous 48 h'} — {analysis.filename or ''}"[:200]))
+    db.session.commit()
+    return None
+
+
+def rembourser_jetons(analysis, motif="Analyse en erreur : jetons rendus"):
+    """Rend les jetons débités pour cette analyse, dans leurs lots d'origine (une seule fois)."""
+    try:
+        detail = json.loads(analysis.jetons_debites or "[]")
+    except Exception:
+        detail = []
+    if not detail:
+        return 0
+    total = 0
+    for lot_id, n in detail:
+        l = db.session.get(LotJeton, lot_id)
+        if l:
+            l.restants += n
+            if l.expire_le <= datetime.utcnow():              # lot expiré entre-temps : un mois pour s'en servir
+                l.expire_le = datetime.utcnow() + timedelta(days=30)
+            total += n
+    analysis.jetons_debites = None
+    db.session.add(MouvementJeton(user_id=analysis.user_id, quantite=total, type="remboursement",
+                                  analysis_id=analysis.id, libelle=motif))
+    db.session.commit()
+    return total
+
+
+def crediter_paquet(user, code, ref):
+    """Achat d'un paquet (Stripe). Crédité UNE seule fois par paiement (page de retour ou webhook)."""
+    pq = config.PAQUETS_JETONS.get(code)
+    if not user or not pq or not ref or MouvementJeton.query.filter_by(user_id=user.id, ref=ref).first():
+        return False
+    crediter_jetons(user, pq["jetons"], "achat", f"Achat de {pq['jetons']} jetons ({pq['prix_eur']:.0f} €)", ref=ref)
+    if pq.get("bonus"):
+        crediter_jetons(user, pq["bonus"], "bonus", f"{pq['bonus']} jetons offerts avec l'achat", ref=ref + ":bonus")
+    return True
+
+
+def expirer_jetons():
+    n = 0
+    for l in LotJeton.query.filter(LotJeton.restants > 0, LotJeton.expire_le <= datetime.utcnow()).all():
+        db.session.add(MouvementJeton(user_id=l.user_id, quantite=-l.restants, type="expiration",
+                                      libelle=f"{l.restants} jeton(s) expiré(s) (lot du {l.cree_le:%d/%m/%Y})"))
+        n += l.restants
+        l.restants = 0
+    if n:
+        db.session.commit()
+    return n
 
 
 def _crediter_achat_unique(user, ref_paiement):
@@ -1611,10 +1820,11 @@ def _recompenser_parrain(user_id):
     dues = p.filleuls_valides() // PARRAINAGE_FILLEULS_PAR_RECOMPENSE
     deja = p.recompenses_parrainage or 0
     if dues > deja:
-        p.credits_offerts = (p.credits_offerts or 0) + (dues - deja)
         p.recompenses_parrainage = dues
         db.session.commit()
-        print(f"  [PARRAINAGE] {p.email} : +{dues - deja} analyse(s) offerte(s) ({p.filleuls_valides()} filleuls valides)")
+        n = config.JETONS_PARRAINAGE * (dues - deja)     # 25/11/2026 : jetons (3 filleuls ayant analysé un match)
+        crediter_jetons(p, n, "parrainage", f"{n} jetons offerts : 3 coéquipiers invités ont analysé un match")
+        print(f"  [PARRAINAGE] {p.email} : +{n} jetons ({p.filleuls_valides()} filleuls valides)")
 
 
 # ─────────────────────────────────────────
@@ -1653,8 +1863,9 @@ def relancer_analyse(id):
     if not video_locale and not (a.r2_video_key and config.R2_ENABLED):
         flash("La vidéo de cette analyse n'est plus disponible : envoyez-la à nouveau.")
         return redirect(url_for("dashboard"))
-    if current_user.analyses_left() <= 0:
-        flash("Quota atteint — passez à une formule supérieure.")
+    _msg_j = None if a.jetons_debites else debiter_jetons(current_user, a, a.mode, a.vitesse or "rapide")
+    if _msg_j:
+        flash(_msg_j)
         return redirect(url_for("dashboard"))
     a.status, a.progress, a.progress_msg = "pending", 0, "Relance demandée…"
     db.session.commit()
@@ -1748,6 +1959,48 @@ def run_analysis(
 
         output_dir = os.path.join(config.OUTPUT_FOLDER, str(analysis_id))
 
+        # 25/11/2026 : VITESSE — « 48h » = Gemini Flex (−50 %), à finir 36 h après la commande (12 h de marge pour le
+        # reste au tarif standard) ; « rapide » = tarif standard
+        with app.app_context():
+            _a_v = db.session.get(Analysis, analysis_id)
+            _vit = (_a_v.vitesse if _a_v else None) or "rapide"
+            _cree = _a_v.created_at if (_a_v and _a_v.created_at) else datetime.utcnow()
+        if _vit == "48h":
+            os.environ["SCOUTIA_GEMINI_TIER"] = "flex"
+            os.environ["SCOUTIA_FLEX_ECHEANCE"] = str((_cree + timedelta(hours=36) - datetime(1970, 1, 1)).total_seconds())
+        else:
+            os.environ["SCOUTIA_GEMINI_TIER"] = ""
+            os.environ.pop("SCOUTIA_FLEX_ECHEANCE", None)
+
+        # 25/11/2026 : RÉUTILISATION D'UNE ANALYSE DU MÊME MATCH (même fichier vidéo, même version des réglages) :
+        # le suivi (positions) et les réponses Gemini déjà payées sont repris → pas de GPU, presque 0 $ de Gemini ; seule
+        # la partie propre à cette demande (joueur, noms d'équipes) est refaite. Les réponses de CETTE analyse sont
+        # écrites dans son dossier (pour être réutilisées à leur tour).
+        _match_data_reutilise, _entree_cache = None, None
+        os.makedirs(output_dir, exist_ok=True)
+        os.environ["SCOUTIA_GEMINI_CACHE"] = "on"
+        os.environ["SCOUTIA_GEMINI_CACHE_OUT"] = os.path.join(output_dir, "gemini_cache.jsonl")
+        os.environ["SCOUTIA_GEMINI_CACHE_VIDEO"] = os.path.basename(video_path)
+        os.environ["SCOUTIA_GEMINI_CACHE_IN"] = os.path.join(output_dir, "aucun_cache.jsonl")
+        os.environ.pop("SCOUTIA_CACHE_JOUEUR", None)
+        try:
+            from analysis.cache_analyses import chercher as _chercher_cache
+            _entree_cache = _chercher_cache(video_path)
+            if _entree_cache:
+                from replay import load_cache as _load_cache_r
+                _match_data_reutilise = _load_cache_r(_entree_cache["fichiers"]["suivi"])
+                os.environ["SCOUTIA_GEMINI_CACHE_IN"] = _entree_cache["fichiers"]["gemini"]
+                os.environ["SCOUTIA_CACHE_JOUEUR"] = _entree_cache["fichiers"]["suivi"]
+                print(f"  ♻️  Match déjà analysé ({_entree_cache.get('nom_video')}) : suivi et réponses Gemini réutilisés")
+        except Exception as _e_cache:
+            print(f"  ⚠️  Réutilisation impossible, analyse complète : {_e_cache}")
+            _match_data_reutilise, _entree_cache = None, None
+        try:
+            from ai.gemini_validator import gemini_cache_reinitialiser
+            gemini_cache_reinitialiser()
+        except Exception:
+            pass
+
         result = run_pipeline(
             video_path     = video_path,
             sport          = sport,
@@ -1763,7 +2016,10 @@ def run_analysis(
             team_colors_gemini_precalcule = team_colors_gemini_precalcule,
             use_match_boundary_segments = use_match_boundary_segments,
             couleur_maillot_gardien = couleur_maillot_gardien,
+            _match_data = _match_data_reutilise,
         )
+        if isinstance(result, dict):
+            result["analyse_reutilisee"] = bool(_entree_cache)
 
         # 24/10/2026 : une analyse INCOMPLÈTE (questions au service d'IA abandonnées : crédit, quota) n'est pas
         # livrée comme réussie. Levée AVANT la suppression de la vidéo, pour pouvoir relancer.
@@ -1775,6 +2031,20 @@ def run_analysis(
         if _etat_gv.get("questions_abandonnees"):
             raise RuntimeError(f"Analyse incomplète : {_etat_gv['questions_abandonnees']} question(s) au service d'IA "
                                f"n'ont pas abouti (crédit ou quota) — à relancer")
+
+        # 25/11/2026 : analyse complète → mise en cache pour réutilisation (suivi + réponses Gemini)
+        if not _entree_cache:
+            try:
+                from analysis.cache_analyses import enregistrer as _enregistrer_cache
+                _suivi = os.path.join(output_dir, "cache")
+                _gem = os.environ.get("SCOUTIA_GEMINI_CACHE_OUT")
+                if os.path.exists(os.path.join(_suivi, "frames_data.pkl")) and _gem and os.path.exists(_gem):
+                    _enregistrer_cache(video_path, {"suivi": _suivi, "gemini": _gem})
+                    print("  ♻️  Analyse mise en cache : le même match ne sera plus réanalysé")
+                else:
+                    print("  ⚠️  Analyse non mise en cache (suivi ou réponses Gemini absents)")
+            except Exception as _e_enr:
+                print(f"  ⚠️  Mise en cache impossible : {_e_enr}")
 
         # 24/11/2026 : empreinte du contenu, avant suppression de la vidéo (corrections partagées entre utilisateurs)
         _empreinte = None
@@ -1825,9 +2095,13 @@ def run_analysis(
             a              = db.session.get(Analysis, analysis_id)
             a.status       = "error"
             # 18/11/2026 : message CLAIR pour le client (le détail technique reste dans les journaux du serveur)
-            a.progress_msg = ("L'analyse n'a pas pu aboutir. Elle ne compte pas dans votre quota : "
+            a.progress_msg = ("L'analyse n'a pas pu aboutir. Vos jetons vous ont été rendus : "
                               "vous pouvez la relancer.")
             db.session.commit()
+            try:
+                rembourser_jetons(a)                                  # 25/11/2026
+            except Exception as _e_rb:
+                print(f"  ⚠️  Jetons non rendus pour l'analyse #{analysis_id} : {_e_rb}")
         print(f"  [ERREUR] analyse #{analysis_id} — détail technique : {str(e)[:500]}")
         # V5.2 (11/09/2026) : trace complete (pas seulement str(e)) - le
         # print precedent n'affichait que le message court, facile a
@@ -1852,8 +2126,8 @@ import glob as _glob
 @login_required
 def api_upload_preview():
     """Upload préliminaire XHR — reçoit la vidéo, retourne un upload_id."""
-    if current_user.analyses_left() <= 0:                     # 24/10/2026 : quota vérifié dès l'envoi
-        return jsonify({"error": "quota_exceeded", "message": "Quota atteint — passez à une formule supérieure."}), 403
+    if current_user.solde_jetons() < min(config.COUT_JETONS.values()):          # 25/11/2026 : jetons
+        return jsonify({"error": "quota_exceeded", "message": "Solde de jetons insuffisant — rechargez votre compte."}), 403
     video = request.files.get("video")
     if not video:
         return jsonify({"error": "no video"}), 400
@@ -1873,7 +2147,7 @@ def _preanalyse_refusee(user, compter=False):
     """24/10/2026 : la pré-analyse (coup d'envoi, couleurs) appelle Gemini et coûte de l'argent : refusée si le
     quota est épuisé, ou au-delà de LIMITE_PREANALYSES_JOUR par jour. Retourne None si autorisée, sinon le motif.
     compter=True : la pré-analyse autorisée est comptée (au moment de la détection)."""
-    if user.analyses_left() <= 0:
+    if user.solde_jetons() < min(config.COUT_JETONS.values()):                  # 25/11/2026 : jetons
         return "Quota atteint — passez à une formule supérieure pour analyser cette vidéo."
     jour = datetime.utcnow().strftime("%Y-%m-%d")
     if user.preanalyses_date != jour:
@@ -2338,10 +2612,31 @@ def heatmap(id, name):
 # ─────────────────────────────────────────
 # STRIPE — CHECKOUT
 # ─────────────────────────────────────────
+@app.route("/acheter-jetons", methods=["POST"])
+@login_required
+def acheter_jetons():
+    """25/11/2026 : achat d'un paquet de jetons (paiement unique Stripe)."""
+    code = request.form.get("paquet")
+    if code not in config.PAQUETS_JETONS:
+        flash("Paquet inconnu")
+        return redirect(url_for("pricing"))
+    from payments.stripe_handler import create_checkout_jetons
+    url = create_checkout_jetons(current_user.email, current_user.id, code,
+                                 success_url=request.host_url + "payment/success",
+                                 cancel_url=request.host_url + "pricing")
+    if not url:
+        flash("Le paiement n'a pas pu être préparé. Réessayez dans un instant.")
+        return redirect(url_for("pricing"))
+    return redirect(url)
+
+
 @app.route("/create-checkout", methods=["POST"])
 @app.route("/checkout/<plan>",  methods=["GET"])
 @login_required
 def checkout(plan=None):
+    # 25/11/2026 : les formules (Starter, Pro, Unique) sont remplacées par les jetons
+    flash("Les formules sont remplacées par des jetons : choisissez un paquet.")
+    return redirect(url_for("pricing"))
     if request.method == "POST":
         plan = request.form.get("plan")
 
@@ -2379,6 +2674,14 @@ def payment_success():
 
     if not data:
         flash("Paiement non confirme — contactez le support")
+        return redirect(url_for("dashboard"))
+
+    if data.get("type") == "jetons":                                    # 25/11/2026
+        pq = config.PAQUETS_JETONS.get(data.get("paquet"), {})
+        if crediter_paquet(current_user, data.get("paquet"), data.get("session_id") or session_id):
+            flash(f"Merci ! {pq.get('jetons', 0) + pq.get('bonus', 0)} jetons ont été ajoutés à votre compte.")
+        else:
+            flash("Ce paiement a déjà été crédité.")
         return redirect(url_for("dashboard"))
 
     if data.get("plan") == "unique":
@@ -2432,6 +2735,16 @@ def stripe_webhook():
         return jsonify({"error": "invalid"}), 400
 
     event_type = data["event_type"]
+
+    if event_type == "payment_success" and data.get("type") == "jetons":       # 25/11/2026 : paquets de jetons
+        try:
+            u_j = db.session.get(User, int(data.get("user_id") or 0))
+        except (TypeError, ValueError):
+            u_j = None
+        if u_j and data.get("payment_status") in (None, "paid"):
+            ok_j = crediter_paquet(u_j, data.get("paquet"), data.get("session_id"))
+            print(f"  [STRIPE] jetons ({data.get('paquet')}) {'crédités' if ok_j else 'déjà crédités'} — {u_j.email}")
+        return jsonify({"ok": True}), 200
 
     if event_type in ["payment_success", "renewal_success"]:
         user = User.query.filter_by(stripe_customer=data["customer_id"]).first()
@@ -2556,9 +2869,30 @@ def admin_offrir_analysis(id):
     a.offerte = not bool(a.offerte)
     a.offerte_motif = ((request.form.get("motif") or "").strip()[:200] or None) if a.offerte else None
     db.session.commit()
+    if a.offerte:                                                  # 25/11/2026 : geste commercial = jetons rendus
+        rembourser_jetons(a, motif=f"Analyse offerte{' : ' + a.offerte_motif if a.offerte_motif else ''}")
     u = db.session.get(User, a.user_id)
     flash(f"Analyse #{a.id} {'offerte' if a.offerte else 'de nouveau décomptée'} — "
           f"{u.email if u else '?'} : {u.analyses_count() if u else '?'} vidéo(s) décomptée(s)")
+    return redirect(url_for("admin"))
+
+
+@app.route("/admin/user/<int:user_id>/jetons", methods=["POST"])
+@login_required
+@admin_required
+def admin_jetons(user_id):
+    """25/11/2026 : geste commercial — ajouter des jetons à un utilisateur, avec un motif."""
+    u = db.session.get(User, user_id)
+    try:
+        n = int(request.form.get("n", "0"))
+    except ValueError:
+        n = 0
+    if not u or n <= 0 or n > 500:
+        flash("Nombre de jetons invalide")
+        return redirect(url_for("admin"))
+    motif = (request.form.get("motif") or "").strip()[:150] or "geste commercial"
+    crediter_jetons(u, n, "offert", f"{n} jetons offerts : {motif}", ref=f"admin:{current_user.id}")
+    flash(f"{n} jetons ajoutés à {u.email} (solde : {u.solde_jetons()})")
     return redirect(url_for("admin"))
 
 
@@ -2598,7 +2932,7 @@ def too_large(e):
 _COLONNES_AJOUTEES = {
     "analysis": {"celery_task_id": "VARCHAR(200)", "offerte": "BOOLEAN DEFAULT 0", "offerte_motif": "VARCHAR(200)",
                  "mon_equipe": "INTEGER", "position_joueur": "VARCHAR(40)", "couleur_maillot_gardien": "VARCHAR(20)",
-                 "empreinte_video": "VARCHAR(64)"},
+                 "empreinte_video": "VARCHAR(64)", "vitesse": "VARCHAR(10)", "jetons_debites": "TEXT"},
     "retour_but": {"source": "VARCHAR(80)"},
     "user":     {"code_parrain": "VARCHAR(16)", "parrain_id": "INTEGER", "credits_offerts": "INTEGER DEFAULT 0",
                  "recompenses_parrainage": "INTEGER DEFAULT 0", "paiements_credites": "TEXT",

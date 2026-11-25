@@ -166,6 +166,27 @@ PLANS = {
 }
 
 # ─────────────────────────────────────────
+# 25/11/2026 — JETONS (remplacent les formules Starter / Pro / Unique). Prix À VÉRIFIER après mesure en production.
+# ─────────────────────────────────────────
+JETON_PRIX_EUR = float(os.getenv("JETON_PRIX_EUR", 3))
+COUT_JETONS = {                                  # (mode, vitesse) → jetons
+    ("match", "48h"):     int(os.getenv("JETONS_MATCH_48H", 2)),
+    ("match", "rapide"):  int(os.getenv("JETONS_MATCH_RAPIDE", 3)),
+    ("player", "48h"):    int(os.getenv("JETONS_JOUEUR_48H", 3)),
+    ("player", "rapide"): int(os.getenv("JETONS_JOUEUR_RAPIDE", 4)),
+}
+PAQUETS_JETONS = {                               # code → jetons achetés, offerts, prix
+    "p10":  {"jetons": 10,  "bonus": 0,  "prix_eur": 30},
+    "p20":  {"jetons": 20,  "bonus": 1,  "prix_eur": 60},
+    "p30":  {"jetons": 30,  "bonus": 2,  "prix_eur": 90},
+    "p50":  {"jetons": 50,  "bonus": 5,  "prix_eur": 150},
+    "p100": {"jetons": 100, "bonus": 12, "prix_eur": 300},
+}
+JETONS_ESSAI          = int(os.getenv("JETONS_ESSAI", 2))          # à l'inscription, « match sous 48 h » uniquement
+JETONS_PARRAINAGE     = int(os.getenv("JETONS_PARRAINAGE", 2))     # par tranche de 3 filleuls ayant analysé un match
+JETONS_VALIDITE_MOIS  = int(os.getenv("JETONS_VALIDITE_MOIS", 24))
+
+# ─────────────────────────────────────────
 # EXPORT PDF
 # ─────────────────────────────────────────
 PDF_LOGO_PATH     = os.getenv("PDF_LOGO_PATH",     "static/logo.png")
