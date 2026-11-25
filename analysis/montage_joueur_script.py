@@ -2065,6 +2065,16 @@ if BOUT_EN_BOUT and BOUT_EN_BOUT.get("buts"):
         _eq_b = str(b.get("equipe") or "").lower()
         _SON_EN = _FR_EN.get(COULEUR_EQUIPE.get(EQ, ""), "")
         _ADV2 = _FR_EN.get(COULEUR_EQUIPE.get(1 - EQ, ""), "")
+        # 25/11/2026 : maillots de même couleur (mode short) → l'équipe du but se reconnaît au SHORT
+        # (« maillot red / short dark blue » contre « maillot red / short black ») ; sinon « rouge » ressemblait aux deux
+        if globals().get("MESURE_PAR_SHORT") and "short" in _eq_b:
+            _sh_b = _eq_b.split("short", 1)[1]
+            _sh_son = _FR_EN.get(COULEUR_SHORT_EQUIPE.get(EQ, ""), "")
+            _sh_adv = _FR_EN.get(COULEUR_SHORT_EQUIPE.get(1 - EQ, ""), "")
+            _son_ok = bool(_sh_son) and (_sh_son in _sh_b or (COULEUR_SHORT_EQUIPE.get(EQ) == "bleu" and "blue" in _sh_b))
+            _adv_ok = bool(_sh_adv) and _sh_adv in _sh_b
+            _SON_EN, _ADV2 = ("__son__", "__adv__") if True else (_SON_EN, _ADV2)
+            _eq_b = ("__son__" if _son_ok and not _adv_ok else "__adv__" if _adv_ok and not _son_ok else "")
         if garde:
             lien = "impliqué : " + raison
         elif _SON_EN and _SON_EN in _eq_b:
