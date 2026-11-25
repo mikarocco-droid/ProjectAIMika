@@ -959,14 +959,26 @@ def _regenerer_fiche(a, result):
     try:
         from export.fiche_joueur import generer_fiche_joueur, joindre_au_rapport
         d = json.load(open(j["fiche_donnees"], encoding="utf-8"))
-        imp = [float(x) for x in j.get("buts_impliques") or []]
+        from export.rapport_client import minute_de_match
         autres = [x for x in (d.get("chronologie") or []) if x.get("type") not in ("but", "but_implique")]
-        buts_ch = []
-        for b in _buts_effectifs(result):
+        # 25/11/2026 : buts tels que tranchés, avec le score (quand tous sont validés avec leur équipe) et le rôle du joueur
+        eff = sorted(_buts_effectifs(result), key=lambda b: float(b.get("time_abs") or 0))
+        score_ok = bool(eff) and all(b.get("status") == "confirmé" and b.get("equipe") in ("A", "B") for b in eff)
+        sc = {"A": 0, "B": 0}
+        bm = result.get("bornes_mi_temps") or d.get("bornes") or {}
+        buts_ch, roles = [], []
+        for b in eff:
             t = float(b.get("time_abs") or 0)
+            score = None
+            if score_ok:
+                sc[b["equipe"]] += 1
+                score = f"{sc['A']}-{sc['B']}"
             role = b.get("role_joueur") if b.get("role_joueur") in ("buteur", "passeur") else None
-            buts_ch.append({"t_abs": t, "conf": b.get("status") == "confirmé", "role": role,
-                            "type": "but_implique" if any(abs(t - x) <= 5 for x in imp) else "but"})
+            buts_ch.append({"t_abs": t, "type": "but", "conf": b.get("status") == "confirmé", "role": role, "score": score})
+            if role:
+                roles.append({"role": role, "score": score,
+                              "minute": minute_de_match(t, bm.get("ko1"), bm) if bm.get("ko1") is not None else f"{int(t) // 60}'"})
+        d["roles"] = roles
         d["chronologie"] = autres + buts_ch
         d["chemin_pdf"] = j.get("fiche") or d["chemin_pdf"]      # chemin local (les données viennent parfois de Kaggle)
         generer_fiche_joueur(**d)
