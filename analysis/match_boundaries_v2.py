@@ -145,7 +145,10 @@ def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=6,
                              # garantie universelle. Le systeme garde une redondance
                              # (reprise de scan si Q2 rejette a tort) qui absorbe une
                              # partie de ce risque residuel.
-        max_retries  = max_retries,
+        # 25/11/2026 : UN seul essai d'abord ; si la fenêtre est dégénérée, on passe DIRECTEMENT au repli « sans
+        # pause » (les essais suivants donnaient la même réponse : Stavelot, 3 essais identiques) ; les essais restants
+        # ne servent que si le repli échoue
+        max_retries  = 1,
         model_name   = model_name,
         tmp_dir      = tmp_dir,  # V5.2 FIX : dossier temporaire dedie,
                              # evite toute collision de nom de fichier
@@ -199,6 +202,15 @@ def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=6,
             return {"status": "AUTO_CONFIRMED", "ko2_s": r2["kickoff_s"], "reason": "SANS_PAUSE",
                     "n_appels_gemini": n_av + (r2.get("n_appels_gemini") or 0)}
         print(f"  [KO2] repli sans pause : rien trouvé ({r2.get('reason')})")
+
+    # essais restants de la fenêtre habituelle (variance de Gemini), si le premier n'a rien donné
+    if resultat["status"] != "AUTO_CONFIRMED" and max_retries > 1:
+        print(f"  [KO2] nouvel essai de la fenêtre habituelle ({max_retries - 1} restant(s))")
+        resultat = detect_kickoff_gemini_avec_retry(
+            video_path, max_search_s=t_fin_recherche, t_debut=t_debut_recherche, pas_scan=pas_scan,
+            pas_scan_fin=pas_scan_fin, delai_verif_q2=30, delai_verif_q2_precoce=22, max_retries=max_retries - 1,
+            model_name=model_name, tmp_dir=tmp_dir, fonction_q1=fonction_q1_choisie, taille_lot=1,
+            fonction_q2=fonction_q2_choisie)
 
     if resultat["status"] == "AUTO_CONFIRMED":
         return {"status": "AUTO_CONFIRMED", "ko2_s": resultat["kickoff_s"], "reason": None,
