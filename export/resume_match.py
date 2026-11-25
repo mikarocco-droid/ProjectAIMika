@@ -226,3 +226,44 @@ def occasions_depuis_sequences(dossier_sequences, ids, occasions_ref=(), ko=0.0)
                   key=lambda o: abs(float(o.get("time_abs") or 0) - t), default=None)
         out.append({"time_abs": t, "time": t - float(ko or 0), "equipe": (ref or {}).get("equipe"), "label": "Occasion"})
     return out
+
+
+def assembler_mixte(fichiers, sortie_mp4):
+    """25/11/2026 : assemble des séquences de SOURCES DIFFÉRENTES (montage du joueur, encodé avec le repère, et séquences
+    du match, copiées de la vidéo d'origine). Les flux n'étant pas identiques, chaque séquence est d'abord réencodée au
+    même format (taille de la première séquence, x264 CRF 18, son AAC), puis l'ensemble est collé sans réencodage."""
+    ff = _ffmpeg()
+    if not ff or not fichiers:
+        return None
+    fp = None
+    try:
+        import json as _j
+        fp = ff.replace("ffmpeg", "ffprobe") if os.path.exists(ff.replace("ffmpeg", "ffprobe")) else shutil.which("ffprobe")
+        w, h = 1920, 1080
+        if fp:
+            r = subprocess.run([fp, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of",
+                                "json", fichiers[0]], capture_output=True, text=True)
+            st = (_j.loads(r.stdout or "{}").get("streams") or [{}])[0]
+            w, h = int(st.get("width") or w), int(st.get("height") or h)
+    except Exception:
+        w, h = 1920, 1080
+    tmp = tempfile.mkdtemp(prefix="mixte_")
+    morceaux = []
+    for k, f in enumerate(fichiers):
+        m = os.path.join(tmp, f"m{k:03d}.mp4")
+        son = True
+        if fp:
+            ra = subprocess.run([fp, "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", f],
+                                capture_output=True, text=True)
+            son = bool((ra.stdout or "").strip())
+        carte_son = ["-map", "0:a:0"] if son else ["-map", "1:a:0", "-shortest"]
+        r = subprocess.run([ff, "-y", "-loglevel", "error", "-i", f, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                            "-map", "0:v:0", *carte_son,
+                            "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps=30",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "128k", m], capture_output=True, text=True)
+        if r.returncode == 0 and os.path.exists(m):
+            morceaux.append(m)
+    out = _assembler(morceaux, sortie_mp4) if morceaux else None
+    shutil.rmtree(tmp, ignore_errors=True)
+    return out
