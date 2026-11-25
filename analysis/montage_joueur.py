@@ -22,7 +22,7 @@ SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "montage_joueu
 COULEURS_VALIDES = ["rouge", "bleu", "bleu clair", "blanc", "noir", "jaune", "vert", "orange", "violet", "gris"]
 
 
-def monter_joueur(video, cache_dir, sortie, match, numero, couleur, bornes=None, buts=None, gardien=False,
+def monter_joueur(video, cache_dir, sortie, match, numero, couleur, bornes=None, buts=None, gardien=False, short=None,
                   couleur_maillot=None, entrees=None, gemini_key=None, parseq_poids=None, rapport_pdf=None,
                   duree_analyse_min=0.0, attribution=None, delai_max_s=6 * 3600, afficher=True):
     """Monte le résumé d'un joueur et produit sa fiche. Renvoie un dict (voir resultat_montage_joueur.json) ;
@@ -31,6 +31,9 @@ def monter_joueur(video, cache_dir, sortie, match, numero, couleur, bornes=None,
     if couleur not in COULEURS_VALIDES:
         return {"trouve": False, "erreur": f"couleur inconnue : {couleur!r} (attendu : {', '.join(COULEURS_VALIDES)})",
                 "message": None}
+    short = str(short or "").strip().lower()          # 25/11/2026 : couleur du SHORT (équipes de maillots proches)
+    if short and short not in COULEURS_VALIDES:
+        return {"trouve": False, "erreur": f"couleur de short inconnue : {short!r}", "message": None}
     if gardien and str(couleur_maillot or "").strip().lower() not in COULEURS_VALIDES:
         return {"trouve": False, "erreur": "gardien : couleur du maillot du gardien manquante ou inconnue", "message": None}
     os.makedirs(sortie, exist_ok=True)
@@ -43,7 +46,7 @@ def monter_joueur(video, cache_dir, sortie, match, numero, couleur, bornes=None,
         "RELAIS": {"match": match, "video": video, "cache": cache_dir, "actions_abs": [], "bornes": bornes,
                    "buts": buts or [], "t0": None, "duree_analyse_min": duree_analyse_min, "joueur_seul": True},
         "MATCH": match, "VIDEO": video, "CACHE": cache_dir, "NUMERO": int(numero), "COULEUR": couleur,
-        "GARDIEN": bool(gardien), "COULEUR_MAILLOT": str(couleur_maillot or "").strip().lower(),
+        "GARDIEN": bool(gardien), "COULEUR_MAILLOT": str(couleur_maillot or "").strip().lower(), "SHORT": short,
         "FENETRES": [], "MODE": "complet", "DUREE_ANALYSE_MIN": duree_analyse_min, "ATTRIBUTION": attribution,
     }
     fichier_p = os.path.join(sortie, "parametres_montage_joueur.json")

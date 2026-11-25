@@ -95,6 +95,9 @@ COULEUR      = "bleu"   # COULEUR DE L'ÉQUIPE (joueurs de champ) ; rouge, bleu,
 PARSEQ_VERSION = "v2"     # ← TEST n°16 : lancer une fois avec "v1", une fois avec "v2" ("" = le plus récent disponible)
 GARDIEN         = False    # 19/11 : mode gardien (reconnu par la couleur de SON maillot et sa position)
 COULEUR_MAILLOT = ""       # couleur du maillot du gardien (différente de celle de son équipe)
+SHORT        = ""             # 25/11/2026 : couleur du SHORT de l'équipe ("" = non utilisé). Sert quand les deux équipes ont
+                              # des MAILLOTS proches (Stavelot bordeaux / short bleu marine contre Honsfeld rouge / short
+                              # noir) : l'équipe est alors choisie, et les joueurs rangés, par le short
 HAUTEUR_MIN_GARDIEN = 40   # 19/11 (5) : px — pas de numéro à lire, le gardien loin de la caméra doit compter
 IMAGES_PAR_PASSAGE_GARDIEN = 3   # 19/11 (7) : 3 images suffisent pour dire « noir » ou « pas noir »
 MAX_VERIF_GARDIEN   = 150  # personnes-périodes vérifiées au plus (19/11 (6) : regroupées par piste du suivi)
@@ -692,7 +695,9 @@ def couleurs_par_gemini():
                     "other team with a MAGENTA box labelled B. What is the main SHIRT color of team A and of team B? "
                     "Also give the shirt color of each GOALKEEPER you can see (they wear a different color from their "
                     "team), with the team they belong to if you can tell, and the shirt color of the REFEREE. "
+                    "Also give the SHORTS color of team A and of team B. "
                     "Ignore the box colors themselves. Answer ONLY with JSON: {\"A\": \"...\", \"B\": \"...\", "
+                    "\"A_short\": \"...\", \"B_short\": \"...\", "
                     "\"gardiens\": [{\"couleur\": \"...\", \"equipe\": \"A|B|?\"}], \"arbitre\": \"...\"} using these "
                     "French names: " + ", ".join(COULEURS_VALIDES) + " (\"?\" if not visible).")
         try:
@@ -706,6 +711,9 @@ def couleurs_par_gemini():
                 c = str(d.get(k, "")).strip().lower()
                 if c in COULEURS_VALIDES:
                     votes[eq_][c] += 1
+                c_s = str(d.get(k + "_short", "")).strip().lower()
+                if c_s in COULEURS_VALIDES:
+                    VOTES_SHORT[eq_][c_s] += 1
             print(f"   Gemini, coup d'envoi + {dt} s : A (équipe 0) « {d.get('A')} », B (équipe 1) « {d.get('B')} »"
                   f" | gardiens {d.get('gardiens')} | arbitre « {d.get('arbitre')} »")
             for _g in (d.get("gardiens") or []):
@@ -720,7 +728,8 @@ def couleurs_par_gemini():
 
 
 COULEUR_EQUIPE, SOURCE_COULEURS = {}, ""
-if sauve and sauve.get("couleurs_source") == "gemini" and len(sauve.get("couleurs") or {}) == 2 and not GARDIEN:
+VOTES_SHORT = collections.defaultdict(collections.Counter)     # 25/11 : couleurs des shorts (Gemini)
+if sauve and sauve.get("couleurs_source") == "gemini" and len(sauve.get("couleurs") or {}) == 2 and not GARDIEN and not SHORT:
     COULEUR_EQUIPE = {int(k): v for k, v in sauve["couleurs"].items()}
     SOURCE_COULEURS = "gemini"
     print("   couleurs des équipes réutilisées (Gemini, sauvegarde) :", COULEUR_EQUIPE)
@@ -788,6 +797,14 @@ else:
     proches = lambda a, b: a == b or any(a in fam and b in fam for fam in FAMILLES)
     equipes_voulues = [e for e, c in COULEUR_EQUIPE.items() if c == COULEUR.lower()] or \
                       [e for e, c in COULEUR_EQUIPE.items() if proches(c, COULEUR.lower())]
+    # 25/11/2026 : maillots proches (deux équipes « rouge ») → départage par la couleur du SHORT
+    if SHORT and len(equipes_voulues) != 1:
+        _cand = list(COULEUR_EQUIPE) if not equipes_voulues else equipes_voulues
+        _par_short = [e for e in _cand if VOTES_SHORT.get(e) and VOTES_SHORT[e].most_common(1)[0][0] == SHORT] or \
+                     [e for e in _cand if VOTES_SHORT.get(e) and proches(VOTES_SHORT[e].most_common(1)[0][0], SHORT)]
+        print(f"   shorts vus par Gemini : { {e: dict(v) for e, v in VOTES_SHORT.items()} } → équipe(s) au short « {SHORT} » : {_par_short}")
+        if len(_par_short) == 1:
+            equipes_voulues = _par_short
 if len(equipes_voulues) != 1 or equipes_voulues[0] not in COULEUR_EQUIPE:
     raise SystemExit(f"❌ Équipe « {COULEUR} » introuvable ou ambiguë (couleurs : {COULEUR_EQUIPE}) — règle EQUIPE = 0 ou 1")
 EQ = equipes_voulues[0]
@@ -796,6 +813,15 @@ if len(COULEUR_EQUIPE) < 2:
           f"du haut du maillot est « {COULEUR_EQUIPE[EQ]} » (moins discriminant)")
 elif famille(COULEUR_EQUIPE[0]) & famille(COULEUR_EQUIPE[1]):
     print(f"   ⚠️ couleurs d'équipe proches ({COULEUR_EQUIPE}) : la mesure de couleur sera peu discriminante")
+# 25/11/2026 : maillots proches + shorts connus et différents → la vignette est rangée par la couleur du SHORT
+COULEUR_SHORT_EQUIPE = {e: v.most_common(1)[0][0] for e, v in VOTES_SHORT.items() if v}
+if SHORT:
+    COULEUR_SHORT_EQUIPE[EQ] = SHORT
+MESURE_PAR_SHORT = bool(SHORT and len(COULEUR_SHORT_EQUIPE) == 2 and len(COULEUR_EQUIPE) == 2
+                        and famille(COULEUR_EQUIPE[0]) & famille(COULEUR_EQUIPE[1])
+                        and not (famille(COULEUR_SHORT_EQUIPE[0]) & famille(COULEUR_SHORT_EQUIPE[1])))
+if SHORT:
+    print(f"   shorts : {COULEUR_SHORT_EQUIPE} → mesure par le short : {'OUI' if MESURE_PAR_SHORT else 'non'}")
 
 _FEN = [(int(h.split(":")[0]) * 60 + int(h.split(":")[1]) - FENETRE_AVANT,
          int(h.split(":")[0]) * 60 + int(h.split(":")[1]) + FENETRE_APRES) for h in FENETRES]
@@ -865,6 +891,10 @@ def parts_couleur(img, b):
     x1, y1, x2, y2 = [int(v) for v in b]
     h, w = y2 - y1, x2 - x1
     haut = img[max(0, y1 + int(0.15 * h)):max(0, y1 + int(0.45 * h)), max(0, x1 + w // 5):max(0, x2 - w // 5)]
+    couleurs_ref = COULEUR_EQUIPE
+    if globals().get("MESURE_PAR_SHORT"):        # 25/11 : zone du short (≈ 50 à 68 % de la hauteur du cadre)
+        haut = img[max(0, y1 + int(0.50 * h)):max(0, y1 + int(0.68 * h)), max(0, x1 + w // 5):max(0, x2 - w // 5)]
+        couleurs_ref = COULEUR_SHORT_EQUIPE
     if haut.size == 0:
         return [0.0, 0.0]
     hsv = _hsv(haut)
@@ -881,7 +911,19 @@ def parts_couleur(img, b):
     if garde.mean() < 0.25:
         return [0.0, 0.0]                         # presque que de la pelouse : cadre vide ou joueur minuscule
     noms = noms[garde]
-    return [round(float(np.isin(noms, list(nom_mesure(COULEUR_EQUIPE[e]))).mean()), 3) if e in COULEUR_EQUIPE else 0.0
+    if globals().get("MESURE_PAR_SHORT") and {couleurs_ref.get(0), couleurs_ref.get(1)} & {"noir"} and \
+            any(couleurs_ref.get(e) in ("bleu", "bleu clair", "violet") for e in (0, 1)):
+        # 25/11 : short BLEU MARINE contre short NOIR : le bleu marine est en grande partie vu « noir » ; on décide par la
+        # présence de pixels bleus (le short noir n'en a presque pas)
+        e_bleu = 0 if couleurs_ref.get(0) in ("bleu", "bleu clair", "violet") else 1
+        p_bleu = float(np.isin(noms, ["bleu", "bleu clair", "violet"]).mean())
+        p_noir = float((noms == "noir").mean())
+        if p_bleu >= 0.12:
+            return [1.0, 0.0] if e_bleu == 0 else [0.0, 1.0]
+        if p_noir >= 0.40 and p_bleu < 0.04:
+            return [0.0, 1.0] if e_bleu == 0 else [1.0, 0.0]
+        return [0.0, 0.0]
+    return [round(float(np.isin(noms, list(nom_mesure(couleurs_ref[e]))).mean()), 3) if e in couleurs_ref else 0.0
             for e in (0, 1)]
 
 
