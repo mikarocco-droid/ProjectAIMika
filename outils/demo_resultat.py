@@ -68,6 +68,7 @@ def main():
         result["joueur"] = {"demande": True, "trouve": bool(rj.get("trouve")), "numero": str(rj.get("numero") or ""),
                             "couleur": None, "gardien": bool(rj.get("gardien")), "fiche": loc(rj.get("fiche")),
                             "fiche_donnees": loc(rj.get("fiche_donnees")), "buts_impliques": rj.get("buts_impliques") or [],
+                            "rapport_et_fiche": loc(rj.get("rapport_et_fiche")),
                             # séquences : dossier clips_* copié dans le dossier joueur (avec sequences.json)
                             "sequences": next((os.path.dirname(f) for f in glob.glob(os.path.join(dj, "**", "sequences.json"),
                                                                                    recursive=True)), None),
