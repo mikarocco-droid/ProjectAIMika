@@ -1035,7 +1035,38 @@ def _sequences_joueur(result):
             x["type"] = "but possible"
         x["coche"] = (x["id"] in choisis) if choisis is not None else base
         x["duree"] = int(round(float(x["fin"]) - float(x["debut"])))
+        x["groupe"] = "montage" if x.get("dans_resume") else "moment"
+        x["chemin"] = os.path.join(d, x["fichier"])
+        x["src"] = f"joueur_sequence/{x['id']}"
+    # 25/11/2026 : « AUTRES FAITS DE JEU À VOIR » = séquences du MATCH qui ne recouvrent aucune séquence du joueur
+    # (il peut y être présent sans avoir été reconnu) ; décochées par défaut, à ajouter à son montage
+    for m in _sequences_resume(result):
+        if any(float(m["debut"]) <= float(x["fin"]) and float(m["fin"]) >= float(x["debut"]) for x in seqs):
+            continue
+        dedans = [st for t, st in buts if float(m["debut"]) <= t <= float(m["fin"])]
+        # 25/11 : un faux but écarté reste proposé, comme action (souvent une action dangereuse)
+        ecarte = bool(dedans) and all(st == "ecarte" for st in dedans)
+        mid = "m" + m["id"]
+        seqs.append({"id": mid, "fichier": m["fichier"], "debut": m["debut"], "fin": m["fin"], "minute": m.get("minute"),
+                     "type": ("action (pas un but)" if ecarte else "but" if "valide" in dedans
+                              else "but possible" if dedans else "fait de jeu"),
+                     "dans_resume": False, "groupe": "match", "coche": bool(choisis and mid in choisis),
+                     "duree": int(round(float(m["fin"]) - float(m["debut"]))),
+                     "chemin": os.path.join(result["sequences_resume"], m["fichier"]), "src": f"sequence/{m['id']}"})
     return sorted(seqs, key=lambda x: x["debut"])
+
+
+def _assembler_montage_joueur(result, ids, sortie):
+    """Montage du joueur à partir des séquences cochées (les siennes et, s'il y en a, celles du match), dans l'ordre."""
+    from export.resume_match import recomposer_resume, assembler_mixte
+    j = _joueur_ok(result) or {}
+    voulus = set(ids)
+    choix = [x for x in _sequences_joueur(result) if x["id"] in voulus and os.path.exists(x["chemin"])]
+    if not choix:
+        return None
+    if any(x["groupe"] == "match" for x in choix):       # sources différentes : réencodage commun
+        return assembler_mixte([x["chemin"] for x in sorted(choix, key=lambda x: x["debut"])], sortie)
+    return recomposer_resume(j["sequences"], [x["id"] for x in choix], sortie)
 
 
 def _maj_montage_joueur(a, result):
@@ -1045,11 +1076,10 @@ def _maj_montage_joueur(a, result):
     if not j or not j.get("sequences") or j.get("montage_perso_manuel"):
         return
     try:
-        from export.resume_match import recomposer_resume
         ids = [x["id"] for x in _sequences_joueur(result) if x["coche"]]
         if not ids:
             return
-        out = recomposer_resume(j["sequences"], ids, os.path.join(j["sequences"], "montage_perso.mp4"))
+        out = _assembler_montage_joueur(result, ids, os.path.join(j["sequences"], "montage_perso.mp4"))
         if out:
             json.dump(ids, open(out + ".json", "w", encoding="utf-8"))
             result["joueur"]["montage_perso"] = out
@@ -1066,7 +1096,7 @@ def stream_joueur_sequence(id, sid):
     if not a or a.user_id != current_user.id or not re.fullmatch(r"s\d{3}", sid or ""):
         return "Forbidden", 403
     result = json.loads(a.result_json) if a.result_json else {}
-    x = next((q for q in _sequences_joueur(result) if q["id"] == sid), None)
+    x = next((q for q in _sequences_joueur(result) if q["id"] == sid and q["groupe"] != "match"), None)
     if not x:
         return "Introuvable", 404
     return send_from_directory(result["joueur"]["sequences"], x["fichier"])
@@ -1081,12 +1111,11 @@ def composer_joueur(id):
         return redirect(url_for("dashboard"))
     result = json.loads(a.result_json) if a.result_json else {}
     j = _joueur_ok(result)
-    ids = [x for x in request.form.getlist("seqj") if re.fullmatch(r"s\d{3}", x)]
+    ids = [x for x in request.form.getlist("seqj") if re.fullmatch(r"m?s\d{3}", x)]
     if not j or not j.get("sequences") or not ids:
         flash("Choisissez au moins une séquence.")
         return redirect(url_for("results", id=id) + "#joueur")
-    from export.resume_match import recomposer_resume
-    out = recomposer_resume(j["sequences"], ids, os.path.join(j["sequences"], "montage_perso.mp4"))
+    out = _assembler_montage_joueur(result, ids, os.path.join(j["sequences"], "montage_perso.mp4"))
     if not out:
         flash("Le montage n'a pas pu être refait. Réessayez.")
         return redirect(url_for("results", id=id) + "#joueur")
