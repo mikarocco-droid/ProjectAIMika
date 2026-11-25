@@ -187,7 +187,7 @@
             <source src="/stream/{{ analysis.id }}/sequence/{{ b.sequence }}" type="video/mp4">
           </video>
           {% endif %}
-          <form method="post" action="/buts/{{ analysis.id }}/{{ b.i }}/verdict" style="margin-top:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <form method="post" action="/buts/{{ analysis.id }}/{{ b.i }}/verdict" data-attente="Enregistrement… Le rapport{% if joueur %}, sa fiche et son montage sont{% else %} est{% endif %} mis à jour." style="margin-top:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
             {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
             <span>Équipe :</span>
             {% for k in ('A', 'B') %}
@@ -205,7 +205,7 @@
       <!-- 23/11/2026 : ajouter un but que l'analyse n'a pas trouvé — l'utilisateur MONTRE la séquence du but -->
       <details id="ajouter-but" style="margin-top:14px">
         <summary style="cursor:pointer;color:var(--cyan)">➕ Un but manque ? Montrez-le nous</summary>
-        <form method="post" action="/buts/{{ analysis.id }}/ajouter" style="margin-top:8px">
+        <form method="post" action="/buts/{{ analysis.id }}/ajouter" data-attente="Ajout du but… Le rapport{% if joueur %}, sa fiche et son montage sont{% else %} est{% endif %} mis à jour." style="margin-top:8px">
           {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
           {% if candidats_but %}
           <p style="margin:0 0 8px;color:var(--gray)">Regardez les séquences ci-dessous et cochez celle où le but est marqué.</p>
@@ -265,7 +265,7 @@
       <p style="margin:0 0 6px"><strong>Son rôle dans les buts</strong></p>
       <p style="margin:0 0 10px;color:var(--gray);font-size:.9rem">Pour chaque but confirmé : a-t-il marqué, donné la passe
         décisive ? L'analyse indique seulement s'il était impliqué juste avant. Sa fiche sera mise à jour.</p>
-      <form method="post" action="/joueur/{{ analysis.id }}/roles">
+      <form method="post" action="/joueur/{{ analysis.id }}/roles" data-attente="Enregistrement et mise à jour de sa fiche…">
         {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
         {% for b in buts_conf_j %}
         <div class="highlight-item" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -294,7 +294,7 @@
         <p style="margin:10px 0 8px;color:var(--gray)">Cochez les séquences à garder. Par défaut, son montage contient les buts et ses
           actions. Les « moments à voir » sont ses ballons écartés par l'analyse ; les « autres faits de jeu » sont les actions
           du match où il n'a pas été reconnu : ajoutez celles où vous le voyez. Le montage est assemblé dans l'ordre du match.</p>
-        <form method="post" action="/joueur/{{ analysis.id }}/composer">
+        <form method="post" action="/joueur/{{ analysis.id }}/composer" data-attente="Montage du joueur en cours… Si vous avez ajouté des faits de jeu du match, cela peut prendre quelques minutes.">
           {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
           {% for titre, grp in [("Séquences de son montage", "montage"), ("Moments à voir (ses ballons écartés par l'analyse)", "moment"),
                                  ("Autres faits de jeu à voir (il y est peut-être, sans avoir été reconnu)", "match")] %}
@@ -384,7 +384,7 @@
       {% endif %}
       <p style="margin:0 0 10px;color:var(--gray)">Regardez chaque séquence, cochez celles que vous voulez garder, puis
         cliquez sur « Refaire mon résumé ». Les séquences sont toujours assemblées dans l'ordre du match.</p>
-      <form method="post" action="/resume/{{ analysis.id }}/composer">
+      <form method="post" action="/resume/{{ analysis.id }}/composer" data-attente="Montage du résumé en cours…">
         {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
         {% for titre, dans in [("Séquences du résumé", True), ("D'autres moments à voir", False)] %}
           {% set liste = sequences | selectattr("dans_resume", "equalto", dans) | list %}
@@ -662,5 +662,31 @@
 <footer>
   <p>© 2026 ScoutIA — Propulsé par Claude AI &amp; Gemini Vision</p>
 </footer>
+<!-- 25/11/2026 : message d'attente pendant un montage ou une mise à jour (le serveur répond quand c'est fini) -->
+<div id="attente" style="display:none;position:fixed;inset:0;background:rgba(5,8,14,.78);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:var(--surface,#161b26);border:1px solid var(--border,#2a2f3a);border-radius:14px;padding:26px 30px;max-width:420px;text-align:center">
+    <div class="attente-rond"></div>
+    <p id="attente-msg" style="margin:14px 0 4px;color:var(--white,#fff);font-weight:600">Montage en cours…</p>
+    <p style="margin:0;color:var(--gray,#9aa3b2);font-size:.85rem">Ne fermez pas la page : elle se mettra à jour toute seule.</p>
+  </div>
+</div>
+<style>
+  .attente-rond { width:38px;height:38px;margin:0 auto;border:4px solid rgba(0,200,230,.25);border-top-color:var(--cyan,#00c8e6);
+                  border-radius:50%;animation:attente-tour 0.9s linear infinite; }
+  @keyframes attente-tour { to { transform: rotate(360deg); } }
+</style>
+<script>
+  document.querySelectorAll("form[data-attente]").forEach(function (f) {
+    f.addEventListener("submit", function () {
+      var a = document.getElementById("attente");
+      document.getElementById("attente-msg").textContent = f.getAttribute("data-attente");
+      a.style.display = "flex";
+      setTimeout(function () { f.querySelectorAll("button").forEach(function (b) { b.disabled = true; }); }, 0);
+    });
+  });
+  window.addEventListener("pageshow", function () {      // retour arrière du navigateur : on cache le message
+    var a = document.getElementById("attente"); if (a) { a.style.display = "none"; }
+  });
+</script>
 </body>
 </html>
