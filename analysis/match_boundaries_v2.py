@@ -179,6 +179,27 @@ def find_ko2_gemini(video_path, ko1_s, half_duration_min=45, marge_avant_min=6,
                              # non touche.
     )
 
+    # 25/11/2026 : VIDÉO SANS PAUSE (caméra manuelle coupée à la mi-temps : Stavelot B – Honsfeld B, reprise 47:43 avec
+    # KO1 00:10). La fenêtre habituelle commence à KO1 + 51 min : la reprise est AVANT, d'où une « fenêtre dégénérée »
+    # (match déjà en cours dès le premier signal). Repli UNIQUEMENT dans ce cas : nouvelle recherche de KO1 + 41 min à
+    # KO1 + 51 min (fin de 1re mi-temps + coupure). Sans effet sur les vidéos avec pause (fenêtre habituelle trouvée).
+    # SCOUTIA_KO2_SANS_PAUSE=0 → désactivé.
+    if (resultat["status"] != "AUTO_CONFIRMED" and "DEGENERATE" in str(resultat.get("reason", ""))
+            and os.environ.get("SCOUTIA_KO2_SANS_PAUSE", "1").strip() != "0"):
+        print(f"  [KO2] fenêtre habituelle dégénérée : la vidéo est peut-être COUPÉE à la mi-temps — recherche de "
+              f"{(ko1_s + (half_duration_min - 4) * 60) / 60:.0f} à {t_debut_recherche / 60:.0f} min")
+        n_av = resultat.get("n_appels_gemini") or 0
+        r2 = detect_kickoff_gemini_avec_retry(
+            video_path, max_search_s=t_debut_recherche, t_debut=ko1_s + (half_duration_min - 4) * 60,
+            pas_scan=pas_scan, pas_scan_fin=pas_scan_fin, delai_verif_q2=30, delai_verif_q2_precoce=22,
+            max_retries=1, model_name=model_name, tmp_dir=tmp_dir, fonction_q1=fonction_q1_choisie,
+            taille_lot=1, fonction_q2=fonction_q2_choisie)
+        if r2.get("status") == "AUTO_CONFIRMED":
+            print(f"  [KO2] reprise trouvée sans pause : {r2['kickoff_s']:.0f} s")
+            return {"status": "AUTO_CONFIRMED", "ko2_s": r2["kickoff_s"], "reason": "SANS_PAUSE",
+                    "n_appels_gemini": n_av + (r2.get("n_appels_gemini") or 0)}
+        print(f"  [KO2] repli sans pause : rien trouvé ({r2.get('reason')})")
+
     if resultat["status"] == "AUTO_CONFIRMED":
         return {"status": "AUTO_CONFIRMED", "ko2_s": resultat["kickoff_s"], "reason": None,
                  "n_appels_gemini": resultat.get("n_appels_gemini")}
