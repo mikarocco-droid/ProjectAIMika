@@ -955,7 +955,8 @@ def _regenerer_fiche(a, result):
     """24/11/2026 : fiche du joueur refaite avec les buts tels que tranchés et le rôle du joueur (buteur / passeur)."""
     j = _joueur_ok(result)
     if not j or not j.get("fiche_donnees") or not os.path.exists(j["fiche_donnees"]):
-        return
+        print(f"  [FICHE JOUEUR] non régénérée : données de la fiche introuvables ({(j or {}).get('fiche_donnees')})")
+        return False
     try:
         from export.fiche_joueur import generer_fiche_joueur, joindre_au_rapport
         d = json.load(open(j["fiche_donnees"], encoding="utf-8"))
@@ -984,8 +985,11 @@ def _regenerer_fiche(a, result):
         generer_fiche_joueur(**d)
         if j.get("rapport_et_fiche") and result.get("pdf") and os.path.exists(result["pdf"]):
             joindre_au_rapport(result["pdf"], d["chemin_pdf"], j["rapport_et_fiche"])
+        print(f"  [FICHE JOUEUR] refaite : {d['chemin_pdf']}")
+        return True
     except Exception as e:
         print(f"  [FICHE JOUEUR] non régénérée : {e}")
+        return False
 
 
 @app.route("/joueur/<int:id>/roles", methods=["POST"])
@@ -1010,8 +1014,10 @@ def roles_joueur(id):
                                         time_abs=t, role=r, implique=any(abs(t - x) <= 5 for x in imp)))
     a.result_json = json.dumps(result)
     db.session.commit()
-    _regenerer_fiche(a, result)
-    flash("Rôle du joueur enregistré : sa fiche est mise à jour.")
+    if _regenerer_fiche(a, result):
+        flash("Rôle du joueur enregistré : sa fiche est mise à jour.")
+    else:
+        flash("Rôle enregistré, mais sa fiche n'a pas pu être refaite (voir le journal du serveur).")
     return redirect(url_for("results", id=id) + "#joueur")
 
 
