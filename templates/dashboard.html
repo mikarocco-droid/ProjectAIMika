@@ -38,7 +38,7 @@
   <div class="nav-inner">
     <a href="/" class="logo">⚡ ScoutIA</a>
     <div class="nav-links">
-      <span class="plan-badge-nav">{{ plan.name }}</span>
+      <a href="/pricing" class="plan-badge-nav" title="Recharger">🪙 {{ solde_jetons }} jeton{{ 's' if solde_jetons != 1 else '' }}</a>
       <a href="/logout">Déconnexion</a>
     </div>
   </div>
@@ -48,10 +48,11 @@
 
   <div class="upload-card">
     <h2>Nouvelle analyse</h2>
-    <p class="quota-info">{{ used }} / {{ plan.videos + (credits_offerts or 0) }} vidéos utilisées
-      {% if credits_offerts %}<span style="color:var(--yellow)">(dont {{ credits_offerts }} offerte{{ 's' if credits_offerts > 1 else '' }})</span>{% endif %}</p>
+    <p class="quota-info">Solde : <strong>{{ solde_jetons }} jeton{{ 's' if solde_jetons != 1 else '' }}</strong>
+      {% if jetons_essai %}<span style="color:var(--yellow)">(dont {{ jetons_essai }} offerts, pour un match sous 48 h)</span>{% endif %}
+      · <a href="/pricing">Recharger →</a></p>
 
-    {% if (analyses_left if analyses_left is defined else plan.videos - used) > 0 %}
+    {% if solde_jetons >= (cout_jetons.values() | min) %}
     <form action="/upload" method="POST" enctype="multipart/form-data" id="upload-form">
       <input type="file" name="video" accept="video/*" id="file-input" hidden>
       <input type="hidden" name="preview_upload_id" id="preview-upload-id">
@@ -261,16 +262,61 @@
         </div>
       </div>
 
+        <!-- 25/11/2026 : vitesse et coût en jetons -->
+        <div class="mode-selector" style="margin-top:0.75rem">
+          <label class="mode-option">
+            <input type="radio" name="vitesse" value="rapide" id="vitesse-rapide" {% if not jetons_essai %}checked{% endif %}>
+            <div class="mode-card">
+              <div class="mode-icon">⚡</div>
+              <div class="mode-title">Rapide</div>
+              <div class="mode-desc">Résultat en 2 h environ — <strong class="cout-vitesse" data-match="{{ cout_jetons.match_rapide }}" data-joueur="{{ cout_jetons.player_rapide }}">{{ cout_jetons.match_rapide }}</strong> jetons</div>
+            </div>
+          </label>
+          <label class="mode-option">
+            <input type="radio" name="vitesse" value="48h" id="vitesse-48h" {% if jetons_essai %}checked{% endif %}>
+            <div class="mode-card">
+              <div class="mode-icon">🕐</div>
+              <div class="mode-title">Sous 48 h</div>
+              <div class="mode-desc">Mode économique, souvent bien avant — <strong class="cout-vitesse" data-match="{{ cout_jetons.match_48h }}" data-joueur="{{ cout_jetons.player_48h }}">{{ cout_jetons.match_48h }}</strong> jetons</div>
+            </div>
+          </label>
+        </div>
+        <p id="info-jetons" style="font-size:.8rem;color:var(--yellow);margin:.4rem 0 0;display:none"></p>
+
         <button type="submit" class="btn-primary" id="submit-btn" disabled
                 style="width:100%;margin-top:0.75rem">
           Lancer l'analyse →
         </button>
+        <script>
+          (function () {
+            var solde = {{ solde_jetons }}, essai = {{ jetons_essai }};
+            function maj() {
+              var joueur = (document.querySelector('input[name="mode"]:checked') || {}).value === "joueur";
+              var v48 = document.getElementById("vitesse-48h").checked;
+              document.querySelectorAll(".cout-vitesse").forEach(function (e) {
+                e.textContent = joueur ? e.dataset.joueur : e.dataset.match; });
+              var cout = parseInt(document.querySelector('input[name="vitesse"]:checked').closest(".mode-option")
+                                  .querySelector(".cout-vitesse").textContent, 10);
+              var utilisables = (!joueur && v48) ? solde : solde - essai;
+              var info = document.getElementById("info-jetons");
+              if (utilisables < cout) {
+                info.style.display = "block";
+                info.textContent = (essai && (joueur || !v48))
+                  ? "Tes " + essai + " jetons offerts ne servent qu'à un « match sous 48 h » (mode économique). Pour cette analyse, recharge ton compte."
+                  : "Solde insuffisant pour cette analyse (" + cout + " jetons) : recharge ton compte.";
+              } else { info.style.display = "none"; }
+            }
+            document.querySelectorAll('input[name="mode"], input[name="vitesse"]').forEach(function (r) {
+              r.addEventListener("change", maj); });
+            maj();
+          })();
+        </script>
       </div> <!-- /step-config -->
     </form>
 
     {% else %}
     <div class="quota-exceeded">
-      Quota atteint. <a href="/pricing">Upgradez votre plan →</a>
+      Solde de jetons insuffisant. <a href="/pricing">Recharger mon compte →</a>
     </div>
     {% endif %}
   </div>
@@ -292,7 +338,7 @@
       </div>
       <div class="analysis-status">
         {% if a.offerte %}
-          <span class="status-done" style="color:var(--yellow)" title="Cette analyse ne compte pas dans votre quota">🎁 Offerte</span>
+          <span class="status-done" style="color:var(--yellow)" title="Les jetons de cette analyse vous ont été rendus">🎁 Offerte</span>
         {% endif %}
         {% if a.status == "done" %}
           <span class="status-done">✓ Terminé</span>
@@ -322,14 +368,30 @@
 </div>
 
 
+  <!-- 25/11/2026 : historique des jetons -->
+  {% if mouvements %}
+  <details style="margin-top:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.25rem">
+    <summary style="cursor:pointer;font-size:0.9rem;font-weight:600;color:var(--white)">🪙 Historique de mes jetons</summary>
+    <table style="width:100%;margin-top:.75rem;font-size:.82rem;border-collapse:collapse">
+      {% for m in mouvements %}
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:.35rem .25rem;color:var(--gray-dim);white-space:nowrap">{{ m.cree_le.strftime('%d/%m/%Y') }}</td>
+        <td style="padding:.35rem .25rem;color:var(--gray)">{{ m.libelle }}</td>
+        <td style="padding:.35rem .25rem;text-align:right;font-family:var(--font-mono);color:{{ 'var(--green)' if m.quantite > 0 else 'var(--red)' }}">{{ '+' if m.quantite > 0 else '' }}{{ m.quantite }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </details>
+  {% endif %}
+
   <!-- Parrainage (24/10/2026) : lien personnel ; 1 analyse offerte par tranche de 3 filleuls ayant analysé un match -->
   {% if lien_parrainage %}
   <div style="margin-top:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.25rem">
     <p style="font-size:0.9rem;font-weight:600;color:var(--white);margin-bottom:0.25rem">🎁 Invite ton équipe</p>
     <p style="font-size:0.8rem;color:var(--gray);margin-bottom:0.75rem">
-      Pour {{ par_recompense }} coéquipiers inscrits avec ton lien qui analysent leur premier match, tu reçois 1 analyse offerte.
+      Pour {{ par_recompense }} coéquipiers inscrits avec ton lien qui analysent un match, tu reçois {{ jetons_parrainage }} jetons.
       <strong style="color:var(--white)">{{ filleuls_valides % par_recompense }} / {{ par_recompense }}</strong>
-      {% if filleuls_valides >= par_recompense %} · {{ filleuls_valides // par_recompense }} analyse{{ 's' if filleuls_valides // par_recompense > 1 else '' }} déjà gagnée{{ 's' if filleuls_valides // par_recompense > 1 else '' }}{% endif %}
+      {% if filleuls_valides >= par_recompense %} · {{ (filleuls_valides // par_recompense) * jetons_parrainage }} jetons déjà gagnés{% endif %}
     </p>
     <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
       <input type="text" readonly value="{{ lien_parrainage }}" id="lien-parrainage"

@@ -21,113 +21,49 @@
 </nav>
 
 <div class="pricing-page">
-  <h1>Tarifs simples</h1>
-  <p class="pricing-subtitle">Commencez gratuitement, upgradez quand vous êtes prêt.</p>
+  <h1>Des jetons, sans abonnement</h1>
+  <p class="pricing-subtitle">1 jeton = {{ '%.0f' % prix_jeton }} €. Tu paies seulement ce que tu analyses ; plus tu en prends, plus tu reçois de jetons offerts.</p>
+
+  <!-- 25/11/2026 : coût de chaque analyse -->
+  <div style="max-width:760px;margin:0 auto 2.5rem">
+    <table class="admin-table" style="width:100%">
+      <thead><tr><th>Analyse</th><th>⚡ Rapide (≈ 2 h)</th><th>🕐 Sous 48 h (économique)</th></tr></thead>
+      <tbody>
+        <tr><td style="color:var(--white)">⚽ Match : buts, résumé vidéo, rapport PDF</td>
+            <td><strong>{{ cout.match_rapide }} jetons</strong></td><td><strong>{{ cout.match_48h }} jetons</strong></td></tr>
+        <tr><td style="color:var(--white)">🎯 Joueur : le match + son montage et sa fiche</td>
+            <td><strong>{{ cout.player_rapide }} jetons</strong></td><td><strong>{{ cout.player_48h }} jetons</strong></td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:.82rem;color:var(--gray);margin-top:.6rem">Les durées sont indicatives. « Sous 48 h » : le résultat
+      arrive souvent bien avant. 🎁 À l'inscription : <strong>{{ jetons_essai }} jetons offerts</strong>, pour un premier
+      match analysé en mode « sous 48 h ».</p>
+  </div>
 
   <div class="plans-grid">
-
-    <!-- GRATUIT -->
-    <div class="plan-card">
+    {% for code, pq in paquets.items() %}
+    <div class="plan-card {% if code == 'p30' %}featured{% endif %}">
+      {% if code == 'p30' %}<div class="plan-badge-top">Populaire</div>{% endif %}
       <div class="plan-header">
-        <div class="plan-name">Gratuit</div>
-        <div class="plan-price">0€</div>
-        <div class="plan-desc">Pour découvrir</div>
+        <div class="plan-name">{{ pq.jetons }} jetons{% if pq.bonus %} <span style="color:var(--yellow)">+ {{ pq.bonus }} offerts</span>{% endif %}</div>
+        <div class="plan-price">{{ '%.0f' % pq.prix_eur }}€</div>
+        <div class="plan-desc">{{ pq.jetons + pq.bonus }} jetons au total · {{ '%.2f' % (pq.prix_eur / (pq.jetons + pq.bonus)) }} € le jeton</div>
       </div>
       <ul class="plan-features">
-        <li>1 vidéo</li>
-        <li>Résumé vidéo à composer</li>
-        <li>Rapport PDF du match</li>
-        <li style="opacity:.4">Support</li>
+        <li>≈ {{ (pq.jetons + pq.bonus) // cout.match_rapide }} matchs rapides</li>
+        <li>ou ≈ {{ (pq.jetons + pq.bonus) // cout.match_48h }} matchs sous 48 h</li>
+        <li>Valables {{ validite }} mois</li>
       </ul>
       {% if current_user.is_authenticated %}
-        {% if current_user.plan == "free" %}
-          <div class="plan-current">Plan actuel</div>
-        {% else %}
-          <a href="/dashboard" class="btn-secondary">Dashboard</a>
-        {% endif %}
-      {% else %}
-        <a href="/register" class="btn-secondary">Commencer</a>
-      {% endif %}
-    </div>
-
-    <!-- UNIQUE -->
-    <div class="plan-card">
-      <div class="plan-header">
-        <div class="plan-name">Vidéo unique</div>
-        <div class="plan-price">5€<span>/vidéo</span></div>
-        <div class="plan-desc">Sans engagement</div>
-      </div>
-      <ul class="plan-features">
-        <li>1 vidéo analysée</li>
-        <li>Résumé vidéo à composer</li>
-        <li>Rapport PDF du match</li>
-        <li>Paiement unique</li>
-      </ul>
-      {% if current_user.is_authenticated %}
-        <form action="/create-checkout" method="POST">
-          <input type="hidden" name="plan" value="unique">
-          <button type="submit" class="btn-secondary">Acheter 1 vidéo</button>
+        <form action="/acheter-jetons" method="POST">
+          <input type="hidden" name="paquet" value="{{ code }}">
+          <button type="submit" class="{{ 'btn-primary' if code == 'p30' else 'btn-secondary' }}">Acheter</button>
         </form>
       {% else %}
-        <a href="/register" class="btn-secondary">Commencer</a>
+        <a href="/register" class="{{ 'btn-primary' if code == 'p30' else 'btn-secondary' }}">Commencer</a>
       {% endif %}
     </div>
-
-    <!-- STARTER -->
-    <div class="plan-card featured">
-      <div class="plan-badge-top">Populaire</div>
-      <div class="plan-header">
-        <div class="plan-name">Starter</div>
-        <div class="plan-price">79€<span>/mois</span></div>
-        <div class="plan-desc">3,95€ par vidéo</div>
-      </div>
-      <ul class="plan-features">
-        <li>20 vidéos / mois</li>
-        <li>Résumé vidéo à composer</li>
-        <li>Rapport PDF du match</li>
-        <li>Support email</li>
-      </ul>
-      {% if current_user.is_authenticated %}
-        {% if current_user.plan == "starter" %}
-          <div class="plan-current">Plan actuel</div>
-        {% else %}
-          <form action="/create-checkout" method="POST">
-            <input type="hidden" name="plan" value="starter">
-            <button type="submit" class="btn-primary">Choisir Starter</button>
-          </form>
-        {% endif %}
-      {% else %}
-        <a href="/register" class="btn-primary">Commencer</a>
-      {% endif %}
-    </div>
-
-    <!-- PRO -->
-    <div class="plan-card">
-      <div class="plan-header">
-        <div class="plan-name">Pro</div>
-        <div class="plan-price">269€<span>/mois</span></div>
-        <div class="plan-desc">2,69€ par vidéo</div>
-      </div>
-      <ul class="plan-features">
-        <li>100 vidéos / mois</li>
-        <li>Résumé vidéo à composer</li>
-        <li>Rapport PDF du match</li>
-        <li>Support prioritaire</li>
-      </ul>
-      {% if current_user.is_authenticated %}
-        {% if current_user.plan == "pro" %}
-          <div class="plan-current">Plan actuel</div>
-        {% else %}
-          <form action="/create-checkout" method="POST">
-            <input type="hidden" name="plan" value="pro">
-            <button type="submit" class="btn-primary">Choisir Pro</button>
-          </form>
-        {% endif %}
-      {% else %}
-        <a href="/register" class="btn-primary">Commencer</a>
-      {% endif %}
-    </div>
-
+    {% endfor %}
   </div>
 
   <div class="faq">
@@ -145,7 +81,7 @@
 
     <div class="faq-item">
       <div class="faq-q">Combien de temps dure une analyse ?</div>
-      <div class="faq-a">Environ 2 h pour un match complet, un peu plus si tu demandes le montage d'un joueur. Tu peux fermer l'onglet — une notification t'attend quand c'est prêt.</div>
+      <div class="faq-a">En mode « Rapide », environ 2 h pour un match complet (2 h 30 avec le montage d'un joueur). En mode « Sous 48 h », l'analyse passe par un traitement économique : le résultat arrive dans les 48 h, souvent bien avant. Tu peux fermer l'onglet — une notification t'attend quand c'est prêt.</div>
     </div>
 
     <div class="faq-item">
@@ -169,13 +105,18 @@
     </div>
 
     <div class="faq-item">
-      <div class="faq-q">Puis-je annuler à tout moment ?</div>
-      <div class="faq-a">Oui, sans engagement ni frais. Tu peux annuler depuis ton dashboard en un clic. Tu conserves l'accès jusqu'à la fin de la période payée.</div>
+      <div class="faq-q">Mes jetons expirent-ils ?</div>
+      <div class="faq-a">Ils sont valables {{ validite }} mois après l'achat. Pas d'abonnement, rien à résilier : tu recharges quand tu veux.</div>
     </div>
 
     <div class="faq-item">
-      <div class="faq-q">Le plan gratuit est vraiment gratuit ?</div>
-      <div class="faq-a">Oui, sans carte bancaire. 1 analyse complète offerte pour tester. Si tu es convaincu, tu passes sur un plan payant. Sinon, aucune obligation.</div>
+      <div class="faq-q">Et si l'analyse échoue ?</div>
+      <div class="faq-a">Tes jetons te sont rendus automatiquement, et tu peux relancer l'analyse.</div>
+    </div>
+
+    <div class="faq-item">
+      <div class="faq-q">L'essai est vraiment gratuit ?</div>
+      <div class="faq-a">Oui, sans carte bancaire : {{ jetons_essai }} jetons offerts à l'inscription, pour analyser un premier match en mode « sous 48 h ». Invite aussi ton équipe : quand 3 coéquipiers inscrits avec ton lien ont analysé un match, tu reçois {{ jetons_parrainage }} jetons.</div>
     </div>
 
     <div class="faq-item">

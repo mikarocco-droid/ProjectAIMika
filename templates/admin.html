@@ -81,6 +81,7 @@
         <th>Plan</th>
         <th>Admin</th>
         <th title="Vidéos décomptées du quota (hors analyses offertes et en erreur ; mois en cours pour Starter et Pro)">Vidéos décomptées</th>
+        <th>Jetons</th>
         <th>Changer plan</th>
         <th>Action</th>
       </tr>
@@ -99,6 +100,15 @@
           {% endif %}
         </td>
         <td style="font-family:var(--font-mono)">{{ u.analyses_count() }}</td>
+        <td>
+          {# 25/11/2026 : jetons — solde et geste commercial #}
+          <div style="font-family:var(--font-mono);font-size:.75rem;color:var(--white)">🪙 {{ u.solde_jetons() }}</div>
+          <form class="action-form" action="/admin/user/{{ u.id }}/jetons" method="POST">
+            <input type="number" name="n" min="1" max="500" placeholder="+n" style="width:52px;font-size:.72rem">
+            <input type="text" name="motif" placeholder="motif" maxlength="150" style="width:90px;font-size:.72rem">
+            <button type="submit" class="btn-xs btn-save">Ajouter</button>
+          </form>
+        </td>
         <td>
           <form class="action-form" action="/admin/user/{{ u.id }}/plan" method="POST">
             <select class="plan-select" name="plan">

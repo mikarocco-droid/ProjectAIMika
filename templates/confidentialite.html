@@ -49,6 +49,8 @@
     <tr><td>Résultats : résumé vidéo, séquences, rapport, montage et fiche d'un joueur</td><td>Vous les rendre (contrat)</td>
         <td>{{ retention.get('free', 7) }} jours (Gratuit), {{ retention.get('unique', 30) }} jours (Unique),
             {{ retention.get('starter', 30) }} jours (Starter), {{ retention.get('pro', 90) }} jours (Pro), puis suppression automatique</td></tr>
+    <tr><td>Données de suivi du match (positions des joueurs et du ballon, sans image) et réponses textuelles de l'IA</td>
+        <td>Ne pas réanalyser le même match quand un autre utilisateur envoie la même vidéo</td><td>30 jours</td></tr>
     <tr><td>Empreinte technique de la vidéo (calculée sur le fichier, elle ne contient aucune image)</td>
         <td>Reconnaître le même match envoyé par un autre utilisateur</td><td>Comme l'analyse</td></tr>
     <tr><td>Confirmations, corrections et ajouts de buts ; rôle d'un joueur (buteur, passeur)</td>
@@ -93,6 +95,8 @@
     <form method="post" action="/compte/supprimer" onsubmit="return confirm('Supprimer définitivement votre compte ?')">
       {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
       <label>Tapez <strong>SUPPRIMER</strong> : <input type="text" name="confirmation" size="12" required></label>
+      <label style="display:block;margin:.5rem 0;font-size:.85rem"><input type="checkbox" name="perte_jetons" value="1">
+        Je sais que mes jetons restants seront perdus.</label>
       <button type="submit" class="btn-secondary" style="border-color:var(--red);color:var(--red)">Supprimer mon compte</button>
     </form>
   </div>
