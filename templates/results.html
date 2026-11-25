@@ -147,6 +147,11 @@
   </div>
   {% endif %}
 
+  {# 25/11/2026 : messages de confirmation / d'erreur (rôle enregistré, fiche refaite…) #}
+  {% with messages = get_flashed_messages() %}{% for m in messages %}
+    <div class="flash" style="margin-bottom:12px">{{ m }}</div>
+  {% endfor %}{% endwith %}
+
   <!-- Buts, avec leur statut — 23/11/2026 : l'utilisateur confirme les buts « à vérifier » (vidéo, oui/non, équipe) -->
   {% if buts_page %}
   <div class="result-section" id="buts">
