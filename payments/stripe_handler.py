@@ -55,6 +55,36 @@ def create_checkout_session(user_email, plan, success_url, cancel_url):
 
 
 # ─────────────────────────────────────────
+# 25/11/2026 — PAQUETS DE JETONS (paiement unique, prix fixé ici : pas de « Price » à créer dans Stripe)
+# ─────────────────────────────────────────
+def create_checkout_jetons(user_email, user_id, code_paquet, success_url, cancel_url):
+    if not STRIPE_AVAILABLE or not config.STRIPE_SECRET_KEY:
+        return None
+    pq = config.PAQUETS_JETONS.get(code_paquet)
+    if not pq:
+        print(f"❌ Paquet de jetons inconnu : {code_paquet}")
+        return None
+    nom = f"{pq['jetons']} jetons ScoutIA" + (f" + {pq['bonus']} offerts" if pq.get("bonus") else "")
+    try:
+        session = stripe.checkout.Session.create(
+            # moyens de paiement : ceux activés dans le tableau de bord Stripe (carte, Bancontact…)
+            mode                 = "payment",
+            customer_email       = user_email,
+            line_items           = [{"price_data": {"currency": "eur", "unit_amount": int(round(pq["prix_eur"] * 100)),
+                                                    "product_data": {"name": nom}},
+                                     "quantity": 1}],
+            metadata             = {"type": "jetons", "paquet": code_paquet, "user_id": str(user_id), "email": user_email},
+            client_reference_id  = str(user_id),
+            success_url          = success_url + "?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url           = cancel_url
+        )
+        return session.url
+    except Exception as e:
+        print(f"❌ Stripe checkout jetons : {e}")
+        return None
+
+
+# ─────────────────────────────────────────
 # PORTAIL CLIENT
 # ─────────────────────────────────────────
 def create_portal_session(stripe_customer_id, return_url):
@@ -95,7 +125,12 @@ def verify_checkout_session(session_id):
             "plan":            session.metadata.get("plan"),
             "email":           session.metadata.get("email"),
             "customer_id":     session.customer,
-            "subscription_id": session.subscription
+            "subscription_id": session.subscription,
+            # 25/11/2026 : paquets de jetons
+            "type":            session.metadata.get("type"),
+            "paquet":          session.metadata.get("paquet"),
+            "user_id":         session.metadata.get("user_id"),
+            "session_id":      session.id,
         }
 
     except stripe.error.StripeError as e:
@@ -130,12 +165,19 @@ def handle_webhook(payload, sig_header):
 
     # ── Paiement initial réussi ───────────
     if event_type == "checkout.session.completed":
+        md = data.get("metadata", {}) or {}
         return {
             "event_type":      "payment_success",
-            "plan":            data.get("metadata", {}).get("plan"),
-            "email":           data.get("metadata", {}).get("email"),
+            "plan":            md.get("plan"),
+            "email":           md.get("email"),
             "customer_id":     data.get("customer"),
-            "subscription_id": data.get("subscription")
+            "subscription_id": data.get("subscription"),
+            # 25/11/2026 : paquets de jetons (crédités une seule fois, par la référence de la session)
+            "type":            md.get("type"),
+            "paquet":          md.get("paquet"),
+            "user_id":         md.get("user_id"),
+            "session_id":      data.get("id"),
+            "payment_status":  data.get("payment_status"),
         }
 
     # ── Renouvellement abonnement ─────────
