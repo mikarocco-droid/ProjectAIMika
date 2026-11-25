@@ -660,6 +660,12 @@ def _installer_verrou_gemini():
 _installer_verrou_gemini()
 
 
+def gemini_cache_reinitialiser():
+    """25/11/2026 : repart d'un cache vide avant CHAQUE analyse (un même processus de l'application enchaîne plusieurs
+    analyses : sans cela, le fichier de sortie et les réponses en mémoire resteraient ceux de la première)."""
+    _GC.update({"loaded": False, "entries": {}, "out": None, "hits": 0, "misses": 0, "strict_misses": 0, "writes": 0})
+
+
 def gemini_cache_summary():
     """Bilan du cache (à afficher en fin de run)."""
     with _GC_LOCK:
