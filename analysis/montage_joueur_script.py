@@ -95,6 +95,7 @@ COULEUR      = "bleu"   # COULEUR DE L'ÉQUIPE (joueurs de champ) ; rouge, bleu,
 PARSEQ_VERSION = "v2"     # ← TEST n°16 : lancer une fois avec "v1", une fois avec "v2" ("" = le plus récent disponible)
 GARDIEN         = False    # 19/11 : mode gardien (reconnu par la couleur de SON maillot et sa position)
 COULEUR_MAILLOT = ""       # couleur du maillot du gardien (différente de celle de son équipe)
+FAMILLES_SHORT = [{"bleu", "bleu clair", "violet"}, {"blanc", "gris"}, {"rouge", "orange"}, {"jaune", "orange"}]
 SHORT        = ""             # 25/11/2026 : couleur du SHORT de l'équipe ("" = non utilisé). Sert quand les deux équipes ont
                               # des MAILLOTS proches (Stavelot bordeaux / short bleu marine contre Honsfeld rouge / short
                               # noir) : l'équipe est alors choisie, et les joueurs rangés, par le short
@@ -787,6 +788,59 @@ for eq_, lst in sorted(echantillons.items()):
         COULEUR_EQUIPE[eq_] = votes.most_common(1)[0][0]
         print(f"   équipe {eq_} : maillots « {COULEUR_EQUIPE[eq_]} » ({len(lst)} joueurs mesurés : "
               + ", ".join(f"{c} {100 * n / len(lst):.0f} %" for c, n in votes.most_common(3)) + ")")
+
+# 25/11/2026 : MODE « SHORT » INDÉPENDANT DU SUIVI. Quand un short est donné, les équipes ne sont pas tirées des étiquettes
+# du suivi (Stavelot – Honsfeld : deux équipes rouges, étiquettes déséquilibrées 39 / 282, images Gemini « encadrées »
+# toutes ignorées). Gemini décrit les deux équipes sur l'image entière (maillot + short) ; l'équipe 0 = celle du joueur,
+# l'équipe 1 = l'adversaire ; chaque vignette est ensuite rangée par la mesure de son short.
+def _equipes_sans_cadres():
+    try:
+        from google import genai
+        from google.genai import types
+    except Exception as e:
+        print(f"   (Gemini indisponible : {e})"); return []
+    client = genai.Client(api_key=GEMINI_KEY)
+    cap_s = cv2.VideoCapture(VIDEO)
+    vus = []
+    for dt in (30, 120, 300, 600):
+        cap_s.set(cv2.CAP_PROP_POS_MSEC, (KO + dt) * 1000)
+        ok, img = cap_s.read()
+        if not ok:
+            continue
+        _, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        q = ("Football match image. Describe the two OUTFIELD teams (not goalkeepers, not the referee): the main SHIRT "
+             "color and the SHORTS color of each. Answer ONLY with JSON: {\"equipes\": [{\"maillot\": \"...\", "
+             "\"short\": \"...\"}, {\"maillot\": \"...\", \"short\": \"...\"}]} using these French names: "
+             + ", ".join(COULEURS_VALIDES) + " (\"?\" if not visible).")
+        try:
+            r = client.models.generate_content(model=MODELE, contents=[q, types.Part.from_bytes(data=jpg.tobytes(), mime_type="image/jpeg")],
+                                               config={"temperature": 0.0})
+            compter(r, "maillots et shorts (image entière)")
+            t = r.text or ""
+            d = json.loads(t[t.index("{"):t.rindex("}") + 1])
+            eqs = [(str(e.get("maillot", "")).lower(), str(e.get("short", "")).lower()) for e in (d.get("equipes") or [])]
+            print(f"   Gemini, coup d'envoi + {dt} s (image entière) : {eqs}")
+            vus += [e for e in eqs if e[0] in COULEURS_VALIDES and e[1] in COULEURS_VALIDES]
+        except Exception as e:
+            print(f"   Gemini, coup d'envoi + {dt} s (image entière) : réponse inexploitable ({e})")
+    cap_s.release()
+    return vus
+
+
+if SHORT and not GARDIEN:
+    _vus_s = _equipes_sans_cadres()
+    _proche_s = lambda a, b: a == b or any(a in fam and b in fam for fam in FAMILLES_SHORT)
+    _adv = collections.Counter(e for e in _vus_s if not _proche_s(e[1], SHORT))
+    _a_maillot, _a_short = (_adv.most_common(1)[0][0] if _adv else (COULEUR.lower(), "noir" if SHORT != "noir" else "blanc"))
+    if not _adv:
+        print(f"   ⚠️ short de l'adversaire non vu par Gemini : on suppose « {_a_short} »")
+    COULEUR_EQUIPE = {0: COULEUR.lower(), 1: _a_maillot}
+    VOTES_SHORT = collections.defaultdict(collections.Counter, {0: collections.Counter({SHORT: 1}),
+                                                                 1: collections.Counter({_a_short: 1})})
+    EQUIPE = 0
+    SOURCE_COULEURS = "gemini (image entière, mode short)"
+    print(f"   MODE SHORT : joueur = maillot « {COULEUR} », short « {SHORT} » | adversaire = maillot « {_a_maillot} », "
+          f"short « {_a_short} » — les étiquettes d'équipe du suivi ne sont pas utilisées")
 
 # ── 3. SEGMENTS CANDIDATS ─────────────────────────────────────────────────────────────────────
 FAMILLES = [{"rouge", "orange"}, {"bleu", "bleu clair", "violet"}, {"blanc", "gris"}, {"jaune", "orange"}]
