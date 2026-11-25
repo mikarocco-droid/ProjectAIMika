@@ -1,17 +1,17 @@
-# ═════════════════════════════════════════════════════════════════════════════
-# ScoutIA — dépendances Python (17/11/2026)
-# Établies en relevant TOUS les imports du code (pipeline, app web, tâches) et ce que les cellules Kaggle installent.
-# Ultralytics (AGPL-3.0) est RETIRÉ : la détection passe par RF-DETR (Apache 2.0, tailles Nano/Small/Medium/Large).
-# Versions : laissées ouvertes sauf celles déjà figées ; à FIGER sur les versions validées avant le déploiement
+# 
+# ScoutIA - dependances Python (17/11/2026)
+# Etablies en relevant TOUS les imports du code (pipeline, app web, taches) et ce que les cellules Kaggle installent.
+# Ultralytics (AGPL-3.0) est RETIRE : la detection passe par RF-DETR (Apache 2.0, tailles Nano/Small/Medium/Large).
+# Versions : laissees ouvertes sauf celles deja figees ; a FIGER sur les versions validees avant le deploiement
 # (pip freeze sur l'environnement qui a servi aux tests).
 #
-# À installer À PART (hors pip) :
-#   • système : ffmpeg, tesseract-ocr (apt-get install ffmpeg tesseract-ocr)
-#   • GPU : torch + torchvision compilés pour la version CUDA de la machine, AVANT ce fichier, par ex.
+# A installer A PART (hors pip) :
+#    systeme : ffmpeg, tesseract-ocr (apt-get install ffmpeg tesseract-ocr)
+#    GPU : torch + torchvision compiles pour la version CUDA de la machine, AVANT ce fichier, par ex.
 #       pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-# ═════════════════════════════════════════════════════════════════════════════
+# 
 
-# ── Web ──────────────────────────────────────────────────────────────────────
+# -- Web ----------------------------------------------------------------------
 flask>=3.0
 flask-sqlalchemy>=3.1
 flask-login>=0.6
@@ -19,45 +19,45 @@ werkzeug>=3.0
 python-dotenv>=1.0
 boto3                      # stockage des fichiers (app.py)
 
-# ── Vision : détection, suivi, ré-identification ─────────────────────────────
-opencv-python>=4.9         # sur serveur sans écran : opencv-python-headless à la place
-rfdetr                     # détecteur joueurs + ballon (Apache 2.0) — À FIGER (pip show rfdetr)
+# -- Vision : detection, suivi, re-identification -----------------------------
+opencv-python>=4.9         # sur serveur sans ecran : opencv-python-headless a la place
+rfdetr                     # detecteur joueurs + ballon (Apache 2.0) - A FIGER (pip show rfdetr)
 deep-sort-realtime         # suivi des joueurs (vision/tracker.py)
 torchreid                  # apparence des joueurs, OSNet (analysis/player_reid.py)
-gdown                      # téléchargement des poids OSNet par torchreid au 1er lancement
-pytesseract                # lecture des numéros (vision/ocr.py) — demande tesseract-ocr (système)
-# Montage d'un joueur (analysis/montage_joueur.py, 19/11/2026) : lecture des numéros par PARSeq affiné
-#   poids : parseq_scoutia_maillots_v2.pt (hors dépôt) → variable SCOUTIA_PARSEQ_POIDS ; code PARSeq : torch.hub
-#   (baudm/parseq, commit figé dans le script) — demande ffmpeg (système) pour assembler le montage
+gdown                      # telechargement des poids OSNet par torchreid au 1er lancement
+pytesseract                # lecture des numeros (vision/ocr.py) - demande tesseract-ocr (systeme)
+# Montage d'un joueur (analysis/montage_joueur.py, 19/11/2026) : lecture des numeros par PARSeq affine
+#   poids : parseq_scoutia_maillots_v2.pt (hors depot) -> variable SCOUTIA_PARSEQ_POIDS ; code PARSeq : torch.hub
+#   (baudm/parseq, commit fige dans le script) - demande ffmpeg (systeme) pour assembler le montage
 timm
 pytorch-lightning
 nltk
 pypdf                      # fiche du joueur jointe au rapport du match
 
-# ── Audio / vidéo ────────────────────────────────────────────────────────────
-av>=11.0                   # lecture vidéo pour Gemini (ai/gemini_validator.py)
+# -- Audio / video ------------------------------------------------------------
+av>=11.0                   # lecture video pour Gemini (ai/gemini_validator.py)
 librosa                    # fin de mi-temps / fin de match par le son (analysis/match_boundaries_v2.py)
 
-# ── IA ───────────────────────────────────────────────────────────────────────
+# -- IA -----------------------------------------------------------------------
 google-genai>=0.5          # Gemini
 anthropic>=0.25
 
-# ── Export ───────────────────────────────────────────────────────────────────
+# -- Export -------------------------------------------------------------------
 fpdf2>=2.7
 
-# ── Paiement ─────────────────────────────────────────────────────────────────
+# -- Paiement -----------------------------------------------------------------
 stripe>=8.0
 
-# ── Calcul ───────────────────────────────────────────────────────────────────
+# -- Calcul -------------------------------------------------------------------
 numpy>=1.26
 scikit-learn>=1.3
 joblib>=1.3
 psutil>=5.9
 
-# ── Serveur de production ────────────────────────────────────────────────────
+# -- Serveur de production ----------------------------------------------------
 gunicorn>=21.0
 
-# ── File d'attente asynchrone (Celery + Redis) ───────────────────────────────
+# -- File d'attente asynchrone (Celery + Redis) -------------------------------
 celery[redis]==5.3.6
 redis==5.0.0
 flower==2.0.1
