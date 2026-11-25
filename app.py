@@ -2017,6 +2017,9 @@ def run_analysis(
             use_match_boundary_segments = use_match_boundary_segments,
             couleur_maillot_gardien = couleur_maillot_gardien,
             _match_data = _match_data_reutilise,
+            # 25/11/2026 : MÊME type de caméra que la validation (tous les tests : « high_side ») — sans ce paramètre,
+            # le pipeline prenait sa valeur par défaut « low_side », jamais validée
+            camera_type = os.getenv("SCOUTIA_CAMERA_TYPE", "high_side"),
         )
         if isinstance(result, dict):
             result["analyse_reutilisee"] = bool(_entree_cache)
