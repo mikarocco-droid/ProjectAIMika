@@ -23,7 +23,7 @@ def generer_fiche_joueur(chemin_pdf, numero, couleur, trouve, presence_s=0.0, n_
                          buts_confirmes=None, buts_possibles=None, match="", lignes_supp=None,
                          titre_buts="Buts du match (confirmés)",
                          titre_possibles="Buts possibles du match, NON confirmés par l'analyse",
-                         source_presence="passages où son numéro est lu", chronologie=None, bornes=None):
+                         source_presence="passages où son numéro est lu", chronologie=None, bornes=None, roles=None):
     """buts_* : listes de (minute « 54' », raison « 3 touche(s) juste avant »)."""
     pdf = FPDF(format="A4")
     pdf.set_auto_page_break(True, 15)
@@ -55,20 +55,19 @@ def generer_fiche_joueur(chemin_pdf, numero, couleur, trouve, presence_s=0.0, n_
                                   "couleur du maillot indiqués. Le résumé du match vous est livré normalement."),
                        align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     else:
+        # 25/11/2026 : la fiche parle DU JOUEUR — buts marqués et passes décisives indiqués par l'utilisateur (avec le
+        # score), plus de liste des buts du match ni de « moments avec le ballon » (incomplet : on le voit dans le montage)
         _ligne("Présence reconnue", f"environ {presence_s / 60:.1f} min ({n_passages} {source_presence})")
-        _ligne("Moments avec le ballon", str(n_moments_ballon))
         for t_, v_ in (lignes_supp or []):          # 19/11 : lignes propres au gardien (arrêts, tirs adverses…)
             _ligne(t_, v_)
-        bc = buts_confirmes or []
-        _ligne(titre_buts,
-               ", ".join(f"{m} ({r})" for m, r in bc) if bc else "aucun vu")
-        bp = buts_possibles or []
-        if bp:
-            pdf.set_font("Helvetica", "I", 9)
-            pdf.set_text_color(170, 175, 185)
-            pdf.multi_cell(0, 6, _txt(titre_possibles + " : "
-                                      + ", ".join(f"{m} ({r})" for m, r in bp) + "."),
-                           new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        if roles is None:
+            _ligne("Buts et passes décisives", "à indiquer sur la page de résultats, une fois les buts du match validés")
+        else:
+            _f = lambda r: r["minute"] + (f" (but du {r['score']})" if r.get("score") else "")
+            bm = [_f(r) for r in roles if r.get("role") == "buteur"]
+            pd_ = [_f(r) for r in roles if r.get("role") == "passeur"]
+            _ligne("Buts marqués", ", ".join(bm) if bm else "aucun")
+            _ligne("Passes décisives", ", ".join(pd_) if pd_ else "aucune")
         pdf.ln(6)
         pdf.set_font("Helvetica", "", 8.5)
         pdf.set_text_color(170, 175, 185)
@@ -83,8 +82,8 @@ def generer_fiche_joueur(chemin_pdf, numero, couleur, trouve, presence_s=0.0, n_
 _C_REPERE, _C_BUT, _C_VERIF = (0, 200, 230), (255, 77, 77), (230, 190, 60)
 _C_IMPLIQUE, _C_BUTEUR, _C_PASSEUR = (170, 110, 255), (60, 200, 120), (255, 150, 50)
 _C_MOMENT, _C_ARRET = (170, 180, 195), (235, 235, 235)
-_LIB = {"but": "But", "but_verif": "But possible (à vérifier)", "but_implique": "Impliqué dans le but",
-        "buteur": "But marqué", "passeur": "Passe décisive", "moment": "Action avec le ballon", "arret": "Arrêt"}
+_LIB = {"but": "But", "but_verif": "But possible (à vérifier)", "but_implique": "But",
+        "buteur": "But marqué", "passeur": "Passe décisive", "moment": "Action (vue à l'image)", "arret": "Arrêt"}
 
 
 def _couleur(it):
@@ -93,9 +92,7 @@ def _couleur(it):
     if it.get("role") == "passeur":
         return _C_PASSEUR
     ty = it["type"]
-    if ty == "but_implique":
-        return _C_IMPLIQUE
-    if ty == "but":
+    if ty in ("but", "but_implique"):          # 25/11 : « impliqué » n'est plus affiché (seuls but / passe comptent)
         return _C_BUT if it.get("conf", True) else _C_VERIF
     return {"moment": _C_MOMENT, "arret": _C_ARRET}.get(ty, _C_MOMENT)
 
@@ -137,7 +134,7 @@ def _page_chronologie(pdf, chronologie, bornes, numero, couleur):
         h = 7 if it["type"] != "moment" else 4.5
         pdf.rect(pos(it["t_abs"]) - 0.8, y0 + 13.6 - h / 2, 1.6, h, "F")
     # légende
-    leg = [("BUT", _C_BUT), ("À VÉRIFIER", _C_VERIF), ("IMPLIQUÉ", _C_IMPLIQUE), ("SES ACTIONS", _C_MOMENT)]
+    leg = [("BUT", _C_BUT), ("À VÉRIFIER", _C_VERIF), ("SES ACTIONS VUES", _C_MOMENT)]
     if any(i.get("role") == "buteur" for i in items):
         leg.append(("A MARQUÉ", _C_BUTEUR))
     if any(i.get("role") == "passeur" for i in items):
@@ -165,8 +162,8 @@ def _page_chronologie(pdf, chronologie, bornes, numero, couleur):
     for it in items:
         lib = _LIB.get(it.get("role") or "", None) or (_LIB["but_verif"] if it["type"] == "but" and not it.get("conf", True)
                                                       else _LIB.get(it["type"], "Action"))
-        if it["type"] == "but_implique" and not it.get("conf", True) and not it.get("role"):
-            lib += " (but à vérifier)"
+        if it.get("score"):
+            lib += f" (but du {it['score']})" if it.get("role") else f" ({it['score']})"
         if it.get("detail"):
             lib += f" — {it['detail']}"
         lignes.append((float(it["t_abs"]), lib, _couleur(it)))
@@ -189,8 +186,8 @@ def _page_chronologie(pdf, chronologie, bornes, numero, couleur):
     pdf.set_font("Helvetica", "I", 7.5)
     pdf.set_text_color(150, 160, 175)
     pdf.set_x(12)
-    pdf.multi_cell(186, 4, _txt("« Impliqué dans le but » : il a touché le ballon ou était reconnu juste avant le but. "
-                                "Qui a marqué ou donné la passe décisive n'est indiqué que lorsque c'est connu."))
+    pdf.multi_cell(186, 4, _txt("Ses actions : seulement celles où il a été reconnu à l'image (numéro lisible) ; il en manque "
+                                "forcément. « But marqué » et « passe décisive » sont indiqués sur la page de résultats."))
 
 
 def joindre_au_rapport(rapport_pdf, fiche_pdf, sortie_pdf):
