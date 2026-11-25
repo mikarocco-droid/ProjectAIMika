@@ -2125,7 +2125,7 @@ if VERIF_TOUCHES and _fus and GEMINI_KEY:
     _fus = sorted(_ok_t, key=lambda f_: f_[0])
     _TOUCHES_ECARTEES += [(f_[0], f_[1]) for f_ in _non_t]      # 24/11 : proposées dans « Composer son montage »
 # 24/11/2026 : chronologie de la fiche (frise + tableau) : buts du match, ses actions, ses arrêts (gardien)
-_chrono_f = ([{"t_abs": g, "type": "but_implique" if imp else "but", "conf": cf} for g, cf, imp in _CHRONO_BUTS]
+_chrono_f = ([{"t_abs": g, "type": "but", "conf": cf} for g, cf, imp in _CHRONO_BUTS]   # 25/11 : plus d'« impliqué »
              + [{"t_abs": (a_ + b_) / 2, "type": "moment"} for a_, b_, _ in _fus]
              + [{"t_abs": t, "type": "arret"} for t, _ in (_ARRETS if GARDIEN else [])])
 _bn_f = (BOUT_EN_BOUT or {}).get("bornes") or []
