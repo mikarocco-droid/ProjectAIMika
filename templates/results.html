@@ -291,19 +291,21 @@
         </div>
         <a href="/stream/{{ analysis.id }}/joueur_perso?dl=1" class="btn-secondary">⬇ Télécharger mon montage</a>
         {% endif %}
-        <p style="margin:10px 0 8px;color:var(--gray)">Cochez les séquences à garder. Les « moments à voir » sont des ballons
-          que l'analyse a écartés (doute sur la touche) : à vous de juger. Le montage est assemblé dans l'ordre du match.</p>
+        <p style="margin:10px 0 8px;color:var(--gray)">Cochez les séquences à garder. Par défaut, son montage contient les buts et ses
+          actions. Les « moments à voir » sont ses ballons écartés par l'analyse ; les « autres faits de jeu » sont les actions
+          du match où il n'a pas été reconnu : ajoutez celles où vous le voyez. Le montage est assemblé dans l'ordre du match.</p>
         <form method="post" action="/joueur/{{ analysis.id }}/composer">
           {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
-          {% for titre, dans in [("Séquences de son montage", True), ("Moments à voir", False)] %}
-            {% set liste = sequences_joueur | selectattr("dans_resume", "equalto", dans) | list %}
+          {% for titre, grp in [("Séquences de son montage", "montage"), ("Moments à voir (ses ballons écartés par l'analyse)", "moment"),
+                                 ("Autres faits de jeu à voir (il y est peut-être, sans avoir été reconnu)", "match")] %}
+            {% set liste = sequences_joueur | selectattr("groupe", "equalto", grp) | list %}
             {% if liste %}
             <p style="margin:12px 0 8px"><strong>{{ titre }}</strong> ({{ liste | length }})</p>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">
               {% for x in liste %}
               <label style="display:block;border:1px solid var(--border);border-radius:8px;padding:6px;cursor:pointer">
                 <video controls preload="none" style="width:100%;border-radius:6px;background:#000">
-                  <source src="/stream/{{ analysis.id }}/joueur_sequence/{{ x.id }}" type="video/mp4">
+                  <source src="/stream/{{ analysis.id }}/{{ x.src }}" type="video/mp4">
                 </video>
                 <div style="margin-top:4px"><input type="checkbox" name="seqj" value="{{ x.id }}" {% if x.coche %}checked{% endif %}>
                   <strong>{{ x.minute }}</strong> · {{ x.type }} · {{ x.duree }} s</div>
@@ -346,7 +348,7 @@
   {% endif %}
 
   <!-- Résumé du match (22/11/2026 : résumé de base en haut, puis « Composer mon résumé ») -->
-  {% if result.reel %}
+  {% if result.reel and not joueur %}{# 25/11 : en mode joueur, tout passe par son montage #}
   <div class="result-section">
     <div class="result-section-header">
       <span class="result-section-icon">🎬</span>
@@ -365,7 +367,7 @@
   </div>
   {% endif %}
 
-  {% if sequences %}
+  {% if sequences and not joueur %}
   <div class="result-section" id="composer">
     <div class="result-section-header">
       <span class="result-section-icon">✂️</span>
