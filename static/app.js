@@ -416,6 +416,7 @@ async function runTeamDetection(uploadId) {
             ? "Délai dépassé — renseignez les couleurs manuellement."
             : "Détection non disponible — continuez manuellement.";
         if (prog) prog.textContent = msg;
+        afficherKickoff(null);     // 26/11/2026 : coup d'envoi en saisie facultative (sinon, rien ne s'affichait)
         await new Promise(r => setTimeout(r, 1500));
         console.warn("Team detection:", e.message);
     }
