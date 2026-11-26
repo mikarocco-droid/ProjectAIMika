@@ -262,7 +262,8 @@ def validate():
         print("✅  Cloudflare R2 activé — stockage cloud")
     else:
         print("ℹ️   R2 non configuré — stockage local (mode test)")
-    print(f"ℹ️   YOLO batch={YOLO_BATCH_SIZE}  frame_skip={FRAME_SKIP_EVERY}")
+    # 26/11/2026 : le détecteur est RF-DETR (Ultralytics/YOLO retiré) ; les variables gardent leur ancien nom
+    print(f"ℹ️   Détection (RF-DETR) : lots de {YOLO_BATCH_SIZE} images, 1 image analysée sur {FRAME_SKIP_EVERY}")
     for w in warnings:
         print(w)
     return len(warnings) == 0
