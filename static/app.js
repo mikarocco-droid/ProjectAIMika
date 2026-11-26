@@ -88,7 +88,8 @@ let _uploadDone = false;
 // que la détection est finie. Le bouton « Lancer l'analyse » attend la fin du téléchargement complet.
 // Si l'aperçu est impossible (format non MP4/MOV, erreur), détection sur le fichier complet comme avant.
 // ─────────────────────────────────────────
-const DUREE_APERCU_S = 720;            // 12 min : couvre le coup d'envoi de la plupart des vidéos
+const DUREE_APERCU_S = 1200;           // 26/11/2026 : 20 min (était 12) — coups d'envoi observés jusqu'à 14:41
+                                        // (Andrimont ; SRU 11:31 manqué avec 12 min) ; recherche jusqu'à ≈ 19 min
 let _detectionLancee = false;          // une détection (aperçu ou fichier complet) est en cours ou faite
 let _apercuEnCours   = false;          // l'aperçu est en préparation ou en cours d'envoi
 let _uidComplet      = "";
