@@ -2327,13 +2327,15 @@ def _echec_analyse(analysis_id, detail=""):
         if not a:
             return
         a.status       = "error"
-        a.progress_msg = ("L'analyse n'a pas pu aboutir. Vos jetons vous ont été rendus : "
-                          "vous pouvez la relancer.")
-        db.session.commit()
+        rendus = 0
         try:
-            rembourser_jetons(a)                                  # 25/11/2026
+            rendus = rembourser_jetons(a)                         # 25/11/2026
         except Exception as _e_rb:
             print(f"  ⚠️  Jetons non rendus pour l'analyse #{analysis_id} : {_e_rb}")
+        # 26/11/2026 : « jetons rendus » seulement s'il y en a eu (analyses d'avant les jetons : rien à rendre)
+        a.progress_msg = ("L'analyse n'a pas pu aboutir. Vos jetons vous ont été rendus." if rendus
+                          else "L'analyse n'a pas pu aboutir.")
+        db.session.commit()
     if detail:
         print(f"  [ERREUR] analyse #{analysis_id} — détail technique : {str(detail)[:500]}")
 
@@ -2788,6 +2790,30 @@ def status(id):
         "progress":     a.progress,
         "progress_msg": a.progress_msg
     })
+
+
+@app.template_filter("nom_video")
+def _nom_video(nom):
+    """26/11/2026 : « 20261126_111934_78436ecf_p4-sru….mp4 » → « p4-sru….mp4 » (préfixe technique d'unicité masqué)."""
+    return re.sub(r"^\d{8}_\d{6}_[0-9a-f]{6,8}_", "", str(nom or ""))
+
+
+@app.route("/analyse/<int:id>/supprimer", methods=["POST"])
+@login_required
+def supprimer_analyse(id):
+    """26/11/2026 : bouton « Supprimer » du tableau de bord (analyse terminée ou en erreur)."""
+    a = db.session.get(Analysis, id)
+    if not a or a.user_id != current_user.id:
+        flash("Analyse introuvable")
+        return redirect(url_for("dashboard"))
+    if a.status in ("processing", "pending"):
+        flash("Cette analyse est en cours : elle ne peut pas être supprimée maintenant.")
+        return redirect(url_for("dashboard"))
+    _supprimer_fichiers_analyse(a)
+    db.session.delete(a)
+    db.session.commit()
+    flash("Analyse supprimée.")
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/api/delete/<int:id>", methods=["DELETE"])
