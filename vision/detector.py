@@ -663,9 +663,10 @@ class Detector:
                 self._ball_model_name = ball_model_name
                 self.model            = self._ball_model  # remplace le modèle joueurs
                 self.model_name       = ball_model_name
-                print(f"  Detector SINGLE YOLO26m : {ball_model_name} | joueurs+ballon | conf_ballon={ball_conf}")
+                # 26/11/2026 : « yolo26m.pt » n'est plus qu'un nom interne : vision/detecteur_libre le charge en RF-DETR
+                print(f"  Détecteur unique (RF-DETR) : joueurs + ballon en une passe | nom interne {ball_model_name} | conf_ballon={ball_conf}")
             except Exception as _e:
-                print(f"  ⚠️  YOLO26m single introuvable ({_e}) → fallback double inférence")
+                print(f"  ⚠️  Détecteur unique indisponible ({_e}) → deux passes (joueurs, puis ballon)")
                 self._use_single_yolo26 = False
                 self._ball_model      = self.model
                 self._ball_model_name = self.model_name
