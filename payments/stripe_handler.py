@@ -110,32 +110,46 @@ def create_portal_session(stripe_customer_id, return_url):
 # ─────────────────────────────────────────
 # VÉRIFICATION SESSION APRÈS PAIEMENT
 # ─────────────────────────────────────────
+def _en_dict(obj):
+    """26/11/2026 : depuis la bibliothèque stripe v13+, les objets de Stripe ne sont plus des dictionnaires
+    (« .get » n'existe plus) : conversion explicite, compatible avec les anciennes versions."""
+    if obj is None:
+        return {}
+    if hasattr(obj, "to_dict"):
+        try:
+            return obj.to_dict()
+        except Exception:
+            pass
+    try:
+        return dict(obj)
+    except Exception:
+        return {}
+
+
 def verify_checkout_session(session_id):
     if not STRIPE_AVAILABLE or not config.STRIPE_SECRET_KEY:
         return None
 
     try:
-        session = stripe.checkout.Session.retrieve(session_id)
+        session = _en_dict(stripe.checkout.Session.retrieve(session_id))
 
-        if session.payment_status != "paid":
-            print(f"⚠️  Session non payée : {session.payment_status}")
+        if session.get("payment_status") != "paid":
+            print(f"⚠️  Session non payée : {session.get('payment_status')}")
             return None
 
+        md = session.get("metadata") or {}
         return {
-            "plan":            session.metadata.get("plan"),
-            "email":           session.metadata.get("email"),
-            "customer_id":     session.customer,
-            "subscription_id": session.subscription,
+            "plan":            md.get("plan"),
+            "email":           md.get("email"),
+            "customer_id":     session.get("customer"),
+            "subscription_id": session.get("subscription"),
             # 25/11/2026 : paquets de jetons
-            "type":            session.metadata.get("type"),
-            "paquet":          session.metadata.get("paquet"),
-            "user_id":         session.metadata.get("user_id"),
-            "session_id":      session.id,
+            "type":            md.get("type"),
+            "paquet":          md.get("paquet"),
+            "user_id":         md.get("user_id"),
+            "session_id":      session.get("id"),
         }
 
-    except stripe.error.StripeError as e:
-        print(f"❌ Stripe verify error : {e}")
-        return None
 
     except Exception as e:
         print(f"❌ Erreur inattendue verify : {e}")
@@ -153,15 +167,16 @@ def handle_webhook(payload, sig_header):
         event = stripe.Webhook.construct_event(
             payload, sig_header, config.STRIPE_WEBHOOK_SECRET
         )
-    except stripe.error.SignatureVerificationError:
+    except getattr(getattr(stripe, "error", stripe), "SignatureVerificationError", ValueError):
         print("❌ Webhook signature invalide")
         return None
     except Exception as e:
         print(f"❌ Webhook error : {e}")
         return None
 
-    event_type = event["type"]
-    data       = event["data"]["object"]
+    event      = _en_dict(event)
+    event_type = event.get("type")
+    data       = (event.get("data") or {}).get("object") or {}
 
     # ── Paiement initial réussi ───────────
     if event_type == "checkout.session.completed":
@@ -186,7 +201,7 @@ def handle_webhook(payload, sig_header):
         if sub:
             try:
                 subscription = stripe.Subscription.retrieve(sub)
-                plan = subscription.metadata.get("plan", "pro")
+                plan = (_en_dict(subscription).get("metadata") or {}).get("plan", "pro")
             except Exception:
                 plan = "pro"
 
