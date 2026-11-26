@@ -2,13 +2,13 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>Résultats — ScoutIA</title>
+<title>Résultats — {{ marque }}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 <nav>
   <div class="nav-inner">
-    <a href="/" class="logo">⚡ ScoutIA</a>
+    <a href="/" class="logo">⚡ {{ marque }}</a>
     <div class="nav-links">
       <a href="/dashboard">Dashboard</a>
       <a href="/logout">Déconnexion</a>
@@ -616,7 +616,7 @@
           </p>
           <p style="font-size:0.88rem;color:var(--gray);margin-bottom:1rem;line-height:1.6">
             Envoie ce rapport à ton coach, ton équipe ou tes parents.<br>
-            Plus vous êtes à utiliser ScoutIA, plus l'analyse devient puissante.
+            Plus vous êtes à utiliser {{ marque }}, plus l'analyse devient puissante.
           </p>
           <button onclick="shareMatch()" class="btn-secondary" style="gap:0.5rem">
             📤 Partager ce match
@@ -649,7 +649,7 @@
   function shareMatch() {
     const url = window.location.href;
     if (navigator.share) {
-      navigator.share({ title: "Mon match analysé — ScoutIA", url });
+      navigator.share({ title: "Mon match analysé — {{ marque }}", url });
     } else {
       navigator.clipboard.writeText(url).then(() => {
         const btn = document.querySelector('[onclick="shareMatch()"]');
@@ -665,7 +665,7 @@
 </div>
 
 <footer>
-  <p>© 2026 ScoutIA — Propulsé par Claude AI &amp; Gemini Vision</p>
+  <p>© 2026 {{ marque }} — Propulsé par Claude AI &amp; Gemini Vision</p>
 </footer>
 <!-- 25/11/2026 : message d'attente pendant un montage ou une mise à jour (le serveur répond quand c'est fini) -->
 <div id="attente" style="display:none;position:fixed;inset:0;background:rgba(5,8,14,.78);z-index:9999;align-items:center;justify-content:center">

@@ -2,13 +2,13 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>Tarifs — ScoutIA</title>
+<title>Tarifs — {{ marque }}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 <nav>
   <div class="nav-inner">
-    <a href="/" class="logo">⚡ ScoutIA</a>
+    <a href="/" class="logo">⚡ {{ marque }}</a>
     <div class="nav-links">
       {% if current_user.is_authenticated %}
         <a href="/dashboard" class="btn-nav">Dashboard →</a>
@@ -71,12 +71,12 @@
 
     <div class="faq-item">
       <div class="faq-q">C'est quoi exactement une "analyse" ?</div>
-      <div class="faq-a">Tu uploades une vidéo de match, et ScoutIA repère automatiquement les buts et les occasions dangereuses (tirs, arrêts du gardien, poteaux). Tu reçois un résumé vidéo des moments clés (que tu peux recomposer toi-même), la liste des buts avec leur minute de jeu et un rapport PDF avec la chronologie du match. Chaque but est marqué « confirmé » ou « à vérifier » ; tu peux confirmer un but, en écarter un ou en ajouter un oublié, et le score se complète. En option, le montage et la fiche d'un joueur choisi.</div>
+      <div class="faq-a">Tu uploades une vidéo de match, et {{ marque }} repère automatiquement les buts et les occasions dangereuses (tirs, arrêts du gardien, poteaux). Tu reçois un résumé vidéo des moments clés (que tu peux recomposer toi-même), la liste des buts avec leur minute de jeu et un rapport PDF avec la chronologie du match. Chaque but est marqué « confirmé » ou « à vérifier » ; tu peux confirmer un but, en écarter un ou en ajouter un oublié, et le score se complète. En option, le montage et la fiche d'un joueur choisi.</div>
     </div>
 
     <div class="faq-item">
       <div class="faq-q">Quels formats vidéo sont acceptés ?</div>
-      <div class="faq-a">MP4, AVI, MOV, MKV — jusqu'à 10 GB par vidéo. ScoutIA est mis au point sur des vidéos de caméras automatiques (type Veo) qui couvrent tout le terrain. Avec une autre caméra, il fonctionne si l'angle couvre bien le terrain, mais les résultats peuvent être moins bons.</div>
+      <div class="faq-a">MP4, AVI, MOV, MKV — jusqu'à 10 GB par vidéo. {{ marque }} est mis au point sur des vidéos de caméras automatiques (type Veo) qui couvrent tout le terrain. Avec une autre caméra, il fonctionne si l'angle couvre bien le terrain, mais les résultats peuvent être moins bons.</div>
     </div>
 
     <div class="faq-item">
@@ -91,7 +91,7 @@
 
     <div class="faq-item">
       <div class="faq-q">Que signifie un but « à vérifier » ?</div>
-      <div class="faq-a">ScoutIA a vu une action qui ressemble fortement à un but (célébration, reprise du jeu au centre), sans pouvoir le confirmer avec certitude. Sur la page de résultats, tu regardes sa séquence et tu cliques « C'est un but » (avec l'équipe) ou « Pas un but » : le score et le PDF se mettent à jour. Nous préférons te le signaler honnêtement plutôt que d'annoncer un but incertain comme acquis.</div>
+      <div class="faq-a">{{ marque }} a vu une action qui ressemble fortement à un but (célébration, reprise du jeu au centre), sans pouvoir le confirmer avec certitude. Sur la page de résultats, tu regardes sa séquence et tu cliques « C'est un but » (avec l'équipe) ou « Pas un but » : le score et le PDF se mettent à jour. Nous préférons te le signaler honnêtement plutôt que d'annoncer un but incertain comme acquis.</div>
     </div>
 
     <div class="faq-item">
@@ -121,14 +121,14 @@
 
     <div class="faq-item">
       <div class="faq-q">Je suis coach — c'est fait pour moi ?</div>
-      <div class="faq-a">Absolument. ScoutIA repère les buts et les occasions de ton match, prépare un résumé vidéo et un PDF prêts à partager. Plus besoin de parcourir deux heures de vidéo pour retrouver les moments clés.</div>
+      <div class="faq-a">Absolument. {{ marque }} repère les buts et les occasions de ton match, prépare un résumé vidéo et un PDF prêts à partager. Plus besoin de parcourir deux heures de vidéo pour retrouver les moments clés.</div>
     </div>
 
   </div>
 </div>
 
 <footer>
-  <p>© 2026 ScoutIA — Produit par Michaël Ziant · <a href="/cgu">Conditions d'utilisation</a> · <a href="/confidentialite">Confidentialité</a></p>
+  <p>© 2026 {{ marque }} — Produit par Michaël Ziant · <a href="/cgu">Conditions d'utilisation</a> · <a href="/confidentialite">Confidentialité</a></p>
 </footer>
 </body>
 </html>

@@ -2,13 +2,13 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>Admin — ScoutIA</title>
+<title>Admin — {{ marque }}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 <nav>
   <div class="nav-inner">
-    <a href="/" class="logo">⚡ ScoutIA</a>
+    <a href="/" class="logo">⚡ {{ marque }}</a>
     <div class="nav-links">
       <span class="badge badge-admin">Admin</span>
       <a href="/dashboard">Dashboard</a>
@@ -211,7 +211,7 @@
 </div>
 
 <footer>
-  <p>© 2026 ScoutIA — Panel Administration</p>
+  <p>© 2026 {{ marque }} — Panel Administration</p>
 </footer>
 </body>
 </html>

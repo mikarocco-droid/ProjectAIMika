@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Confidentialité — ScoutIA</title>
+<title>Confidentialité — {{ marque }}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
   .legal { max-width: 820px; margin: 0 auto; padding: 3rem 1.5rem 4rem; line-height: 1.7; }
@@ -22,7 +22,7 @@
 <body>
 <nav>
   <div class="nav-inner">
-    <a href="/" class="logo">⚡ ScoutIA</a>
+    <a href="/" class="logo">⚡ {{ marque }}</a>
     <div class="nav-links"><a href="/pricing">Tarifs</a><a href="/cgu">Conditions</a></div>
   </div>
 </nav>
@@ -34,7 +34,7 @@
   {% with messages = get_flashed_messages() %}{% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}{% endwith %}
 
   <h2>1. Responsable du traitement</h2>
-  <p>Michaël Ziant (ScoutIA), <span class="a-completer">[adresse]</span>. Pour toute question sur vos données :
+  <p>Michaël Ziant ({{ marque }}), <span class="a-completer">[adresse]</span>. Pour toute question sur vos données :
     <span class="a-completer">[adresse e-mail de contact]</span>.</p>
 
   <h2>2. Les données traitées, pourquoi, et combien de temps</h2>
@@ -50,7 +50,7 @@
         <td>{{ retention_jours }} jours après l'analyse, puis suppression automatique</td></tr>
     <tr><td>Erreurs de l'analyse que vous signalez (but écarté, but ajouté, équipe corrigée) et les données techniques du
         match (suivi, réponses de l'IA, sans image)</td>
-        <td>Examinées par ScoutIA pour corriger et améliorer la détection</td>
+        <td>Examinées par {{ marque }} pour corriger et améliorer la détection</td>
         <td>Pendant la durée de conservation des résultats ; une copie de travail est supprimée une fois la correction testée</td></tr>
     <tr><td>Données de suivi du match (positions des joueurs et du ballon, sans image) et réponses textuelles de l'IA</td>
         <td>Ne pas réanalyser le même match quand un autre utilisateur envoie la même vidéo</td><td>30 jours</td></tr>
@@ -65,7 +65,7 @@
   </table>
 
   <h2>3. Images de personnes, et de mineurs</h2>
-  <p>Les vidéos montrent des joueurs, souvent mineurs, des arbitres et des spectateurs. ScoutIA ne cherche pas à identifier
+  <p>Les vidéos montrent des joueurs, souvent mineurs, des arbitres et des spectateurs. {{ marque }} ne cherche pas à identifier
     les personnes par leur visage : un joueur est suivi uniquement à partir du <strong>numéro et de la couleur de
     maillot</strong> donnés par l'utilisateur. Il appartient à l'utilisateur de n'envoyer que des vidéos qu'il a le droit
     d'utiliser (voir les <a href="/cgu">conditions d'utilisation</a>).</p>
@@ -83,7 +83,7 @@
     Vos données ne sont ni vendues ni utilisées à des fins publicitaires.</p>
 
   <h2>5. Cookies</h2>
-  <p>ScoutIA n'utilise qu'un cookie de session, nécessaire pour rester connecté. Aucun cookie publicitaire ni de mesure
+  <p>{{ marque }} n'utilise qu'un cookie de session, nécessaire pour rester connecté. Aucun cookie publicitaire ni de mesure
     d'audience.</p>
 
   <h2 id="droits">6. Vos droits</h2>
@@ -106,6 +106,6 @@
   {% endif %}
 </div>
 
-<footer><p>© 2026 ScoutIA — <a href="/cgu">Conditions d'utilisation</a> · <a href="/confidentialite">Confidentialité</a></p></footer>
+<footer><p>© 2026 {{ marque }} — <a href="/cgu">Conditions d'utilisation</a> · <a href="/confidentialite">Confidentialité</a></p></footer>
 </body>
 </html>

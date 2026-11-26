@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Conditions d'utilisation — ScoutIA</title>
+<title>Conditions d'utilisation — {{ marque }}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
   .legal { max-width: 820px; margin: 0 auto; padding: 3rem 1.5rem 4rem; line-height: 1.7; }
@@ -18,7 +18,7 @@
 <body>
 <nav>
   <div class="nav-inner">
-    <a href="/" class="logo">⚡ ScoutIA</a>
+    <a href="/" class="logo">⚡ {{ marque }}</a>
     <div class="nav-links"><a href="/pricing">Tarifs</a><a href="/confidentialite">Confidentialité</a></div>
   </div>
 </nav>
@@ -28,17 +28,17 @@
   <div class="maj">Version du {{ version }}</div>
 
   <h2>1. Qui fournit le service</h2>
-  <p>ScoutIA est édité par Michaël Ziant, <span class="a-completer">[adresse]</span>, <span class="a-completer">[numéro
+  <p>{{ marque }} est édité par Michaël Ziant, <span class="a-completer">[adresse]</span>, <span class="a-completer">[numéro
     d'entreprise BCE, si applicable]</span>. Contact : <span class="a-completer">[adresse e-mail de contact]</span>.</p>
 
   <h2>2. Le service</h2>
-  <p>ScoutIA analyse des vidéos de matchs de football envoyées par l'utilisateur. Il produit notamment : la liste des buts
+  <p>{{ marque }} analyse des vidéos de matchs de football envoyées par l'utilisateur. Il produit notamment : la liste des buts
     détectés avec leur minute de jeu, un résumé vidéo que l'utilisateur peut recomposer, un rapport PDF et, sur demande, le
     montage et la fiche d'un joueur choisi.</p>
   <p>Les résultats sont produits <strong>automatiquement</strong> par des programmes d'analyse et d'intelligence artificielle.
     Ce sont des estimations : un but peut être manqué, mal daté ou détecté à tort, un joueur peut ne pas être reconnu. C'est
     pourquoi certains buts sont marqués « à vérifier » et peuvent être confirmés, écartés ou ajoutés par l'utilisateur.
-    ScoutIA ne garantit pas l'exactitude ni l'exhaustivité des résultats.</p>
+    {{ marque }} ne garantit pas l'exactitude ni l'exhaustivité des résultats.</p>
 
   <h2>3. Compte</h2>
   <ul>
@@ -59,7 +59,7 @@
     <li>il n'utilise pas les résultats (montages, fiches de joueurs) d'une manière qui porte atteinte aux droits des
       personnes filmées, notamment à leur droit à l'image, ni pour les dénigrer.</li>
   </ul>
-  <p>L'utilisateur reste propriétaire de ses vidéos. Il autorise ScoutIA à les traiter uniquement pour fournir le service.</p>
+  <p>L'utilisateur reste propriétaire de ses vidéos. Il autorise {{ marque }} à les traiter uniquement pour fournir le service.</p>
 
   <h2>5. Confirmations de buts partagées</h2>
   <p>Les confirmations, corrections et ajouts de buts faits par un utilisateur sont rattachés au match. Si la même vidéo est
@@ -70,7 +70,7 @@
   <h2>6. Jetons, prix et paiement</h2>
   <ul>
     <li>Les analyses se paient en <strong>jetons</strong>, achetés par paquets sur la page <a href="/pricing">Tarifs</a>
-      (paiement unique, traité par Stripe ; ScoutIA n'a jamais accès aux données de la carte). Le nombre de jetons de chaque
+      (paiement unique, traité par Stripe ; {{ marque }} n'a jamais accès aux données de la carte). Le nombre de jetons de chaque
       analyse (match ou joueur, rapide ou sous 48 h) y est indiqué avant le lancement.</li>
     <li>Les jetons sont valables <strong>24 mois</strong> après l'achat. Ils ne sont ni remboursables en argent ni
       transférables à un autre compte, sauf obligation légale. Les jetons non utilisés à l'expiration sont perdus.</li>
@@ -88,12 +88,12 @@
     <li>tenter de contourner les quotas, de perturber le service ou d'accéder aux données d'autres utilisateurs ;</li>
     <li>fausser volontairement les confirmations de buts.</li>
   </ul>
-  <p>En cas de manquement, ScoutIA peut suspendre ou supprimer le compte.</p>
+  <p>En cas de manquement, {{ marque }} peut suspendre ou supprimer le compte.</p>
 
   <h2>8. Disponibilité et responsabilité</h2>
-  <p>ScoutIA fait de son mieux pour que le service fonctionne, sans garantir qu'il soit disponible en permanence ni sans
+  <p>{{ marque }} fait de son mieux pour que le service fonctionne, sans garantir qu'il soit disponible en permanence ni sans
     erreur. Les résultats ne remplacent pas le regard d'un entraîneur ou d'un arbitre. Dans les limites permises par la loi,
-    la responsabilité de ScoutIA est limitée au montant payé par l'utilisateur pour l'analyse concernée.</p>
+    la responsabilité de {{ marque }} est limitée au montant payé par l'utilisateur pour l'analyse concernée.</p>
 
   <h2>9. Conservation des résultats</h2>
   <p>La vidéo d'origine est supprimée à la fin de l'analyse. Les résultats sont conservés pendant une durée qui dépend de
@@ -109,6 +109,6 @@
     défaut, les tribunaux compétents sont ceux prévus par la loi, en tenant compte des droits du consommateur.</p>
 </div>
 
-<footer><p>© 2026 ScoutIA — <a href="/cgu">Conditions d'utilisation</a> · <a href="/confidentialite">Confidentialité</a></p></footer>
+<footer><p>© 2026 {{ marque }} — <a href="/cgu">Conditions d'utilisation</a> · <a href="/confidentialite">Confidentialité</a></p></footer>
 </body>
 </html>

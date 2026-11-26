@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>Dashboard — ScoutIA</title>
+<title>Dashboard — {{ marque }}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -36,7 +36,7 @@
 <body>
 <nav>
   <div class="nav-inner">
-    <a href="/" class="logo">⚡ ScoutIA</a>
+    <a href="/" class="logo">⚡ {{ marque }}</a>
     <div class="nav-links">
       <a href="/pricing" class="plan-badge-nav" title="Recharger">🪙 {{ solde_jetons }} jeton{{ 's' if solde_jetons != 1 else '' }}</a>
       <a href="/logout">Déconnexion</a>

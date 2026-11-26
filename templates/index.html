@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ScoutIA — Analyse vidéo de matchs par IA</title>
+<title>{{ marque }} — Analyse vidéo de matchs par IA</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
   .stats-band {
@@ -153,7 +153,7 @@
 
 <nav>
   <div class="nav-inner">
-    <a href="/" class="logo">⚡ ScoutIA</a>
+    <a href="/" class="logo">⚡ {{ marque }}</a>
     <div class="nav-links">
       <a href="/pricing">Tarifs</a>
       {% if current_user.is_authenticated %}
@@ -348,7 +348,7 @@
 </div>
 
 <footer>
-  <p>© 2026 ScoutIA — Produit par Michaël Ziant · <a href="/cgu">Conditions d'utilisation</a> · <a href="/confidentialite">Confidentialité</a></p>
+  <p>© 2026 {{ marque }} — Produit par Michaël Ziant · <a href="/cgu">Conditions d'utilisation</a> · <a href="/confidentialite">Confidentialité</a></p>
 </footer>
 
 </body>
