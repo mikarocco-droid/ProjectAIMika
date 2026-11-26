@@ -24,11 +24,27 @@ def _frame_to_base64(frame):
     return base64.b64encode(buf).decode('utf-8')
 
 
+# 26/11/2026 : compteur des questions « couleurs » (attendu par app._detect_teams_colors_autour_ko, absent de ce
+# module : la détection des couleurs autour du coup d'envoi plantait à l'import)
+_N_APPELS_COULEURS = 0
+
+
+def reset_couleurs_calls_count():
+    global _N_APPELS_COULEURS
+    _N_APPELS_COULEURS = 0
+
+
+def get_couleurs_calls_count():
+    return _N_APPELS_COULEURS
+
+
 def _ask_gemini_colors(frame, client):
     """
     Demande à Gemini d'identifier les couleurs des 2 équipes sur une frame.
     Retourne dict avec team_a et team_b ou None si échec.
     """
+    global _N_APPELS_COULEURS
+    _N_APPELS_COULEURS += 1
     img_b64 = _frame_to_base64(frame)
 
     prompt = """Regarde cette image d'un match de football.
