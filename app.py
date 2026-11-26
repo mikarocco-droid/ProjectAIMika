@@ -1886,7 +1886,8 @@ def rembourser_jetons(analysis, motif="Analyse en erreur : jetons rendus"):
 def crediter_paquet(user, code, ref):
     """Achat d'un paquet (Stripe). Crédité UNE seule fois par paiement (page de retour ou webhook)."""
     pq = config.PAQUETS_JETONS.get(code)
-    if not user or not pq or not ref or MouvementJeton.query.filter_by(user_id=user.id, ref=ref).first():
+    # 26/11/2026 : un paiement n'est crédité qu'UNE fois, tous comptes confondus
+    if not user or not pq or not ref or MouvementJeton.query.filter_by(ref=ref).first():
         return False
     crediter_jetons(user, pq["jetons"], "achat", f"Achat de {pq['jetons']} jetons ({pq['prix_eur']:.0f} €)", ref=ref)
     if pq.get("bonus"):
@@ -2951,6 +2952,9 @@ def payment_success():
         return redirect(url_for("dashboard"))
 
     if data.get("type") == "jetons":                                    # 25/11/2026
+        if str(data.get("user_id") or "") != str(current_user.id):     # 26/11 : paiement d'un AUTRE compte
+            flash("Ce paiement ne correspond pas à votre compte.")
+            return redirect(url_for("dashboard"))
         pq = config.PAQUETS_JETONS.get(data.get("paquet"), {})
         if crediter_paquet(current_user, data.get("paquet"), data.get("session_id") or session_id):
             flash(f"Merci ! {pq.get('jetons', 0) + pq.get('bonus', 0)} jetons ont été ajoutés à votre compte.")
