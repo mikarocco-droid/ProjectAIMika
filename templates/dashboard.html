@@ -333,8 +333,11 @@
     {% for a in analyses %}
     <div class="analysis-card" id="card-{{ a.id }}">
       <div class="analysis-info">
-        <div class="analysis-name">{{ a.filename }}</div>
+        <div class="analysis-name" title="{{ a.filename }}">{{ a.filename | nom_video }}</div>
         <div class="analysis-date">{{ a.created_at.strftime('%d/%m/%Y %H:%M') }} — {{ a.sport }}</div>
+        {% if a.status == "error" %}
+          <div class="analysis-erreur">✕ {{ a.progress_msg }}</div>
+        {% endif %}
       </div>
       <div class="analysis-status">
         {% if a.offerte %}
@@ -351,10 +354,16 @@
             <div class="progress-msg">{{ a.progress_msg }}</div>
           </div>
         {% elif a.status == "error" %}
-          <span class="status-error">✕ {{ a.progress_msg }}</span>
           <form method="post" action="/relancer/{{ a.id }}" style="display:inline">
             {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
             <button type="submit" class="btn-small">Relancer</button>
+          </form>
+        {% endif %}
+        {% if a.status in ["done", "error"] %}
+          <form method="post" action="/analyse/{{ a.id }}/supprimer" style="display:inline"
+                onsubmit="return confirm('Supprimer cette analyse et ses fichiers ?')">
+            {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+            <button type="submit" class="btn-supprimer" title="Supprimer">🗑</button>
           </form>
         {% endif %}
       </div>
