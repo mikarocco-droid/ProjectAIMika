@@ -761,6 +761,9 @@ select option {
 }
 
 .mode-option input[type="radio"] { display: none; }
+/* 26/11/2026 : cadres de même hauteur sur une ligne, quelle que soit la longueur du texte */
+.mode-option { display: flex; }
+.mode-option .mode-card { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 
 .mode-card {
   border: 2px solid var(--border);
