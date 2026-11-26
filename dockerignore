@@ -1,0 +1,30 @@
+# .dockerignore — ScoutIA
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.git/
+.gitignore
+uploads/
+outputs/
+instance/
+*.db
+*.sqlite3
+*.pt
+models/
+.env/
+node_modules/
+app-old.py
+scout.py
+# 26/11/2026 : secrets, notes et données jamais dans les images
+*.env
+param.env
+CleAPIStripe.txt
+Rapport/
+donnees/
+demo_*/
+*.ipynb
+*.zip
+*.mp4

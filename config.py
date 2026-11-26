@@ -9,7 +9,9 @@ load_dotenv(".env/param.env")
 # FLASK
 # ─────────────────────────────────────────
 SECRET_KEY   = os.getenv("SECRET_KEY",   "dev-only-change-me")
-DATABASE_URI = os.getenv("DATABASE_URI", "sqlite:///db.sqlite3")
+DATABASE_URI = os.getenv("DATABASE_URI", "") or os.getenv("DATABASE_URL", "") or "sqlite:///db.sqlite3"
+if DATABASE_URI.startswith("postgres://"):          # 26/11/2026 : PostgreSQL en production (forme courte acceptée)
+    DATABASE_URI = "postgresql://" + DATABASE_URI[len("postgres://"):]
 DEBUG        = os.getenv("DEBUG",        "false").lower() == "true"
 
 # ─────────────────────────────────────────
@@ -42,6 +44,16 @@ R2_ENDPOINT_URL = (
 # ─────────────────────────────────────────
 # RÉTENTION DES FICHIERS (en jours)
 # ─────────────────────────────────────────
+# 26/11/2026 : avec les JETONS, plus de formules → une seule durée de conservation des résultats pour tous
+RETENTION_JOURS = int(os.getenv("RETENTION_JOURS", 30))
+# 26/11/2026 : erreurs signalées par les utilisateurs → e-mail à l'administrateur (résumé, au plus une fois par heure)
+ADMIN_EMAIL  = os.getenv("ADMIN_EMAIL", "")
+SMTP_HOST    = os.getenv("SMTP_HOST", "")
+SMTP_PORT    = int(os.getenv("SMTP_PORT", 587))
+SMTP_USER    = os.getenv("SMTP_USER", "")
+SMTP_PASS    = os.getenv("SMTP_PASS", "")
+SMTP_FROM    = os.getenv("SMTP_FROM", "") or SMTP_USER
+
 FILE_RETENTION_DAYS = {
     "free":    int(os.getenv("RETENTION_FREE",    7)),
     "starter": int(os.getenv("RETENTION_STARTER", 30)),
@@ -164,6 +176,33 @@ PLANS = {
         "montage":      True,
     },
 }
+
+# ─────────────────────────────────────────
+# 26/11/2026 — PRODUCTION : ANALYSES SUR UNE MACHINE GPU DISTANTE (RunPod), à la demande
+#   SCOUTIA_GPU_DISTANT=1 sur le SERVEUR DU SITE : les analyses sont mises en file d'attente ; une machine RunPod est
+#   démarrée quand il y en a, elle demande les analyses au site (HTTPS + jeton), les fait, dépose les résultats sur R2,
+#   et le site les récupère. Sans cette variable : comportement d'avant (analyse sur la machine du site).
+# ─────────────────────────────────────────
+GPU_DISTANT        = os.getenv("SCOUTIA_GPU_DISTANT", "0").strip() == "1"
+WORKER_TOKEN       = os.getenv("SCOUTIA_WORKER_TOKEN", "")          # secret partagé site ↔ machine GPU (long, aléatoire)
+SITE_URL           = os.getenv("SCOUTIA_SITE_URL", "").rstrip("/")  # ex. https://matchscoutia.com
+RUNPOD_API_KEY     = os.getenv("RUNPOD_API_KEY", "")
+RUNPOD_IMAGE       = os.getenv("RUNPOD_IMAGE", "")                   # ex. utilisateur/scoutia-gpu:2026-11-26
+RUNPOD_GPU_TYPES   = [g.strip() for g in os.getenv("RUNPOD_GPU_TYPES", "NVIDIA L4,NVIDIA RTX A5000,NVIDIA GeForce RTX 4090").split(",") if g.strip()]
+RUNPOD_CLOUD_TYPE  = os.getenv("RUNPOD_CLOUD_TYPE", "SECURE")       # SECURE ou COMMUNITY (moins cher, moins garanti)
+RUNPOD_DISQUE_GO   = int(os.getenv("RUNPOD_DISQUE_GO", 80))          # disque de la machine (vidéo + résultats)
+GPU_INACTIF_MIN    = int(os.getenv("SCOUTIA_GPU_INACTIF_MIN", 15))   # machine supprimée après N min sans analyse
+GPU_SILENCE_MIN    = int(os.getenv("SCOUTIA_GPU_SILENCE_MIN", 20))   # analyse remise en file si plus de nouvelles
+# 26/11/2026 : analyses RAPIDES → une machine démarre TOUT DE SUITE pour chacune (pas d'attente), dans la limite de
+# sécurité SCOUTIA_GPU_MAX (protège contre un emballement : bogue, abus, quota Gemini, crédit RunPod) ; analyses
+# « SOUS 48 H » → au plus SCOUTIA_GPU_MAX_48H machines pour elles (elles peuvent attendre : c'est le principe de l'offre)
+GPU_MAX            = int(os.getenv("SCOUTIA_GPU_MAX", 10))
+GPU_MAX_48H        = int(os.getenv("SCOUTIA_GPU_MAX_48H", 1))
+# variables transmises telles quelles à la machine GPU (réglages de l'analyse et clés nécessaires)
+VARIABLES_POUR_GPU = ["GEMINI_API_KEY", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME",
+                      "SCOUTIA_PROFIL_KO", "SCOUTIA_JOUEUR_V30", "SCOUTIA_CAMERA_TYPE", "SCOUTIA_RESUME_MAX_MIN",
+                      "SCOUTIA_RESUME_COPIE", "SCOUTIA_PARSEQ_POIDS", "SCOUTIA_PARSEQ_R2_KEY", "SCOUTIA_KO2_SANS_PAUSE",
+                      "SCOUTIA_KO_REDATER_GARDE"]
 
 # ─────────────────────────────────────────
 # 25/11/2026 — JETONS (remplacent les formules Starter / Pro / Unique). Prix À VÉRIFIER après mesure en production.

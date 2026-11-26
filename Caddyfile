@@ -1,0 +1,12 @@
+# Caddyfile — HTTPS automatique (Let's Encrypt) — remplacer le domaine
+matchscoutia.com, www.matchscoutia.com {
+    request_body {
+        max_size 11GB
+    }
+    reverse_proxy app:5000 {
+        transport http {
+            read_timeout 3600s
+            write_timeout 3600s
+        }
+    }
+}

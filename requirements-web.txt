@@ -1,0 +1,18 @@
+# ScoutIA - modules du SERVEUR DU SITE en production (26/11/2026)
+# Le site n'analyse pas les videos (c'est la machine GPU RunPod) : pas de PyTorch ici, image legere.
+flask>=3.0
+flask-sqlalchemy>=3.1
+flask-login>=0.6
+werkzeug>=3.0
+python-dotenv>=1.0
+gunicorn>=21.0
+psycopg2-binary>=2.9        # base PostgreSQL
+stripe>=10.0
+boto3                       # Cloudflare R2
+requests
+fpdf2>=2.7                  # rapports et fiches PDF (refaits apres les reponses des utilisateurs)
+pypdf                       # rapport + fiche du joueur reunis
+numpy
+opencv-python-headless      # pre-analyse (coup d'envoi, couleurs des equipes)
+google-genai                # pre-analyse (Gemini)
+imageio-ffmpeg              # secours si ffmpeg n'est pas installe

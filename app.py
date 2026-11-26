@@ -15,7 +15,7 @@ load_dotenv(".env/param.env")
 from flask import (
     session,
     Flask, render_template, request, redirect,
-    url_for, jsonify, send_from_directory, flash
+    url_for, jsonify, send_from_directory, flash, send_file
 )
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import (
@@ -261,7 +261,7 @@ def cgu():
 @app.route("/confidentialite")
 def confidentialite():
     return render_template("confidentialite.html", version=CGU_VERSION,
-                           retention=config.FILE_RETENTION_DAYS, retours_mois=RETOURS_MOIS_APRES_SAISON)
+                           retention=config.FILE_RETENTION_DAYS, retention_jours=config.RETENTION_JOURS, retours_mois=RETOURS_MOIS_APRES_SAISON)
 
 
 @app.route("/compte/supprimer", methods=["POST"])
@@ -300,8 +300,8 @@ def cleanup_expired_outputs():
             if not user:
                 continue
 
-            plan            = user.plan or "free"
-            retention_days  = config.FILE_RETENTION_DAYS.get(plan, 7)
+            # 26/11/2026 : jetons → même durée pour tous (les anciennes formules ne s'appliquent plus)
+            retention_days  = config.RETENTION_JOURS
             expires_at      = a.created_at + timedelta(days=retention_days)
 
             if now > expires_at and (a.output_dir or a.r2_output_prefix):
@@ -436,6 +436,27 @@ def get_plan_obj(plan_name):
 PLANS_MENSUELS = ("starter", "pro")      # quota remis à zéro chaque mois
 PARRAINAGE_FILLEULS_PAR_RECOMPENSE = 3   # 24/10/2026 : 1 analyse offerte par tranche de 3 filleuls valides
 LIMITE_PREANALYSES_JOUR = 5              # 24/10/2026 : pré-analyses (appels Gemini) par utilisateur et par jour
+
+
+class MachineGPU(db.Model):
+    """26/11/2026 : machine GPU RunPod créée par le site (une seule à la fois)."""
+    id              = db.Column(db.Integer, primary_key=True)
+    pod_id          = db.Column(db.String(64), nullable=True, index=True)
+    statut          = db.Column(db.String(20), default="demarrage")     # demarrage, active, supprimee
+    cree_le         = db.Column(db.DateTime, default=datetime.utcnow)
+    dernier_contact = db.Column(db.DateTime, nullable=True)
+
+
+class SignalementErreur(db.Model):
+    """26/11/2026 : erreur de l'analyse signalée par un utilisateur (faux but écarté, but oublié, équipe corrigée…),
+    envoyée à l'administrateur par e-mail pour un test de rejeu AVANT la suppression des fichiers."""
+    id          = db.Column(db.Integer, primary_key=True)
+    analysis_id = db.Column(db.Integer, nullable=False, index=True)
+    user_id     = db.Column(db.Integer, nullable=True)
+    nature      = db.Column(db.String(40), nullable=False)
+    detail      = db.Column(db.String(300), nullable=True)
+    cree_le     = db.Column(db.DateTime, default=datetime.utcnow)
+    envoye_le   = db.Column(db.DateTime, nullable=True)
 
 
 class LotJeton(db.Model):
@@ -604,6 +625,9 @@ class Analysis(db.Model):
     # 25/11/2026 : vitesse choisie (« rapide » ≈ 2 h, « 48h » économique) et jetons débités ([[lot, n], …])
     vitesse                 = db.Column(db.String(10), nullable=True)
     jetons_debites          = db.Column(db.Text, nullable=True)
+    # 26/11/2026 : paramètres de l'analyse, pour la machine GPU distante
+    parametres_json         = db.Column(db.Text, nullable=True)
+    machine_pod_id          = db.Column(db.String(64), nullable=True)     # machine GPU qui fait l'analyse
     # 24/11/2026 : empreinte du CONTENU de la vidéo (taille + 3 morceaux) : la même vidéo envoyée par un autre utilisateur
     # reçoit les corrections de buts déjà faites
     empreinte_video         = db.Column(db.String(64), nullable=True, index=True)
@@ -904,12 +928,97 @@ def verdict_but(id, i):
         db.session.add(RetourBut(analysis_id=a.id, user_id=current_user.id, time_abs=float(b.get("time_abs") or 0),
                                  est_but=(verdict == "but"), equipe=equipe, statut_initial=b.get("status"),
                                  equipe_initiale=b.get("equipe")))
+        _signaler_si_erreur(a, result, b, verdict, equipe)
     a.result_json = json.dumps(result)
     db.session.commit()
     _regenerer_rapport(a, result)
     _regenerer_fiche(a, result)
     _maj_montage_joueur(a, result)
     return redirect(url_for("results", id=id) + f"#but-{i}")
+
+
+# ─────────────────────────────────────────
+# 26/11/2026 — ERREURS SIGNALÉES → E-MAIL À L'ADMINISTRATEUR + PAQUET DE REJEU (avant la suppression des fichiers)
+# ─────────────────────────────────────────
+def _hhmm(t):
+    t = int(float(t or 0))
+    return f"{t // 60:02d}:{t % 60:02d}"
+
+
+def _lettre_equipe(result, tenue):
+    """Lettre A/B d'une tenue d'équipe annoncée par l'analyse (None si inconnue)."""
+    tenues = ((result.get("attribution_equipes") or {}).get("tenues")) or {}
+    for k, v in tenues.items():
+        if v and str(v).lower() == str(tenue or "").lower():
+            return k
+    return tenue if tenue in ("A", "B") else None
+
+
+def _signaler_si_erreur(a, result, b, verdict, equipe):
+    """Une VRAIE erreur de l'analyse (pas une simple réponse sur un but « à vérifier ») est signalée."""
+    statut, t = b.get("status"), b.get("time_abs")
+    if verdict == "pas_but" and statut == "confirmé" and not b.get("ajoute_par_utilisateur"):
+        nature, detail = "faux but confirmé", f"{_hhmm(t)} vidéo : l'analyse l'avait confirmé"
+    elif verdict == "but" and equipe and _lettre_equipe(result, b.get("equipe")) not in (None, equipe):
+        nature, detail = "mauvaise équipe", f"{_hhmm(t)} vidéo : annoncé {b.get('equipe')}, corrigé en {equipe}"
+    else:
+        return
+    db.session.add(SignalementErreur(analysis_id=a.id, user_id=current_user.id, nature=nature, detail=detail[:300]))
+
+
+def envoyer_mail(destinataire, sujet, texte):
+    if not (config.SMTP_HOST and config.SMTP_FROM and destinataire):
+        print(f"  [MAIL] non envoyé (SMTP non configuré) : {sujet}")
+        return False
+    import smtplib
+    from email.message import EmailMessage
+    m = EmailMessage()
+    m["From"], m["To"], m["Subject"] = config.SMTP_FROM, destinataire, sujet
+    m.set_content(texte)
+    try:
+        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=30) as srv:
+            srv.starttls()
+            if config.SMTP_USER:
+                srv.login(config.SMTP_USER, config.SMTP_PASS)
+            srv.send_message(m)
+        return True
+    except Exception as e:
+        print(f"  [MAIL] échec : {e}")
+        return False
+
+
+def envoyer_signalements():
+    """Un e-mail par analyse ayant de nouvelles erreurs signalées : quoi, où, jusqu'à quand, lien du paquet de rejeu."""
+    with app.app_context():
+        nouveaux = SignalementErreur.query.filter(SignalementErreur.envoye_le.is_(None)).all()
+        par_analyse = {}
+        for sg in nouveaux:
+            par_analyse.setdefault(sg.analysis_id, []).append(sg)
+        for aid, liste in par_analyse.items():
+            a = db.session.get(Analysis, aid)
+            if not a:
+                continue
+            expire = (a.created_at or datetime.utcnow()) + timedelta(days=config.RETENTION_JOURS)
+            result = json.loads(a.result_json or "{}")
+            tous = SignalementErreur.query.filter_by(analysis_id=aid).order_by(SignalementErreur.cree_le).all()
+            buts = [f"  - {_hhmm(b.get('time_abs'))} vidéo | analyse : {b.get('status')} {b.get('equipe') or ''} | "
+                    f"utilisateur : {b.get('verdict_utilisateur') or '—'} {b.get('equipe_utilisateur') or ''}"
+                    for b in (result.get("buts") or [])]
+            texte = (f"Analyse #{aid} — {a.filename}\nEnvoyée le {a.created_at:%d/%m/%Y %H:%M} | mode {a.mode} | "
+                     f"vitesse {a.vitesse or 'rapide'}\n\nERREURS SIGNALÉES :\n"
+                     + "\n".join(f"  - {sg.nature} : {sg.detail}" for sg in tous)
+                     + "\n\nTOUS LES BUTS (analyse → réponse de l'utilisateur) :\n" + ("\n".join(buts) or "  (aucun)")
+                     + f"\n\nBornes : {result.get('bornes_mi_temps') or 'non trouvées'}"
+                     + f"\nTenues : {((result.get('attribution_equipes') or {}).get('tenues')) or '?'}"
+                     + f"\n\nPAQUET DE REJEU (cache du suivi + réponses Gemini + vérité de l'utilisateur), à télécharger "
+                       f"AVANT le {expire:%d/%m/%Y} (suppression automatique ensuite) :\n"
+                       f"  {config.SITE_URL}/admin/analysis/{aid}/paquet-rejeu\n"
+                       f"Page de résultats : {config.SITE_URL}/results/{aid}\n")
+            if envoyer_mail(config.ADMIN_EMAIL, f"ScoutIA — erreur signalée sur l'analyse #{aid} "
+                                                f"({len(liste)} nouvelle(s))", texte):
+                for sg in liste:
+                    sg.envoye_le = datetime.utcnow()
+                db.session.commit()
 
 
 def _minute_vers_video(texte, bm):
@@ -958,6 +1067,8 @@ def ajouter_but(id):
     result["buts"].sort(key=lambda b: float(b.get("time_abs") or 0))
     db.session.add(RetourBut(analysis_id=a.id, user_id=current_user.id, time_abs=t, est_but=True, equipe=equipe,
                              statut_initial="manquant", equipe_initiale=None, source=source))
+    db.session.add(SignalementErreur(analysis_id=a.id, user_id=current_user.id, nature="but oublié",
+                                     detail=f"{_hhmm(t)} vidéo ({source}), équipe {equipe}"))
     a.result_json = json.dumps(result)
     db.session.commit()
     _regenerer_rapport(a, result)
@@ -1036,6 +1147,9 @@ def _regenerer_fiche(a, result):
         score_ok = bool(eff) and all(b.get("status") == "confirmé" and b.get("equipe") in ("A", "B") for b in eff)
         sc = {"A": 0, "B": 0}
         bm = result.get("bornes_mi_temps") or d.get("bornes") or {}
+        if result.get("bornes_mi_temps"):          # 25/11 : bornes du match (mi-temps, fin) aussi dans la chronologie
+            d["bornes"] = {k: result["bornes_mi_temps"].get(k) for k in ("ko1", "fin1mt", "ko2", "finmatch")
+                           if result["bornes_mi_temps"].get(k) is not None}
         buts_ch, roles = [], []
         for b in eff:
             t = float(b.get("time_abs") or 0)
@@ -1891,6 +2005,8 @@ def _lancer_analyse(analysis_id, video_path, sport, plan, mode="match", player_i
                   team_colors_gemini_precalcule=team_colors_gemini_precalcule,
                   use_match_boundary_segments=use_match_boundary_segments,
                   couleur_maillot_gardien=couleur_maillot_gardien)
+    if config.GPU_DISTANT:                       # 26/11/2026 : production — file d'attente + machine GPU RunPod
+        return _mettre_en_file(analysis_id, video_path, sport, plan, params)
     if CELERY_AVAILABLE:
         try:
             celery_run_analysis.apply_async(
@@ -1906,6 +2022,297 @@ def _lancer_analyse(analysis_id, video_path, sport, plan, mode="match", player_i
             print(f"  ⚠️  Celery injoignable ({e}) — analyse #{analysis_id} lancée dans un fil d'exécution")
     threading.Thread(target=run_analysis, args=(analysis_id, video_path, sport, plan), kwargs=params, daemon=True).start()
     return "thread"
+
+
+# ─────────────────────────────────────────
+# 26/11/2026 — PRODUCTION : FILE D'ATTENTE + MACHINE GPU DISTANTE (RunPod)
+# ─────────────────────────────────────────
+def _mettre_en_file(analysis_id, video_path, sport, plan, params):
+    """L'analyse attend une machine GPU. La vidéo doit être sur R2 (envoyée depuis le site si besoin)."""
+    with app.app_context():
+        a = db.session.get(Analysis, analysis_id)
+        r2_key = params.get("r2_key") or a.r2_video_key
+        if not r2_key:
+            client = get_r2_client()
+            if not client or not video_path or not os.path.exists(video_path):
+                a.status, a.progress_msg = "error", "Vidéo introuvable pour l'analyse."
+                db.session.commit()
+                _echec_analyse(analysis_id, "pas de vidéo à envoyer sur R2")
+                return "erreur"
+            r2_key = f"videos/{analysis_id}_{secure_filename(os.path.basename(video_path))}"
+            client.upload_file(video_path, config.R2_BUCKET_NAME, r2_key)
+            try:
+                os.remove(video_path)             # la vidéo n'est plus gardée sur le serveur du site
+            except Exception:
+                pass
+        a.r2_video_key = r2_key
+        a.parametres_json = json.dumps(dict(params, r2_key=r2_key, sport=sport, plan=plan), default=str)
+        a.status, a.progress = "pending", 0
+        a.progress_msg = ("Mode économique : votre analyse est dans la file d'attente (résultat sous 48 h)."
+                          if (a.vitesse or "rapide") == "48h" else "Analyse en file d'attente : elle démarre dans quelques minutes.")
+        db.session.commit()
+    _reveiller_gestionnaire_gpu()                 # le gestionnaire central décide (pas de machine créée en double)
+    return "file"
+
+
+def _machines_actives():
+    return MachineGPU.query.filter(MachineGPU.statut != "supprimee").order_by(MachineGPU.id).all()
+
+
+def _machine_courante():
+    m = _machines_actives()
+    return m[-1] if m else None
+
+
+_EVENEMENT_GPU = threading.Event()
+
+
+def _reveiller_gestionnaire_gpu():
+    _EVENEMENT_GPU.set()
+
+
+def _demarrer_gpu_si_besoin():
+    """GESTIONNAIRE CENTRAL (un seul processus). Une machine libre (ou qui démarre) prend d'abord les RAPIDES.
+    • RAPIDES : une machine de plus pour chaque rapide qui n'a pas de place → elles démarrent toutes en même temps
+      (limite de sécurité SCOUTIA_GPU_MAX) ;
+    • SOUS 48 H : elles utilisent les places restantes, et au plus SCOUTIA_GPU_MAX_48H machines sont créées pour elles."""
+    if not config.GPU_DISTANT:
+        return
+    with app.app_context():
+        attente = Analysis.query.filter_by(status="pending").filter(Analysis.r2_video_key.isnot(None)).all()
+        n_rapides = sum(1 for a in attente if (a.vitesse or "rapide") != "48h")
+        n_48h = len(attente) - n_rapides
+        actives = _machines_actives()
+        occupees = {a.machine_pod_id for a in Analysis.query.filter_by(status="processing")
+                    .filter(Analysis.machine_pod_id.isnot(None)).all()}
+        libres = len([m for m in actives if m.pod_id not in occupees])
+        place = max(0, config.GPU_MAX - len(actives))
+        manque_rapides = max(0, n_rapides - libres)
+        a_creer = min(manque_rapides, place)
+        libres_apres = max(0, libres - n_rapides)              # places libres qui restent pour les « 48 h »
+        en_cours_48h = Analysis.query.filter_by(status="processing", vitesse="48h").count()
+        if n_48h > libres_apres:
+            a_creer += min(n_48h - libres_apres, max(0, config.GPU_MAX_48H - en_cours_48h - libres_apres),
+                           place - a_creer)
+        a_creer = max(0, a_creer)
+        if not a_creer:
+            if manque_rapides > place:
+                print(f"  [GPU] ⚠️ limite de sécurité atteinte ({config.GPU_MAX} machines) : "
+                      f"{manque_rapides - place} analyse(s) rapide(s) attendent une place")
+            return
+        from gpu_distant import creer_machine
+        crees = 0
+        for _ in range(a_creer):
+            pod_id = creer_machine()
+            if not pod_id:
+                break
+            db.session.add(MachineGPU(pod_id=pod_id, statut="demarrage", dernier_contact=datetime.utcnow()))
+            db.session.commit()
+            crees += 1
+        print(f"  [GPU] en attente : {n_rapides} rapide(s), {n_48h} sous 48 h | machines : {len(actives) + crees}"
+              f" (limite {config.GPU_MAX})")
+
+
+def _surveiller_gpu():
+    """Toutes les 30 s (ou dès qu'une analyse arrive) : machines silencieuses ou inutiles supprimées, leurs analyses
+    remises en file (une seule fois, sans nouveau débit de jetons), puis machines créées si besoin."""
+    if not config.GPU_DISTANT:
+        return
+    from gpu_distant import supprimer_machine, etat_machine
+    with app.app_context():
+        maintenant = datetime.utcnow()
+        en_file = Analysis.query.filter_by(status="pending").filter(Analysis.r2_video_key.isnot(None)).count()
+        for m in _machines_actives():
+            silence = (maintenant - (m.dernier_contact or m.cree_le)).total_seconds() / 60
+            ses_analyses = Analysis.query.filter_by(status="processing", machine_pod_id=m.pod_id).all()
+            limite = config.GPU_SILENCE_MIN + (15 if m.statut == "demarrage" else 0)
+            perdue = silence > limite or etat_machine(m.pod_id) is None
+            inutile = not ses_analyses and not en_file and silence > config.GPU_INACTIF_MIN + 5
+            if not (perdue or inutile):
+                continue
+            if supprimer_machine(m.pod_id):
+                m.statut = "supprimee"
+                for a in ses_analyses:
+                    p = json.loads(a.parametres_json or "{}")
+                    if p.get("_relancee"):
+                        db.session.commit()
+                        _echec_analyse(a.id, f"machine GPU {m.pod_id} perdue deux fois")
+                    else:
+                        p["_relancee"] = True
+                        a.parametres_json = json.dumps(p)
+                        a.status, a.machine_pod_id = "pending", None
+                        a.progress_msg = "Analyse relancée (machine de calcul indisponible) — sans nouveau débit de jetons."
+                db.session.commit()
+    _demarrer_gpu_si_besoin()
+
+
+def start_surveillance_gpu():
+    if not config.GPU_DISTANT:
+        return
+    def _boucle():
+        while True:
+            try:
+                _surveiller_gpu()
+            except Exception as e:
+                print(f"  [GPU] surveillance : {e}")
+            _EVENEMENT_GPU.wait(30)                    # toutes les 30 s, ou tout de suite quand une analyse arrive
+            _EVENEMENT_GPU.clear()
+    threading.Thread(target=_boucle, daemon=True).start()
+    print("✅  Surveillance de la machine GPU démarrée (toutes les minutes)")
+
+
+def _jeton_machine_ok():
+    import hmac
+    jeton = (request.headers.get("Authorization") or "").replace("Bearer ", "", 1)
+    return bool(config.WORKER_TOKEN) and hmac.compare_digest(jeton, config.WORKER_TOKEN)
+
+
+def _contact_machine(pod_id, statut=None):
+    m = MachineGPU.query.filter_by(pod_id=pod_id).first() if pod_id else _machine_courante()
+    if m:
+        m.dernier_contact = datetime.utcnow()
+        if statut:
+            m.statut = statut
+        db.session.commit()
+
+
+@app.route("/api/worker/prochaine", methods=["POST"])
+def api_worker_prochaine():
+    """La machine GPU demande une analyse : les RAPIDES d'abord, puis les « sous 48 h », par ordre d'arrivée."""
+    if not _jeton_machine_ok():
+        return jsonify({"error": "forbidden"}), 403
+    pod_id = (request.json or {}).get("pod_id")
+    _contact_machine(pod_id, "active")
+    for a in sorted(Analysis.query.filter_by(status="pending").filter(Analysis.r2_video_key.isnot(None)).all(),
+                    key=lambda x: ((x.vitesse or "rapide") == "48h", x.created_at or datetime.utcnow())):
+        pris = Analysis.query.filter_by(id=a.id, status="pending").update(
+            {"status": "processing", "progress": 2, "machine_pod_id": pod_id,
+             "progress_msg": "Analyse démarrée sur la machine de calcul…"})
+        db.session.commit()
+        if pris:
+            p = json.loads(a.parametres_json or "{}")
+            return jsonify({"analyse": dict(p, id=a.id, vitesse=a.vitesse or "rapide", filename=a.filename,
+                                            cree_le=(a.created_at or datetime.utcnow()).isoformat())})
+    return jsonify({"analyse": None})
+
+
+@app.route("/api/worker/progression", methods=["POST"])
+def api_worker_progression():
+    if not _jeton_machine_ok():
+        return jsonify({"error": "forbidden"}), 403
+    d = request.json or {}
+    _contact_machine(d.get("pod_id"))
+    a = db.session.get(Analysis, int(d.get("id") or 0))
+    if a and a.status == "processing":
+        a.progress = max(2, min(99, int(d.get("progress") or a.progress or 2)))
+        a.progress_msg = str(d.get("message") or a.progress_msg)[:200]
+        db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/worker/termine", methods=["POST"])
+def api_worker_termine():
+    """La machine GPU a fini : les résultats sont sur R2 → copiés sur le serveur du site, puis supprimés de R2."""
+    if not _jeton_machine_ok():
+        return jsonify({"error": "forbidden"}), 403
+    d = request.json or {}
+    _contact_machine(d.get("pod_id"))
+    aid = int(d.get("id") or 0)
+    a = db.session.get(Analysis, aid)
+    if not a:
+        return jsonify({"error": "analyse inconnue"}), 404
+    if not d.get("ok"):
+        _echec_analyse(aid, d.get("erreur"))
+        return jsonify({"ok": True})
+    output_dir = os.path.abspath(os.path.join(config.OUTPUT_FOLDER, str(aid)))
+    prefixe = d.get("prefixe_r2") or f"resultats/{aid}/"
+    try:
+        client = get_r2_client()
+        os.makedirs(output_dir, exist_ok=True)
+        for page in client.get_paginator("list_objects_v2").paginate(Bucket=config.R2_BUCKET_NAME, Prefix=prefixe):
+            for obj in page.get("Contents", []):
+                rel = obj["Key"][len(prefixe):]
+                if not rel or ".." in rel.split("/"):
+                    continue
+                dest = os.path.join(output_dir, *rel.split("/"))
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                client.download_file(config.R2_BUCKET_NAME, obj["Key"], dest)
+        # chemins de la machine GPU → chemins du serveur du site
+        texte = json.dumps(d.get("result") or {})
+        base = str(d.get("sortie_distante") or "").rstrip("/")
+        if base:
+            texte = texte.replace(json.dumps(base)[1:-1], json.dumps(output_dir)[1:-1])
+        result = json.loads(texte)
+    except Exception as e:
+        _echec_analyse(aid, f"récupération des résultats impossible : {e}")
+        return jsonify({"ok": False}), 500
+    _finaliser_analyse(aid, result, output_dir, None, d.get("empreinte"))
+    _r2_delete_prefix(prefixe)                   # les résultats sont sur le serveur : plus rien à garder sur R2
+    if a.r2_video_key:
+        r2_delete(a.r2_video_key)                # la vidéo d'origine est supprimée dès la fin de l'analyse
+    return jsonify({"ok": True})
+
+
+@app.route("/api/worker/inactif", methods=["POST"])
+def api_worker_inactif():
+    """La machine n'a plus de travail depuis un moment : le site la supprime (sauf si une analyse vient d'arriver)."""
+    if not _jeton_machine_ok():
+        return jsonify({"error": "forbidden"}), 403
+    pod_id = (request.json or {}).get("pod_id")
+    _contact_machine(pod_id)
+    if Analysis.query.filter_by(status="pending").filter(Analysis.r2_video_key.isnot(None)).count():
+        return jsonify({"arret": False})
+    from gpu_distant import supprimer_machine
+    m = MachineGPU.query.filter_by(pod_id=pod_id).first() if pod_id else None
+    if m and supprimer_machine(m.pod_id):
+        m.statut = "supprimee"
+        db.session.commit()
+    return jsonify({"arret": True})
+
+
+def _finaliser_analyse(analysis_id, result, output_dir, r2_prefix, empreinte):
+    """Analyse réussie : enregistrement, corrections partagées, parrainage (site ou machine GPU distante)."""
+    with app.app_context():
+        a                  = db.session.get(Analysis, analysis_id)
+        a.status           = "done"
+        a.progress         = 100
+        a.progress_msg     = "Analyse terminee"
+        a.result_json      = json.dumps(result)
+        a.output_dir       = output_dir
+        a.r2_output_prefix = r2_prefix
+        a.empreinte_video  = empreinte
+        db.session.commit()
+        # 24/11/2026 : corrections de buts déjà faites sur la MÊME vidéo par d'autres utilisateurs
+        try:
+            if _appliquer_verdicts_partages(a, result):
+                a.result_json = json.dumps(result)
+                db.session.commit()
+                _regenerer_rapport(a, result)
+        except Exception as _e_vp:
+            print(f"  ⚠️  Corrections partagées non appliquées : {_e_vp}")
+        # 24/10/2026 : parrainage — jamais bloquant pour l'analyse elle-même
+        try:
+            _recompenser_parrain(a.user_id)
+        except Exception as _e_parr:
+            print(f"  ⚠️  Parrainage non mis à jour : {_e_parr}")
+
+
+def _echec_analyse(analysis_id, detail=""):
+    """Analyse en erreur : message clair pour le client, jetons rendus (site ou machine GPU distante)."""
+    with app.app_context():
+        a              = db.session.get(Analysis, analysis_id)
+        if not a:
+            return
+        a.status       = "error"
+        a.progress_msg = ("L'analyse n'a pas pu aboutir. Vos jetons vous ont été rendus : "
+                          "vous pouvez la relancer.")
+        db.session.commit()
+        try:
+            rembourser_jetons(a)                                  # 25/11/2026
+        except Exception as _e_rb:
+            print(f"  ⚠️  Jetons non rendus pour l'analyse #{analysis_id} : {_e_rb}")
+    if detail:
+        print(f"  [ERREUR] analyse #{analysis_id} — détail technique : {str(detail)[:500]}")
 
 
 # ─────────────────────────────────────────
@@ -1929,23 +2336,6 @@ def run_analysis(
     local_tmp = None  # chemin temporaire si téléchargé depuis R2
 
     try:
-        # V5.2 (11/09/2026) : import manquant — run_pipeline() etait
-        # appelee plus bas (ligne originale ~776) sans jamais etre
-        # importee nulle part dans ce fichier, causant systematiquement
-        # NameError: name 'run_pipeline' is not defined des qu'une
-        # analyse etait lancee via ce chemin (fallback threading, sans
-        # Celery). Bug preexistant, jamais visible dans le terminal car
-        # le except ci-dessous stockait l'erreur sans la logger (corrige
-        # egalement ci-dessous).
-        from pipeline import run_pipeline
-        # 24/10/2026 : état d'accès à Gemini remis à zéro (une coupure d'une analyse précédente du même
-        # processus ne doit pas faire échouer celle-ci)
-        try:
-            from ai.gemini_validator import gemini_reinitialiser_etat
-            gemini_reinitialiser_etat()
-        except Exception as _e_gv:
-            print(f"  ⚠️  Remise à zéro de l'état Gemini impossible : {_e_gv}")
-
         # ── Mode R2 : télécharge la vidéo localement pour le pipeline ──
         if r2_key and config.R2_ENABLED:
             local_tmp  = os.path.join(
@@ -1958,104 +2348,18 @@ def run_analysis(
             video_path = local_tmp
 
         output_dir = os.path.join(config.OUTPUT_FOLDER, str(analysis_id))
-
-        # 25/11/2026 : VITESSE — « 48h » = Gemini Flex (−50 %), à finir 36 h après la commande (12 h de marge pour le
-        # reste au tarif standard) ; « rapide » = tarif standard
         with app.app_context():
             _a_v = db.session.get(Analysis, analysis_id)
             _vit = (_a_v.vitesse if _a_v else None) or "rapide"
             _cree = _a_v.created_at if (_a_v and _a_v.created_at) else datetime.utcnow()
-        if _vit == "48h":
-            os.environ["SCOUTIA_GEMINI_TIER"] = "flex"
-            os.environ["SCOUTIA_FLEX_ECHEANCE"] = str((_cree + timedelta(hours=36) - datetime(1970, 1, 1)).total_seconds())
-        else:
-            os.environ["SCOUTIA_GEMINI_TIER"] = ""
-            os.environ.pop("SCOUTIA_FLEX_ECHEANCE", None)
 
-        # 25/11/2026 : RÉUTILISATION D'UNE ANALYSE DU MÊME MATCH (même fichier vidéo, même version des réglages) :
-        # le suivi (positions) et les réponses Gemini déjà payées sont repris → pas de GPU, presque 0 $ de Gemini ; seule
-        # la partie propre à cette demande (joueur, noms d'équipes) est refaite. Les réponses de CETTE analyse sont
-        # écrites dans son dossier (pour être réutilisées à leur tour).
-        _match_data_reutilise, _entree_cache = None, None
-        os.makedirs(output_dir, exist_ok=True)
-        os.environ["SCOUTIA_GEMINI_CACHE"] = "on"
-        os.environ["SCOUTIA_GEMINI_CACHE_OUT"] = os.path.join(output_dir, "gemini_cache.jsonl")
-        os.environ["SCOUTIA_GEMINI_CACHE_VIDEO"] = os.path.basename(video_path)
-        os.environ["SCOUTIA_GEMINI_CACHE_IN"] = os.path.join(output_dir, "aucun_cache.jsonl")
-        os.environ.pop("SCOUTIA_CACHE_JOUEUR", None)
-        try:
-            from analysis.cache_analyses import chercher as _chercher_cache
-            _entree_cache = _chercher_cache(video_path)
-            if _entree_cache:
-                from replay import load_cache as _load_cache_r
-                _match_data_reutilise = _load_cache_r(_entree_cache["fichiers"]["suivi"])
-                os.environ["SCOUTIA_GEMINI_CACHE_IN"] = _entree_cache["fichiers"]["gemini"]
-                os.environ["SCOUTIA_CACHE_JOUEUR"] = _entree_cache["fichiers"]["suivi"]
-                print(f"  ♻️  Match déjà analysé ({_entree_cache.get('nom_video')}) : suivi et réponses Gemini réutilisés")
-        except Exception as _e_cache:
-            print(f"  ⚠️  Réutilisation impossible, analyse complète : {_e_cache}")
-            _match_data_reutilise, _entree_cache = None, None
-        try:
-            from ai.gemini_validator import gemini_cache_reinitialiser
-            gemini_cache_reinitialiser()
-        except Exception:
-            pass
-
-        result = run_pipeline(
-            video_path     = video_path,
-            sport          = sport,
-            output_dir     = output_dir,
-            analysis_id    = analysis_id,
-            save_annotated = config.PLANS.get(plan, {}).get("montage", False),
-            plan           = plan,
-            mode           = mode,
-            player_id       = player_id,
-            player_position = player_position,
-            team_names      = team_names or None,
-            kickoff_s_precalcule = kickoff_s_precalcule,
-            team_colors_gemini_precalcule = team_colors_gemini_precalcule,
-            use_match_boundary_segments = use_match_boundary_segments,
-            couleur_maillot_gardien = couleur_maillot_gardien,
-            _match_data = _match_data_reutilise,
-            # 25/11/2026 : MÊME type de caméra que la validation (tous les tests : « high_side ») — sans ce paramètre,
-            # le pipeline prenait sa valeur par défaut « low_side », jamais validée
-            camera_type = os.getenv("SCOUTIA_CAMERA_TYPE", "high_side"),
-        )
-        if isinstance(result, dict):
-            result["analyse_reutilisee"] = bool(_entree_cache)
-
-        # 24/10/2026 : une analyse INCOMPLÈTE (questions au service d'IA abandonnées : crédit, quota) n'est pas
-        # livrée comme réussie. Levée AVANT la suppression de la vidéo, pour pouvoir relancer.
-        try:
-            from ai.gemini_validator import gemini_etat
-            _etat_gv = gemini_etat()
-        except Exception:
-            _etat_gv = {}
-        if _etat_gv.get("questions_abandonnees"):
-            raise RuntimeError(f"Analyse incomplète : {_etat_gv['questions_abandonnees']} question(s) au service d'IA "
-                               f"n'ont pas abouti (crédit ou quota) — à relancer")
-
-        # 25/11/2026 : analyse complète → mise en cache pour réutilisation (suivi + réponses Gemini)
-        if not _entree_cache:
-            try:
-                from analysis.cache_analyses import enregistrer as _enregistrer_cache
-                _suivi = os.path.join(output_dir, "cache")
-                _gem = os.environ.get("SCOUTIA_GEMINI_CACHE_OUT")
-                if os.path.exists(os.path.join(_suivi, "frames_data.pkl")) and _gem and os.path.exists(_gem):
-                    _enregistrer_cache(video_path, {"suivi": _suivi, "gemini": _gem})
-                    print("  ♻️  Analyse mise en cache : le même match ne sera plus réanalysé")
-                else:
-                    print("  ⚠️  Analyse non mise en cache (suivi ou réponses Gemini absents)")
-            except Exception as _e_enr:
-                print(f"  ⚠️  Mise en cache impossible : {_e_enr}")
-
-        # 24/11/2026 : empreinte du contenu, avant suppression de la vidéo (corrections partagées entre utilisateurs)
-        _empreinte = None
-        try:
-            from analysis.cache_analyses import empreinte_video
-            _empreinte = empreinte_video(video_path)
-        except Exception as _e_emp:
-            print(f"  ⚠️  Empreinte de la vidéo impossible : {_e_emp}")
+        # 26/11/2026 : le CALCUL est dans analyse_execution.py (le même que sur la machine GPU distante)
+        from analyse_execution import executer_analyse
+        result, _empreinte = executer_analyse(
+            analysis_id, video_path, sport, plan, output_dir, vitesse=_vit, cree_le=_cree, mode=mode,
+            player_id=player_id, team_names=team_names, player_position=player_position,
+            kickoff_s_precalcule=kickoff_s_precalcule, team_colors_gemini_precalcule=team_colors_gemini_precalcule,
+            use_match_boundary_segments=use_match_boundary_segments, couleur_maillot_gardien=couleur_maillot_gardien)
 
         # ── Supprime la vidéo brute dès que l'analyse est terminée ──
         delete_raw_video(video_path, r2_key)
@@ -2065,47 +2369,14 @@ def run_analysis(
         if config.R2_ENABLED:
             r2_prefix = r2_upload_outputs(output_dir, analysis_id)
 
-        with app.app_context():
-            a                  = db.session.get(Analysis, analysis_id)
-            a.status           = "done"
-            a.progress         = 100
-            a.progress_msg     = "Analyse terminee"
-            a.result_json      = json.dumps(result)
-            a.output_dir       = output_dir
-            a.r2_output_prefix = r2_prefix
-            a.empreinte_video  = _empreinte
-            db.session.commit()
-            # 24/11/2026 : corrections de buts déjà faites sur la MÊME vidéo par d'autres utilisateurs
-            try:
-                if _appliquer_verdicts_partages(a, result):
-                    a.result_json = json.dumps(result)
-                    db.session.commit()
-                    _regenerer_rapport(a, result)
-            except Exception as _e_vp:
-                print(f"  ⚠️  Corrections partagées non appliquées : {_e_vp}")
-            # 24/10/2026 : parrainage — jamais bloquant pour l'analyse elle-même
-            try:
-                _recompenser_parrain(a.user_id)
-            except Exception as _e_parr:
-                print(f"  ⚠️  Parrainage non mis à jour : {_e_parr}")
+        _finaliser_analyse(analysis_id, result, output_dir, r2_prefix, _empreinte)
 
     except Exception as e:
         # Nettoyage en cas d'erreur
         if local_tmp and os.path.exists(local_tmp):
             os.remove(local_tmp)
 
-        with app.app_context():
-            a              = db.session.get(Analysis, analysis_id)
-            a.status       = "error"
-            # 18/11/2026 : message CLAIR pour le client (le détail technique reste dans les journaux du serveur)
-            a.progress_msg = ("L'analyse n'a pas pu aboutir. Vos jetons vous ont été rendus : "
-                              "vous pouvez la relancer.")
-            db.session.commit()
-            try:
-                rembourser_jetons(a)                                  # 25/11/2026
-            except Exception as _e_rb:
-                print(f"  ⚠️  Jetons non rendus pour l'analyse #{analysis_id} : {_e_rb}")
-        print(f"  [ERREUR] analyse #{analysis_id} — détail technique : {str(e)[:500]}")
+        _echec_analyse(analysis_id, e)
         # V5.2 (11/09/2026) : trace complete (pas seulement str(e)) - le
         # print precedent n'affichait que le message court, facile a
         # manquer dans le flot des logs de requetes Flask. Le
@@ -2880,6 +3151,41 @@ def admin_offrir_analysis(id):
     return redirect(url_for("admin"))
 
 
+@app.route("/admin/analysis/<int:aid>/paquet-rejeu")
+@login_required
+@admin_required
+def admin_paquet_rejeu(aid):
+    """26/11/2026 : archive pour rejouer le match dans Kaggle à 0 $ : cache du suivi, réponses Gemini, vérité saisie par
+    l'utilisateur (buts, équipes, bornes), rapport. Pas de vidéo (supprimée après l'analyse)."""
+    import zipfile, tempfile
+    a = db.session.get(Analysis, aid)
+    if not a or not a.output_dir or not os.path.isdir(a.output_dir):
+        flash("Fichiers de cette analyse introuvables (déjà supprimés ?)")
+        return redirect(url_for("admin"))
+    result = json.loads(a.result_json or "{}")
+    verite = {"analyse": aid, "fichier": a.filename, "empreinte_video": a.empreinte_video,
+              "bornes_mi_temps": result.get("bornes_mi_temps"), "kickoff_offset": result.get("kickoff_offset"),
+              "tenues": ((result.get("attribution_equipes") or {}).get("tenues")),
+              "buts": [{k: b.get(k) for k in ("time_abs", "status", "equipe", "verdict_utilisateur", "equipe_utilisateur",
+                                               "ajoute_par_utilisateur", "source_ajout")} for b in (result.get("buts") or [])],
+              "signalements": [{"nature": s_.nature, "detail": s_.detail, "le": s_.cree_le.isoformat()}
+                               for s_ in SignalementErreur.query.filter_by(analysis_id=aid).all()]}
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    tmp.close()
+    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("verite_utilisateur.json", json.dumps(verite, ensure_ascii=False, indent=1))
+        cache = os.path.join(a.output_dir, "cache")
+        if os.path.isdir(cache):
+            for f in os.listdir(cache):
+                z.write(os.path.join(cache, f), f"cache_{aid}_reference/{f}")
+        for f in ("gemini_cache.jsonl",):
+            if os.path.exists(os.path.join(a.output_dir, f)):
+                z.write(os.path.join(a.output_dir, f), f"gemini_cache_{aid}.jsonl")
+        if result.get("pdf") and os.path.exists(result["pdf"]):
+            z.write(result["pdf"], f"rapport_{aid}.pdf")
+    return send_file(tmp.name, as_attachment=True, download_name=f"rejeu_analyse_{aid}.zip")
+
+
 @app.route("/admin/user/<int:user_id>/jetons", methods=["POST"])
 @login_required
 @admin_required
@@ -2935,7 +3241,8 @@ def too_large(e):
 _COLONNES_AJOUTEES = {
     "analysis": {"celery_task_id": "VARCHAR(200)", "offerte": "BOOLEAN DEFAULT 0", "offerte_motif": "VARCHAR(200)",
                  "mon_equipe": "INTEGER", "position_joueur": "VARCHAR(40)", "couleur_maillot_gardien": "VARCHAR(20)",
-                 "empreinte_video": "VARCHAR(64)", "vitesse": "VARCHAR(10)", "jetons_debites": "TEXT"},
+                 "empreinte_video": "VARCHAR(64)", "vitesse": "VARCHAR(10)", "jetons_debites": "TEXT",
+                 "parametres_json": "TEXT", "machine_pod_id": "VARCHAR(64)"},
     "retour_but": {"source": "VARCHAR(80)"},
     "user":     {"code_parrain": "VARCHAR(16)", "parrain_id": "INTEGER", "credits_offerts": "INTEGER DEFAULT 0",
                  "recompenses_parrainage": "INTEGER DEFAULT 0", "paiements_credites": "TEXT",
@@ -2971,12 +3278,48 @@ except Exception as _e_schema:
 # ─────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────
+_FICHIER_VERROU_TACHES = None
+
+
+def demarrer_taches_de_fond():
+    """26/11/2026 : nettoyage quotidien + surveillance de la machine GPU, dans UN SEUL processus (Gunicorn en lance
+    plusieurs : un verrou de fichier désigne celui qui s'en charge). Appelé à l'import en production."""
+    global _FICHIER_VERROU_TACHES
+    if _FICHIER_VERROU_TACHES is not None:
+        return
+    try:
+        import fcntl
+        os.makedirs("instance", exist_ok=True)
+        _FICHIER_VERROU_TACHES = open(os.path.join("instance", ".taches_de_fond.lock"), "w")
+        fcntl.flock(_FICHIER_VERROU_TACHES, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except ImportError:
+        _FICHIER_VERROU_TACHES = True             # Windows (tests en local) : pas de verrou, un seul processus
+    except OSError:
+        return                                     # un autre processus s'en charge déjà
+    start_cleanup_scheduler()
+    start_surveillance_gpu()
+
+    def _boucle_mails():                       # 26/11/2026 : erreurs signalées → e-mail (toutes les 15 min)
+        import time
+        while True:
+            try:
+                envoyer_signalements()
+            except Exception as e:
+                print(f"  [MAIL] signalements : {e}")
+            time.sleep(900)
+    threading.Thread(target=_boucle_mails, daemon=True).start()
+
+
+if os.getenv("SCOUTIA_TACHES_DE_FOND", "1" if config.GPU_DISTANT else "0") == "1":
+    demarrer_taches_de_fond()
+
+
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
 
-    # Lance le nettoyage automatique en background
-    start_cleanup_scheduler()
+    # Lance le nettoyage automatique en background (et la surveillance GPU en production)
+    demarrer_taches_de_fond()
 
     app.run(
         debug    = config.DEBUG,

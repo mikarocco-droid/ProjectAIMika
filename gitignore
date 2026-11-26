@@ -1,0 +1,21 @@
+# ScoutIA — fichiers à NE JAMAIS publier sur GitHub (19/11/2026)
+# Secrets et configuration locale
+.env
+*.env
+param.env
+IA
+# Base de données (comptes clients, Stripe) et dossier Flask « instance »
+instance/
+*.db
+*.sqlite3
+# Fichiers générés
+__pycache__/
+*.pyc
+outputs/
+uploads/
+*.mp4
+*.zip
+# 26/11/2026
+CleAPIStripe.txt
+donnees/
+demo_*/

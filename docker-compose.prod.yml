@@ -1,0 +1,55 @@
+# docker-compose.prod.yml — PRODUCTION ScoutIA (26/11/2026)
+# Serveur du site (Hetzner) : base PostgreSQL + site Flask + Caddy (HTTPS automatique Let's Encrypt).
+# Les analyses tournent sur une machine GPU RunPod créée à la demande (SCOUTIA_GPU_DISTANT=1).
+# Lancement : docker compose -f docker-compose.prod.yml up -d --build
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: scoutia-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: scoutia
+      POSTGRES_USER: scoutia
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./donnees/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scoutia"]
+      interval: 10s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: scoutia-app
+    restart: unless-stopped
+    env_file:
+      - param.env
+    environment:
+      DATABASE_URI: postgresql://scoutia:${POSTGRES_PASSWORD}@db:5432/scoutia
+      SCOUTIA_GPU_DISTANT: "1"
+      OUTPUT_FOLDER: /app/outputs
+      UPLOAD_FOLDER: /app/uploads
+    volumes:
+      - ./donnees/outputs:/app/outputs         # résultats des analyses (sur un volume Hetzner si besoin de place)
+      - ./donnees/uploads:/app/uploads
+      - ./donnees/instance:/app/instance
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "5000"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: scoutia-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./donnees/caddy:/data
+    depends_on:
+      - app

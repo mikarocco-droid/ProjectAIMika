@@ -35,46 +35,18 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
     && update-alternatives --install /usr/bin/python python python3.11 1 \
     && python3 -m pip install --upgrade pip
 
-# PyTorch CUDA + dépendances GPU
-RUN pip install \
-    torch torchvision --index-url https://download.pytorch.org/whl/cu121 \
-    && pip install \
-    rfdetr \
-    opencv-python-headless \
-    anthropic \
-    fpdf2 \
-    python-dotenv \
-    scikit-learn \
-    joblib \
-    numpy \
-    google-genai \
-    av \
-    pytesseract \
-    boto3 \
-    deep-sort-realtime \
-    torchreid \
-    timm \
-    pytorch-lightning \
-    nltk \
-    pypdf \
-    gdown \
-    librosa \
-    flask-login \
-    stripe \
-    runpod \
-    celery[redis] \
-    redis \
-    flask \
-    flask-sqlalchemy \
-    werkzeug \
-    psutil
+# PyTorch CUDA d'abord (sinon pip installerait la version sans GPU), puis TOUS les modules du projet
+RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+COPY requirements.txt /app/requirements.txt
+RUN pip install -r /app/requirements.txt
 
 # Pré-télécharger les poids RF-DETR Medium (Apache 2.0)
 RUN python3 -c "import rfdetr; rfdetr.RFDETRMedium()" || true
 # Code PARSeq (lecture des numéros du montage joueur), même commit que analysis/montage_joueur_script.py ; les POIDS
-# affinés (parseq_scoutia_maillots_v2.pt) sont à déposer sur le serveur → variable SCOUTIA_PARSEQ_POIDS
+# affinés (parseq_scoutia_maillots_v2.pt) sont téléchargés depuis R2 au démarrage (worker_gpu.py)
 RUN python3 -c "import torch; torch.hub.load('baudm/parseq:1902db043c029a7e03a3818c616c06600af574be', 'parseq', pretrained=True, trust_repo=True)" || true
 
-COPY runpod_worker.py /app/runpod_worker.py
-
-CMD ["python3", "/app/runpod_worker.py"]
+# 26/11/2026 : tout le code du projet ; la machine lance le programme de la machine GPU (worker_gpu.py)
+COPY . /app
+ENV PYTHONPATH=/app
+CMD ["python3", "/app/worker_gpu.py"]
