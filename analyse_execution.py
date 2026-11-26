@@ -44,6 +44,8 @@ def executer_analyse(analysis_id, video_path, sport, plan, output_dir, vitesse="
     os.environ["SCOUTIA_GEMINI_CACHE_VIDEO"] = os.path.basename(video_path)
     os.environ["SCOUTIA_GEMINI_CACHE_IN"] = os.path.join(output_dir, "aucun_cache.jsonl")
     os.environ.pop("SCOUTIA_CACHE_JOUEUR", None)
+    for _k in ("SCOUTIA_REPLAY_BORNES", "SCOUTIA_REPLAY_KO2", "SCOUTIA_REPLAY_FIN1MT"):
+        os.environ.pop(_k, None)
     try:
         from analysis.cache_analyses import chercher as _chercher_cache
         _entree_cache = _chercher_cache(video_path)
@@ -52,6 +54,19 @@ def executer_analyse(analysis_id, video_path, sport, plan, output_dir, vitesse="
             _match_data_reutilise = _load_cache_r(_entree_cache["fichiers"]["suivi"])
             os.environ["SCOUTIA_GEMINI_CACHE_IN"] = _entree_cache["fichiers"]["gemini"]
             os.environ["SCOUTIA_CACHE_JOUEUR"] = _entree_cache["fichiers"]["suivi"]
+            # 26/11/2026 : MI-TEMPS reprises de la 1re analyse (sinon perdues : le rejeu ne les recherche pas ;
+            # test Stavelot du 26/11). À défaut, le rejeu les déduit du trou de la pause dans le suivi.
+            os.environ["SCOUTIA_REPLAY_BORNES"] = "1"
+            try:
+                import json as _json
+                _b = _json.load(open(_entree_cache["fichiers"]["bornes"], encoding="utf-8"))
+                if _b.get("ko2") is not None:
+                    os.environ["SCOUTIA_REPLAY_KO2"] = str(float(_b["ko2"]))
+                if _b.get("fin1mt") is not None:
+                    os.environ["SCOUTIA_REPLAY_FIN1MT"] = str(float(_b["fin1mt"]))
+                print(f"  ♻️  mi-temps reprises de la 1re analyse : {_b}")
+            except Exception:
+                pass
             print(f"  ♻️  Match déjà analysé ({_entree_cache.get('nom_video')}) : suivi et réponses Gemini réutilisés")
     except Exception as _e_cache:
         print(f"  ⚠️  Réutilisation impossible, analyse complète : {_e_cache}")
@@ -91,7 +106,14 @@ def executer_analyse(analysis_id, video_path, sport, plan, output_dir, vitesse="
             _suivi = os.path.join(output_dir, "cache")
             _gem = os.environ.get("SCOUTIA_GEMINI_CACHE_OUT")
             if os.path.exists(os.path.join(_suivi, "frames_data.pkl")) and _gem and os.path.exists(_gem):
-                _enregistrer_cache(video_path, {"suivi": _suivi, "gemini": _gem})
+                _fichiers = {"suivi": _suivi, "gemini": _gem}
+                _bm = (result or {}).get("bornes_mi_temps") if isinstance(result, dict) else None
+                if _bm:                                     # 26/11 : mi-temps gardées pour une réutilisation
+                    import json as _json
+                    _p_b = os.path.join(output_dir, "bornes_mi_temps.json")
+                    _json.dump(_bm, open(_p_b, "w", encoding="utf-8"))
+                    _fichiers["bornes"] = _p_b
+                _enregistrer_cache(video_path, _fichiers)
                 print("  ♻️  Analyse mise en cache : le même match ne sera plus réanalysé")
         except Exception as _e_enr:
             print(f"  ⚠️  Mise en cache impossible : {_e_enr}")
