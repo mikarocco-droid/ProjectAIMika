@@ -354,10 +354,14 @@
             <div class="progress-msg">{{ a.progress_msg }}</div>
           </div>
         {% elif a.status == "error" %}
+          {% if (a.nb_relances or 0) < relances_max %}
           <form method="post" action="/relancer/{{ a.id }}" style="display:inline">
             {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
-            <button type="submit" class="btn-small">Relancer</button>
+            <button type="submit" class="btn-small" title="{{ relances_max - (a.nb_relances or 0) }} relance(s) possible(s)">Relancer</button>
           </form>
+          {% else %}
+          <span class="analysis-erreur" style="margin:0">Relances épuisées — contactez-nous</span>
+          {% endif %}
         {% endif %}
         {% if a.status in ["done", "error"] %}
           <form method="post" action="/analyse/{{ a.id }}/supprimer" style="display:inline"
