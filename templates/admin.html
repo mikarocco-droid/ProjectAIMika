@@ -197,6 +197,7 @@
           {% endif %}
         </td>
         <td>
+          {% if a.status == 'done' %}<a class="btn-xs" href="/admin/analysis/{{ a.id }}/paquet-rejeu" title="Cache du suivi + réponses Gemini + vérité de l'utilisateur, pour rejouer le match dans Kaggle">⬇ Rejeu</a>{% endif %}
           <form class="action-form" action="/admin/analysis/{{ a.id }}/delete" method="POST"
                 onsubmit="return confirm('Supprimer analyse #{{ a.id }} ?')">
             <button type="submit" class="btn-xs btn-danger">Supprimer</button>

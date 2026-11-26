@@ -47,8 +47,11 @@
     <tr><td>Vidéo du match envoyée</td><td>Réaliser l'analyse (contrat)</td>
         <td><strong>Supprimée dès la fin de l'analyse</strong></td></tr>
     <tr><td>Résultats : résumé vidéo, séquences, rapport, montage et fiche d'un joueur</td><td>Vous les rendre (contrat)</td>
-        <td>{{ retention.get('free', 7) }} jours (Gratuit), {{ retention.get('unique', 30) }} jours (Unique),
-            {{ retention.get('starter', 30) }} jours (Starter), {{ retention.get('pro', 90) }} jours (Pro), puis suppression automatique</td></tr>
+        <td>{{ retention_jours }} jours après l'analyse, puis suppression automatique</td></tr>
+    <tr><td>Erreurs de l'analyse que vous signalez (but écarté, but ajouté, équipe corrigée) et les données techniques du
+        match (suivi, réponses de l'IA, sans image)</td>
+        <td>Examinées par ScoutIA pour corriger et améliorer la détection</td>
+        <td>Pendant la durée de conservation des résultats ; une copie de travail est supprimée une fois la correction testée</td></tr>
     <tr><td>Données de suivi du match (positions des joueurs et du ballon, sans image) et réponses textuelles de l'IA</td>
         <td>Ne pas réanalyser le même match quand un autre utilisateur envoie la même vidéo</td><td>30 jours</td></tr>
     <tr><td>Empreinte technique de la vidéo (calculée sur le fichier, elle ne contient aucune image)</td>
