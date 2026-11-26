@@ -64,7 +64,7 @@ def create_checkout_jetons(user_email, user_id, code_paquet, success_url, cancel
     if not pq:
         print(f"❌ Paquet de jetons inconnu : {code_paquet}")
         return None
-    nom = f"{pq['jetons']} jetons ScoutIA" + (f" + {pq['bonus']} offerts" if pq.get("bonus") else "")
+    nom = f"{pq['jetons']} jetons {getattr(config, 'MARQUE', 'MatchScoutIA')}" + (f" + {pq['bonus']} offerts" if pq.get("bonus") else "")
     try:
         session = stripe.checkout.Session.create(
             # moyens de paiement : ceux activés dans le tableau de bord Stripe (carte, Bancontact…)
