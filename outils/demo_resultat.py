@@ -26,6 +26,8 @@ def main():
     ap.add_argument("--dossier", required=True)
     ap.add_argument("--email", required=True, help="compte de l'application qui verra l'analyse")
     ap.add_argument("--titre", default="Match de démonstration")
+    ap.add_argument("--bornes", default=None, help="(facultatif) bornes connues si l'analyse ne les a pas trouvées : "
+                                                   "\"coup d'envoi,fin 1re MT,reprise,fin\" en heure vidéo, ex. \"00:10,47:40,47:43,84:46\"")
     ap.add_argument("--joueur", default=None, help="(facultatif) dossier joueur_* d'un montage : montage, fiche, "
                                                    "fiche_donnees_*.json, resultat_montage_joueur.json")
     a = ap.parse_args()
@@ -44,6 +46,12 @@ def main():
     be = next(iter(glob.glob(os.path.join(dos, "bout_en_bout_*.json"))), None)
     relais = json.load(open(be, encoding="utf-8")) if be else {}
     bn = relais.get("bornes") or [[0, 0]]
+    if a.bornes:                                  # 25/11 : bornes données à la main (analyse sans mi-temps trouvée)
+        _sx = lambda h: sum(int(x) * 60 ** i for i, x in enumerate(reversed(h.strip().split(":"))))
+        _b4 = [float(_sx(h)) for h in a.bornes.split(",")]
+        if len(_b4) == 4:
+            bn = [[_b4[0], _b4[1]], [_b4[2], _b4[3]]]
+            print(f"   bornes données : {a.bornes}")
     ko1 = float(bn[0][0])
     # 23/11 : équipes (A/B) reconstituées à partir des tenues du relais, comme le rapport
     tenues_l = sorted({b.get("equipe") for b in relais.get("buts", []) if b.get("equipe")})
