@@ -701,7 +701,17 @@ def run_pipeline(
     # INIT LEARNING MODEL
     # ─────────────────────────────────────────
     learner = None
+    # 26/11/2026 : APPRENTISSAGE AUTOMATIQUE COUPÉ PAR DÉFAUT (SCOUTIA_APPRENTISSAGE=1 pour le rallumer).
+    # Toute la validation (14 matchs, chacun analysé « à neuf ») a été faite SANS rien d'appris : au-delà de 25 matchs
+    # (délai de recharge des buts, zones de faux buts) ou de 50 tirs (xG avancé), il changerait des réglages validés
+    # sans contrôle ; et il garde des profils de joueurs (des mineurs) d'un match à l'autre, ce que la politique de
+    # confidentialité ne prévoit pas. Sur les machines GPU de production, il serait de toute façon perdu à chaque fois.
+    _apprentissage = os.environ.get("SCOUTIA_APPRENTISSAGE", "0").strip() == "1"
+    if not _apprentissage:
+        print("  Learning : désactivé (SCOUTIA_APPRENTISSAGE=0) — réglages validés utilisés tels quels")
     try:
+        if not _apprentissage:
+            raise RuntimeError("apprentissage désactivé")
         from ai.learning_model import MatchLearner
         learner = MatchLearner(
             sport    = sport,
@@ -716,7 +726,9 @@ def run_pipeline(
               f"FP zones={ls['fp_zones']} | "
               f"spatial={ls['spatial_max_dist']:.0f}px")
     except Exception as e:
-        print(f"  Learning model ignoré : {e}")
+        learner = None
+        if _apprentissage:
+            print(f"  Learning model ignoré : {e}")
 
     # ─────────────────────────────────────────
     # 0. DÉTECTION SPORT + CALIBRATION
