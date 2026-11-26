@@ -43,6 +43,15 @@ def executer_analyse(analysis_id, video_path, sport, plan, output_dir, vitesse="
     os.environ["SCOUTIA_GEMINI_CACHE_OUT"] = os.path.join(output_dir, "gemini_cache.jsonl")
     os.environ["SCOUTIA_GEMINI_CACHE_VIDEO"] = os.path.basename(video_path)
     os.environ["SCOUTIA_GEMINI_CACHE_IN"] = os.path.join(output_dir, "aucun_cache.jsonl")
+    # 26/11/2026 : RELANCE après une erreur → les réponses Gemini déjà payées lors de l'essai précédent (même dossier)
+    # sont relues au lieu d'être reposées (copie : le fichier de sortie va être réécrit)
+    _precedent = os.path.join(output_dir, "gemini_cache.jsonl")
+    if os.path.exists(_precedent) and os.path.getsize(_precedent) > 0:
+        import shutil as _sh
+        _copie = os.path.join(output_dir, "gemini_cache_essai_precedent.jsonl")
+        _sh.copyfile(_precedent, _copie)
+        os.environ["SCOUTIA_GEMINI_CACHE_IN"] = _copie
+        print(f"  ♻️  relance : réponses Gemini de l'essai précédent reprises ({_copie})")
     os.environ.pop("SCOUTIA_CACHE_JOUEUR", None)
     for _k in ("SCOUTIA_REPLAY_BORNES", "SCOUTIA_REPLAY_KO2", "SCOUTIA_REPLAY_FIN1MT"):
         os.environ.pop(_k, None)

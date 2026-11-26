@@ -230,6 +230,8 @@ def _supprimer_fichiers_analyse(a):
         result = {}
     if result.get("demo"):          # analyse de démonstration (outils/demo_resultat.py) : on ne touche pas à ses fichiers
         return
+    if config.R2_ENABLED:           # 26/11/2026 : fichiers de reprise d'un essai en échec (machine GPU)
+        _r2_delete_prefix(f"relances/{a.id}/")
     j = result.get("joueur") or {}
     for f in (result.get("player_reel"), j.get("fiche"), j.get("fiche_donnees"), j.get("rapport_et_fiche"),
               j.get("montage_perso"), (j.get("montage_perso") or "") + ".json" if j.get("montage_perso") else None):
@@ -638,6 +640,7 @@ class Analysis(db.Model):
     # 26/11/2026 : paramètres de l'analyse, pour la machine GPU distante
     parametres_json         = db.Column(db.Text, nullable=True)
     machine_pod_id          = db.Column(db.String(64), nullable=True)     # machine GPU qui fait l'analyse
+    nb_relances             = db.Column(db.Integer, default=0)            # 26/11 : relances par le client
     # 24/11/2026 : empreinte du CONTENU de la vidéo (taille + 3 morceaux) : la même vidéo envoyée par un autre utilisateur
     # reçoit les corrections de buts déjà faites
     empreinte_video         = db.Column(db.String(64), nullable=True, index=True)
@@ -770,6 +773,7 @@ def dashboard():
         mouvements    = (MouvementJeton.query.filter_by(user_id=current_user.id)
                          .order_by(MouvementJeton.cree_le.desc()).limit(30).all()),
         jetons_parrainage = config.JETONS_PARRAINAGE,
+        relances_max      = config.RELANCES_MAX,
         # 24/10/2026 : parrainage
         lien_parrainage   = url_for("register", ref=current_user.code_parrainage(), _external=True),
         filleuls_valides  = current_user.filleuls_valides(),
@@ -1983,6 +1987,10 @@ def relancer_analyse(id):
     if a.status != "error":
         flash("Cette analyse n'est pas en erreur : rien à relancer.")
         return redirect(url_for("dashboard"))
+    if (a.nb_relances or 0) >= config.RELANCES_MAX:     # 26/11/2026 : chaque essai coûte (GPU, Gemini)
+        flash(f"Cette analyse a déjà été relancée {config.RELANCES_MAX} fois sans succès : contactez-nous, nous "
+              f"regarderons la vidéo.")
+        return redirect(url_for("dashboard"))
     chemin = os.path.join(config.UPLOAD_FOLDER, a.filename) if a.filename else None
     video_locale = chemin if (chemin and os.path.exists(chemin)) else None
     if not video_locale and not (a.r2_video_key and config.R2_ENABLED):
@@ -1993,6 +2001,7 @@ def relancer_analyse(id):
         flash(_msg_j)
         return redirect(url_for("dashboard"))
     a.status, a.progress, a.progress_msg = "pending", 0, "Relance demandée…"
+    a.nb_relances = (a.nb_relances or 0) + 1
     db.session.commit()
     # Noms d'équipes repris dans le même ordre qu'à l'envoi (choix « mon équipe » conservé depuis le 18/11/2026 ;
     # pour une analyse plus ancienne, ce choix est inconnu → noms non repris, le rapport affiche les couleurs).
@@ -2258,7 +2267,8 @@ def api_worker_termine():
         _echec_analyse(aid, f"récupération des résultats impossible : {e}")
         return jsonify({"ok": False}), 500
     _finaliser_analyse(aid, result, output_dir, None, d.get("empreinte"))
-    _r2_delete_prefix(prefixe)                   # les résultats sont sur le serveur : plus rien à garder sur R2
+    _r2_delete_prefix(prefixe)
+    _r2_delete_prefix(f"relances/{aid}/")         # 26/11/2026 : reprise d'un essai précédent devenue inutile                   # les résultats sont sur le serveur : plus rien à garder sur R2
     if a.r2_video_key:
         r2_delete(a.r2_video_key)                # la vidéo d'origine est supprimée dès la fin de l'analyse
     return jsonify({"ok": True})
@@ -2335,6 +2345,11 @@ def _echec_analyse(analysis_id, detail=""):
         # 26/11/2026 : « jetons rendus » seulement s'il y en a eu (analyses d'avant les jetons : rien à rendre)
         a.progress_msg = ("L'analyse n'a pas pu aboutir. Vos jetons vous ont été rendus." if rendus
                           else "L'analyse n'a pas pu aboutir.")
+        # 26/11/2026 : dernier essai permis en échec → l'administrateur est prévenu (e-mail des signalements)
+        if (a.nb_relances or 0) >= config.RELANCES_MAX:
+            db.session.add(SignalementErreur(
+                analysis_id=a.id, user_id=a.user_id, nature="relances épuisées",
+                detail=f"{(a.nb_relances or 0) + 1} essais en échec — dernière erreur : {str(detail or '?')[:200]}"))
         db.session.commit()
     if detail:
         print(f"  [ERREUR] analyse #{analysis_id} — détail technique : {str(detail)[:500]}")
@@ -3214,8 +3229,27 @@ def admin_paquet_rejeu(aid):
     l'utilisateur (buts, équipes, bornes), rapport. Pas de vidéo (supprimée après l'analyse)."""
     import zipfile, tempfile
     a = db.session.get(Analysis, aid)
+    if a and not (a.output_dir and os.path.isdir(a.output_dir)) and config.R2_ENABLED:
+        # 26/11/2026 : analyse en échec sur une machine GPU → ses fichiers de reprise (R2, « relances/<id>/ »)
+        try:
+            _tmp_r = tempfile.mkdtemp(prefix=f"rejeu_{aid}_")
+            client = get_r2_client()
+            for page in client.get_paginator("list_objects_v2").paginate(Bucket=config.R2_BUCKET_NAME,
+                                                                          Prefix=f"relances/{aid}/"):
+                for obj in page.get("Contents", []):
+                    rel = obj["Key"][len(f"relances/{aid}/"):]
+                    if rel and ".." not in rel.split("/"):
+                        dest = os.path.join(_tmp_r, *rel.split("/"))
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        client.download_file(config.R2_BUCKET_NAME, obj["Key"], dest)
+            if os.listdir(_tmp_r):
+                _ = (a.result_json, a.filename, a.empreinte_video)   # chargés avant de détacher l'objet
+                db.session.expunge(a)          # détaché : le dossier temporaire n'est JAMAIS enregistré en base
+                a.output_dir = _tmp_r
+        except Exception as e:
+            print(f"  [REJEU] fichiers de reprise R2 indisponibles : {e}")
     if not a or not a.output_dir or not os.path.isdir(a.output_dir):
-        flash("Fichiers de cette analyse introuvables (déjà supprimés ?)")
+        flash("Fichiers de cette analyse introuvables (déjà supprimés, ou échec avant le suivi des joueurs)")
         return redirect(url_for("admin"))
     result = json.loads(a.result_json or "{}")
     verite = {"analyse": aid, "fichier": a.filename, "empreinte_video": a.empreinte_video,
@@ -3297,7 +3331,8 @@ _COLONNES_AJOUTEES = {
     "analysis": {"celery_task_id": "VARCHAR(200)", "offerte": "BOOLEAN DEFAULT 0", "offerte_motif": "VARCHAR(200)",
                  "mon_equipe": "INTEGER", "position_joueur": "VARCHAR(40)", "couleur_maillot_gardien": "VARCHAR(20)",
                  "empreinte_video": "VARCHAR(64)", "vitesse": "VARCHAR(10)", "jetons_debites": "TEXT",
-                 "parametres_json": "TEXT", "machine_pod_id": "VARCHAR(64)"},
+                 "parametres_json": "TEXT", "machine_pod_id": "VARCHAR(64)",
+                 "nb_relances": "INTEGER DEFAULT 0"},
     "retour_but": {"source": "VARCHAR(80)"},
     "user":     {"code_parrain": "VARCHAR(16)", "parrain_id": "INTEGER", "credits_offerts": "INTEGER DEFAULT 0",
                  "recompenses_parrainage": "INTEGER DEFAULT 0", "paiements_credites": "TEXT",

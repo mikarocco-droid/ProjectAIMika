@@ -179,6 +179,9 @@ PLANS = {
     },
 }
 
+# 26/11/2026 : relances d'une analyse en erreur par le client (chaque essai coûte du GPU et du Gemini au service)
+RELANCES_MAX = int(os.getenv("SCOUTIA_RELANCES_MAX", 3))
+
 # 26/11/2026 : NOM AFFICHÉ (pages, rapports, Stripe, e-mails). « ScoutIA » se prononce comme « Scout AI », marque
 # déposée aux États-Unis dans les mêmes classes : « MatchScoutIA » est plus distinctif (domaine matchscoutia.com)
 MARQUE = os.getenv("SCOUTIA_MARQUE", "MatchScoutIA")

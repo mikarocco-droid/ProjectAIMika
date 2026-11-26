@@ -74,6 +74,65 @@ def _envoyer_resultats(dossier, prefixe):
     return n
 
 
+def _telecharger_prefixe(prefixe, dossier):
+    """Télécharge tous les fichiers R2 d'un préfixe dans un dossier ; renvoie leur nombre."""
+    client, n = _r2(), 0
+    for page in client.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=prefixe):
+        for obj in page.get("Contents", []):
+            rel = obj["Key"][len(prefixe):]
+            if not rel or ".." in rel.split("/"):
+                continue
+            dest = os.path.join(dossier, *rel.split("/"))
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            client.download_file(BUCKET, obj["Key"], dest)
+            n += 1
+    return n
+
+
+def _reprendre_essai_precedent(aid, video, dossier):
+    """26/11/2026 : RELANCE après un échec → reprend ce que l'essai précédent avait déjà payé : les réponses Gemini, et
+    le suivi des joueurs s'il était terminé (alors l'analyse est rejouée SANS GPU, comme un match déjà analysé)."""
+    try:
+        reprise = os.path.join(TRAVAIL, "reprise", str(aid))
+        shutil.rmtree(reprise, ignore_errors=True)
+        if not _telecharger_prefixe(f"relances/{aid}/", reprise):
+            return
+        gem = os.path.join(reprise, "gemini_cache.jsonl")
+        if os.path.exists(gem):
+            os.makedirs(dossier, exist_ok=True)
+            shutil.copyfile(gem, os.path.join(dossier, "gemini_cache.jsonl"))   # relu par analyse_execution
+        suivi = os.path.join(reprise, "cache")
+        if os.path.exists(os.path.join(suivi, "frames_data.pkl")):
+            if not os.path.exists(gem):
+                open(gem, "w").close()
+            from analysis.cache_analyses import enregistrer
+            enregistrer(video, {"suivi": suivi, "gemini": gem})
+            print("  ♻️  essai précédent : suivi des joueurs et réponses Gemini repris (pas de GPU pour le suivi)", flush=True)
+        else:
+            print("  ♻️  essai précédent : réponses Gemini reprises", flush=True)
+    except Exception as e:
+        print(f"  ⚠️  reprise de l'essai précédent impossible : {e}", flush=True)
+
+
+def _deposer_pour_relance(aid, dossier):
+    """26/11/2026 : en cas d'échec, dépose sur R2 ce qui a déjà été payé (réponses Gemini, suivi terminé)."""
+    try:
+        client, prefixe, n = _r2(), f"relances/{aid}/", 0
+        gem = os.path.join(dossier, "gemini_cache.jsonl")
+        if os.path.exists(gem) and os.path.getsize(gem) > 0:
+            client.upload_file(gem, BUCKET, prefixe + "gemini_cache.jsonl")
+            n += 1
+        suivi = os.path.join(dossier, "cache")
+        if os.path.exists(os.path.join(suivi, "frames_data.pkl")):
+            for f in os.listdir(suivi):
+                client.upload_file(os.path.join(suivi, f), BUCKET, prefixe + "cache/" + f)
+                n += 1
+        if n:
+            print(f"  essai en échec : {n} fichier(s) gardé(s) sur R2 pour une relance", flush=True)
+    except Exception as e:
+        print(f"  ⚠️  dépôt pour relance impossible : {e}", flush=True)
+
+
 def traiter(job):
     aid = int(job["id"])
     dossier = os.path.join(TRAVAIL, "sortie", str(aid))
@@ -92,6 +151,7 @@ def traiter(job):
     try:
         print(f"\n══ ANALYSE #{aid} ({job.get('vitesse')}, {job.get('mode')}) — {job.get('filename')}", flush=True)
         _r2().download_file(BUCKET, job["r2_key"], video)
+        _reprendre_essai_precedent(aid, video, dossier)
         _site("/api/worker/progression", {"id": aid, "progress": 5, "message": "Vidéo reçue, analyse en cours…"}, essais=1)
         from analyse_execution import executer_analyse
         cree = datetime.fromisoformat(job["cree_le"]) if job.get("cree_le") else None
@@ -112,6 +172,7 @@ def traiter(job):
     except Exception as e:
         fini.set()
         traceback.print_exc()
+        _deposer_pour_relance(aid, dossier)
         _site("/api/worker/termine", {"id": aid, "ok": False, "erreur": f"{type(e).__name__}: {e}"[:500]})
     finally:
         fini.set()
