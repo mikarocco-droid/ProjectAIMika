@@ -329,7 +329,7 @@ class ScoutPDF(FPDF):
         self.set_text_color(*ACCENT)
         self.set_font("Helvetica", "B", 8)
         self.set_xy(12, 4)
-        self.cell(60, 5, "SCOUT AI", align="L")
+        self.cell(60, 5, getattr(config, "MARQUE", "MatchScoutIA"), align="L")
         self.set_text_color(*GRAY_L)
         self.set_font("Helvetica", "", 7)
         self.set_xy(0, 4)
@@ -345,7 +345,7 @@ class ScoutPDF(FPDF):
         self.set_text_color(*GRAY_D)
         self.set_xy(12, self.get_y() + 1)
         self.cell(0, 4,
-            f"Scout AI  |  {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  Page {self.page_no()}",
+            f"{getattr(config, 'MARQUE', 'MatchScoutIA')}  |  {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  Page {self.page_no()}",
             align="C")
 
     def section_title(self, title):
@@ -525,7 +525,7 @@ def generate_pdf(result, output_path, sport="football"):
     # Titre
     pdf.set_font("Helvetica", "B", 26)
     pdf.set_text_color(*ACCENT)
-    pdf.cell(0, 10, "SCOUT AI", align="C",
+    pdf.cell(0, 10, getattr(config, "MARQUE", "MatchScoutIA"), align="C",
              new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(*GRAY_L)
