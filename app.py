@@ -28,6 +28,16 @@ from werkzeug.utils import secure_filename
 import config
 from config import allowed_file
 
+# 26/11/2026 : les fichiers TEMPORAIRES (vidéos de plusieurs Go reçues par le site, images de la pré-analyse) vont
+# dans le dossier des envois, pas dans le dossier temporaire du système (C: plein sous Windows : « No space left »)
+import tempfile as _tempfile
+try:
+    _tmp_dir = os.path.abspath(os.path.join(config.UPLOAD_FOLDER, "tmp"))
+    os.makedirs(_tmp_dir, exist_ok=True)
+    _tempfile.tempdir = _tmp_dir
+except Exception as _e_tmp:
+    print(f"  ⚠️  Dossier temporaire inchangé : {_e_tmp}")
+
 # 25/10/2026 : VERROU GEMINI chargé dès le démarrage — tous les appels du serveur web et du worker Celery, y compris
 # la PRÉ-ANALYSE (coup d'envoi, couleurs), passent par le modèle unique gemini-3.8-flash. Avant, gemini_validator
 # n'était chargé qu'au lancement de l'analyse : la pré-analyse appelait gemini-3.1-pro-preview et gemini-2.5-flash
@@ -2580,18 +2590,21 @@ def api_detect_teams(upload_id):
                 video_path, kickoff_info["kickoff_s"], preview_dir, upload_id
             )
         else:
-            # Fallback : KO non trouvé, on ne sait pas où échantillonner
-            # de façon fiable - ancienne méthode (bootstrap 30s) plutôt
-            # que de ne rien proposer du tout.
-            print(f"  [PREVIEW] KO non trouvé ({kickoff_info['status']}) — "
-                  f"fallback couleurs sur bootstrap_duration=30s")
-            from analysis.detect_teams_preview import detect_teams_preview
-            result = detect_teams_preview(
-                video_path          = video_path,
-                output_dir          = preview_dir,
-                bootstrap_duration  = 30.0,
-                sport               = _prev_sport,
-            )
+            # 26/11/2026 : coup d'envoi hors de l'aperçu (SRU : coup d'envoi 11:31, aperçu de ≈ 11 min) → les couleurs
+            # sont lues aux 3/4 de la partie reçue (joueurs en tenue sur le terrain, échauffement ou jeu), avec la
+            # MÊME méthode qu'autour du coup d'envoi. L'ancienne méthode (30 premières secondes, souvent vides) reste
+            # en dernier recours.
+            _t_ref = max(60.0, 0.75 * float(_max_search_s or 0))
+            print(f"  [PREVIEW] KO non trouvé ({kickoff_info['status']}) — couleurs lues autour de {_t_ref:.0f} s")
+            result = _detect_teams_colors_autour_ko(video_path, _t_ref, preview_dir, upload_id)
+            if not result.get("success"):
+                from analysis.detect_teams_preview import detect_teams_preview
+                result = detect_teams_preview(
+                    video_path          = video_path,
+                    output_dir          = preview_dir,
+                    bootstrap_duration  = 30.0,
+                    sport               = _prev_sport,
+                )
 
         if result.get("success"):
             for tid in ["team_0", "team_1"]:
