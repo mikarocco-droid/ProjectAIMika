@@ -899,6 +899,15 @@ select option {
   font-size: 0.82rem;
   color: var(--red);
 }
+/* 26/11/2026 : message d'erreur SOUS le nom (il débordait de la carte) ; noms longs coupés proprement */
+.analysis-info { min-width: 0; flex: 1; }
+.analysis-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.analysis-erreur { margin-top: 0.35rem; font-size: 0.78rem; color: var(--red); }
+.btn-supprimer {
+  background: transparent; border: 1px solid var(--border); border-radius: 8px; color: var(--gray);
+  padding: 0.35rem 0.55rem; cursor: pointer; font-size: 0.85rem; transition: var(--trans);
+}
+.btn-supprimer:hover { border-color: var(--red); color: var(--red); }
 
 /* Progress bar */
 .progress-container { min-width: 160px; }
