@@ -122,6 +122,7 @@ def traiter(job):
 def boucle():
     if not (SITE and JETON):
         raise SystemExit("❌ SCOUTIA_SITE_URL et SCOUTIA_WORKER_TOKEN sont nécessaires")
+    import ai.gemini_validator  # noqa: F401  (verrou : modèle unique + cache, AVANT toute question)
     print(f"Machine GPU ScoutIA prête ({POD_ID}) → {SITE}", flush=True)
     _preparer_parseq()
     derniere_activite = time.time()

@@ -15,6 +15,10 @@ def executer_analyse(analysis_id, video_path, sport, plan, output_dir, vitesse="
                      team_colors_gemini_precalcule=None, use_match_boundary_segments=True,
                      couleur_maillot_gardien=None, **_ignores):
     """Fait l'analyse complète. Renvoie (result, empreinte). Lève une exception si elle n'aboutit pas."""
+    # 26/11/2026 : le VERROU Gemini (modèle unique gemini-3.8-flash + cache) est installé AVANT toute question :
+    # sinon un module qui demande « gemini-3.1-pro-preview » l'obtiendrait réellement (vu le 25/11 : test de la
+    # reprise lancé sans le verrou → 161 questions facturées au tarif de Gemini 3.1 Pro)
+    import ai.gemini_validator  # noqa: F401
     from pipeline import run_pipeline
     try:
         from ai.gemini_validator import gemini_reinitialiser_etat
