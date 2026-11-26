@@ -282,13 +282,9 @@ def detect_teams_preview(video_path, output_dir="outputs/preview",
         print(f"  [PREVIEW] Gemini n'a pas pu identifier les équipes → fallback YOLO")
 
     # ── Fallback : méthode YOLO+LAB ───────────────────────────────────────────
-    print(f"  [PREVIEW] Fallback méthode YOLO+LAB...")
-    try:
-        from analysis.detect_teams_yolo import detect_teams_preview as _yolo_detect
-        return _yolo_detect(video_path, output_dir, bootstrap_duration, sport)
-    except Exception as e:
-        print(f"  [PREVIEW] Fallback échoué : {e}")
-        return {"success": False, "error": "Détection impossible"}
+    # 26/11/2026 : l'ancien repli YOLO+LAB (analysis.detect_teams_yolo) n'existe plus depuis le retrait d'Ultralytics
+    print(f"  [PREVIEW] Couleurs non détectées — l'utilisateur les renseigne, l'analyse les retrouvera")
+    return {"success": False, "error": "Couleurs non détectées — renseignez les équipes, l'analyse les retrouvera."}
 
 
 def _hex_to_bgr(hex_color):
