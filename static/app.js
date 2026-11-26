@@ -321,8 +321,10 @@ function showUploadError(msg) {
 async function runTeamDetection(uploadId) {
     const prog = document.getElementById("detecting-progress");
 
-    // Timeout de sécurité : max 90s, puis on révèle quand même le dashboard
-    const TIMEOUT_MS = 90000;
+    // Timeout de sécurité, puis on révèle quand même le dashboard. 26/11/2026 : 5 min (était 90 s) — avec l'aperçu de
+    // 20 min, coup d'envoi + couleurs prennent ≈ 2 min 30 (SRU, coup d'envoi à 11:31) : la page abandonnait avant la
+    // réponse et affichait « non concluant » alors que le serveur trouvait tout
+    const TIMEOUT_MS = 300000;
     let   timedOut   = false;
     const timeoutId  = setTimeout(() => {
         timedOut = true;
@@ -331,16 +333,18 @@ async function runTeamDetection(uploadId) {
     // Messages de progression pendant l'attente
     const msgs = [
         "Lecture des premières minutes de la vidéo…",
-        "Détection des joueurs en cours…",
-        "Analyse des couleurs de maillot…",
-        "Calcul des clusters d'équipes…",
+        "Recherche du coup d'envoi…",
+        "Recherche du coup d'envoi (jusqu'à 2 à 3 minutes)…",
+        "Coup d'envoi : vérification…",
+        "Analyse des couleurs des maillots…",
+        "Presque terminé…",
     ];
     let msgIdx = 0;
     const msgInterval = setInterval(() => {
         if (prog && msgIdx < msgs.length) {
             prog.textContent = msgs[msgIdx++];
         }
-    }, 6000);
+    }, 20000);
 
     try {
         if (prog) prog.textContent = msgs[0];
