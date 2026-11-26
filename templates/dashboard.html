@@ -265,19 +265,19 @@
         <!-- 25/11/2026 : vitesse et coût en jetons -->
         <div class="mode-selector" style="margin-top:0.75rem">
           <label class="mode-option">
-            <input type="radio" name="vitesse" value="rapide" id="vitesse-rapide" {% if not jetons_essai %}checked{% endif %}>
-            <div class="mode-card">
-              <div class="mode-icon">⚡</div>
-              <div class="mode-title">Rapide</div>
-              <div class="mode-desc">Résultat en 2 h environ — <strong class="cout-vitesse" data-match="{{ cout_jetons.match_rapide }}" data-joueur="{{ cout_jetons.player_rapide }}">{{ cout_jetons.match_rapide }}</strong> jetons</div>
-            </div>
-          </label>
-          <label class="mode-option">
             <input type="radio" name="vitesse" value="48h" id="vitesse-48h" {% if jetons_essai %}checked{% endif %}>
             <div class="mode-card">
               <div class="mode-icon">🕐</div>
               <div class="mode-title">Sous 48 h</div>
               <div class="mode-desc">Mode économique, souvent bien avant — <strong class="cout-vitesse" data-match="{{ cout_jetons.match_48h }}" data-joueur="{{ cout_jetons.player_48h }}">{{ cout_jetons.match_48h }}</strong> jetons</div>
+            </div>
+          </label>
+          <label class="mode-option">
+            <input type="radio" name="vitesse" value="rapide" id="vitesse-rapide" {% if not jetons_essai %}checked{% endif %}>
+            <div class="mode-card">
+              <div class="mode-icon">⚡</div>
+              <div class="mode-title">Rapide</div>
+              <div class="mode-desc">Résultat en 2 h environ — <strong class="cout-vitesse" data-match="{{ cout_jetons.match_rapide }}" data-joueur="{{ cout_jetons.player_rapide }}">{{ cout_jetons.match_rapide }}</strong> jetons</div>
             </div>
           </label>
         </div>
