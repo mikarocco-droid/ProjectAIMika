@@ -38,7 +38,8 @@ def executer_analyse(analysis_id, video_path, sport, plan, output_dir, vitesse="
     # RÉUTILISATION d'une analyse du même match (même fichier, même version des réglages)
     _match_data_reutilise, _entree_cache = None, None
     os.makedirs(output_dir, exist_ok=True)
-    os.environ["SCOUTIA_GEMINI_CACHE"] = "on"
+    # « on » en production ; un test peut imposer « strict » (0 $ garanti : aucune question hors cache)
+    os.environ["SCOUTIA_GEMINI_CACHE"] = os.environ.get("SCOUTIA_GEMINI_CACHE_FORCE", "on")
     os.environ["SCOUTIA_GEMINI_CACHE_OUT"] = os.path.join(output_dir, "gemini_cache.jsonl")
     os.environ["SCOUTIA_GEMINI_CACHE_VIDEO"] = os.path.basename(video_path)
     os.environ["SCOUTIA_GEMINI_CACHE_IN"] = os.path.join(output_dir, "aucun_cache.jsonl")

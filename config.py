@@ -12,6 +12,8 @@ SECRET_KEY   = os.getenv("SECRET_KEY",   "dev-only-change-me")
 DATABASE_URI = os.getenv("DATABASE_URI", "") or os.getenv("DATABASE_URL", "") or "sqlite:///db.sqlite3"
 if DATABASE_URI.startswith("postgres://"):          # 26/11/2026 : PostgreSQL en production (forme courte acceptée)
     DATABASE_URI = "postgresql://" + DATABASE_URI[len("postgres://"):]
+if DATABASE_URI.startswith("postgresql://"):        # pilote installé : psycopg2 (requirements-web.txt) — SQLAlchemy 2.1
+    DATABASE_URI = "postgresql+psycopg2://" + DATABASE_URI[len("postgresql://"):]   # prendrait sinon « psycopg » (v3)
 DEBUG        = os.getenv("DEBUG",        "false").lower() == "true"
 
 # ─────────────────────────────────────────
@@ -176,6 +178,10 @@ PLANS = {
         "montage":      True,
     },
 }
+
+# 26/11/2026 : NOM AFFICHÉ (pages, rapports, Stripe, e-mails). « ScoutIA » se prononce comme « Scout AI », marque
+# déposée aux États-Unis dans les mêmes classes : « MatchScoutIA » est plus distinctif (domaine matchscoutia.com)
+MARQUE = os.getenv("SCOUTIA_MARQUE", "MatchScoutIA")
 
 # ─────────────────────────────────────────
 # 26/11/2026 — PRODUCTION : ANALYSES SUR UNE MACHINE GPU DISTANTE (RunPod), à la demande

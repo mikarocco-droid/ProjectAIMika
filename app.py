@@ -1014,7 +1014,7 @@ def envoyer_signalements():
                        f"AVANT le {expire:%d/%m/%Y} (suppression automatique ensuite) :\n"
                        f"  {config.SITE_URL}/admin/analysis/{aid}/paquet-rejeu\n"
                        f"Page de résultats : {config.SITE_URL}/results/{aid}\n")
-            if envoyer_mail(config.ADMIN_EMAIL, f"ScoutIA — erreur signalée sur l'analyse #{aid} "
+            if envoyer_mail(config.ADMIN_EMAIL, f"{config.MARQUE} — erreur signalée sur l'analyse #{aid} "
                                                 f"({len(liste)} nouvelle(s))", texte):
                 for sg in liste:
                     sg.envoye_le = datetime.utcnow()
@@ -1525,7 +1525,7 @@ def get_upload_url():
     analysis = Analysis(
         vitesse      = vitesse,
         user_id      = current_user.id,
-        filename     = safe_filename,
+        filename     = safe_filename[-200:],       # 26/11 : PostgreSQL refuse un texte plus long que la colonne
         sport        = sport,
         mode         = mode,
         player_id    = player_id,
@@ -1704,7 +1704,7 @@ def upload():
         # par _upload_unique_id pour eviter toute collision (cf. note
         # ci-dessus) - le nom original de l'utilisateur (s'il existe) est
         # conserve en suffixe pour rester lisible.
-        _nom_original = secure_filename(f.filename) if (f and f.filename) else f"video{_ext}"
+        _nom_original = _nom_court(secure_filename(f.filename)) if (f and f.filename) else f"video{_ext}"
         filename = f"{_upload_unique_id}_{_nom_original}"
         path     = os.path.join(config.UPLOAD_FOLDER, filename)
         try:
@@ -1725,7 +1725,7 @@ def upload():
             return redirect(url_for("dashboard"))
 
         # Meme correctif : prefixe unique + nom original en suffixe lisible.
-        filename = f"{_upload_unique_id}_{secure_filename(f.filename)}"
+        filename = f"{_upload_unique_id}_{_nom_court(secure_filename(f.filename))}"
         path     = os.path.join(config.UPLOAD_FOLDER, filename)
         f.save(path)
 
@@ -1746,7 +1746,7 @@ def upload():
 
     analysis = Analysis(
         user_id   = current_user.id,
-        filename  = filename,
+        filename  = filename[-200:],               # 26/11 : PostgreSQL refuse un texte plus long que la colonne
         sport     = sport,
         mode      = mode,
         player_id = player_id,
@@ -2269,6 +2269,18 @@ def api_worker_inactif():
         m.statut = "supprimee"
         db.session.commit()
     return jsonify({"arret": True})
+
+
+@app.context_processor
+def _marque_dans_les_pages():
+    """26/11/2026 : le nom affiché ({{ marque }}) vient de config.MARQUE."""
+    return {"marque": config.MARQUE}
+
+
+def _nom_court(nom, n=80):
+    """26/11/2026 : nom de fichier raccourci (le disque refuse plus de 255 caractères, la base en garde 200)."""
+    base, ext = os.path.splitext(nom or "video.mp4")
+    return (base[:n] or "video") + (ext[:10] or ".mp4")
 
 
 def _finaliser_analyse(analysis_id, result, output_dir, r2_prefix, empreinte):
@@ -3261,14 +3273,19 @@ def _assurer_schema():
     from sqlalchemy import inspect as _sa_inspect, text as _sa_text
     db.create_all()
     insp = _sa_inspect(db.engine)
+    postgres = db.engine.dialect.name.startswith("postgres")      # 26/11/2026 : production sur PostgreSQL
     for table, colonnes in _COLONNES_AJOUTEES.items():
         if table not in insp.get_table_names():
             continue
         existantes = {c["name"] for c in insp.get_columns(table)}
         for nom, type_sql in colonnes.items():
             if nom not in existantes:
+                if postgres:        # types et valeurs par défaut propres à PostgreSQL ; « user » est un mot réservé
+                    type_sql = (type_sql.replace("DATETIME", "TIMESTAMP").replace("BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE")
+                                .replace("BOOLEAN DEFAULT 1", "BOOLEAN DEFAULT TRUE"))
+                nom_table = db.engine.dialect.identifier_preparer.quote(table)
                 with db.engine.begin() as cx:
-                    cx.execute(_sa_text(f"ALTER TABLE {table} ADD COLUMN {nom} {type_sql}"))
+                    cx.execute(_sa_text(f"ALTER TABLE {nom_table} ADD COLUMN {nom} {type_sql}"))
                 print(f"  [SCHÉMA] colonne ajoutée : {table}.{nom}")
 
 
