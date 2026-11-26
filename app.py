@@ -3352,10 +3352,13 @@ def _liberer_analyses_orphelines():
     """26/11/2026 : en local (analyse dans un fil de l'application, sans Celery ni GPU distant), arrêter l'application
     arrête aussi les analyses en cours : au redémarrage, elles restaient « en cours » pour toujours, jetons non
     rendus. Elles passent en erreur, jetons rendus, et peuvent être relancées."""
-    if config.GPU_DISTANT or CELERY_AVAILABLE:
+    if config.GPU_DISTANT:
         return
     with app.app_context():
-        for a in Analysis.query.filter(Analysis.status.in_(["processing", "pending"])).all():
+        # « Celery installé » ne veut pas dire « Celery en marche » : seules les analyses réellement confiées à Celery
+        # (identifiant de tâche enregistré) peuvent encore tourner ailleurs ; les autres tournaient dans l'application
+        for a in Analysis.query.filter(Analysis.status.in_(["processing", "pending"]),
+                                       Analysis.celery_task_id.is_(None)).all():
             _echec_analyse(a.id, "application arrêtée pendant l'analyse")
             print(f"  [ANALYSE] #{a.id} interrompue par l'arrêt de l'application : erreur, jetons rendus")
 
