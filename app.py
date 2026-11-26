@@ -3348,9 +3348,22 @@ if os.getenv("SCOUTIA_TACHES_DE_FOND", "1" if config.GPU_DISTANT else "0") == "1
     demarrer_taches_de_fond()
 
 
+def _liberer_analyses_orphelines():
+    """26/11/2026 : en local (analyse dans un fil de l'application, sans Celery ni GPU distant), arrêter l'application
+    arrête aussi les analyses en cours : au redémarrage, elles restaient « en cours » pour toujours, jetons non
+    rendus. Elles passent en erreur, jetons rendus, et peuvent être relancées."""
+    if config.GPU_DISTANT or CELERY_AVAILABLE:
+        return
+    with app.app_context():
+        for a in Analysis.query.filter(Analysis.status.in_(["processing", "pending"])).all():
+            _echec_analyse(a.id, "application arrêtée pendant l'analyse")
+            print(f"  [ANALYSE] #{a.id} interrompue par l'arrêt de l'application : erreur, jetons rendus")
+
+
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
+    _liberer_analyses_orphelines()
 
     # Lance le nettoyage automatique en background (et la surveillance GPU en production)
     demarrer_taches_de_fond()
